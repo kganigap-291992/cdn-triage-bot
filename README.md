@@ -10,6 +10,13 @@ safely integrated into production workflows.
 
 ---
 
+## Data Safety
+
+All telemetry used in this project is **synthetically generated** to mirror real-world CDN traffic patterns.
+No production logs, customer data, or proprietary systems are involved.
+
+---
+
 ## Why this project exists
 
 CDN incident triage is often:
