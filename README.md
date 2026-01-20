@@ -33,15 +33,15 @@ clear metrics, and human-in-the-loop Slack workflows.
 ## High-level architecture
 
 Slack Slash Command (/triage)
-↓
+ →
 n8n Workflow Orchestrator
-↓
+ →
 Log Ingestion (CSV → pluggable DB source)
-↓
+ →
 Feature Derivation & Aggregation
-↓
+ →
 Rule-based Diagnosis & Drilldowns
-↓
+ →
 Slack Summary + Interactive Queries
 
 
