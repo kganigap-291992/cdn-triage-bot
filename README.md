@@ -92,3 +92,15 @@ The bot is driven entirely via Slack slash commands.
 4. Run `/triage` commands from Slack
 
 ---
+
+## High-Level n8n Flow
+
+```mermaid
+flowchart LR
+    A[Slack<br/>/triage command] -->|HTTP POST| B[n8n Webhook]
+    B --> C[Parser<br/>Parse filters & window]
+    C --> D[HTTP Request<br/>Fetch CSV]
+    D --> E[Metrics Engine<br/>Errors & P95 TTMS]
+    E --> F[Slack<br/>Summary Response]
+
+
