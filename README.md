@@ -1,99 +1,53 @@
-# CDN Incident Triage Bot (n8n + Slack) (v1)
+# CDN Incident Triage Bot  
+**V1 (n8n + Slack) → V2 (Standalone UI + API)**
 
-An automated incident triage system that analyzes CDN telemetry
+An automated CDN incident triage system that analyzes delivery telemetry
 (edge, mid-tier, cache, URL patterns, and client signals) and produces
-evidence-backed diagnosis and drill-down insights via Slack.
+**evidence-backed diagnosis and drill-down insights**.
 
-This project mirrors CDN/video operations and demonstrates
-how operational analytics, automation, and (optionally) LLMs can be
-safely integrated into production workflows.
+This project mirrors real-world CDN/video operations and demonstrates
+how operational analytics, automation, and tooling evolution can be
+applied safely in production-style workflows.
 
 ---
 
 ## Data Safety
 
-All telemetry used in this project is **synthetically generated** to mirror real-world CDN traffic patterns.
-No production logs, customer data, or proprietary systems are involved.
+All telemetry used in this project is **synthetically generated** to mirror
+real-world CDN traffic patterns.
+
+- No production logs
+- No customer data
+- No proprietary systems
 
 ---
 
-## Why this project exists
+## Why This Project Exists
 
 CDN incident triage is often:
-- manual and time-consuming
-- dependent on tribal knowledge
-- difficult to standardize across teams
+
+- manual and time-consuming  
+- dependent on tribal knowledge  
+- difficult to standardize across teams  
 
 Engineers must correlate:
-- edge vs upstream errors
-- cache behavior
-- latency spikes
-- URL types (manifest vs segment)
-- regional edge issues
-- client/User-Agent patterns
+- edge vs upstream errors  
+- cache behavior  
+- latency spikes  
+- URL types (manifest vs segment)  
+- regional POP failures  
+- client / User-Agent patterns  
 
 **This project automates first-level triage** using deterministic rules,
-clear metrics, and human-in-the-loop Slack workflows.
+clear metrics, and explainable summaries.
 
 ---
 
-## High-level architecture
+# V1 — n8n + Slack (Prototype Phase)
 
-Slack Slash Command (/triage)
- →
-n8n Workflow Orchestrator
- →
-Log Ingestion (CSV → pluggable DB source)
- →
-Feature Derivation & Aggregation
- →
-Rule-based Diagnosis & Drilldowns
- →
-Slack Summary + Interactive Queries
+V1 focused on **speed of iteration and signal validation**.
 
-
-**Key design principle:**  
-The ingestion layer is fully replaceable. CSV-based logs are used for demo
-purposes and can be swapped with a production telemetry database
-(e.g. ELK / MapleDB / ClickHouse) without changing triage logic.
-
----
-## Dataset
-
-For demo purposes, the project uses a **single 10,000-row CSV**
-representing 60 minutes of CDN traffic.
-
-Multiple real-world failure patterns are embedded implicitly via:
-- time windows
-- regions/POPs
-- delivery service
-- URL/asset behavior
-
-  
-### Derived features (inside the workflow)
-- `region`, `pop` from edge cache naming
-- `asset_id`, `asset_type` (manifest vs segment) from URL
-- cache hit ratio
-- latency percentiles (p50/p95/p99)
-- upstream byte amplification
-- error concentration by asset, cache, region, UA
-
----
-
-## Supported Slack queries
-
-The bot is driven entirely via Slack slash commands.
-
-## Running the demo
-
-1. Create a Slack app with a `/triage` slash command
-2. Deploy the n8n workflow
-3. Host the CSV via GitHub raw URL
-4. Run `/triage` commands from Slack
-
----
-
-## High-Level n8n Flow
+## V1 High-Level Architecture
 
 ```mermaid
 flowchart LR
@@ -102,22 +56,3 @@ flowchart LR
     C --> D[HTTP Request<br/>Fetch CSV]
     D --> E[Metrics Engine<br/>Errors & P95 TTMS]
     E --> F[Slack<br/>Summary Response]
-```
-## Version Freeze: v1
-
-**Status:** Frozen (Jan 2026)
-
-### Included
-
-- CSV-based ingestion
-- Deterministic metrics engine
-- Slack based triage output
-
-### Planned Next Steps (V2)
-
-- LLM based explanation layer (metrics remain determinstic)
-- Agent with RAG and Memory as UX layer 
-
-
-
-
