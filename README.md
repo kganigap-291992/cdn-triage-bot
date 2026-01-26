@@ -1,4 +1,4 @@
-# CDN Incident Triage Bot (n8n + Slack)
+# CDN Incident Triage Bot (n8n + Slack) (v1)
 
 An automated incident triage system that analyzes CDN telemetry
 (edge, mid-tier, cache, URL patterns, and client signals) and produces
@@ -102,5 +102,22 @@ flowchart LR
     C --> D[HTTP Request<br/>Fetch CSV]
     D --> E[Metrics Engine<br/>Errors & P95 TTMS]
     E --> F[Slack<br/>Summary Response]
+```
+## Version Freeze: v1
+
+**Status:** Frozen (Jan 2026)
+
+### Included
+
+- CSV-based ingestion
+- Deterministic metrics engine
+- Slack based triage output
+
+### Planned Next Steps (V2)
+
+- LLM based explanation layer (metrics remain determinstic)
+- Agent with RAG and Memory as UX layer 
+
+
 
 
