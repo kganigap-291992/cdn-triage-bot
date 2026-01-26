@@ -47,6 +47,23 @@ clear metrics, and explainable summaries.
 
 V1 focused on **speed of iteration and signal validation**.
 
+### Why a UI Was Required (Beyond Automation)
+
+While n8n worked well for automated, one-shot triage, it is not designed
+for interactive or conversational workflows.
+
+Chat-based triage requires:
+- deterministic and reproducible metrics
+- explicit request/response boundaries
+- inspectable intermediate state
+- clear separation between computation and explanation
+
+The move to a UI + API architecture in V2 was a prerequisite for any
+future chat or agent-based interface. The UI externalizes system state
+and makes reasoning observable, allowing conversational layers to sit
+on top without compromising correctness.
+
+
 ## V1 High-Level Architecture
 
 ```mermaid
