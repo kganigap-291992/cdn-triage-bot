@@ -468,6 +468,8 @@ export function runTriage({
 
   const ttmsVals = filtered.map(r => Number(r.ttms_ms)).filter(v => Number.isFinite(v));
   const p95 = percentile(ttmsVals, 95);
+  const p99 = percentile(ttmsVals, 99);
+
 
   const hitCount = filtered.filter(r => Number(r.edge_cache_hit) === 1).length;
   const hitRatio = total ? (hitCount / total) * 100 : null;
@@ -494,7 +496,7 @@ export function runTriage({
     evidence.push(`No 5xx responses observed.`);
   }
   evidence.push(`Cache hit ratio ${formatPct(hitRatio)} (miss ${formatPct(missRatio)}).`);
-  evidence.push(`Latency p95 TTMS = ${formatMs(p95)}.`);
+  evidence.push(`Latency p95/p99 TTMS = ${formatMs(p95)}/${formatMs(p99)}.`);
 
   // Pretty summary
   const header = `🧭 *CDN TRIAGE SUMMARY*`;
@@ -506,6 +508,7 @@ export function runTriage({
     `📊 *Traffic & Performance*`,
     `• Requests: *${formatInt(total)}*`,
     `• P95 TTMS: *${formatMs(p95)}*`,
+    `• P99 TTMS: *${formatMs(p99)}*`,
     `• Cache Hit: *${formatPct(hitRatio)}*  (miss ${formatPct(missRatio)})`,
   ].join("\n");
 
@@ -573,6 +576,7 @@ export function runTriage({
       timeRangeUTC: { start: startISO, end: endISO },
       totalRequests: total,
       p95TtmsMs: p95,
+      p99TtmsMs: p99,
       cacheHitPct: hitRatio,
       cacheMissPct: missRatio,
       statusCounts: statusCountsPairs.map(([code, count]) => ({ code: Number(code), count })),
