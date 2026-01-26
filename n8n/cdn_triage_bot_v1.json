@@ -1,0 +1,179 @@
+{
+  "name": "CDN_BOT",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "triage",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -16,
+        -208
+      ],
+      "id": "a1524ed4-94b2-4071-84e7-29c80ab2b205",
+      "name": "Webhook",
+      "webhookId": "bf4f9f60-fd4e-4043-990f-ffaa282fa61b"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"status\":\"ok\",\"message\":\"CDN triage is running. Results will be posted shortly\"}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        848,
+        -208
+      ],
+      "id": "dfc9bad4-32d5-4869-a36a-78a90d878aac",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "url": "https://raw.githubusercontent.com/kganigap-291992/cdn-triage-bot/refs/heads/main/data/cdn_logs_6h_80k_stresstest.csv",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "csvText"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        416,
+        112
+      ],
+      "id": "eab674fb-a2dc-4356-b953-90ee35ec46d4",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0AA7U6FK7T",
+          "mode": "list",
+          "cachedResultName": "triage_lab"
+        },
+        "text": "={{$json.summaryText}}\n",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        976,
+        112
+      ],
+      "id": "0b9b338c-aa64-453c-801b-2bd4d25bedf7",
+      "name": "Send a message",
+      "webhookId": "1f0aab26-7545-45ea-9409-51f887e0c329",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "xy8gwdrvOqRONnE3",
+          "name": "Slack account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\nconst rawText = String(body.text ?? \"\").trim();\n\nfunction splitTokens(s){ return s.split(/[\\s,]+/).filter(Boolean); }\n\nfunction parseWindow(v){\n  if(!v) return 60;\n  const m = String(v).match(/^(\\d+)([mhd])?$/i);\n  if(!m) return 60;\n  let n = parseInt(m[1], 10);\n  let u = (m[2] ?? \"m\").toLowerCase();\n  if(u === \"h\") n *= 60;\n  if(u === \"d\") n *= 1440;\n  return Math.min(n, 240);\n}\n\nfunction parseBool(v){\n  if(v == null) return false;\n  const s = String(v).trim().toLowerCase();\n  return [\"1\",\"true\",\"yes\",\"y\",\"on\"].includes(s);\n}\n\nfunction normLower(v){\n  return String(v ?? \"\").trim().toLowerCase();\n}\n\nfunction normUpper(v){\n  return String(v ?? \"\").trim().toUpperCase();\n}\n\nfunction parseList(v, normalizeFn){\n  // supports: \"A,B,C\" or \"A|B|C\" (and also single values)\n  const s = String(v ?? \"\").trim();\n  if(!s) return [];\n  return s.split(/[|,]+/).map(x => normalizeFn(x)).filter(Boolean);\n}\n\nlet service=\"all\", region=\"all\", pop=\"all\", windowMinutes=60;\nlet debug=false;\nconst filters=[];\n\nfor(const t of splitTokens(rawText)){\n  const parts = t.split(\"=\");\n  const key = normLower(parts.shift() ?? \"\");\n  const value = parts.join(\"=\").trim(); // allow '=' in value\n\n  // --- Primary dimensions ---\n  if(key === \"service\") service = normLower(value) || \"all\";\n  else if(key === \"delivery_service\") service = normLower(value) || \"all\"; // alias for your new CSV\n  else if(key === \"region\") region = normLower(value) || \"all\";\n  else if(key === \"pop\") pop = normLower(value) || \"all\";\n  else if(key === \"window\") windowMinutes = parseWindow(value);\n  else if(key === \"debug\") debug = parseBool(value || \"1\");\n\n  // --- Status filter (existing) ---\n  else if(key === \"edge_status\"){\n    const v = normLower(value);\n    if(v && v.endsWith(\"xx\")){\n      const b = parseInt(v[0], 10) * 100;\n      filters.push({ key:\"edge_status\", type:\"range\", min:b, max:b+99 });\n    } else if(v) {\n      const n = parseInt(v, 10);\n      if(!Number.isNaN(n)) filters.push({ key:\"edge_status\", type:\"eq\", value:n });\n    }\n  }\n\n  // --- NEW: crc filter ---\n  else if(key === \"crc\"){\n    const list = parseList(value, normUpper);\n    if(list.length === 1) {\n      filters.push({ key:\"crc\", type:\"eq\", value:list[0] });\n    } else if(list.length > 1) {\n      filters.push({ key:\"crc\", type:\"in\", values:list });\n    }\n  }\n\n  // --- OPTIONAL: crc_class filter (semantic buckets) ---\n  // Example usage: crc_class=error OR crc_class=hit\n  else if(key === \"crc_class\"){\n    const v = normLower(value);\n    if(v) filters.push({ key:\"crc_class\", type:\"eq\", value:v });\n  }\n}\n\n// If you want, you can also expose crc/crc_class selections in the output:\nreturn [{\n  json: { service, region, pop, windowMinutes, filters, debug }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        -208
+      ],
+      "id": "08ccfd22-e5c2-4104-9fb7-84decb537b9a",
+      "name": "Parser"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * CDN TRIAGE BOT — METRICS ENGINE (Pretty Output + Status Code Distribution + Guardrails)\n * =====================================================================================\n * Inputs:\n *  - From \"Parser\" node: service, region, pop, windowMinutes, filters, debug\n *  - CSV text from prior HTTP node: $json.csvText or $json.body\n *\n * Canonical dataset fields produced here:\n *  - service     (lowercase) from delivery_service|service\n *  - region/pop  (lowercase) derived from url host edge-<region>-<pop>\n *  - crc         (UPPERCASE)\n *  - crc_class   (hit|miss|error|client|other|unknown)\n *\n * Adds:\n *  - Response Codes distribution\n *  - Data Quality counters\n *  - Warnings for suspicious/silent failures\n */\n\n// ------------------------------------------------------------\n// Helpers\n// ------------------------------------------------------------\nfunction normLower(v){ return String(v ?? \"\").trim().toLowerCase(); }\nfunction normUpper(v){ return String(v ?? \"\").trim().toUpperCase(); }\n\nfunction matchDim(value, expected) {\n  if (!expected || expected === \"all\") return true;\n  return normLower(value) === normLower(expected);\n}\n\nfunction percentile(arr, p) {\n  if (!arr || arr.length === 0) return null;\n  const sorted = [...arr].sort((a, b) => a - b);\n  const idx = (p / 100) * (sorted.length - 1);\n  const lo = Math.floor(idx);\n  const hi = Math.ceil(idx);\n  if (lo === hi) return sorted[lo];\n  const w = idx - lo;\n  return sorted[lo] * (1 - w) + sorted[hi] * w;\n}\n\nfunction formatPct(x, digits=2){\n  if (x == null || !Number.isFinite(x)) return \"n/a\";\n  return `${x.toFixed(digits)}%`;\n}\n\nfunction formatMs(x){\n  if (x == null || !Number.isFinite(x)) return \"n/a\";\n  return `${Math.round(x)} ms`;\n}\n\nfunction formatInt(x){\n  if (x == null || !Number.isFinite(x)) return \"0\";\n  return `${Math.round(x)}`;\n}\n\nfunction prettyFilters(filters) {\n  if (!filters?.length) return \"none\";\n  return filters.map(f => {\n    if (f?.type === \"range\") return `${f.key}=${f.min}-${f.max}`;\n    if (f?.type === \"eq\") return `${f.key}=${f.value}`;\n    if (f?.type === \"in\") return `${f.key} in (${(f.values ?? []).join(\",\")})`;\n    return `${f?.key ?? \"filter\"}`;\n  }).join(\", \");\n}\n\nfunction topCounts(rows, key, limit = 6) {\n  const counts = new Map();\n  for (const r of rows) {\n    const v = String(r?.[key] ?? \"\").trim();\n    if (!v) continue;\n    counts.set(v, (counts.get(v) ?? 0) + 1);\n  }\n  return [...counts.entries()]\n    .sort((a, b) => b[1] - a[1])\n    .slice(0, limit);\n}\n\nfunction topValuesPretty(rows, key, limit=6){\n  const entries = topCounts(rows, key, limit);\n  if (!entries.length) return \"n/a\";\n  return entries.map(([v,c]) => `${v} (${c})`).join(\", \");\n}\n\nfunction deriveRegionPopFromUrl(u) {\n  const s = String(u || \"\");\n  const m = s.match(/:\\/\\/edge-([a-z0-9]+)-([a-z0-9]+)\\b/i);\n  if (!m) return { region: null, pop: null };\n  return { region: m[1].toLowerCase(), pop: m[2].toLowerCase() };\n}\n\nfunction normalizeIsoToMsUtc(ts) {\n  if (!ts) return null;\n  let s = String(ts).trim();\n  if (!s) return null;\n\n  const hasTZ = /Z$|[+-]\\d\\d:\\d\\d$/.test(s);\n  const m = s.match(/^(.+?)(\\.(\\d+))?(Z|[+-]\\d\\d:\\d\\d)?$/);\n  if (!m) return null;\n\n  const base = m[1];\n  const frac = m[3] ?? \"\";\n  const tz = m[4] ?? (hasTZ ? \"\" : \"Z\");\n\n  const ms = (frac + \"000\").slice(0, 3);\n  const iso = `${base}.${ms}${tz || \"Z\"}`;\n  return iso;\n}\n\nfunction toMs(ts) {\n  const iso = normalizeIsoToMsUtc(ts);\n  if (!iso) return NaN;\n  const ms = Date.parse(iso);\n  return Number.isFinite(ms) ? ms : NaN;\n}\n\nfunction deriveCrcClass(crcRaw) {\n  const c = normUpper(crcRaw);\n  if (!c || c === \"UNKNOWN\") return \"unknown\";\n\n  if (c.startsWith(\"ERR_\")) return \"error\";\n\n  if ([\"TCP_HIT\",\"TCP_CF_HIT\",\"TCP_REF_FAIL_HIT\",\"TCP_REFRESH_HIT\"].includes(c)) return \"hit\";\n  if ([\"TCP_MISS\",\"TCP_REFRESH_MISS\"].includes(c)) return \"miss\";\n  if ([\"TCP_CLIENT_REFRESH\"].includes(c)) return \"client\";\n\n  return \"other\";\n}\n\nfunction passesFilter(row, f) {\n  if (!f || !f.key) return true;\n  const v = row[f.key];\n\n  if (f.type === \"range\") {\n    const n = Number(v);\n    if (!Number.isFinite(n)) return false;\n    const minOk = f.min == null ? true : n >= Number(f.min);\n    const maxOk = f.max == null ? true : n <= Number(f.max);\n    return minOk && maxOk;\n  }\n\n  if (f.type === \"eq\") {\n    const a = String(v ?? \"\").trim().toLowerCase();\n    const b = String(f.value ?? \"\").trim().toLowerCase();\n    return a === b;\n  }\n\n  if (f.type === \"in\") {\n    const a = String(v ?? \"\").trim().toLowerCase();\n    const set = (f.values ?? []).map(x => String(x).trim().toLowerCase());\n    return set.includes(a);\n  }\n\n  return true;\n}\n\nfunction countBy(rows, key) {\n  const m = new Map();\n  for (const r of rows) {\n    const v = r?.[key];\n    if (v == null || v === \"\" || Number.isNaN(v)) continue;\n    m.set(v, (m.get(v) ?? 0) + 1);\n  }\n  return [...m.entries()].sort((a, b) => Number(a[0]) - Number(b[0]));\n}\n\nfunction prettyStatusCounts(statusCounts, limit = 12) {\n  if (!statusCounts.length) return \"n/a\";\n  return statusCounts\n    .slice(0, limit)\n    .map(([code, count]) => `• ${code}: *${count}*`)\n    .join(\"\\n\");\n}\n\nfunction parseCsv(csvText) {\n  const text = String(csvText).trim();\n  if (!text) return [];\n\n  const lines = text.split(/\\r?\\n/);\n  if (lines.length < 2) return [];\n\n  function splitCsvLine(line) {\n    const out = [];\n    let cur = \"\";\n    let inQuotes = false;\n\n    for (let i = 0; i < line.length; i++) {\n      const ch = line[i];\n\n      if (ch === '\"') {\n        if (inQuotes && line[i + 1] === '\"') { cur += '\"'; i++; }\n        else inQuotes = !inQuotes;\n      } else if (ch === \",\" && !inQuotes) {\n        out.push(cur); cur = \"\";\n      } else cur += ch;\n    }\n    out.push(cur);\n    return out.map(s => s.trim());\n  }\n\n  const headers = splitCsvLine(lines[0]).map(h => h.replace(/^\"|\"$/g, \"\").trim());\n\n  const rows = [];\n  for (let i = 1; i < lines.length; i++) {\n    const line = lines[i];\n    if (!line || !line.trim()) continue;\n\n    const cols = splitCsvLine(line);\n    const obj = {};\n\n    for (let c = 0; c < headers.length; c++) {\n      const key = headers[c];\n      let val = cols[c] ?? \"\";\n      val = String(val).replace(/^\"|\"$/g, \"\");\n      obj[key] = val;\n    }\n\n    // Numeric normalization\n    if (obj.edge_status !== undefined) obj.edge_status = Number(obj.edge_status);\n    if (obj.mid_status !== undefined) obj.mid_status = Number(obj.mid_status);\n    if (obj.ttms_ms !== undefined) obj.ttms_ms = Number(obj.ttms_ms);\n    if (obj.upstream_bytes !== undefined) obj.upstream_bytes = Number(obj.upstream_bytes);\n    if (obj.edge_cache_hit !== undefined) obj.edge_cache_hit = Number(obj.edge_cache_hit);\n\n    // Canonical dims\n    obj.service = normLower(obj.delivery_service ?? obj.service) || \"unknown\";\n\n    obj.crc = normUpper(obj.crc) || \"UNKNOWN\";\n    obj.crc_class = deriveCrcClass(obj.crc);\n\n    const rp = deriveRegionPopFromUrl(obj.url);\n    obj.region = normLower(obj.region ?? rp.region) || \"unknown\";\n    obj.pop = normLower(obj.pop ?? rp.pop) || \"unknown\";\n\n    rows.push(obj);\n  }\n\n  return rows;\n}\n\n// ------------------------------------------------------------\n// Debug helpers\n// ------------------------------------------------------------\nfunction buildDebugObj({ rows, inWindow, filtered, startISO, endISO, anchorISO, dq, warnings }) {\n  const sample = (filtered[0] ?? inWindow[0] ?? null);\n  const sampleCompact = sample ? {\n    ts: sample.ts,\n    service: sample.service,\n    region: sample.region,\n    pop: sample.pop,\n    crc: sample.crc,\n    crc_class: sample.crc_class,\n    edge_status: sample.edge_status,\n    ttms_ms: sample.ttms_ms,\n    url: sample.url,\n  } : null;\n\n  return {\n    rows_total: rows.length,\n    rows_inWindow: inWindow.length,\n    rows_filtered: filtered.length,\n    time: { anchor: anchorISO, start: startISO, end: endISO },\n    available: {\n      service: topValuesPretty(inWindow, \"service\", 8),\n      region: topValuesPretty(inWindow, \"region\", 8),\n      pop: topValuesPretty(inWindow, \"pop\", 8),\n      crc_class: topValuesPretty(inWindow, \"crc_class\", 8),\n      crc: topValuesPretty(inWindow, \"crc\", 8),\n      edge_status: topValuesPretty(inWindow, \"edge_status\", 12),\n    },\n    data_quality: dq,\n    warnings,\n    sample: sampleCompact,\n  };\n}\n\nfunction debugBlock(dbg) {\n  const sample = dbg.sample ? JSON.stringify(dbg.sample) : \"n/a\";\n  const w = (dbg.warnings?.length ? dbg.warnings.join(\" | \") : \"none\");\n  const dq = dbg.data_quality ? JSON.stringify(dbg.data_quality) : \"n/a\";\n\n  return [\n    `--- DEBUG ---`,\n    `rows_total=${dbg.rows_total}`,\n    `rows_inWindow=${dbg.rows_inWindow}`,\n    `rows_filtered=${dbg.rows_filtered}`,\n    `anchor=${dbg.time.anchor}`,\n    `start=${dbg.time.start}`,\n    `end=${dbg.time.end}`,\n    `avail_service=${dbg.available.service}`,\n    `avail_region=${dbg.available.region}`,\n    `avail_pop=${dbg.available.pop}`,\n    `avail_crc_class=${dbg.available.crc_class}`,\n    `avail_crc=${dbg.available.crc}`,\n    `avail_edge_status=${dbg.available.edge_status}`,\n    `data_quality=${dq}`,\n    `warnings=${w}`,\n    `sample=${sample}`,\n  ].join(\"\\n\");\n}\n\n// ------------------------------------------------------------\n// Inputs from Parser\n// ------------------------------------------------------------\nconst parsed = $items(\"Parser\")[0].json;\n\nconst service = parsed.service ?? \"all\";\nconst region = parsed.region ?? \"all\";\nconst pop = parsed.pop ?? \"all\";\nconst windowMinutes = Number(parsed.windowMinutes ?? 60);\nconst filters = Array.isArray(parsed.filters) ? parsed.filters : [];\nconst debug = !!parsed.debug;\n\n// ------------------------------------------------------------\n// CSV text (HTTP node output)\n// ------------------------------------------------------------\nconst csvText = $json.csvText ?? $json.body;\nif (!csvText) {\n  throw new Error(\"No CSV text found. Set HTTP Response Format=Text and Put Output in Field=csvText (or use body).\");\n}\n\nconst rows = parseCsv(csvText);\nif (rows.length === 0) {\n  throw new Error(\"Parsed 0 rows from CSV. Check delimiter/quotes/header line.\");\n}\n\n// ------------------------------------------------------------\n// Data quality counters (whole dataset)\n// ------------------------------------------------------------\nconst dqAll = {\n  invalid_ts: rows.filter(r => !r.ts || Number.isNaN(toMs(r.ts))).length,\n  missing_edge_status: rows.filter(r => !Number.isFinite(r.edge_status)).length,\n  unknown_service: rows.filter(r => r.service === \"unknown\").length,\n  unknown_crc: rows.filter(r => r.crc === \"UNKNOWN\").length,\n  unknown_region: rows.filter(r => r.region === \"unknown\").length,\n  unknown_pop: rows.filter(r => r.pop === \"unknown\").length,\n};\n\n// ------------------------------------------------------------\n// Anchor on MAX timestamp and compute window\n// ------------------------------------------------------------\nlet anchor = null;\nlet validTsCount = 0;\n\nfor (const r of rows) {\n  const ms = toMs(r.ts);\n  if (!Number.isNaN(ms)) {\n    validTsCount++;\n    anchor = anchor == null ? ms : Math.max(anchor, ms);\n  }\n}\n\nif (validTsCount === 0 || anchor == null) {\n  throw new Error(\"No valid timestamps found. Check ts format (expected ISO-like).\");\n}\n\nlet start = anchor - windowMinutes * 60 * 1000;\nlet end = anchor;\n\nconst inWindow = rows.filter(r => {\n  const ms = toMs(r.ts);\n  if (Number.isNaN(ms)) return false;\n  return ms >= start && ms <= end;\n});\n\nconst startISO = new Date(start).toISOString();\nconst endISO = new Date(end).toISOString();\nconst anchorISO = endISO;\n\n// Data quality counters (window)\nconst dqWindow = {\n  invalid_ts: inWindow.filter(r => !r.ts || Number.isNaN(toMs(r.ts))).length, // should be 0 by construction\n  missing_edge_status: inWindow.filter(r => !Number.isFinite(r.edge_status)).length,\n  unknown_service: inWindow.filter(r => r.service === \"unknown\").length,\n  unknown_crc: inWindow.filter(r => r.crc === \"UNKNOWN\").length,\n  unknown_region: inWindow.filter(r => r.region === \"unknown\").length,\n  unknown_pop: inWindow.filter(r => r.pop === \"unknown\").length,\n};\n\n// ------------------------------------------------------------\n// Apply filters + dimensions\n// ------------------------------------------------------------\nlet filtered = inWindow\n  .filter(r => matchDim(r.service, service))\n  .filter(r => matchDim(r.region, region))\n  .filter(r => matchDim(r.pop, pop));\n\nfor (const f of filters) {\n  filtered = filtered.filter(r => passesFilter(r, f));\n}\n\n// ------------------------------------------------------------\n// Warnings (suspicious outcomes)\n// ------------------------------------------------------------\nconst warnings = [];\n\nif (service !== \"all\" && filtered.length === inWindow.length && inWindow.length > 0) {\n  warnings.push(`Service filter '${service}' did not reduce dataset (possible schema mismatch).`);\n}\nif (region !== \"all\" && filtered.length === inWindow.length && inWindow.length > 0) {\n  warnings.push(`Region filter '${region}' did not reduce dataset.`);\n}\nif (pop !== \"all\" && filtered.length === inWindow.length && inWindow.length > 0) {\n  warnings.push(`POP filter '${pop}' did not reduce dataset.`);\n}\nif (inWindow.length > 0 && filtered.length === 0) {\n  warnings.push(`Filters removed all rows. Check available values in DEBUG.`);\n}\nif (dqWindow.missing_edge_status > 0) {\n  warnings.push(`Some rows missing edge_status (${dqWindow.missing_edge_status}). Response code totals may not sum perfectly.`);\n}\nif (dqWindow.invalid_ts > 0) {\n  warnings.push(`Some rows have invalid ts in window (${dqWindow.invalid_ts}).`);\n}\n\nconst dbg = debug ? buildDebugObj({ rows, inWindow, filtered, startISO, endISO, anchorISO, dq: { all: dqAll, window: dqWindow }, warnings }) : null;\n\n// ------------------------------------------------------------\n// Empty window / no matches\n// ------------------------------------------------------------\nif (inWindow.length === 0) {\n  const summary = [\n    `🧭 *CDN TRIAGE SUMMARY*`,\n    `No data found in requested time window.`,\n    `• Scope: service=\\`${service}\\`  region=\\`${region}\\`  pop=\\`${pop}\\``,\n    `• Window: \\`${windowMinutes}m\\`  • Filters: \\`${prettyFilters(filters)}\\``,\n    `• Time (UTC): \\`${startISO}\\` → \\`${endISO}\\``,\n    ...(warnings.length ? [\"\", `⚠️ *Warnings*`, ...warnings.map(w => `• ${w}`)] : []),\n    ...(debug && dbg ? [\"\", \"```\", debugBlock(dbg), \"```\"] : []),\n  ].join(\"\\n\");\n\n  return [{\n    json: {\n      ...$json,\n      timeRangeUTC: { start: startISO, end: endISO },\n      totalRequests: 0,\n      p95TtmsMs: null,\n      cacheHitPct: null,\n      cacheMissPct: null,\n      statusCounts: [],\n      warnings,\n      dataQuality: { all: dqAll, window: dqWindow },\n      summaryText: summary,\n      debug: dbg,\n    }\n  }];\n}\n\nif (filtered.length === 0) {\n  const summary = [\n    `🧭 *CDN TRIAGE SUMMARY*`,\n    `No rows matched your filters.`,\n    `• Requested: service=\\`${service}\\` region=\\`${region}\\` pop=\\`${pop}\\` window=\\`${windowMinutes}m\\``,\n    `• Filters: \\`${prettyFilters(filters)}\\``,\n    `• Available (this window):`,\n    `   - service: ${topValuesPretty(inWindow, \"service\")}`,\n    `   - region: ${topValuesPretty(inWindow, \"region\")}`,\n    `   - pop: ${topValuesPretty(inWindow, \"pop\")}`,\n    `   - crc_class: ${topValuesPretty(inWindow, \"crc_class\")}`,\n    `   - edge_status: ${topValuesPretty(inWindow, \"edge_status\")}`,\n    ...(warnings.length ? [\"\", `⚠️ *Warnings*`, ...warnings.map(w => `• ${w}`)] : []),\n    ...(debug && dbg ? [\"\", \"```\", debugBlock(dbg), \"```\"] : []),\n  ].join(\"\\n\");\n\n  return [{\n    json: {\n      ...$json,\n      timeRangeUTC: { start: startISO, end: endISO },\n      totalRequests: 0,\n      p95TtmsMs: null,\n      cacheHitPct: null,\n      cacheMissPct: null,\n      statusCounts: [],\n      warnings,\n      dataQuality: { all: dqAll, window: dqWindow },\n      summaryText: summary,\n      debug: dbg,\n    }\n  }];\n}\n\n// ------------------------------------------------------------\n// Metrics\n// ------------------------------------------------------------\nconst total = filtered.length;\n\nconst ttmsVals = filtered.map(r => Number(r.ttms_ms)).filter(v => Number.isFinite(v));\nconst p95 = percentile(ttmsVals, 95);\n\nconst hitCount = filtered.filter(r => Number(r.edge_cache_hit) === 1).length;\nconst hitRatio = total ? (hitCount / total) * 100 : null;\n\nconst missCount = filtered.filter(r => Number(r.edge_cache_hit) === 0).length;\nconst missRatio = total ? (missCount / total) * 100 : null;\n\n// Response code distribution (raw counts)\nconst statusCounts = countBy(filtered, \"edge_status\");\n\n// Error subset (still useful for evidence)\nconst errorRows = filtered.filter(r => Number(r.edge_status) >= 500);\nconst errorCount = errorRows.length;\nconst errorRate = total ? (errorCount / total) * 100 : null;\n\n// Breakdowns\nconst topCrcClass = topCounts(filtered, \"crc_class\", 4);\nconst topErrorsByCrc = topCounts(errorRows, \"crc\", 4);\n\n// Evidence bullets\nconst evidence = [];\nif (errorCount > 0) {\n  const topErr = topErrorsByCrc[0];\n  if (topErr) evidence.push(`Error responses are dominated by \\`${topErr[0]}\\` (${topErr[1]} of ${errorCount}).`);\n  evidence.push(`Error responses: ${errorCount}/${total} (${formatPct(errorRate)}).`);\n} else {\n  evidence.push(`No 5xx responses observed.`);\n}\nevidence.push(`Cache hit ratio ${formatPct(hitRatio)} (miss ${formatPct(missRatio)}).`);\nevidence.push(`Latency p95 TTMS = ${formatMs(p95)}.`);\n\n// ------------------------------------------------------------\n// Pretty Slack summary\n// ------------------------------------------------------------\nconst header = `🧭 *CDN TRIAGE SUMMARY*`;\nconst scopeLine = `• Scope: service=\\`${service}\\`  region=\\`${region}\\`  pop=\\`${pop}\\``;\nconst windowLine = `• Window: \\`${windowMinutes}m\\`  • Time (UTC): \\`${startISO}\\` → \\`${endISO}\\``;\nconst filterLine = `• Filters: \\`${prettyFilters(filters)}\\``;\n\nconst trafficPerf = [\n  `📊 *Traffic & Performance*`,\n  `• Requests: *${formatInt(total)}*`,\n  `• P95 TTMS: *${formatMs(p95)}*`,\n  `• Cache Hit: *${formatPct(hitRatio)}*  (miss ${formatPct(missRatio)})`,\n].join(\"\\n\");\n\nconst statusBlock = [\n  `🧮 *Response Codes*`,\n  prettyStatusCounts(statusCounts, 12),\n].join(\"\\n\");\n\nconst breakdown = [\n  `🧩 *Top breakdowns*`,\n  `• service: ${topValuesPretty(filtered, \"service\", 4)}`,\n  `• region: ${topValuesPretty(filtered, \"region\", 4)}`,\n  `• pop: ${topValuesPretty(filtered, \"pop\", 4)}`,\n  `• crc_class: ${topCrcClass.length ? topCrcClass.map(([v,c]) => `${v} (${c})`).join(\", \") : \"n/a\"}`,\n].join(\"\\n\");\n\nconst evidenceBlock = [\n  `🧾 *Evidence*`,\n  ...evidence.map(x => `• ${x}`)\n].join(\"\\n\");\n\nconst dqLines = [];\nif (dqWindow.missing_edge_status || dqWindow.unknown_service || dqWindow.unknown_crc || dqWindow.unknown_region || dqWindow.unknown_pop) {\n  dqLines.push(`⚠️ *Data Quality (window)*`);\n  if (dqWindow.missing_edge_status) dqLines.push(`• missing edge_status: ${dqWindow.missing_edge_status}`);\n  if (dqWindow.unknown_service) dqLines.push(`• unknown service: ${dqWindow.unknown_service}`);\n  if (dqWindow.unknown_crc) dqLines.push(`• unknown crc: ${dqWindow.unknown_crc}`);\n  if (dqWindow.unknown_region) dqLines.push(`• unknown region: ${dqWindow.unknown_region}`);\n  if (dqWindow.unknown_pop) dqLines.push(`• unknown pop: ${dqWindow.unknown_pop}`);\n}\n\nconst warnLines = warnings.length ? [`⚠️ *Warnings*`, ...warnings.map(w => `• ${w}`)] : [];\n\nconst debugSection = (debug && dbg)\n  ? [\"\", \"```\", debugBlock(dbg), \"```\"].join(\"\\n\")\n  : \"\";\n\nconst summaryText = [\n  header,\n  scopeLine,\n  windowLine,\n  filterLine,\n  ...(warnLines.length ? [\"\", ...warnLines] : []),\n  ...(dqLines.length ? [\"\", ...dqLines] : []),\n  \"\",\n  trafficPerf,\n  \"\",\n  statusBlock,\n  \"\",\n  breakdown,\n  \"\",\n  evidenceBlock,\n  debugSection\n].filter(Boolean).join(\"\\n\");\n\nreturn [{\n  json: {\n    ...$json,\n    timeRangeUTC: { start: startISO, end: endISO },\n    totalRequests: total,\n    p95TtmsMs: p95,\n    cacheHitPct: hitRatio,\n    cacheMissPct: missRatio,\n    statusCounts: statusCounts.map(([code,count]) => ({ code: Number(code), count })),\n    topCrcClass: topCrcClass.map(([k,v]) => ({ crc_class: k, count: v })),\n    topErrorCrc: topErrorsByCrc.map(([k,v]) => ({ crc: k, count: v })),\n    warnings,\n    dataQuality: { all: dqAll, window: dqWindow },\n    summaryText,\n    debug: dbg,\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        112
+      ],
+      "id": "21238229-df45-42f2-a543-c3717e79858c",
+      "name": "Metrics"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parser": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Metrics": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "df286b43-1dff-4e70-9adc-20514b01103e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6764c79f47394251996df2c5f4c1e6280e5cf80debb2f3d7d17e476093ee3f99"
+  },
+  "id": "RUD3N79Ta4y850BEbPVEU",
+  "tags": []
+}
