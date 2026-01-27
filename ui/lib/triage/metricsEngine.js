@@ -199,12 +199,31 @@ function parseCsv(csvText) {
       obj[key] = val;
     }
 
-    // Numeric normalization
-    if (obj.edge_status !== undefined) obj.edge_status = Number(obj.edge_status);
-    if (obj.mid_status !== undefined) obj.mid_status = Number(obj.mid_status);
-    if (obj.ttms_ms !== undefined) obj.ttms_ms = Number(obj.ttms_ms);
-    if (obj.upstream_bytes !== undefined) obj.upstream_bytes = Number(obj.upstream_bytes);
-    if (obj.edge_cache_hit !== undefined) obj.edge_cache_hit = Number(obj.edge_cache_hit);
+    
+    // Numeric normalization + alias mapping (CSV/header differences)
+    const has = (k) => obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== "";
+
+    // Status: allow status/edge_status/http_status/response_code, but normalize to edge_status
+    if (!has("edge_status")) {
+    if (has("status")) obj.edge_status = obj.status;
+    else if (has("http_status")) obj.edge_status = obj.http_status;
+    else if (has("response_code")) obj.edge_status = obj.response_code;
+    }
+    if (has("edge_status")) obj.edge_status = Number(obj.edge_status);
+
+    // Mid status (optional)
+    if (has("mid_status")) obj.mid_status = Number(obj.mid_status);
+
+    // TTMS: allow ttms/ttms_ms/time_to_first_byte, normalize to ttms_ms
+    if (!has("ttms_ms")) {
+      if (has("ttms")) obj.ttms_ms = obj.ttms;
+      else if (has("time_to_first_byte")) obj.ttms_ms = obj.time_to_first_byte;
+    }
+    if (has("ttms_ms")) obj.ttms_ms = Number(obj.ttms_ms);
+
+    // Bytes + cache hit (optional)
+    if (has("upstream_bytes")) obj.upstream_bytes = Number(obj.upstream_bytes);
+    if (has("edge_cache_hit")) obj.edge_cache_hit = Number(obj.edge_cache_hit);
 
     // Canonical dims
     obj.service = normLower(obj.delivery_service ?? obj.service) || "unknown";
