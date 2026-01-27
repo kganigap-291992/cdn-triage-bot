@@ -1,0 +1,6 @@
+node_modules
+.next
+ui/node_modules
+ui/.next
+
+ui/lib/triage/metricsEngine.js.broken

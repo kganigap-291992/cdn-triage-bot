@@ -1,0 +1,93 @@
+### Parser Code 
+
+const body = $json.body ?? $json;
+const rawText = String(body.text ?? "").trim();
+
+function splitTokens(s){ return s.split(/[\s,]+/).filter(Boolean); }
+
+function parseWindow(v){
+  if(!v) return 60;
+  const m = String(v).match(/^(\d+)([mhd])?$/i);
+  if(!m) return 60;
+  let n = parseInt(m[1], 10);
+  let u = (m[2] ?? "m").toLowerCase();
+  if(u === "h") n *= 60;
+  if(u === "d") n *= 1440;
+  return Math.min(n, 240);
+}
+
+function parseBool(v){
+  if(v == null) return false;
+  const s = String(v).trim().toLowerCase();
+  return ["1","true","yes","y","on"].includes(s);
+}
+
+function normLower(v){
+  return String(v ?? "").trim().toLowerCase();
+}
+
+function normUpper(v){
+  return String(v ?? "").trim().toUpperCase();
+}
+
+function parseList(v, normalizeFn){
+  // supports: "A,B,C" or "A|B|C" (and also single values)
+  const s = String(v ?? "").trim();
+  if(!s) return [];
+  return s.split(/[|,]+/).map(x => normalizeFn(x)).filter(Boolean);
+}
+
+let service="all", region="all", pop="all", windowMinutes=60;
+let debug=false;
+const filters=[];
+
+for(const t of splitTokens(rawText)){
+  const parts = t.split("=");
+  const key = normLower(parts.shift() ?? "");
+  const value = parts.join("=").trim(); // allow '=' in value
+
+  // --- Primary dimensions ---
+  if(key === "service") service = normLower(value) || "all";
+  else if(key === "delivery_service") service = normLower(value) || "all"; // alias for your new CSV
+  else if(key === "region") region = normLower(value) || "all";
+  else if(key === "pop") pop = normLower(value) || "all";
+  else if(key === "window") windowMinutes = parseWindow(value);
+  else if(key === "debug") debug = parseBool(value || "1");
+
+  // --- Status filter (existing) ---
+  else if(key === "edge_status"){
+    const v = normLower(value);
+    if(v && v.endsWith("xx")){
+      const b = parseInt(v[0], 10) * 100;
+      filters.push({ key:"edge_status", type:"range", min:b, max:b+99 });
+    } else if(v) {
+      const n = parseInt(v, 10);
+      if(!Number.isNaN(n)) filters.push({ key:"edge_status", type:"eq", value:n });
+    }
+  }
+
+  // --- NEW: crc filter ---
+  else if(key === "crc"){
+    const list = parseList(value, normUpper);
+    if(list.length === 1) {
+      filters.push({ key:"crc", type:"eq", value:list[0] });
+    } else if(list.length > 1) {
+      filters.push({ key:"crc", type:"in", values:list });
+    }
+  }
+
+  // --- OPTIONAL: crc_class filter (semantic buckets) ---
+  // Example usage: crc_class=error OR crc_class=hit
+  else if(key === "crc_class"){
+    const v = normLower(value);
+    if(v) filters.push({ key:"crc_class", type:"eq", value:v });
+  }
+}
+
+// If you want, you can also expose crc/crc_class selections in the output:
+return [{
+  json: { service, region, pop, windowMinutes, filters, debug }
+}];
+
+
+
