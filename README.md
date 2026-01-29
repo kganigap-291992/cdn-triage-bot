@@ -73,3 +73,68 @@ flowchart LR
     C --> D[HTTP Request<br/>Fetch CSV]
     D --> E[Metrics Engine<br/>Errors & P95 TTMS]
     E --> F[Slack<br/>Summary Response]
+```
+
+### Why a UI Was Required (Beyond Automation)
+
+While n8n worked well for automated, one-shot triage, it is not designed
+for interactive or conversational workflows.
+
+Chat-based triage requires:
+- deterministic and reproducible metrics
+- explicit request/response boundaries
+- inspectable intermediate state
+- clear separation between computation and explanation
+
+The move to a UI + API architecture in V2 was a prerequisite for any
+future chat or agent-based interface. The UI externalizes system state
+and makes reasoning observable, allowing conversational layers to sit
+on top without compromising correctness.
+
+
+## Demo UI (Deterministic) — Triage + Chat Controller
+
+This demo UI provides:
+- CSV URL or CSV file upload
+- Filter controls: service, region, pop, window (minutes)
+- Run History (last 10) stored in localStorage
+- Metrics summary + raw metricsJson
+- **Chat panel (Phase B1)**: chat-shaped controller that runs the same deterministic triage using the current filters
+
+### Architecture
+
+- The application is a single Next.js web UI.
+- Users can run triage either via filters or via chat.
+- Chat is currently deterministic and acts as a controller.
+- All requests flow through a single `/api/triage` endpoint.
+- CSV logs are used for demos; ClickHouse will replace CSV in future versions without changing the UI.
+
+
+### Chat behavior (Phase B1)
+Chat is not an LLM yet. It is a control surface:
+- User types a message
+- We optionally parse simple overrides from text:
+  - `service=vod` / `svc=vod`
+  - `region=use1`
+  - `pop=sjc`
+  - `win=60` / `window=60`
+- Then the UI runs `/api/triage` deterministically and prints the summary
+
+### Example chat inputs
+- `run triage`
+- `service=vod region=usw2 pop=sjc win=60`
+- `svc=live win=15`
+
+### Why deterministic first?
+We intentionally keep metrics computation deterministic for:
+- reproducibility
+- debugging
+- future ClickHouse swap without changing the UI
+
+
+    C --> T
+
+    T --> D
+    CH -. future .-> T
+
+    T --> V
