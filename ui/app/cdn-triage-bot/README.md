@@ -1,4 +1,5 @@
 # CDN Incident Triage Bot  
+
 **V1 (n8n + Slack) → V2 (Standalone UI + API)**
 
 An automated CDN incident triage system that analyzes delivery telemetry
@@ -47,6 +48,17 @@ clear metrics, and explainable summaries.
 
 V1 focused on **speed of iteration and signal validation**.
 
+## V1 High-Level Architecture
+
+```mermaid
+flowchart LR
+    A[Slack<br/>/triage command] -->|HTTP POST| B[n8n Webhook]
+    B --> C[Parser<br/>Parse filters & window]
+    C --> D[HTTP Request<br/>Fetch CSV]
+    D --> E[Metrics Engine<br/>Errors & P95 TTMS]
+    E --> F[Slack<br/>Summary Response]
+```
+
 ### Why a UI Was Required (Beyond Automation)
 
 While n8n worked well for automated, one-shot triage, it is not designed
@@ -64,12 +76,70 @@ and makes reasoning observable, allowing conversational layers to sit
 on top without compromising correctness.
 
 
-## V1 High-Level Architecture
+## Demo UI (Deterministic) — Triage + Chat Controller
 
-```mermaid
+This demo UI provides:
+- CSV URL or CSV file upload
+- Filter controls: service, region, pop, window (minutes)
+- Run History (last 10) stored in localStorage
+- Metrics summary + raw metricsJson
+- **Chat panel (Phase B1)**: chat-shaped controller that runs the same deterministic triage using the current filters
+
+### Architecture
+
+- The application is a single Next.js web UI.
+- Users can run triage either via filters or via chat.
+- Chat is currently deterministic and acts as a controller.
+- All requests flow through a single `/api/triage` endpoint.
+- CSV logs are used for demos; ClickHouse will replace CSV in future versions without changing the UI.
+
+
+### Chat behavior (Phase B1)
+Chat is not an LLM yet. It is a control surface:
+- User types a message
+- We optionally parse simple overrides from text:
+  - `service=vod` / `svc=vod`
+  - `region=use1`
+  - `pop=sjc`
+  - `win=60` / `window=60`
+- Then the UI runs `/api/triage` deterministically and prints the summary
+
+### Example chat inputs
+- `run triage`
+- `service=vod region=usw2 pop=sjc win=60`
+- `svc=live win=15`
+
+### Why deterministic first?
+We intentionally keep metrics computation deterministic for:
+- reproducibility
+- debugging
+- future ClickHouse swap without changing the UI
+
 flowchart LR
-    A[Slack<br/>/triage command] -->|HTTP POST| B[n8n Webhook]
-    B --> C[Parser<br/>Parse filters & window]
-    C --> D[HTTP Request<br/>Fetch CSV]
-    D --> E[Metrics Engine<br/>Errors & P95 TTMS]
-    E --> F[Slack<br/>Summary Response]
+    U[User]
+
+    subgraph UI["Next.js Web UI"]
+        F[Filters<br/>service / region / pop / window]
+        C[Chat<br/>(deterministic)]
+        V[Results View<br/>metrics + summary]
+    end
+
+    subgraph API["API"]
+        T[/api/triage<br/>deterministic engine]
+    end
+
+    subgraph Data["Data Source"]
+        D[(CSV logs)]
+        CH[(ClickHouse)<br/>future]
+    end
+
+    U --> F
+    U --> C
+
+    F --> T
+    C --> T
+
+    T --> D
+    CH -. future .-> T
+
+    T --> V
