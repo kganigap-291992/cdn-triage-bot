@@ -12,7 +12,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function shortTime(iso) {
+function shortTime(iso: string) {
   try {
     const d = new Date(iso);
     return d.toLocaleString();
@@ -21,7 +21,7 @@ function shortTime(iso) {
   }
 }
 
-function safeParse(json, fallback) {
+function safeParse<T>(json: string, fallback: T): T {
   try {
     return JSON.parse(json);
   } catch {
@@ -29,10 +29,17 @@ function safeParse(json, fallback) {
   }
 }
 
+type ChatMsg = {
+  id: string;
+  role: "system" | "user" | "assistant";
+  text: string;
+  ts: string;
+};
+
 export default function Home() {
   // Inputs
   const [csvUrl, setCsvUrl] = useState(DEFAULT_URL);
-  const [file, setFile] = useState(null);
+  const [file, setFile] = useState<File | null>(null);
 
   const [service, setService] = useState("all");
   const [region, setRegion] = useState("all");
@@ -43,18 +50,36 @@ export default function Home() {
   // Output
   const [loading, setLoading] = useState(false);
   const [summaryText, setSummaryText] = useState("");
-  const [metricsJson, setMetricsJson] = useState(null);
+  const [metricsJson, setMetricsJson] = useState<any>(null);
   const [error, setError] = useState("");
 
   // History
-  const [history, setHistory] = useState([]);
-  const [selectedRunId, setSelectedRunId] = useState(null);
+  const [history, setHistory] = useState<any[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+
+  // Chat (Phase B1 - visual controller)
+  const [chatInput, setChatInput] = useState("");
+  const [messages, setMessages] = useState<ChatMsg[]>([
+    {
+      id: "sys-1",
+      role: "system",
+      text: "Chat ready. Type a message and I’ll run triage using the current filters.",
+      ts: nowIso(),
+    },
+  ]);
+
+  function addMsg(role: ChatMsg["role"], text: string) {
+    setMessages((prev) => [
+      ...prev,
+      { id: `${Date.now()}-${Math.random()}`, role, text, ts: nowIso() },
+    ]);
+  }
 
   // Load history once on mount
   useEffect(() => {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
-    const parsed = safeParse(raw, []);
+    const parsed = safeParse<any[]>(raw, []);
     if (Array.isArray(parsed)) setHistory(parsed);
   }, []);
 
@@ -66,6 +91,81 @@ export default function Home() {
   const canRun = useMemo(() => {
     return Boolean(file) || (csvUrl && csvUrl.trim().length > 0);
   }, [file, csvUrl]);
+
+  const topMetrics = useMemo(() => {
+    if (!metricsJson) return null;
+
+    const totalRequests = Number(metricsJson.totalRequests) || 0;
+
+    const p95TtmsMs =
+      metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs);
+
+    const p99TtmsMs =
+      metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs);
+
+    const error5xxCount =
+      metricsJson.error5xxCount == null ? null : Number(metricsJson.error5xxCount);
+
+    const errorRatePct =
+      metricsJson.errorRatePct == null ? null : Number(metricsJson.errorRatePct);
+
+    return { totalRequests, p95TtmsMs, p99TtmsMs, error5xxCount, errorRatePct };
+  }, [metricsJson]);
+
+  function MetricCard({
+    label,
+    value,
+    sub,
+  }: {
+    label: string;
+    value: string;
+    sub?: string | null;
+  }) {
+    return (
+      <div className="rounded-xl border p-3">
+        <div className="text-xs text-gray-600">{label}</div>
+        <div className="text-2xl font-bold mt-1">{value}</div>
+        {sub ? <div className="text-xs text-gray-500 mt-1">{sub}</div> : null}
+      </div>
+    );
+  }
+
+  async function runTriageRequest({
+    csvUrlArg,
+    fileArg,
+    serviceArg,
+    regionArg,
+    popArg,
+    windowMinutesArg,
+    debugArg,
+  }: {
+    csvUrlArg: string;
+    fileArg: File | null;
+    serviceArg: string;
+    regionArg: string;
+    popArg: string;
+    windowMinutesArg: number;
+    debugArg: boolean;
+  }) {
+    const fd = new FormData();
+    fd.append("csvUrl", csvUrlArg || "");
+    fd.append("service", serviceArg);
+    fd.append("region", regionArg);
+    fd.append("pop", popArg);
+    fd.append("windowMinutes", String(windowMinutesArg));
+
+    if (fileArg) fd.append("file", fileArg);
+    if (debugArg) fd.append("debug", "true");
+
+    const resp = await fetch("/api/triage", {
+      method: "POST",
+      body: fd,
+    });
+
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || "Request failed");
+    return data;
+  }
 
   async function onRun() {
     setError("");
@@ -81,30 +181,21 @@ export default function Home() {
     setLoading(true);
 
     try {
-      const fd = new FormData();
-      fd.append("csvUrl", csvUrl || "");
-      fd.append("service", service);
-      fd.append("region", region);
-      fd.append("pop", pop);
-      fd.append("windowMinutes", String(windowMinutes));
-
-      if (file) fd.append("file", file);
-      if (debug) fd.append("debug", "true");
-
-      const resp = await fetch("/api/triage", {
-        method: "POST",
-        body: fd,
+      const data = await runTriageRequest({
+        csvUrlArg: csvUrl,
+        fileArg: file,
+        serviceArg: service,
+        regionArg: region,
+        popArg: pop,
+        windowMinutesArg: windowMinutes,
+        debugArg: debug,
       });
-
-      const data = await resp.json();
-      if (!data.ok) throw new Error(data.error || "Request failed");
 
       setSummaryText(data.summaryText || "");
       setMetricsJson(data.metricsJson || null);
 
-      // Save run into history (keep last 10)
       const run = {
-        id: `${Date.now()}`, // simple unique id
+        id: `${Date.now()}`,
         ts: nowIso(),
         inputs: {
           csvUrl: file ? "" : (csvUrl || ""),
@@ -123,20 +214,87 @@ export default function Home() {
         const next = [run, ...prev];
         return next.slice(0, MAX_HISTORY);
       });
-    } catch (e) {
+    } catch (e: any) {
       setError(e?.message || "Something went wrong");
     } finally {
       setLoading(false);
     }
   }
 
-  function loadRun(run) {
+  async function onSendChat() {
+  const text = chatInput.trim();
+  if (!text) return;
+
+  addMsg("user", text);
+  setChatInput("");
+
+  const lower = text.toLowerCase();
+
+  const svcMatch = lower.match(/\b(service|svc)\s*=\s*(all|live|vod)\b/);
+  const regionMatch = lower.match(/\bregion\s*=\s*(all|use1|usw2)\b/);
+  const popMatch = lower.match(/\bpop\s*=\s*(all|iad|sjc)\b/);
+  const winMatch = lower.match(/\b(win|window)\s*=\s*(\d+)\b/);
+
+  const nextService = svcMatch ? svcMatch[2] : service;
+  const nextRegion = regionMatch ? regionMatch[1] : region;
+  const nextPop = popMatch ? popMatch[1] : pop;
+  const nextWindow = winMatch ? Number(winMatch[2]) : windowMinutes;
+
+  if (svcMatch) setService(nextService);
+  if (regionMatch) setRegion(nextRegion);
+  if (popMatch) setPop(nextPop);
+  if (winMatch) setWindowMinutes(nextWindow);
+
+  addMsg(
+    "system",
+    `Running triage with svc=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m...`
+  );
+
+  try {
+    const data = await runTriageRequest({
+      csvUrlArg: csvUrl,
+      fileArg: file,
+      serviceArg: nextService,
+      regionArg: nextRegion,
+      popArg: nextPop,
+      windowMinutesArg: nextWindow,
+      debugArg: debug,
+    });
+
+    setSummaryText(data.summaryText || "");
+    setMetricsJson(data.metricsJson || null);
+
+    const run = {
+      id: `${Date.now()}`,
+      ts: nowIso(),
+      inputs: {
+        csvUrl: file ? "" : (csvUrl || ""),
+        fileName: file ? file.name : "",
+        service: nextService,
+        region: nextRegion,
+        pop: nextPop,
+        windowMinutes: nextWindow,
+        debug: !!debug,
+      },
+      summaryText: data.summaryText || "",
+      metricsJson: data.metricsJson || null,
+    };
+
+    setHistory((prev) => [run, ...prev].slice(0, MAX_HISTORY));
+
+    addMsg("assistant", data.summaryText || "(no summaryText)");
+  } catch (e: any) {
+    addMsg("assistant", `Error: ${e?.message || "Something went wrong"}`);
+  }
+}
+
+  function loadRun(run: any) {
     setSelectedRunId(run.id);
     setError("");
     setSummaryText(run.summaryText || "");
     setMetricsJson(run.metricsJson || null);
 
-    // Restore inputs (note: file cannot be restored, only csvUrl)
+    // Restore inputs (file cannot be restored)
     setFile(null);
     setCsvUrl(run.inputs?.csvUrl || DEFAULT_URL);
     setService(run.inputs?.service || "all");
@@ -146,7 +304,7 @@ export default function Home() {
     setDebug(!!run.inputs?.debug);
   }
 
-  function deleteRun(id) {
+  function deleteRun(id: string) {
     setHistory((prev) => prev.filter((r) => r.id !== id));
     if (selectedRunId === id) {
       setSelectedRunId(null);
@@ -227,125 +385,207 @@ export default function Home() {
           </aside>
 
           {/* Main Panel */}
-          <section className="md:col-span-8 space-y-4">
-            {/* Inputs */}
-            <div className="rounded-xl border p-4 space-y-4">
-              <div>
-                <label className="block font-medium mb-2">CSV URL</label>
-                <input
-                  className="w-full rounded-lg border px-3 py-2"
-                  value={csvUrl}
-                  onChange={(e) => setCsvUrl(e.target.value)}
-                  placeholder="https://..."
-                />
-              </div>
+          <section className="md:col-span-8">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {/* LEFT: Triage UI */}
+              <div className="space-y-4">
+                {/* Inputs */}
+                <div className="rounded-xl border p-4 space-y-4">
+                  <div>
+                    <label className="block font-medium mb-2">CSV URL</label>
+                    <input
+                      className="w-full rounded-lg border px-3 py-2"
+                      value={csvUrl}
+                      onChange={(e) => setCsvUrl(e.target.value)}
+                      placeholder="https://..."
+                    />
+                  </div>
 
-              <div>
-                <label className="block font-medium mb-2">Or upload CSV</label>
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                />
-                {file ? (
-                  <div className="text-sm mt-1">Selected: {file.name}</div>
+                  <div>
+                    <label className="block font-medium mb-2">Or upload CSV</label>
+                    <input
+                      type="file"
+                      accept=".csv,text/csv"
+                      onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                    />
+                    {file ? <div className="text-sm mt-1">Selected: {file.name}</div> : null}
+                    <div className="text-xs text-gray-500 mt-1">
+                      Note: history can reload URL-based runs. File uploads can’t be reloaded (browser limitation).
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div>
+                      <label className="block font-medium mb-2">Service</label>
+                      <select
+                        className="w-full rounded-lg border px-3 py-2"
+                        value={service}
+                        onChange={(e) => setService(e.target.value)}
+                      >
+                        <option value="all">all</option>
+                        <option value="live">live</option>
+                        <option value="vod">vod</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block font-medium mb-2">Region</label>
+                      <select
+                        className="w-full rounded-lg border px-3 py-2"
+                        value={region}
+                        onChange={(e) => setRegion(e.target.value)}
+                      >
+                        <option value="all">all</option>
+                        <option value="use1">use1</option>
+                        <option value="usw2">usw2</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block font-medium mb-2">POP</label>
+                      <select
+                        className="w-full rounded-lg border px-3 py-2"
+                        value={pop}
+                        onChange={(e) => setPop(e.target.value)}
+                      >
+                        <option value="all">all</option>
+                        <option value="iad">iad</option>
+                        <option value="sjc">sjc</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block font-medium mb-2">Window (minutes)</label>
+                      <input
+                        type="number"
+                        className="w-full rounded-lg border px-3 py-2"
+                        value={windowMinutes}
+                        onChange={(e) => setWindowMinutes(Number(e.target.value))}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={debug}
+                        onChange={(e) => setDebug(e.target.checked)}
+                      />
+                      Enable debug output
+                    </label>
+
+                    <button
+                      onClick={onRun}
+                      disabled={loading}
+                      className="rounded-lg border px-4 py-2 font-semibold"
+                    >
+                      {loading ? "Running..." : "Run Triage"}
+                    </button>
+                  </div>
+
+                  {error ? (
+                    <div className="rounded-lg border border-red-300 p-3">
+                      <b>Error:</b> {error}
+                    </div>
+                  ) : null}
+                </div>
+
+                {/* Metric cards */}
+                {topMetrics ? (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <MetricCard
+                      label="totalRequests"
+                      value={topMetrics.totalRequests.toLocaleString()}
+                    />
+                    <MetricCard
+                      label="p95TtmsMs"
+                      value={
+                        topMetrics.p95TtmsMs == null
+                          ? "n/a"
+                          : `${Math.round(topMetrics.p95TtmsMs)} ms`
+                      }
+                    />
+                    <MetricCard
+                      label="p99TtmsMs"
+                      value={
+                        topMetrics.p99TtmsMs == null
+                          ? "n/a"
+                          : `${Math.round(topMetrics.p99TtmsMs)} ms`
+                      }
+                    />
+                    <MetricCard
+                      label="errorRate (5xx)"
+                      value={
+                        topMetrics.errorRatePct == null
+                          ? "n/a"
+                          : `${topMetrics.errorRatePct.toFixed(2)}%`
+                      }
+                      sub={
+                        topMetrics.error5xxCount == null
+                          ? null
+                          : `${topMetrics.error5xxCount.toLocaleString()} / ${topMetrics.totalRequests.toLocaleString()}`
+                      }
+                    />
+                  </div>
                 ) : null}
-                <div className="text-xs text-gray-500 mt-1">
-                  Note: history can reload URL-based runs. File uploads can’t be reloaded (browser limitation).
+
+                {/* Summary */}
+                <div className="rounded-xl border p-4">
+                  <div className="font-medium mb-2">Summary</div>
+                  <pre className="whitespace-pre-wrap text-sm">
+                    {summaryText || "Run triage to see results..."}
+                  </pre>
+                </div>
+
+                {/* Raw metrics */}
+                <div className="rounded-xl border p-4">
+                  <div className="font-medium mb-2">Raw metricsJson (for chat later)</div>
+                  <pre className="whitespace-pre-wrap text-xs">
+                    {metricsJson ? JSON.stringify(metricsJson, null, 2) : "No metricsJson yet."}
+                  </pre>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                <div>
-                  <label className="block font-medium mb-2">Service</label>
-                  <select
-                    className="w-full rounded-lg border px-3 py-2"
-                    value={service}
-                    onChange={(e) => setService(e.target.value)}
-                  >
-                    <option value="all">all</option>
-                    <option value="live">live</option>
-                    <option value="vod">vod</option>
-                  </select>
+              {/* RIGHT: Chat panel */}
+              <div className="rounded-xl border p-4 flex flex-col h-[680px]">
+                <div className="font-medium mb-2">Chat (deterministic for now)</div>
+
+                <div className="flex-1 overflow-auto rounded-lg border p-3 bg-white text-gray-900">
+                  <div className="space-y-3">
+                    {messages.map((m) => (
+                      <div key={m.id} className="text-sm">
+                        <div className="text-xs text-gray-500">
+                          {m.role} • {shortTime(m.ts)}
+                        </div>
+                        <pre className="whitespace-pre-wrap text-gray-900">{m.text}</pre>
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
-                <div>
-                  <label className="block font-medium mb-2">Region</label>
-                  <select
-                    className="w-full rounded-lg border px-3 py-2"
-                    value={region}
-                    onChange={(e) => setRegion(e.target.value)}
-                  >
-                    <option value="all">all</option>
-                    <option value="use1">use1</option>
-                    <option value="usw2">usw2</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block font-medium mb-2">POP</label>
-                  <select
-                    className="w-full rounded-lg border px-3 py-2"
-                    value={pop}
-                    onChange={(e) => setPop(e.target.value)}
-                  >
-                    <option value="all">all</option>
-                    <option value="iad">iad</option>
-                    <option value="sjc">sjc</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block font-medium mb-2">Window (minutes)</label>
+                <div className="mt-3 flex gap-2">
                   <input
-                    type="number"
-                    className="w-full rounded-lg border px-3 py-2"
-                    value={windowMinutes}
-                    onChange={(e) => setWindowMinutes(Number(e.target.value))}
+                    className="flex-1 rounded-lg border px-3 py-2"
+                    placeholder='Try: "run triage" or "live usw2 sjc last 60m" (parser later)'
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") onSendChat();
+                    }}
                   />
+                  <button
+                    className="rounded-lg border px-4 py-2 font-semibold"
+                    onClick={onSendChat}
+                  >
+                    Send
+                  </button>
+                </div>
+
+                <div className="text-xs text-gray-500 mt-2">
+                  For now chat uses the current dropdown filters. Next we’ll parse the message into params.
                 </div>
               </div>
-
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={debug}
-                    onChange={(e) => setDebug(e.target.checked)}
-                  />
-                  Enable debug output
-                </label>
-
-                <button
-                  onClick={onRun}
-                  disabled={loading}
-                  className="rounded-lg border px-4 py-2 font-semibold"
-                >
-                  {loading ? "Running..." : "Run Triage"}
-                </button>
-              </div>
-
-              {error ? (
-                <div className="rounded-lg border border-red-300 p-3">
-                  <b>Error:</b> {error}
-                </div>
-              ) : null}
-            </div>
-
-            {/* Summary */}
-            <div className="rounded-xl border p-4">
-              <div className="font-medium mb-2">Summary</div>
-              <pre className="whitespace-pre-wrap text-sm">
-                {summaryText || "Run triage to see results..."}
-              </pre>
-            </div>
-
-            {/* Raw metrics (optional, helpful for debugging + future chat) */}
-            <div className="rounded-xl border p-4">
-              <div className="font-medium mb-2">Raw metricsJson (for chat later)</div>
-              <pre className="whitespace-pre-wrap text-xs">
-                {metricsJson ? JSON.stringify(metricsJson, null, 2) : "No metricsJson yet."}
-              </pre>
             </div>
           </section>
         </div>
