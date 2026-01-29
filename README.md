@@ -131,10 +131,3 @@ We intentionally keep metrics computation deterministic for:
 - debugging
 - future ClickHouse swap without changing the UI
 
-
-    C --> T
-
-    T --> D
-    CH -. future .-> T
-
-    T --> V
