@@ -599,6 +599,8 @@ export function runTriage({
       cacheHitPct: hitRatio,
       cacheMissPct: missRatio,
       statusCounts: statusCountsPairs.map(([code, count]) => ({ code: Number(code), count })),
+      error5xxCount: errorCount,
+      errorRatePct: errorRate,
       topCrcClass: topCrcClass.map(([k, v]) => ({ crc_class: k, count: v })),
       topErrorCrc: topErrorsByCrc.map(([k, v]) => ({ crc: k, count: v })),
       warnings,
