@@ -36,6 +36,42 @@ type ChatMsg = {
   ts: string;
 };
 
+function normalizeText(s: string) {
+  return (s || "").trim().toLowerCase();
+}
+
+function isGreetingOrSmalltalk(s: string) {
+  const t = normalizeText(s);
+  if (!t) return true;
+
+  if (t.length <= 3) return ["hi", "hey", "yo", "ok", "k"].includes(t);
+
+  const patterns = [
+    /^hi\b/,
+    /^hey\b/,
+    /^hello\b/,
+    /^yo\b/,
+    /^thanks\b/,
+    /^thank you\b/,
+    /^good (morning|afternoon|evening)\b/,
+    /^how are you\b/,
+    /^sup\b/,
+    /^what'?s up\b/,
+  ];
+
+  return patterns.some((p) => p.test(t));
+}
+
+function looksLikeTriageQuery(s: string) {
+  const t = normalizeText(s);
+  if (!t) return false;
+
+  if (t.includes("=")) return true;
+
+  const keywords = ["service", "region", "pop", "win", "window", "errors", "p95", "p99", "ttms"];
+  return keywords.some((k) => t.includes(k));
+}
+
 export default function Home() {
   // Inputs
   const [csvUrl, setCsvUrl] = useState(DEFAULT_URL);
@@ -57,7 +93,7 @@ export default function Home() {
   const [history, setHistory] = useState<any[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
-  // Chat (Phase B1 - visual controller)
+  // Chat
   const [chatInput, setChatInput] = useState("");
   const [messages, setMessages] = useState<ChatMsg[]>([
     {
@@ -97,17 +133,13 @@ export default function Home() {
 
     const totalRequests = Number(metricsJson.totalRequests) || 0;
 
-    const p95TtmsMs =
-      metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs);
-
-    const p99TtmsMs =
-      metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs);
+    const p95TtmsMs = metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs);
+    const p99TtmsMs = metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs);
 
     const error5xxCount =
       metricsJson.error5xxCount == null ? null : Number(metricsJson.error5xxCount);
 
-    const errorRatePct =
-      metricsJson.errorRatePct == null ? null : Number(metricsJson.errorRatePct);
+    const errorRatePct = metricsJson.errorRatePct == null ? null : Number(metricsJson.errorRatePct);
 
     return { totalRequests, p95TtmsMs, p99TtmsMs, error5xxCount, errorRatePct };
   }, [metricsJson]);
@@ -210,10 +242,7 @@ export default function Home() {
         metricsJson: data.metricsJson || null,
       };
 
-      setHistory((prev) => {
-        const next = [run, ...prev];
-        return next.slice(0, MAX_HISTORY);
-      });
+      setHistory((prev) => [run, ...prev].slice(0, MAX_HISTORY));
     } catch (e: any) {
       setError(e?.message || "Something went wrong");
     } finally {
@@ -221,72 +250,106 @@ export default function Home() {
     }
   }
 
-  async function onSendChat() {
-  const text = chatInput.trim();
-  if (!text) return;
+  async function handleChatSend() {
+    const text = chatInput.trim();
+    if (!text) return;
 
-  addMsg("user", text);
-  setChatInput("");
+    if (loading) return;
 
-  const lower = text.toLowerCase();
+    // Record user message once
+    addMsg("user", text);
+    setChatInput("");
+    setError("");
 
-  const svcMatch = lower.match(/\b(service|svc)\s*=\s*(all|live|vod)\b/);
-  const regionMatch = lower.match(/\bregion\s*=\s*(all|use1|usw2)\b/);
-  const popMatch = lower.match(/\bpop\s*=\s*(all|iad|sjc)\b/);
-  const winMatch = lower.match(/\b(win|window)\s*=\s*(\d+)\b/);
+    // Guardrail: greetings / smalltalk
+    if (isGreetingOrSmalltalk(text)) {
+      addMsg(
+        "assistant",
+        "Hey! 👋 I can triage CDN logs.\n\nTry:\nservice=vod region=usw2 pop=sjc win=60"
+      );
+      return;
+    }
 
-  const nextService = svcMatch ? svcMatch[2] : service;
-  const nextRegion = regionMatch ? regionMatch[1] : region;
-  const nextPop = popMatch ? popMatch[1] : pop;
-  const nextWindow = winMatch ? Number(winMatch[2]) : windowMinutes;
+    // Guardrail: not triage intent
+    if (!looksLikeTriageQuery(text)) {
+      addMsg(
+        "assistant",
+        "I didn’t see filters yet.\n\nTry:\nservice=vod region=usw2 pop=sjc win=60"
+      );
+      return;
+    }
 
-  if (svcMatch) setService(nextService);
-  if (regionMatch) setRegion(nextRegion);
-  if (popMatch) setPop(nextPop);
-  if (winMatch) setWindowMinutes(nextWindow);
+    // Parse key=value overrides
+    const lower = text.toLowerCase();
 
-  addMsg(
-    "system",
-    `Running triage with svc=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m...`
-  );
+    const svcMatch = lower.match(/\b(service|svc)\s*=\s*(all|live|vod)\b/);
+    const regionMatch = lower.match(/\bregion\s*=\s*(all|use1|usw2)\b/);
+    const popMatch = lower.match(/\bpop\s*=\s*(all|iad|sjc)\b/);
+    const winMatch = lower.match(/\b(win|window)\s*=\s*(\d+)\b/);
 
-  try {
-    const data = await runTriageRequest({
-      csvUrlArg: csvUrl,
-      fileArg: file,
-      serviceArg: nextService,
-      regionArg: nextRegion,
-      popArg: nextPop,
-      windowMinutesArg: nextWindow,
-      debugArg: debug,
-    });
+    const nextService = svcMatch ? svcMatch[2] : service;
+    const nextRegion = regionMatch ? regionMatch[2] : region;
+    const nextPop = popMatch ? popMatch[2] : pop;
+    const nextWindow = winMatch ? Number(winMatch[2]) : windowMinutes;
 
-    setSummaryText(data.summaryText || "");
-    setMetricsJson(data.metricsJson || null);
+    if (svcMatch) setService(nextService);
+    if (regionMatch) setRegion(nextRegion);
+    if (popMatch) setPop(nextPop);
+    if (winMatch) setWindowMinutes(nextWindow);
 
-    const run = {
-      id: `${Date.now()}`,
-      ts: nowIso(),
-      inputs: {
-        csvUrl: file ? "" : (csvUrl || ""),
-        fileName: file ? file.name : "",
-        service: nextService,
-        region: nextRegion,
-        pop: nextPop,
-        windowMinutes: nextWindow,
-        debug: !!debug,
-      },
-      summaryText: data.summaryText || "",
-      metricsJson: data.metricsJson || null,
-    };
+    if (!canRun) {
+      addMsg("assistant", "Please upload a CSV or provide a CSV URL first.");
+      return;
+    }
 
-    setHistory((prev) => [run, ...prev].slice(0, MAX_HISTORY));
+    addMsg(
+      "system",
+      `Running triage with svc=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
+    );
 
-    addMsg("assistant", data.summaryText || "(no summaryText)");
-  } catch (e: any) {
-    addMsg("assistant", `Error: ${e?.message || "Something went wrong"}`);
+    setLoading(true);
+    try {
+      const data = await runTriageRequest({
+        csvUrlArg: csvUrl,
+        fileArg: file,
+        serviceArg: nextService,
+        regionArg: nextRegion,
+        popArg: nextPop,
+        windowMinutesArg: nextWindow,
+        debugArg: debug,
+      });
+
+      setSummaryText(data.summaryText || "");
+      setMetricsJson(data.metricsJson || null);
+      setSelectedRunId(null);
+
+      const run = {
+        id: `${Date.now()}`,
+        ts: nowIso(),
+        inputs: {
+          csvUrl: file ? "" : (csvUrl || ""),
+          fileName: file ? file.name : "",
+          service: nextService,
+          region: nextRegion,
+          pop: nextPop,
+          windowMinutes: nextWindow,
+          debug: !!debug,
+        },
+        summaryText: data.summaryText || "",
+        metricsJson: data.metricsJson || null,
+      };
+
+      setHistory((prev) => [run, ...prev].slice(0, MAX_HISTORY));
+
+      addMsg("assistant", data.summaryText || "(no summaryText)");
+    } catch (e: any) {
+      const msg = e?.message || "Something went wrong";
+      setError(msg);
+      addMsg("assistant", `Error: ${msg}`);
+    } finally {
+      setLoading(false);
+    }
   }
-}
 
   function loadRun(run: any) {
     setSelectedRunId(run.id);
@@ -410,7 +473,8 @@ export default function Home() {
                     />
                     {file ? <div className="text-sm mt-1">Selected: {file.name}</div> : null}
                     <div className="text-xs text-gray-500 mt-1">
-                      Note: history can reload URL-based runs. File uploads can’t be reloaded (browser limitation).
+                      Note: history can reload URL-based runs. File uploads can’t be reloaded (browser
+                      limitation).
                     </div>
                   </div>
 
@@ -494,33 +558,18 @@ export default function Home() {
                 {/* Metric cards */}
                 {topMetrics ? (
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <MetricCard
-                      label="totalRequests"
-                      value={topMetrics.totalRequests.toLocaleString()}
-                    />
+                    <MetricCard label="totalRequests" value={topMetrics.totalRequests.toLocaleString()} />
                     <MetricCard
                       label="p95TtmsMs"
-                      value={
-                        topMetrics.p95TtmsMs == null
-                          ? "n/a"
-                          : `${Math.round(topMetrics.p95TtmsMs)} ms`
-                      }
+                      value={topMetrics.p95TtmsMs == null ? "n/a" : `${Math.round(topMetrics.p95TtmsMs)} ms`}
                     />
                     <MetricCard
                       label="p99TtmsMs"
-                      value={
-                        topMetrics.p99TtmsMs == null
-                          ? "n/a"
-                          : `${Math.round(topMetrics.p99TtmsMs)} ms`
-                      }
+                      value={topMetrics.p99TtmsMs == null ? "n/a" : `${Math.round(topMetrics.p99TtmsMs)} ms`}
                     />
                     <MetricCard
                       label="errorRate (5xx)"
-                      value={
-                        topMetrics.errorRatePct == null
-                          ? "n/a"
-                          : `${topMetrics.errorRatePct.toFixed(2)}%`
-                      }
+                      value={topMetrics.errorRatePct == null ? "n/a" : `${topMetrics.errorRatePct.toFixed(2)}%`}
                       sub={
                         topMetrics.error5xxCount == null
                           ? null
@@ -567,24 +616,35 @@ export default function Home() {
                 <div className="mt-3 flex gap-2">
                   <input
                     className="flex-1 rounded-lg border px-3 py-2"
-                    placeholder='Try: "run triage" or "live usw2 sjc last 60m" (parser later)'
+                    placeholder='Try: service=vod region=usw2 pop=sjc win=60'
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") onSendChat();
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        handleChatSend();
+                      }
                     }}
                   />
                   <button
                     className="rounded-lg border px-4 py-2 font-semibold"
-                    onClick={onSendChat}
+                    onClick={handleChatSend}
+                    disabled={loading}
                   >
                     Send
                   </button>
                 </div>
 
-                <div className="text-xs text-gray-500 mt-2">
-                  For now chat uses the current dropdown filters. Next we’ll parse the message into params.
-                </div>
+                {/* helper line (small, muted, intentional) */}
+                {!chatInput ? (
+                  <div className="text-xs text-gray-500 mt-2">
+                    Try: <code className="px-1 py-0.5 rounded bg-gray-100">service=vod region=usw2 pop=sjc win=60</code>
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-500 mt-2">
+                    Enter sends • Shift+Enter for newline
+                  </div>
+                )}
               </div>
             </div>
           </section>
