@@ -41,12 +41,14 @@ function formatInt(x) {
 
 function prettyFilters(filters) {
   if (!filters?.length) return "none";
-  return filters.map(f => {
-    if (f?.type === "range") return `${f.key}=${f.min}-${f.max}`;
-    if (f?.type === "eq") return `${f.key}=${f.value}`;
-    if (f?.type === "in") return `${f.key} in (${(f.values ?? []).join(",")})`;
-    return `${f?.key ?? "filter"}`;
-  }).join(", ");
+  return filters
+    .map((f) => {
+      if (f?.type === "range") return `${f.key}=${f.min}-${f.max}`;
+      if (f?.type === "eq") return `${f.key}=${f.value}`;
+      if (f?.type === "in") return `${f.key} in (${(f.values ?? []).join(",")})`;
+      return `${f?.key ?? "filter"}`;
+    })
+    .join(", ");
 }
 
 function topCounts(rows, key, limit = 6) {
@@ -56,9 +58,7 @@ function topCounts(rows, key, limit = 6) {
     if (!v) continue;
     counts.set(v, (counts.get(v) ?? 0) + 1);
   }
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
 }
 
 function topValuesPretty(rows, key, limit = 6) {
@@ -131,7 +131,7 @@ function passesFilter(row, f) {
 
   if (f.type === "in") {
     const a = String(v ?? "").trim().toLowerCase();
-    const set = (f.values ?? []).map(x => String(x).trim().toLowerCase());
+    const set = (f.values ?? []).map((x) => String(x).trim().toLowerCase());
     return set.includes(a);
   }
 
@@ -156,6 +156,111 @@ function prettyStatusCounts(statusCounts, limit = 12) {
     .join("\n");
 }
 
+// ------------------------------------------------------------
+// Timeseries helpers
+// ------------------------------------------------------------
+function chooseBucketSeconds(spanMinutes) {
+  // 1m buckets for up to 3h spans; else 15m
+  return Number(spanMinutes) <= 180 ? 60 : 900;
+}
+
+function percentileSorted(sortedArr, p) {
+  // p is 0..1
+  if (!sortedArr || sortedArr.length === 0) return null;
+  const idx = (sortedArr.length - 1) * p;
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sortedArr[lo];
+  const w = idx - lo;
+  return sortedArr[lo] * (1 - w) + sortedArr[hi] * w;
+}
+
+function computeSpanMinutes(rows) {
+  let minMs = null;
+  let maxMs = null;
+
+  for (const r of rows) {
+    const t = toMs(r.ts);
+    if (Number.isNaN(t)) continue;
+    if (minMs == null || t < minMs) minMs = t;
+    if (maxMs == null || t > maxMs) maxMs = t;
+  }
+
+  if (minMs == null || maxMs == null) return 0;
+  return Math.max(0, (maxMs - minMs) / (60 * 1000));
+}
+
+function buildTimeseriesPoints(rows, spanMinutes) {
+  const bucketSeconds = chooseBucketSeconds(spanMinutes);
+  const bucketMs = bucketSeconds * 1000;
+
+  // bucketStartMs -> accumulator
+  const buckets = new Map();
+
+  let minMs = null;
+  let maxMs = null;
+
+  for (const r of rows) {
+    const t = toMs(r.ts);
+    if (Number.isNaN(t)) continue;
+
+    if (minMs == null || t < minMs) minMs = t;
+    if (maxMs == null || t > maxMs) maxMs = t;
+
+    const b = Math.floor(t / bucketMs) * bucketMs;
+
+    let acc = buckets.get(b);
+    if (!acc) {
+      acc = { total: 0, err5xx: 0, ttms: [] };
+      buckets.set(b, acc);
+    }
+
+    acc.total += 1;
+
+    const edgeStatus = Number(r.edge_status);
+    if (Number.isFinite(edgeStatus) && edgeStatus >= 500 && edgeStatus < 600) {
+      acc.err5xx += 1;
+    }
+
+    const ttms = Number(r.ttms_ms);
+    if (Number.isFinite(ttms)) acc.ttms.push(ttms);
+  }
+
+  const keys = [...buckets.keys()].sort((a, b) => a - b);
+
+  const points = keys.map((k) => {
+    const acc = buckets.get(k);
+    acc.ttms.sort((a, b) => a - b);
+
+    const p95 = percentileSorted(acc.ttms, 0.95);
+    const p99 = percentileSorted(acc.ttms, 0.99);
+    const errorRatePct = acc.total ? (acc.err5xx / acc.total) * 100 : 0;
+
+    return {
+      ts: new Date(k).toISOString(),
+      totalRequests: acc.total,
+      error5xxCount: acc.err5xx,
+      errorRatePct,
+      p95TtmsMs: p95,
+      p99TtmsMs: p99,
+    };
+  });
+
+  const startTs =
+    minMs == null ? null : new Date(Math.floor(minMs / bucketMs) * bucketMs).toISOString();
+  const endTs =
+    maxMs == null ? null : new Date(Math.floor(maxMs / bucketMs) * bucketMs).toISOString();
+
+  return { bucketSeconds, startTs, endTs, points };
+}
+
+function emptyTimeseries() {
+  return { bucketSeconds: null, startTs: null, endTs: null, points: [] };
+}
+
+// ------------------------------------------------------------
+// CSV parsing
+// ------------------------------------------------------------
 function parseCsv(csvText) {
   const text = String(csvText).trim();
   if (!text) return [];
@@ -172,17 +277,24 @@ function parseCsv(csvText) {
       const ch = line[i];
 
       if (ch === '"') {
-        if (inQuotes && line[i + 1] === '"') { cur += '"'; i++; }
-        else inQuotes = !inQuotes;
+        if (inQuotes && line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
       } else if (ch === "," && !inQuotes) {
-        out.push(cur); cur = "";
-      } else cur += ch;
+        out.push(cur);
+        cur = "";
+      } else {
+        cur += ch;
+      }
     }
     out.push(cur);
-    return out.map(s => s.trim());
+    return out.map((s) => s.trim());
   }
 
-  const headers = splitCsvLine(lines[0]).map(h => h.replace(/^"|"$/g, "").trim());
+  const headers = splitCsvLine(lines[0]).map((h) => h.replace(/^"|"$/g, "").trim());
 
   const rows = [];
   for (let i = 1; i < lines.length; i++) {
@@ -199,15 +311,14 @@ function parseCsv(csvText) {
       obj[key] = val;
     }
 
-    
     // Numeric normalization + alias mapping (CSV/header differences)
     const has = (k) => obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== "";
 
-    // Status: allow status/edge_status/http_status/response_code, but normalize to edge_status
+    // Status: allow status/edge_status/http_status/response_code, normalize to edge_status
     if (!has("edge_status")) {
-    if (has("status")) obj.edge_status = obj.status;
-    else if (has("http_status")) obj.edge_status = obj.http_status;
-    else if (has("response_code")) obj.edge_status = obj.response_code;
+      if (has("status")) obj.edge_status = obj.status;
+      else if (has("http_status")) obj.edge_status = obj.http_status;
+      else if (has("response_code")) obj.edge_status = obj.response_code;
     }
     if (has("edge_status")) obj.edge_status = Number(obj.edge_status);
 
@@ -244,18 +355,20 @@ function parseCsv(csvText) {
 // Debug helpers
 // ------------------------------------------------------------
 function buildDebugObj({ rows, inWindow, filtered, startISO, endISO, anchorISO, dq, warnings }) {
-  const sample = (filtered[0] ?? inWindow[0] ?? null);
-  const sampleCompact = sample ? {
-    ts: sample.ts,
-    service: sample.service,
-    region: sample.region,
-    pop: sample.pop,
-    crc: sample.crc,
-    crc_class: sample.crc_class,
-    edge_status: sample.edge_status,
-    ttms_ms: sample.ttms_ms,
-    url: sample.url,
-  } : null;
+  const sample = filtered[0] ?? inWindow[0] ?? null;
+  const sampleCompact = sample
+    ? {
+        ts: sample.ts,
+        service: sample.service,
+        region: sample.region,
+        pop: sample.pop,
+        crc: sample.crc,
+        crc_class: sample.crc_class,
+        edge_status: sample.edge_status,
+        ttms_ms: sample.ttms_ms,
+        url: sample.url,
+      }
+    : null;
 
   return {
     rows_total: rows.length,
@@ -278,7 +391,7 @@ function buildDebugObj({ rows, inWindow, filtered, startISO, endISO, anchorISO, 
 
 function debugBlock(dbg) {
   const sample = dbg.sample ? JSON.stringify(dbg.sample) : "n/a";
-  const w = (dbg.warnings?.length ? dbg.warnings.join(" | ") : "none");
+  const w = dbg.warnings?.length ? dbg.warnings.join(" | ") : "none";
   const dq = dbg.data_quality ? JSON.stringify(dbg.data_quality) : "n/a";
 
   return [
@@ -317,7 +430,11 @@ export function runTriage({
   let filtersArr = [];
   if (Array.isArray(filters)) filtersArr = filters;
   else if (typeof filters === "string" && filters.trim()) {
-    try { filtersArr = JSON.parse(filters); } catch { filtersArr = []; }
+    try {
+      filtersArr = JSON.parse(filters);
+    } catch {
+      filtersArr = [];
+    }
   } else filtersArr = [];
 
   if (!csvText) {
@@ -331,12 +448,12 @@ export function runTriage({
 
   // Data quality counters (whole dataset)
   const dqAll = {
-    invalid_ts: rows.filter(r => !r.ts || Number.isNaN(toMs(r.ts))).length,
-    missing_edge_status: rows.filter(r => !Number.isFinite(r.edge_status)).length,
-    unknown_service: rows.filter(r => r.service === "unknown").length,
-    unknown_crc: rows.filter(r => r.crc === "UNKNOWN").length,
-    unknown_region: rows.filter(r => r.region === "unknown").length,
-    unknown_pop: rows.filter(r => r.pop === "unknown").length,
+    invalid_ts: rows.filter((r) => !r.ts || Number.isNaN(toMs(r.ts))).length,
+    missing_edge_status: rows.filter((r) => !Number.isFinite(r.edge_status)).length,
+    unknown_service: rows.filter((r) => r.service === "unknown").length,
+    unknown_crc: rows.filter((r) => r.crc === "UNKNOWN").length,
+    unknown_region: rows.filter((r) => r.region === "unknown").length,
+    unknown_pop: rows.filter((r) => r.pop === "unknown").length,
   };
 
   // Anchor on MAX timestamp and compute window
@@ -358,7 +475,7 @@ export function runTriage({
   const start = anchor - Number(windowMinutes) * 60 * 1000;
   const end = anchor;
 
-  const inWindow = rows.filter(r => {
+  const inWindow = rows.filter((r) => {
     const ms = toMs(r.ts);
     if (Number.isNaN(ms)) return false;
     return ms >= start && ms <= end;
@@ -370,22 +487,22 @@ export function runTriage({
 
   // Data quality counters (window)
   const dqWindow = {
-    invalid_ts: inWindow.filter(r => !r.ts || Number.isNaN(toMs(r.ts))).length,
-    missing_edge_status: inWindow.filter(r => !Number.isFinite(r.edge_status)).length,
-    unknown_service: inWindow.filter(r => r.service === "unknown").length,
-    unknown_crc: inWindow.filter(r => r.crc === "UNKNOWN").length,
-    unknown_region: inWindow.filter(r => r.region === "unknown").length,
-    unknown_pop: inWindow.filter(r => r.pop === "unknown").length,
+    invalid_ts: inWindow.filter((r) => !r.ts || Number.isNaN(toMs(r.ts))).length,
+    missing_edge_status: inWindow.filter((r) => !Number.isFinite(r.edge_status)).length,
+    unknown_service: inWindow.filter((r) => r.service === "unknown").length,
+    unknown_crc: inWindow.filter((r) => r.crc === "UNKNOWN").length,
+    unknown_region: inWindow.filter((r) => r.region === "unknown").length,
+    unknown_pop: inWindow.filter((r) => r.pop === "unknown").length,
   };
 
   // Apply filters + dimensions
   let filtered = inWindow
-    .filter(r => matchDim(r.service, service))
-    .filter(r => matchDim(r.region, region))
-    .filter(r => matchDim(r.pop, pop));
+    .filter((r) => matchDim(r.service, service))
+    .filter((r) => matchDim(r.region, region))
+    .filter((r) => matchDim(r.pop, pop));
 
   for (const f of filtersArr) {
-    filtered = filtered.filter(r => passesFilter(r, f));
+    filtered = filtered.filter((r) => passesFilter(r, f));
   }
 
   // Warnings
@@ -403,7 +520,9 @@ export function runTriage({
     warnings.push(`Filters removed all rows. Check available values in DEBUG.`);
   }
   if (dqWindow.missing_edge_status > 0) {
-    warnings.push(`Some rows missing edge_status (${dqWindow.missing_edge_status}). Response code totals may not sum perfectly.`);
+    warnings.push(
+      `Some rows missing edge_status (${dqWindow.missing_edge_status}). Response code totals may not sum perfectly.`,
+    );
   }
   if (dqWindow.invalid_ts > 0) {
     warnings.push(`Some rows have invalid ts in window (${dqWindow.invalid_ts}).`);
@@ -430,7 +549,7 @@ export function runTriage({
       `• Scope: service=\`${service}\`  region=\`${region}\`  pop=\`${pop}\``,
       `• Window: \`${windowMinutes}m\`  • Filters: \`${prettyFilters(filtersArr)}\``,
       `• Time (UTC): \`${startISO}\` → \`${endISO}\``,
-      ...(warnings.length ? ["", `⚠️ *Warnings*`, ...warnings.map(w => `• ${w}`)] : []),
+      ...(warnings.length ? ["", `⚠️ *Warnings*`, ...warnings.map((w) => `• ${w}`)] : []),
       ...(debug && dbg ? ["", "```", debugBlock(dbg), "```"] : []),
     ].join("\n");
 
@@ -440,9 +559,11 @@ export function runTriage({
         timeRangeUTC: { start: startISO, end: endISO },
         totalRequests: 0,
         p95TtmsMs: null,
+        p99TtmsMs: null,
         cacheHitPct: null,
         cacheMissPct: null,
         statusCounts: [],
+        timeseries: emptyTimeseries(),
         warnings,
         dataQuality: { all: dqAll, window: dqWindow },
         debug: dbg,
@@ -462,7 +583,7 @@ export function runTriage({
       `   - pop: ${topValuesPretty(inWindow, "pop")}`,
       `   - crc_class: ${topValuesPretty(inWindow, "crc_class")}`,
       `   - edge_status: ${topValuesPretty(inWindow, "edge_status")}`,
-      ...(warnings.length ? ["", `⚠️ *Warnings*`, ...warnings.map(w => `• ${w}`)] : []),
+      ...(warnings.length ? ["", `⚠️ *Warnings*`, ...warnings.map((w) => `• ${w}`)] : []),
       ...(debug && dbg ? ["", "```", debugBlock(dbg), "```"] : []),
     ].join("\n");
 
@@ -472,9 +593,11 @@ export function runTriage({
         timeRangeUTC: { start: startISO, end: endISO },
         totalRequests: 0,
         p95TtmsMs: null,
+        p99TtmsMs: null,
         cacheHitPct: null,
         cacheMissPct: null,
         statusCounts: [],
+        timeseries: emptyTimeseries(),
         warnings,
         dataQuality: { all: dqAll, window: dqWindow },
         debug: dbg,
@@ -485,20 +608,24 @@ export function runTriage({
   // Metrics
   const total = filtered.length;
 
-  const ttmsVals = filtered.map(r => Number(r.ttms_ms)).filter(v => Number.isFinite(v));
+  // ✅ Bucket choice based on ACTUAL span, not user input
+  // Optional tweak: clamp to at least 1 minute to avoid weird 0-minute spans.
+  const spanMinutes = Math.max(1, computeSpanMinutes(filtered));
+  const timeseries = buildTimeseriesPoints(filtered, spanMinutes);
+
+  const ttmsVals = filtered.map((r) => Number(r.ttms_ms)).filter((v) => Number.isFinite(v));
   const p95 = percentile(ttmsVals, 95);
   const p99 = percentile(ttmsVals, 99);
 
-
-  const hitCount = filtered.filter(r => Number(r.edge_cache_hit) === 1).length;
+  const hitCount = filtered.filter((r) => Number(r.edge_cache_hit) === 1).length;
   const hitRatio = total ? (hitCount / total) * 100 : null;
 
-  const missCount = filtered.filter(r => Number(r.edge_cache_hit) === 0).length;
+  const missCount = filtered.filter((r) => Number(r.edge_cache_hit) === 0).length;
   const missRatio = total ? (missCount / total) * 100 : null;
 
   const statusCountsPairs = countBy(filtered, "edge_status");
 
-  const errorRows = filtered.filter(r => Number(r.edge_status) >= 500);
+  const errorRows = filtered.filter((r) => Number(r.edge_status) >= 500);
   const errorCount = errorRows.length;
   const errorRate = total ? (errorCount / total) * 100 : null;
 
@@ -531,23 +658,19 @@ export function runTriage({
     `• Cache Hit: *${formatPct(hitRatio)}*  (miss ${formatPct(missRatio)})`,
   ].join("\n");
 
-  const statusBlock = [
-    `🧮 *Response Codes*`,
-    prettyStatusCounts(statusCountsPairs, 12),
-  ].join("\n");
+  const statusBlock = [`🧮 *Response Codes*`, prettyStatusCounts(statusCountsPairs, 12)].join("\n");
 
   const breakdown = [
     `🧩 *Top breakdowns*`,
     `• service: ${topValuesPretty(filtered, "service", 4)}`,
     `• region: ${topValuesPretty(filtered, "region", 4)}`,
     `• pop: ${topValuesPretty(filtered, "pop", 4)}`,
-    `• crc_class: ${topCrcClass.length ? topCrcClass.map(([v, c]) => `${v} (${c})`).join(", ") : "n/a"}`,
+    `• crc_class: ${
+      topCrcClass.length ? topCrcClass.map(([v, c]) => `${v} (${c})`).join(", ") : "n/a"
+    }`,
   ].join("\n");
 
-  const evidenceBlock = [
-    `🧾 *Evidence*`,
-    ...evidence.map(x => `• ${x}`)
-  ].join("\n");
+  const evidenceBlock = [`🧾 *Evidence*`, ...evidence.map((x) => `• ${x}`)].join("\n");
 
   const dqLines = [];
   if (
@@ -565,11 +688,9 @@ export function runTriage({
     if (dqWindow.unknown_pop) dqLines.push(`• unknown pop: ${dqWindow.unknown_pop}`);
   }
 
-  const warnLines = warnings.length ? [`⚠️ *Warnings*`, ...warnings.map(w => `• ${w}`)] : [];
+  const warnLines = warnings.length ? [`⚠️ *Warnings*`, ...warnings.map((w) => `• ${w}`)] : [];
 
-  const debugSection = (debug && dbg)
-    ? ["", "```", debugBlock(dbg), "```"].join("\n")
-    : "";
+  const debugSection = debug && dbg ? ["", "```", debugBlock(dbg), "```"].join("\n") : "";
 
   const summaryText = [
     header,
@@ -586,8 +707,10 @@ export function runTriage({
     breakdown,
     "",
     evidenceBlock,
-    debugSection
-  ].filter(Boolean).join("\n");
+    debugSection,
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   return {
     summaryText,
@@ -603,6 +726,7 @@ export function runTriage({
       errorRatePct: errorRate,
       topCrcClass: topCrcClass.map(([k, v]) => ({ crc_class: k, count: v })),
       topErrorCrc: topErrorsByCrc.map(([k, v]) => ({ crc: k, count: v })),
+      timeseries,
       warnings,
       dataQuality: { all: dqAll, window: dqWindow },
       debug: dbg,
