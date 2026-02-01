@@ -65,6 +65,10 @@ type TimeseriesPoint = {
   errorRatePct: number;
   p95TtmsMs: number | null;
   p99TtmsMs: number | null;
+
+  statusCounts?: Record<string, number>;
+  crcCounts?: Record<string, number>;
+  hostCounts?: Record<string, number>;
 };
 
 type TimeseriesData = {
@@ -74,7 +78,30 @@ type TimeseriesData = {
   points: TimeseriesPoint[];
 };
 
-type ChartMetric = "errorRatePct" | "totalRequests" | "p95TtmsMs" | "p99TtmsMs" | "error5xxCount";
+type HostBreakdownRow = {
+  host: string;
+  totalRequests: number;
+  p95TtmsMs: number | null;
+  p99TtmsMs: number | null;
+  crcCounts?: Record<string, number>;
+  statusCounts?: Record<string, number>;
+};
+
+type CrcByHostRow = {
+  host: string;
+  crc: string;
+  count: number;
+};
+
+type ChartMetric =
+  | "errorRatePct"
+  | "totalRequests"
+  | "p95TtmsMs"
+  | "p99TtmsMs"
+  | "error5xxCount"
+  | `status:${string}`
+  | `crc:${string}`
+  | `host:${string}`;
 
 // Utility functions
 function getCurrentTimestamp(): string {
@@ -124,7 +151,6 @@ function looksLikeTriageQuery(text: string): boolean {
   if (normalized.includes("=")) return true;
 
   const keywords = ["service", "region", "pop", "win", "window", "errors", "p95", "p99", "ttms", "triage"];
-
   return keywords.some((keyword) => normalized.includes(keyword));
 }
 
@@ -144,6 +170,22 @@ function clamp01(x: number) {
 }
 
 function getMetricValue(p: TimeseriesPoint, metric: ChartMetric): number | null {
+  if (metric.startsWith("status:")) {
+    const code = metric.slice("status:".length);
+    const n = p.statusCounts?.[code];
+    return Number.isFinite(Number(n)) ? Number(n) : 0;
+  }
+  if (metric.startsWith("crc:")) {
+    const k = metric.slice("crc:".length);
+    const n = p.crcCounts?.[k];
+    return Number.isFinite(Number(n)) ? Number(n) : 0;
+  }
+  if (metric.startsWith("host:")) {
+    const h = metric.slice("host:".length);
+    const n = p.hostCounts?.[h];
+    return Number.isFinite(Number(n)) ? Number(n) : 0;
+  }
+
   switch (metric) {
     case "errorRatePct":
       return Number.isFinite(p.errorRatePct) ? p.errorRatePct : 0;
@@ -159,6 +201,11 @@ function getMetricValue(p: TimeseriesPoint, metric: ChartMetric): number | null 
 }
 
 function metricLabel(metric: ChartMetric) {
+  // ✅ tiny fix so labels don’t look weird
+  if (metric.startsWith("status:")) return `Status ${metric.slice("status:".length)} (count)`;
+  if (metric.startsWith("crc:")) return `CRC ${metric.slice("crc:".length)} (count)`;
+  if (metric.startsWith("host:")) return `Host ${metric.slice("host:".length)} (count)`;
+
   switch (metric) {
     case "errorRatePct":
       return "5xx%";
@@ -183,9 +230,7 @@ function formatMetric(metric: ChartMetric, v: number | null) {
 // Format timestamps ONLY after mount to avoid SSR/CSR mismatch.
 function formatTimestampClientSafe(iso: string, mounted: boolean): string {
   if (!iso) return "";
-  if (!mounted) {
-    return iso.replace("T", " ").replace(".000Z", "Z");
-  }
+  if (!mounted) return iso.replace("T", " ").replace(".000Z", "Z");
   try {
     return new Date(iso).toLocaleString();
   } catch {
@@ -223,6 +268,25 @@ function TooltipBubble({ text }: { text: string }) {
       />
     </div>
   );
+}
+
+function statusFamily(code: string) {
+  const n = Number(code);
+  if (!Number.isFinite(n)) return "other";
+  if (n >= 200 && n < 300) return "2xx";
+  if (n >= 300 && n < 400) return "3xx";
+  if (n >= 400 && n < 500) return "4xx";
+  if (n >= 500 && n < 600) return "5xx";
+  return "other";
+}
+
+function familyColorClass(fam: string) {
+  // ✅ required: 2xx green, 3xx blue, 5xx red
+  if (fam === "2xx") return "bg-emerald-500/70";
+  if (fam === "3xx") return "bg-blue-500/70";
+  if (fam === "5xx") return "bg-red-500/70";
+  if (fam === "4xx") return "bg-amber-500/70";
+  return "bg-gray-500/50";
 }
 
 function MiniBars({
@@ -273,10 +337,8 @@ function MiniBars({
         </div>
       </div>
 
-      {/* Chart area */}
       <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
         <div className="relative h-28">
-          {/* subtle grid */}
           <div className="absolute inset-0 pointer-events-none">
             <div className="h-full w-full grid grid-rows-4">
               <div className="border-b border-gray-200/60" />
@@ -286,8 +348,6 @@ function MiniBars({
             </div>
           </div>
 
-          {/* Bars */}
-          {/* ✅ Improvement: overflow-hidden prevents "overlap" look from shadows/tooltips */}
           <div className="relative h-full flex items-end gap-[3px] overflow-hidden">
             {slice.map((p, idx) => {
               const v = getMetricValue(p, metric);
@@ -300,12 +360,8 @@ function MiniBars({
               )}`;
 
               return (
-                <div
-                  key={`${p.ts}-${idx}`}
-                  className="group relative flex-1 min-w-[2px] h-full flex items-end"
-                >
+                <div key={`${p.ts}-${idx}`} className="group relative flex-1 min-w-[2px] h-full flex items-end">
                   <TooltipBubble text={tip} />
-
                   <div
                     className={[
                       "w-full",
@@ -338,14 +394,233 @@ function MiniBars({
   );
 }
 
+/**
+ * ✅ NEW: stacked status bars per bucket
+ * - chooses top status codes across recent buckets (plus "other")
+ * - color-coded by family: 2xx green, 3xx blue, 5xx red (4xx amber, other gray)
+ */
+function StackedStatusBars({
+  points,
+  mounted,
+  maxBars = 48,
+  topCodesLimit = 8,
+}: {
+  points: TimeseriesPoint[];
+  mounted: boolean;
+  maxBars?: number;
+  topCodesLimit?: number;
+}) {
+  const slice = points.slice(-maxBars);
+
+  // aggregate totals per status code across slice
+  const totals = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of slice) {
+      const sc = p.statusCounts;
+      if (!sc) continue;
+      for (const [k, v] of Object.entries(sc)) {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n <= 0) continue;
+        m.set(k, (m.get(k) ?? 0) + n);
+      }
+    }
+    return m;
+  }, [slice]);
+
+  const topCodes = useMemo(() => {
+    return [...totals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, topCodesLimit)
+      .map(([k]) => k)
+      .sort((a, b) => Number(a) - Number(b));
+  }, [totals, topCodesLimit]);
+
+  const legend = useMemo(() => {
+    const fams = new Set<string>();
+    for (const code of topCodes) fams.add(statusFamily(code));
+    return Array.from(fams);
+  }, [topCodes]);
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs text-gray-500">Stacked chart</div>
+          <div className="text-sm font-semibold text-gray-900">Status codes (stacked)</div>
+          <div className="text-[11px] text-gray-500 mt-1">
+            Top codes in last {Math.min(maxBars, points.length)} buckets + <span className="font-medium">other</span>
+          </div>
+        </div>
+
+        <div className="text-right">
+          <div className="text-xs text-gray-500">Colors</div>
+          <div className="mt-1 flex items-center gap-2 justify-end flex-wrap">
+            {legend.includes("2xx") && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-gray-700">
+                <span className="h-2.5 w-2.5 rounded-sm bg-emerald-500/70" />2xx
+              </span>
+            )}
+            {legend.includes("3xx") && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-gray-700">
+                <span className="h-2.5 w-2.5 rounded-sm bg-blue-500/70" />3xx
+              </span>
+            )}
+            {legend.includes("4xx") && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-gray-700">
+                <span className="h-2.5 w-2.5 rounded-sm bg-amber-500/70" />4xx
+              </span>
+            )}
+            {legend.includes("5xx") && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-gray-700">
+                <span className="h-2.5 w-2.5 rounded-sm bg-red-500/70" />5xx
+              </span>
+            )}
+            <span className="inline-flex items-center gap-1 text-[11px] text-gray-700">
+              <span className="h-2.5 w-2.5 rounded-sm bg-gray-500/50" />other
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
+        <div className="relative h-28">
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="h-full w-full grid grid-rows-4">
+              <div className="border-b border-gray-200/60" />
+              <div className="border-b border-gray-200/60" />
+              <div className="border-b border-gray-200/60" />
+              <div className="border-b border-gray-200/60" />
+            </div>
+          </div>
+
+          <div className="relative h-full flex items-end gap-[3px] overflow-hidden">
+            {slice.map((p, idx) => {
+              const total = Math.max(1, Number(p.totalRequests) || 0);
+              const sc = p.statusCounts || {};
+              let sumTop = 0;
+
+              const segments = topCodes.map((code) => {
+                const n = Number(sc[code]) || 0;
+                sumTop += n;
+                return { code, count: n };
+              });
+
+              const other = Math.max(0, total - sumTop);
+
+              const tipLines = [
+                `${formatTimestampClientSafe(p.ts, mounted)}`,
+                `Requests: ${total.toLocaleString()}`,
+                ...segments
+                  .filter((s) => s.count > 0)
+                  .map((s) => `${s.code}: ${s.count.toLocaleString()}`),
+                other > 0 ? `other: ${other.toLocaleString()}` : null,
+              ].filter(Boolean) as string[];
+
+              return (
+                <div key={`${p.ts}-${idx}`} className="group relative flex-1 min-w-[2px] h-full">
+                  <TooltipBubble text={tipLines.join(" • ")} />
+
+                  {/* stack container */}
+                  <div className="w-full h-full rounded-[4px] overflow-hidden ring-0 group-hover:ring-1 group-hover:ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.06)]">
+                    <div className="w-full h-full flex flex-col justify-end">
+                      {/* draw from bottom to top */}
+                      {segments
+                        .filter((s) => s.count > 0)
+                        .sort((a, b) => Number(b.code) - Number(a.code)) // visual variety; not required
+                        .map((s) => {
+                          const pct = (s.count / total) * 100;
+                          const fam = statusFamily(s.code);
+                          return (
+                            <div
+                              key={`${p.ts}-${s.code}`}
+                              className={familyColorClass(fam)}
+                              style={{ height: `${pct}%` }}
+                              title={`${s.code}`}
+                            />
+                          );
+                        })}
+
+                      {other > 0 && (
+                        <div className={familyColorClass("other")} style={{ height: `${(other / total) * 100}%` }} />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="mt-2 text-[11px] text-gray-500">
+          Hover bars to see per-code breakdown. (Colors are by status family.)
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TimeseriesPanel({ points, mounted }: { points: TimeseriesPoint[]; mounted: boolean }) {
   const [metric, setMetric] = useState<ChartMetric>("errorRatePct");
 
+  const maxBars = 48;
+  const recent = useMemo(() => points.slice(-maxBars), [points]);
+
+  function topKeysFromCounts(
+    getCounts: (p: TimeseriesPoint) => Record<string, number> | undefined,
+    limit = 12
+  ): string[] {
+    const agg = new Map<string, number>();
+    for (const p of recent) {
+      const m = getCounts(p);
+      if (!m || typeof m !== "object") continue;
+      for (const [k, v] of Object.entries(m)) {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n <= 0) continue;
+        agg.set(k, (agg.get(k) ?? 0) + n);
+      }
+    }
+    return [...agg.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([k]) => k);
+  }
+
+  const topStatusCodes = useMemo(
+    () => topKeysFromCounts((p) => p.statusCounts, 12).sort((a, b) => Number(a) - Number(b)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [recent]
+  );
+  const topCrcs = useMemo(
+    () => topKeysFromCounts((p) => p.crcCounts, 12),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [recent]
+  );
+  const topHosts = useMemo(
+    () => topKeysFromCounts((p) => p.hostCounts, 12),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [recent]
+  );
+
+  useEffect(() => {
+    if (metric.startsWith("status:")) {
+      const code = metric.slice("status:".length);
+      if (!topStatusCodes.includes(code)) setMetric("errorRatePct");
+    } else if (metric.startsWith("crc:")) {
+      const k = metric.slice("crc:".length);
+      if (!topCrcs.includes(k)) setMetric("errorRatePct");
+    } else if (metric.startsWith("host:")) {
+      const h = metric.slice("host:".length);
+      if (!topHosts.includes(h)) setMetric("errorRatePct");
+    }
+  }, [metric, topStatusCodes, topCrcs, topHosts]);
+
+  
   return (
     <div className="mt-4 space-y-3">
       {/* Control row */}
       <div className="flex items-center justify-between gap-3">
         <div className="text-xs text-gray-500">View</div>
+
         <div className="flex items-center gap-2">
           <select
             value={metric}
@@ -353,28 +628,55 @@ function TimeseriesPanel({ points, mounted }: { points: TimeseriesPoint[]; mount
             className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900
                        focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           >
-            <option value="errorRatePct">5xx%</option>
-            <option value="error5xxCount">5xx Count</option>
-            <option value="totalRequests">Requests</option>
-            <option value="p95TtmsMs">p95 TTMS</option>
-            <option value="p99TtmsMs">p99 TTMS</option>
+            {/* Base metrics */}
+            <optgroup label="Core">
+              <option value="errorRatePct">5xx%</option>
+              <option value="error5xxCount">5xx Count</option>
+              <option value="totalRequests">Requests</option>
+              <option value="p95TtmsMs">p95 TTMS</option>
+              <option value="p99TtmsMs">p99 TTMS</option>
+            </optgroup>
+
+            {/* Dynamic status codes */}
+            {topStatusCodes.length > 0 && (
+              <optgroup label="Status codes (count)">
+                {topStatusCodes.map((code) => (
+                  <option key={`status:${code}`} value={`status:${code}`}>
+                    {code}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+
+            {/* Dynamic CRC */}
+            {topCrcs.length > 0 && (
+              <optgroup label="CRC (count)">
+                {topCrcs.map((k) => (
+                  <option key={`crc:${k}`} value={`crc:${k}`}>
+                    {k}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+
+            {/* Dynamic hosts */}
+            {topHosts.length > 0 && (
+              <optgroup label="Host (count)">
+                {topHosts.map((h) => (
+                  <option key={`host:${h}`} value={`host:${h}`}>
+                    {h}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
 
-          <div className="text-xs text-gray-400 hidden sm:block">last 48 buckets</div>
+          <div className="text-xs text-gray-400 hidden sm:block">last {maxBars} buckets</div>
         </div>
       </div>
 
-      <MiniBars points={points} metric={metric} mounted={mounted} maxBars={48} />
-
-      {/* ✅ Fix: responsive auto-fit grid prevents overlap on mid-width screens */}
-      <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(360px,1fr))] w-full">
-        <div className="min-w-0">
-          <MiniBars points={points} metric="errorRatePct" mounted={mounted} maxBars={48} />
-        </div>
-        <div className="min-w-0">
-          <MiniBars points={points} metric="p95TtmsMs" mounted={mounted} maxBars={48} />
-        </div>
-      </div>
+      {/* Main chosen chart */}
+      <MiniBars points={points} metric={metric} mounted={mounted} maxBars={maxBars} />
     </div>
   );
 }
@@ -402,7 +704,7 @@ export default function CDNTriageApp() {
   const [runHistory, setRunHistory] = useState<TriageRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
-  // Chat (IMPORTANT: start empty to avoid hydration mismatch)
+  // Chat
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
@@ -410,12 +712,8 @@ export default function CDNTriageApp() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
 
-  // Mark mounted (fix hydration mismatch for timestamps)
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  useEffect(() => setMounted(true), []);
 
-  // Initialize welcome chat message after mount (deterministic SSR)
   useEffect(() => {
     if (!mounted) return;
     if (chatMessages.length > 0) return;
@@ -431,45 +729,34 @@ export default function CDNTriageApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted]);
 
-  // Load history from localStorage on mount
   useEffect(() => {
     if (!mounted) return;
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) return;
-
     const parsed = safeParse<TriageRun[]>(stored, []);
     if (Array.isArray(parsed)) setRunHistory(parsed);
   }, [mounted]);
 
-  // Save history to localStorage
   useEffect(() => {
     if (!mounted) return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(runHistory));
   }, [runHistory, mounted]);
 
-  // Auto-scroll chat to bottom on new messages
   useEffect(() => {
     const lastMessage = chatMessages[chatMessages.length - 1];
     if (!lastMessage) return;
 
     if (lastMessageIdRef.current !== lastMessage.id) {
       lastMessageIdRef.current = lastMessage.id;
-
       const el = chatScrollRef.current;
-      if (el) {
-        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-      }
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     }
   }, [chatMessages]);
 
-  // Computed values
-  const canRunTriage = useMemo(() => {
-    return Boolean(uploadedFile) || (csvUrl && csvUrl.trim().length > 0);
-  }, [uploadedFile, csvUrl]);
+  const canRunTriage = useMemo(() => Boolean(uploadedFile) || (csvUrl && csvUrl.trim().length > 0), [uploadedFile, csvUrl]);
 
   const parsedMetrics = useMemo((): MetricsData | null => {
     if (!metricsJson) return null;
-
     return {
       totalRequests: Number(metricsJson.totalRequests) || 0,
       p95TtmsMs: metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs),
@@ -493,6 +780,9 @@ export default function CDNTriageApp() {
         errorRatePct: Number(p.errorRatePct) || 0,
         p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
         p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
+        statusCounts: p.statusCounts && typeof p.statusCounts === "object" ? (p.statusCounts as Record<string, number>) : undefined,
+        crcCounts: p.crcCounts && typeof p.crcCounts === "object" ? (p.crcCounts as Record<string, number>) : undefined,
+        hostCounts: p.hostCounts && typeof p.hostCounts === "object" ? (p.hostCounts as Record<string, number>) : undefined,
       }))
       .filter((p) => p.ts);
 
@@ -504,20 +794,20 @@ export default function CDNTriageApp() {
     };
   }, [metricsJson]);
 
-  // Helper: add chat message
+  const parsedHostBreakdown = useMemo((): HostBreakdownRow[] => {
+    const arr = metricsJson?.hostBreakdown;
+    return Array.isArray(arr) ? (arr as HostBreakdownRow[]) : [];
+  }, [metricsJson]);
+
+  const parsedCrcByHost = useMemo((): CrcByHostRow[] => {
+    const arr = metricsJson?.crcByHost;
+    return Array.isArray(arr) ? (arr as CrcByHostRow[]) : [];
+  }, [metricsJson]);
+
   function addChatMessage(role: ChatMessage["role"], text: string) {
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: `${Date.now()}-${Math.random()}`,
-        role,
-        text,
-        timestamp: getCurrentTimestamp(),
-      },
-    ]);
+    setChatMessages((prev) => [...prev, { id: `${Date.now()}-${Math.random()}`, role, text, timestamp: getCurrentTimestamp() }]);
   }
 
-  // API call: run triage
   async function runTriageRequest(inputs: {
     csvUrl: string;
     file: File | null;
@@ -533,18 +823,15 @@ export default function CDNTriageApp() {
     formData.append("region", inputs.region);
     formData.append("pop", inputs.pop);
     formData.append("windowMinutes", String(inputs.windowMinutes));
-
     if (inputs.file) formData.append("file", inputs.file);
     if (inputs.debug) formData.append("debug", "true");
 
     const response = await fetch("/api/triage", { method: "POST", body: formData });
     const data = await response.json();
-
     if (!data.ok) throw new Error(data.error || "Request failed");
     return data;
   }
 
-  // Manual Run Triage button
   async function handleRunTriage() {
     setErrorMessage("");
     setSummaryText("");
@@ -558,16 +845,7 @@ export default function CDNTriageApp() {
 
     setIsLoading(true);
     try {
-      const data = await runTriageRequest({
-        csvUrl,
-        file: uploadedFile,
-        service,
-        region,
-        pop,
-        windowMinutes,
-        debug: debugMode,
-      });
-
+      const data = await runTriageRequest({ csvUrl, file: uploadedFile, service, region, pop, windowMinutes, debug: debugMode });
       setSummaryText(data.summaryText || "");
       setMetricsJson(data.metricsJson || null);
 
@@ -595,7 +873,6 @@ export default function CDNTriageApp() {
     }
   }
 
-  // Chat send
   async function handleChatSend() {
     const text = chatInput.trim();
     if (!text) return;
@@ -752,12 +1029,11 @@ export default function CDNTriageApp() {
 
   return (
     <main className="min-h-screen w-full bg-gray-50 px-6 py-6">
-      {/* ✅ Improvement: full width container (no max-width cap) */}
       <div className="mx-auto w-full">
         <h1 className="text-2xl font-bold text-gray-900 mb-6">CDN Triage UI (REPO)</h1>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Sidebar: History */}
+          {/* Sidebar */}
           <aside className="lg:col-span-3">
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
               <div className="flex items-center justify-between mb-4">
@@ -819,7 +1095,7 @@ export default function CDNTriageApp() {
           {/* Main */}
           <section className="lg:col-span-9 min-w-0">
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-              {/* Left: Triage UI */}
+              {/* Left */}
               <div className="space-y-4 min-w-0">
                 <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                   <div className="space-y-4">
@@ -846,7 +1122,7 @@ export default function CDNTriageApp() {
                       />
                       {uploadedFile && <div className="text-xs text-gray-600 mt-2">Selected: {uploadedFile.name}</div>}
                       <div className="text-xs text-gray-500 mt-2">
-                        Note: history can reload URL-based runs. File uploads can't be reloaded (browser limitation).
+                        Note: history can reload URL-based runs. File uploads can’t be reloaded (browser limitation).
                       </div>
                     </div>
 
@@ -983,6 +1259,88 @@ export default function CDNTriageApp() {
                     <div className="text-sm text-gray-500 mt-3">No timeseries yet (run triage).</div>
                   ) : (
                     <TimeseriesPanel points={parsedTimeseries.points} mounted={mounted} />
+                  )}
+                </div>
+
+                {/* Host breakdown (from your metricsEngine) */}
+                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <div>
+                      <div className="font-medium text-gray-900">Host Breakdown</div>
+                      <div className="text-xs text-gray-500">Requests + p95/p99 + top CRCs per host</div>
+                    </div>
+                  </div>
+
+                  {parsedHostBreakdown.length === 0 ? (
+                    <div className="text-sm text-gray-500">No host breakdown yet (run triage).</div>
+                  ) : (
+                    <div className="overflow-auto">
+                      <table className="min-w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-xs text-gray-500 border-b">
+                            <th className="py-2 pr-4">Host</th>
+                            <th className="py-2 pr-4">Requests</th>
+                            <th className="py-2 pr-4">p95</th>
+                            <th className="py-2 pr-4">p99</th>
+                            <th className="py-2 pr-4">Top CRCs</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {parsedHostBreakdown.map((h) => {
+                            const crcEntries = Object.entries(h.crcCounts || {})
+                              .sort((a, b) => Number(b[1]) - Number(a[1]))
+                              .slice(0, 6);
+
+                            return (
+                              <tr key={h.host} className="border-b last:border-b-0">
+                                <td className="py-2 pr-4 font-medium text-gray-900 whitespace-nowrap">{h.host}</td>
+                                <td className="py-2 pr-4 text-gray-700">{(h.totalRequests || 0).toLocaleString()}</td>
+                                <td className="py-2 pr-4 text-gray-700">{formatMsOrNA(h.p95TtmsMs)}</td>
+                                <td className="py-2 pr-4 text-gray-700">{formatMsOrNA(h.p99TtmsMs)}</td>
+                                <td className="py-2 pr-4 text-gray-700">
+                                  {crcEntries.length ? crcEntries.map(([k, v]) => `${k} (${v})`).join(", ") : "n/a"}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Optional: CRC-by-host (flattened) */}
+                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <div>
+                      <div className="font-medium text-gray-900">CRC by Host (Top)</div>
+                      <div className="text-xs text-gray-500">From metricsJson.crcByHost (sorted by count)</div>
+                    </div>
+                  </div>
+
+                  {parsedCrcByHost.length === 0 ? (
+                    <div className="text-sm text-gray-500">No crcByHost yet (run triage).</div>
+                  ) : (
+                    <div className="overflow-auto">
+                      <table className="min-w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-xs text-gray-500 border-b">
+                            <th className="py-2 pr-4">Host</th>
+                            <th className="py-2 pr-4">CRC</th>
+                            <th className="py-2 pr-4">Count</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {parsedCrcByHost.slice(0, 30).map((r, idx) => (
+                            <tr key={`${r.host}-${r.crc}-${idx}`} className="border-b last:border-b-0">
+                              <td className="py-2 pr-4 font-medium text-gray-900 whitespace-nowrap">{r.host}</td>
+                              <td className="py-2 pr-4 text-gray-700 whitespace-nowrap">{r.crc}</td>
+                              <td className="py-2 pr-4 text-gray-700">{Number(r.count || 0).toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </div>
 
