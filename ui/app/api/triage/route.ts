@@ -3,11 +3,15 @@ import { runTriage } from "@/lib/triage/metricsEngine";
 
 export const runtime = "nodejs";
 
-export async function POST(req) {
+export async function POST(req: Request) {
+  console.log("🔥 USING ROUTE: app/api/triage/route.ts 🔥");
   try {
     const form = await req.formData();
 
-    const csvUrl = (form.get("csvUrl") || "").toString().trim();
+    const dataSource = ((form.get("dataSource") || "csv").toString().trim() || "csv") as
+      | "csv"
+      | "clickhouse";
+
     const service = (form.get("service") || "all").toString();
     const region = (form.get("region") || "all").toString();
     const pop = (form.get("pop") || "all").toString();
@@ -18,21 +22,33 @@ export async function POST(req) {
       throw new Error("windowMinutes must be a positive number.");
     }
 
-    const filtersRaw = form.get("filters");
-    let filters = {};
-    if (filtersRaw) {
-      const s = filtersRaw.toString().trim();
-      if (s) filters = JSON.parse(s);
-    }
-
     const debugRaw = (form.get("debug") || "").toString().toLowerCase();
     const debug = ["1", "true", "yes", "on"].includes(debugRaw);
+
+    // -----------------------------
+    // ClickHouse branch (stub for now)
+    // -----------------------------
+    if (dataSource === "clickhouse") {
+      // Step 1–3 are not built yet, so fail clearly for now.
+      throw new Error(
+        "ClickHouse mode is selected, but the ClickHouse connector + query pack is not implemented yet."
+      );
+
+      // Later this will be:
+      // const { summaryText, metricsJson } = await runClickhouseTriage({service, region, pop, windowMinutes, debug});
+      // return NextResponse.json({ ok: true, summaryText, metricsJson });
+    }
+
+    // -----------------------------
+    // CSV branch (current working flow)
+    // -----------------------------
+    const csvUrl = (form.get("csvUrl") || "").toString().trim();
 
     const file = form.get("file");
     let csvText = "";
 
-    if (file && typeof file === "object" && typeof file.text === "function") {
-      csvText = await file.text();
+    if (file && typeof file === "object" && typeof (file as any).text === "function") {
+      csvText = await (file as any).text();
     } else {
       if (!csvUrl) throw new Error("Provide either a CSV file upload or csvUrl.");
       const resp = await fetch(csvUrl);
@@ -48,7 +64,6 @@ export async function POST(req) {
       region,
       pop,
       windowMinutes,
-      filters,
       debug,
     });
 

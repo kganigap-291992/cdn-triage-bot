@@ -1,5 +1,6 @@
 # CDN Incident Triage Bot  
 **V1 (n8n + Slack) → V2 (Standalone UI + API)**
+**Author & Maintainer:** Krishna Reddy  
 
 An automated CDN incident triage system that analyzes delivery telemetry
 (edge, mid-tier, cache, URL patterns, and client signals) and produces

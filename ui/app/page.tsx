@@ -32,12 +32,18 @@ type ChatMessage = {
   timestamp: string; // ISO
 };
 
+type DataSource = "csv" | "clickhouse";
+
 type TriageInputs = {
+  dataSource: DataSource;
+
   csvUrl: string;
   fileName: string;
+
   service: string;
   region: string;
   pop: string;
+
   windowMinutes: number;
   debug: boolean;
 };
@@ -197,11 +203,13 @@ function getMetricValue(p: TimeseriesPoint, metric: ChartMetric): number | null 
       return p.p95TtmsMs == null ? null : Number(p.p95TtmsMs);
     case "p99TtmsMs":
       return p.p99TtmsMs == null ? null : Number(p.p99TtmsMs);
+    default:
+      return null; // ✅ guarantees return on all paths
   }
 }
 
+
 function metricLabel(metric: ChartMetric) {
-  // ✅ tiny fix so labels don’t look weird
   if (metric.startsWith("status:")) return `Status ${metric.slice("status:".length)} (count)`;
   if (metric.startsWith("crc:")) return `CRC ${metric.slice("crc:".length)} (count)`;
   if (metric.startsWith("host:")) return `Host ${metric.slice("host:".length)} (count)`;
@@ -281,7 +289,6 @@ function statusFamily(code: string) {
 }
 
 function familyColorClass(fam: string) {
-  // ✅ required: 2xx green, 3xx blue, 5xx red
   if (fam === "2xx") return "bg-emerald-500/70";
   if (fam === "3xx") return "bg-blue-500/70";
   if (fam === "5xx") return "bg-red-500/70";
@@ -317,8 +324,7 @@ function MiniBars({
 
   const isErrorMetric = metric === "errorRatePct" || metric === "error5xxCount";
 
-  const barBase =
-    "rounded-[3px] shadow-[0_1px_0_rgba(0,0,0,0.06)] transition-all duration-150 ease-out";
+  const barBase = "rounded-[3px] shadow-[0_1px_0_rgba(0,0,0,0.06)] transition-all duration-150 ease-out";
   const barColor = isErrorMetric
     ? "bg-gradient-to-t from-red-500/70 to-red-500/35"
     : "bg-gradient-to-t from-blue-600/70 to-blue-600/35";
@@ -354,10 +360,7 @@ function MiniBars({
               const normalized = v == null ? 0 : clamp01((v - minV) / safeSpan);
               const hPct = Math.max(0.06, normalized) * 100;
 
-              const tip = `${formatTimestampClientSafe(p.ts, mounted)} • ${metricLabel(metric)}: ${formatMetric(
-                metric,
-                v
-              )}`;
+              const tip = `${formatTimestampClientSafe(p.ts, mounted)} • ${metricLabel(metric)}: ${formatMetric(metric, v)}`;
 
               return (
                 <div key={`${p.ts}-${idx}`} className="group relative flex-1 min-w-[2px] h-full flex items-end">
@@ -390,171 +393,6 @@ function MiniBars({
       </div>
 
       <div className="mt-2 text-[11px] text-gray-500">Hover bars for exact values.</div>
-    </div>
-  );
-}
-
-/**
- * ✅ NEW: stacked status bars per bucket
- * - chooses top status codes across recent buckets (plus "other")
- * - color-coded by family: 2xx green, 3xx blue, 5xx red (4xx amber, other gray)
- */
-function StackedStatusBars({
-  points,
-  mounted,
-  maxBars = 48,
-  topCodesLimit = 8,
-}: {
-  points: TimeseriesPoint[];
-  mounted: boolean;
-  maxBars?: number;
-  topCodesLimit?: number;
-}) {
-  const slice = points.slice(-maxBars);
-
-  // aggregate totals per status code across slice
-  const totals = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const p of slice) {
-      const sc = p.statusCounts;
-      if (!sc) continue;
-      for (const [k, v] of Object.entries(sc)) {
-        const n = Number(v);
-        if (!Number.isFinite(n) || n <= 0) continue;
-        m.set(k, (m.get(k) ?? 0) + n);
-      }
-    }
-    return m;
-  }, [slice]);
-
-  const topCodes = useMemo(() => {
-    return [...totals.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, topCodesLimit)
-      .map(([k]) => k)
-      .sort((a, b) => Number(a) - Number(b));
-  }, [totals, topCodesLimit]);
-
-  const legend = useMemo(() => {
-    const fams = new Set<string>();
-    for (const code of topCodes) fams.add(statusFamily(code));
-    return Array.from(fams);
-  }, [topCodes]);
-
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-xs text-gray-500">Stacked chart</div>
-          <div className="text-sm font-semibold text-gray-900">Status codes (stacked)</div>
-          <div className="text-[11px] text-gray-500 mt-1">
-            Top codes in last {Math.min(maxBars, points.length)} buckets + <span className="font-medium">other</span>
-          </div>
-        </div>
-
-        <div className="text-right">
-          <div className="text-xs text-gray-500">Colors</div>
-          <div className="mt-1 flex items-center gap-2 justify-end flex-wrap">
-            {legend.includes("2xx") && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-gray-700">
-                <span className="h-2.5 w-2.5 rounded-sm bg-emerald-500/70" />2xx
-              </span>
-            )}
-            {legend.includes("3xx") && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-gray-700">
-                <span className="h-2.5 w-2.5 rounded-sm bg-blue-500/70" />3xx
-              </span>
-            )}
-            {legend.includes("4xx") && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-gray-700">
-                <span className="h-2.5 w-2.5 rounded-sm bg-amber-500/70" />4xx
-              </span>
-            )}
-            {legend.includes("5xx") && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-gray-700">
-                <span className="h-2.5 w-2.5 rounded-sm bg-red-500/70" />5xx
-              </span>
-            )}
-            <span className="inline-flex items-center gap-1 text-[11px] text-gray-700">
-              <span className="h-2.5 w-2.5 rounded-sm bg-gray-500/50" />other
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
-        <div className="relative h-28">
-          <div className="absolute inset-0 pointer-events-none">
-            <div className="h-full w-full grid grid-rows-4">
-              <div className="border-b border-gray-200/60" />
-              <div className="border-b border-gray-200/60" />
-              <div className="border-b border-gray-200/60" />
-              <div className="border-b border-gray-200/60" />
-            </div>
-          </div>
-
-          <div className="relative h-full flex items-end gap-[3px] overflow-hidden">
-            {slice.map((p, idx) => {
-              const total = Math.max(1, Number(p.totalRequests) || 0);
-              const sc = p.statusCounts || {};
-              let sumTop = 0;
-
-              const segments = topCodes.map((code) => {
-                const n = Number(sc[code]) || 0;
-                sumTop += n;
-                return { code, count: n };
-              });
-
-              const other = Math.max(0, total - sumTop);
-
-              const tipLines = [
-                `${formatTimestampClientSafe(p.ts, mounted)}`,
-                `Requests: ${total.toLocaleString()}`,
-                ...segments
-                  .filter((s) => s.count > 0)
-                  .map((s) => `${s.code}: ${s.count.toLocaleString()}`),
-                other > 0 ? `other: ${other.toLocaleString()}` : null,
-              ].filter(Boolean) as string[];
-
-              return (
-                <div key={`${p.ts}-${idx}`} className="group relative flex-1 min-w-[2px] h-full">
-                  <TooltipBubble text={tipLines.join(" • ")} />
-
-                  {/* stack container */}
-                  <div className="w-full h-full rounded-[4px] overflow-hidden ring-0 group-hover:ring-1 group-hover:ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.06)]">
-                    <div className="w-full h-full flex flex-col justify-end">
-                      {/* draw from bottom to top */}
-                      {segments
-                        .filter((s) => s.count > 0)
-                        .sort((a, b) => Number(b.code) - Number(a.code)) // visual variety; not required
-                        .map((s) => {
-                          const pct = (s.count / total) * 100;
-                          const fam = statusFamily(s.code);
-                          return (
-                            <div
-                              key={`${p.ts}-${s.code}`}
-                              className={familyColorClass(fam)}
-                              style={{ height: `${pct}%` }}
-                              title={`${s.code}`}
-                            />
-                          );
-                        })}
-
-                      {other > 0 && (
-                        <div className={familyColorClass("other")} style={{ height: `${(other / total) * 100}%` }} />
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="mt-2 text-[11px] text-gray-500">
-          Hover bars to see per-code breakdown. (Colors are by status family.)
-        </div>
-      </div>
     </div>
   );
 }
@@ -614,7 +452,6 @@ function TimeseriesPanel({ points, mounted }: { points: TimeseriesPoint[]; mount
     }
   }, [metric, topStatusCodes, topCrcs, topHosts]);
 
-  
   return (
     <div className="mt-4 space-y-3">
       {/* Control row */}
@@ -628,7 +465,6 @@ function TimeseriesPanel({ points, mounted }: { points: TimeseriesPoint[]; mount
             className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900
                        focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           >
-            {/* Base metrics */}
             <optgroup label="Core">
               <option value="errorRatePct">5xx%</option>
               <option value="error5xxCount">5xx Count</option>
@@ -637,7 +473,6 @@ function TimeseriesPanel({ points, mounted }: { points: TimeseriesPoint[]; mount
               <option value="p99TtmsMs">p99 TTMS</option>
             </optgroup>
 
-            {/* Dynamic status codes */}
             {topStatusCodes.length > 0 && (
               <optgroup label="Status codes (count)">
                 {topStatusCodes.map((code) => (
@@ -648,7 +483,6 @@ function TimeseriesPanel({ points, mounted }: { points: TimeseriesPoint[]; mount
               </optgroup>
             )}
 
-            {/* Dynamic CRC */}
             {topCrcs.length > 0 && (
               <optgroup label="CRC (count)">
                 {topCrcs.map((k) => (
@@ -659,7 +493,6 @@ function TimeseriesPanel({ points, mounted }: { points: TimeseriesPoint[]; mount
               </optgroup>
             )}
 
-            {/* Dynamic hosts */}
             {topHosts.length > 0 && (
               <optgroup label="Host (count)">
                 {topHosts.map((h) => (
@@ -675,7 +508,6 @@ function TimeseriesPanel({ points, mounted }: { points: TimeseriesPoint[]; mount
         </div>
       </div>
 
-      {/* Main chosen chart */}
       <MiniBars points={points} metric={metric} mounted={mounted} maxBars={maxBars} />
     </div>
   );
@@ -686,6 +518,7 @@ export default function CDNTriageApp() {
   const [mounted, setMounted] = useState(false);
 
   // Form inputs
+  const [dataSource, setDataSource] = useState<DataSource>("csv");
   const [csvUrl, setCsvUrl] = useState(DEFAULT_CSV_URL);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [service, setService] = useState("all");
@@ -713,6 +546,12 @@ export default function CDNTriageApp() {
   const lastMessageIdRef = useRef<string | null>(null);
 
   useEffect(() => setMounted(true), []);
+
+  useEffect(() => {
+  if (dataSource === "clickhouse") {
+    setUploadedFile(null);
+  }
+  }, [dataSource]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -753,7 +592,11 @@ export default function CDNTriageApp() {
     }
   }, [chatMessages]);
 
-  const canRunTriage = useMemo(() => Boolean(uploadedFile) || (csvUrl && csvUrl.trim().length > 0), [uploadedFile, csvUrl]);
+  // ✅ allow ClickHouse runs without CSV
+  const canRunTriage = useMemo(() => {
+    if (dataSource === "clickhouse") return true;
+    return Boolean(uploadedFile) || (csvUrl && csvUrl.trim().length > 0);
+  }, [dataSource, uploadedFile, csvUrl]);
 
   const parsedMetrics = useMemo((): MetricsData | null => {
     if (!metricsJson) return null;
@@ -784,7 +627,8 @@ export default function CDNTriageApp() {
         crcCounts: p.crcCounts && typeof p.crcCounts === "object" ? (p.crcCounts as Record<string, number>) : undefined,
         hostCounts: p.hostCounts && typeof p.hostCounts === "object" ? (p.hostCounts as Record<string, number>) : undefined,
       }))
-      .filter((p) => p.ts);
+      .filter((p: TimeseriesPoint) => Boolean(p.ts));
+
 
     return {
       bucketSeconds: ts.bucketSeconds == null ? null : Number(ts.bucketSeconds),
@@ -805,10 +649,14 @@ export default function CDNTriageApp() {
   }, [metricsJson]);
 
   function addChatMessage(role: ChatMessage["role"], text: string) {
-    setChatMessages((prev) => [...prev, { id: `${Date.now()}-${Math.random()}`, role, text, timestamp: getCurrentTimestamp() }]);
+    setChatMessages((prev) => [
+      ...prev,
+      { id: `${Date.now()}-${Math.random()}`, role, text, timestamp: getCurrentTimestamp() },
+    ]);
   }
 
   async function runTriageRequest(inputs: {
+    dataSource: DataSource;
     csvUrl: string;
     file: File | null;
     service: string;
@@ -818,6 +666,8 @@ export default function CDNTriageApp() {
     debug: boolean;
   }) {
     const formData = new FormData();
+    formData.append("dataSource", inputs.dataSource);
+
     formData.append("csvUrl", inputs.csvUrl || "");
     formData.append("service", inputs.service);
     formData.append("region", inputs.region);
@@ -827,9 +677,28 @@ export default function CDNTriageApp() {
     if (inputs.debug) formData.append("debug", "true");
 
     const response = await fetch("/api/triage", { method: "POST", body: formData });
-    const data = await response.json();
-    if (!data.ok) throw new Error(data.error || "Request failed");
+
+    let data: any = null;
+    try {
+      data = await response.json();
+    } catch {
+      // If the server returns HTML or empty body, response.json() will throw
+      throw new Error(`Non-JSON response (HTTP ${response.status})`);
+    }
+
+    console.log("triage status:", response.status, response.ok);
+    console.log("triage data keys:", Object.keys(data || {}));
+    console.log("triage ok:", data?.ok);
+    console.log("summaryText len:", data?.summaryText?.length);
+    console.log("metricsJson keys:", Object.keys(data?.metricsJson || {}));
+
+    // ✅ IMPORTANT: check HTTP status AND app-level ok flag
+    if (!response.ok || !data?.ok) {
+      throw new Error(data?.error || `Request failed (HTTP ${response.status})`);
+    }
+
     return data;
+
   }
 
   async function handleRunTriage() {
@@ -839,13 +708,27 @@ export default function CDNTriageApp() {
     setSelectedRunId(null);
 
     if (!canRunTriage) {
-      setErrorMessage("Please provide a CSV URL or upload a CSV file.");
+      setErrorMessage(
+        dataSource === "clickhouse"
+          ? "ClickHouse mode should be runnable (unexpected)."
+          : "Please provide a CSV URL or upload a CSV file."
+      );
       return;
     }
 
     setIsLoading(true);
     try {
-      const data = await runTriageRequest({ csvUrl, file: uploadedFile, service, region, pop, windowMinutes, debug: debugMode });
+      const data = await runTriageRequest({
+        dataSource,
+        csvUrl,
+        file: uploadedFile,
+        service,
+        region,
+        pop,
+        windowMinutes,
+        debug: debugMode,
+      });
+
       setSummaryText(data.summaryText || "");
       setMetricsJson(data.metricsJson || null);
 
@@ -853,7 +736,8 @@ export default function CDNTriageApp() {
         id: `${Date.now()}`,
         timestamp: getCurrentTimestamp(),
         inputs: {
-          csvUrl: uploadedFile ? "" : csvUrl || "",
+          dataSource,
+          csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
           fileName: uploadedFile ? uploadedFile.name : "",
           service,
           region,
@@ -883,7 +767,10 @@ export default function CDNTriageApp() {
     setErrorMessage("");
 
     if (isGreetingOrSmallTalk(text)) {
-      addChatMessage("assistant", "Hey! 👋 I can triage CDN logs.\n\nTry:\nservice=vod region=usw2 pop=sjc win=60");
+      addChatMessage(
+        "assistant",
+        "Hey! 👋 I can triage CDN logs.\n\nTry:\nservice=vod region=usw2 pop=sjc win=60"
+      );
       return;
     }
 
@@ -921,7 +808,9 @@ export default function CDNTriageApp() {
     if (invalids.length) {
       addChatMessage(
         "assistant",
-        `I couldn’t run that because some values are invalid:\n- ${invalids.join("\n- ")}\n\nTry:\nservice=vod region=usw2 pop=sjc win=60`
+        `I couldn’t run that because some values are invalid:\n- ${invalids.join(
+          "\n- "
+        )}\n\nTry:\nservice=vod region=usw2 pop=sjc win=60`
       );
       return;
     }
@@ -937,15 +826,24 @@ export default function CDNTriageApp() {
     if (candidateWindow != null) setWindowMinutes(nextWindow);
 
     if (!canRunTriage) {
-      addChatMessage("assistant", "Please upload a CSV or provide a CSV URL first.");
+      addChatMessage(
+        "assistant",
+        dataSource === "clickhouse"
+          ? "ClickHouse mode should be runnable (unexpected)."
+          : "Please upload a CSV or provide a CSV URL first."
+      );
       return;
     }
 
-    addChatMessage("system", `Running triage with svc=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`);
+    addChatMessage(
+      "system",
+      `Running triage (${dataSource}) with svc=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
+    );
 
     setIsLoading(true);
     try {
       const data = await runTriageRequest({
+        dataSource,
         csvUrl,
         file: uploadedFile,
         service: nextService,
@@ -963,7 +861,8 @@ export default function CDNTriageApp() {
         id: `${Date.now()}`,
         timestamp: getCurrentTimestamp(),
         inputs: {
-          csvUrl: uploadedFile ? "" : csvUrl || "",
+          dataSource,
+          csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
           fileName: uploadedFile ? uploadedFile.name : "",
           service: nextService,
           region: nextRegion,
@@ -992,12 +891,15 @@ export default function CDNTriageApp() {
     setSummaryText(run.summaryText || "");
     setMetricsJson(run.metricsJson || null);
 
+    setDataSource(run.inputs?.dataSource || "csv");
+
     setUploadedFile(null);
     setCsvUrl(run.inputs?.csvUrl || DEFAULT_CSV_URL);
     setService(run.inputs?.service || "all");
     setRegion(run.inputs?.region || "all");
     setPop(run.inputs?.pop || "all");
-    setWindowMinutes(Number(run.inputs?.windowMinutes || 60));
+    const wm = Number(run.inputs?.windowMinutes);
+    setWindowMinutes(Number.isFinite(wm) && wm > 0 ? wm : 60);
     setDebugMode(!!run.inputs?.debug);
   }
 
@@ -1027,6 +929,8 @@ export default function CDNTriageApp() {
     );
   }
 
+  const csvInputsDisabled = isLoading || dataSource === "clickhouse";
+
   return (
     <main className="min-h-screen w-full bg-gray-50 px-6 py-6">
       <div className="mx-auto w-full">
@@ -1053,9 +957,9 @@ export default function CDNTriageApp() {
                 <div className="space-y-3">
                   {runHistory.map((run) => {
                     const isActive = run.id === selectedRunId;
-                    const inp = run.inputs || {};
-                    const title = inp.fileName ? `file: ${inp.fileName}` : "url: csv";
-                    const subtitle = `svc=${inp.service} region=${inp.region} pop=${inp.pop} win=${inp.windowMinutes}m`;
+                    const inp = run.inputs || ({} as any);
+                    const title = inp.fileName ? `file: ${inp.fileName}` : inp.dataSource === "clickhouse" ? "source: clickhouse" : "url: csv";
+                    const subtitle = `${inp.dataSource || "csv"} • svc=${inp.service} region=${inp.region} pop=${inp.pop} win=${inp.windowMinutes}m`;
 
                     return (
                       <div
@@ -1064,9 +968,7 @@ export default function CDNTriageApp() {
                           isActive ? "bg-blue-50 border-blue-300" : "bg-white border-gray-200 hover:bg-gray-50"
                         }`}
                       >
-                        <div className="text-xs font-semibold text-gray-900">
-                          {formatTimestampClientSafe(run.timestamp, mounted)}
-                        </div>
+                        <div className="text-xs font-semibold text-gray-900">{formatTimestampClientSafe(run.timestamp, mounted)}</div>
                         <div className="text-xs text-gray-600 mt-1">{subtitle}</div>
                         <div className="text-xs text-gray-500 mt-1 truncate">{title}</div>
 
@@ -1099,15 +1001,34 @@ export default function CDNTriageApp() {
               <div className="space-y-4 min-w-0">
                 <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                   <div className="space-y-4">
+                    {/* ✅ Data source selector */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Data Source</label>
+                      <select
+                        className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        value={dataSource}
+                        onChange={(e) => setDataSource(e.target.value as DataSource)}
+                        disabled={isLoading}
+                      >
+                        <option value="csv">CSV</option>
+                        <option value="clickhouse">ClickHouse</option>
+                      </select>
+                      <div className="text-xs text-gray-500 mt-2">
+                        {dataSource === "csv"
+                          ? "Uses CSV URL or uploaded file."
+                          : "Uses ClickHouse (mock for now; next step = real queries). CSV fields below are ignored."}
+                      </div>
+                    </div>
+
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">CSV URL</label>
                       <input
                         type="text"
                         className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        value={csvUrl}
+                        value={csvUrl ?? ""}
                         onChange={(e) => setCsvUrl(e.target.value)}
                         placeholder="https://..."
-                        disabled={isLoading}
+                        disabled={csvInputsDisabled}
                       />
                     </div>
 
@@ -1118,7 +1039,7 @@ export default function CDNTriageApp() {
                         accept=".csv,text/csv"
                         onChange={(e) => setUploadedFile(e.target.files?.[0] ?? null)}
                         className="text-sm text-gray-700"
-                        disabled={isLoading}
+                        disabled={csvInputsDisabled}
                       />
                       {uploadedFile && <div className="text-xs text-gray-600 mt-2">Selected: {uploadedFile.name}</div>}
                       <div className="text-xs text-gray-500 mt-2">
@@ -1177,14 +1098,24 @@ export default function CDNTriageApp() {
 
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">Window (minutes)</label>
-                        <input
+                       <input
                           type="number"
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          value={windowMinutes}
-                          onChange={(e) => setWindowMinutes(Number(e.target.value))}
+                          value={Number.isFinite(windowMinutes) ? windowMinutes : 60}
+                          onChange={(e) => {
+                            const raw = e.target.value; // string
+                            if (raw === "") {
+                              // user cleared input temporarily — keep it controlled + sane
+                              setWindowMinutes(60); // or 1 if you prefer
+                              return;
+                            }
+                            const n = Number(raw);
+                            setWindowMinutes(Number.isFinite(n) && n > 0 ? n : 60);
+                          }}
                           min={1}
                           disabled={isLoading}
                         />
+
                       </div>
                     </div>
 
@@ -1262,7 +1193,7 @@ export default function CDNTriageApp() {
                   )}
                 </div>
 
-                {/* Host breakdown (from your metricsEngine) */}
+                {/* Host breakdown */}
                 <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
                   <div className="flex items-center justify-between gap-3 mb-2">
                     <div>
@@ -1309,7 +1240,7 @@ export default function CDNTriageApp() {
                   )}
                 </div>
 
-                {/* Optional: CRC-by-host (flattened) */}
+                {/* CRC-by-host */}
                 <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
                   <div className="flex items-center justify-between gap-3 mb-2">
                     <div>
@@ -1363,10 +1294,7 @@ export default function CDNTriageApp() {
               <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm flex flex-col h-[680px] min-w-0">
                 <div className="font-medium text-gray-900 mb-3">Chat (deterministic for now)</div>
 
-                <div
-                  ref={chatScrollRef}
-                  className="flex-1 overflow-y-auto rounded-lg border border-gray-200 p-4 bg-white mb-2"
-                >
+                <div ref={chatScrollRef} className="flex-1 overflow-y-auto rounded-lg border border-gray-200 p-4 bg-white mb-2">
                   <div className="space-y-4">
                     {chatMessages.map((msg) => (
                       <div key={msg.id}>
@@ -1391,7 +1319,7 @@ export default function CDNTriageApp() {
                                  focus:ring-2 focus:ring-blue-500 focus:border-blue-500 placeholder-gray-400
                                  disabled:opacity-60 disabled:cursor-not-allowed"
                       placeholder="Try: service=vod region=usw2 pop=sjc win=60"
-                      value={chatInput}
+                      value={chatInput ?? ""}
                       onChange={(e) => setChatInput(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
