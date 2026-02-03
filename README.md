@@ -132,3 +132,20 @@ We intentionally keep metrics computation deterministic for:
 - debugging
 - future ClickHouse swap without changing the UI
 
+### ClickHouse (Mock Mode)
+
+The ClickHouse data path is wired end-to-end (UI → API → metrics → charts)
+using **simulated data**.
+
+This validates:
+- schema assumptions
+- API contracts
+- metrics shape
+- UI and chat behavior
+
+No ClickHouse credentials are required to run or demo the system.
+
+The mock runner will be replaced with real 
+ClickHouse execution **without any UI or API changes**.
+
+
