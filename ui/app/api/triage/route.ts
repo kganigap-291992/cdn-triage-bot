@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { runTriage } from "@/lib/triage/metricsEngine";
+import { runClickhouseTriage } from "@/lib/clickhouse/runClickhouseTriage";
 
 export const runtime = "nodejs";
 
@@ -8,10 +9,11 @@ export async function POST(req: Request) {
   try {
     const form = await req.formData();
 
-    const dataSource = ((form.get("dataSource") || "csv").toString().trim() || "csv") as
-      | "csv"
-      | "clickhouse";
+    // ✅ Data source + partner (public-safe default)
+    const dataSource = (form.get("dataSource") || "csv").toString().trim().toLowerCase();
+    const partner = (form.get("partner") || "acme_media").toString().trim();
 
+    // Common filters (used by CSV + ClickHouse)
     const service = (form.get("service") || "all").toString();
     const region = (form.get("region") || "all").toString();
     const pop = (form.get("pop") || "all").toString();
@@ -26,17 +28,19 @@ export async function POST(req: Request) {
     const debug = ["1", "true", "yes", "on"].includes(debugRaw);
 
     // -----------------------------
-    // ClickHouse branch (stub for now)
+    // ✅ ClickHouse branch (mock now, real later)
     // -----------------------------
     if (dataSource === "clickhouse") {
-      // Step 1–3 are not built yet, so fail clearly for now.
-      throw new Error(
-        "ClickHouse mode is selected, but the ClickHouse connector + query pack is not implemented yet."
-      );
+      const { summaryText, metricsJson } = await runClickhouseTriage({
+        partner,
+        service,
+        region,
+        pop,
+        windowMinutes,
+        debug,
+      });
 
-      // Later this will be:
-      // const { summaryText, metricsJson } = await runClickhouseTriage({service, region, pop, windowMinutes, debug});
-      // return NextResponse.json({ ok: true, summaryText, metricsJson });
+      return NextResponse.json({ ok: true, summaryText, metricsJson });
     }
 
     // -----------------------------
