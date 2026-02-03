@@ -28,10 +28,10 @@ export async function POST(req: Request) {
     const debug = ["1", "true", "yes", "on"].includes(debugRaw);
 
     // -----------------------------
-    // ✅ ClickHouse branch (mock now, real later)
+    // ✅ ClickHouse branch
     // -----------------------------
     if (dataSource === "clickhouse") {
-      const { summaryText, metricsJson } = await runClickhouseTriage({
+      const result = await runClickhouseTriage({
         partner,
         service,
         region,
@@ -40,11 +40,17 @@ export async function POST(req: Request) {
         debug,
       });
 
-      return NextResponse.json({ ok: true, summaryText, metricsJson });
+      // result can be { summaryText, metricsJson, debugSql? }
+      return NextResponse.json({
+        ok: true,
+        summaryText: result.summaryText,
+        metricsJson: result.metricsJson,
+        ...(debug && result.debugSql ? { _debug: { sql: result.debugSql } } : {}),
+      });
     }
 
     // -----------------------------
-    // CSV branch (current working flow)
+    // CSV branch
     // -----------------------------
     const csvUrl = (form.get("csvUrl") || "").toString().trim();
 
@@ -56,9 +62,7 @@ export async function POST(req: Request) {
     } else {
       if (!csvUrl) throw new Error("Provide either a CSV file upload or csvUrl.");
       const resp = await fetch(csvUrl);
-      if (!resp.ok) {
-        throw new Error(`Failed to fetch csvUrl (${resp.status} ${resp.statusText})`);
-      }
+      if (!resp.ok) throw new Error(`Failed to fetch csvUrl (${resp.status} ${resp.statusText})`);
       csvText = await resp.text();
     }
 

@@ -34,8 +34,19 @@ type ChatMessage = {
 
 type DataSource = "csv" | "clickhouse";
 
+const PARTNER_OPTIONS = [
+  "acme_media",
+  "beta_stream",
+  "charlie_video",
+  "delta_tv",
+  "echo_entertainment",
+] as const;
+
+type Partner = (typeof PARTNER_OPTIONS)[number];
+
 type TriageInputs = {
   dataSource: DataSource;
+  partner: Partner;
 
   csvUrl: string;
   fileName: string;
@@ -204,10 +215,9 @@ function getMetricValue(p: TimeseriesPoint, metric: ChartMetric): number | null 
     case "p99TtmsMs":
       return p.p99TtmsMs == null ? null : Number(p.p99TtmsMs);
     default:
-      return null; // ✅ guarantees return on all paths
+      return null;
   }
 }
-
 
 function metricLabel(metric: ChartMetric) {
   if (metric.startsWith("status:")) return `Status ${metric.slice("status:".length)} (count)`;
@@ -278,24 +288,6 @@ function TooltipBubble({ text }: { text: string }) {
   );
 }
 
-function statusFamily(code: string) {
-  const n = Number(code);
-  if (!Number.isFinite(n)) return "other";
-  if (n >= 200 && n < 300) return "2xx";
-  if (n >= 300 && n < 400) return "3xx";
-  if (n >= 400 && n < 500) return "4xx";
-  if (n >= 500 && n < 600) return "5xx";
-  return "other";
-}
-
-function familyColorClass(fam: string) {
-  if (fam === "2xx") return "bg-emerald-500/70";
-  if (fam === "3xx") return "bg-blue-500/70";
-  if (fam === "5xx") return "bg-red-500/70";
-  if (fam === "4xx") return "bg-amber-500/70";
-  return "bg-gray-500/50";
-}
-
 function MiniBars({
   points,
   metric,
@@ -360,7 +352,10 @@ function MiniBars({
               const normalized = v == null ? 0 : clamp01((v - minV) / safeSpan);
               const hPct = Math.max(0.06, normalized) * 100;
 
-              const tip = `${formatTimestampClientSafe(p.ts, mounted)} • ${metricLabel(metric)}: ${formatMetric(metric, v)}`;
+              const tip = `${formatTimestampClientSafe(p.ts, mounted)} • ${metricLabel(metric)}: ${formatMetric(
+                metric,
+                v
+              )}`;
 
               return (
                 <div key={`${p.ts}-${idx}`} className="group relative flex-1 min-w-[2px] h-full flex items-end">
@@ -454,7 +449,6 @@ function TimeseriesPanel({ points, mounted }: { points: TimeseriesPoint[]; mount
 
   return (
     <div className="mt-4 space-y-3">
-      {/* Control row */}
       <div className="flex items-center justify-between gap-3">
         <div className="text-xs text-gray-500">View</div>
 
@@ -519,7 +513,9 @@ export default function CDNTriageApp() {
 
   // Form inputs
   const [dataSource, setDataSource] = useState<DataSource>("csv");
+  const [partner, setPartner] = useState<Partner>("acme_media");
   const [csvUrl, setCsvUrl] = useState(DEFAULT_CSV_URL);
+
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [service, setService] = useState("all");
   const [region, setRegion] = useState("all");
@@ -548,9 +544,7 @@ export default function CDNTriageApp() {
   useEffect(() => setMounted(true), []);
 
   useEffect(() => {
-  if (dataSource === "clickhouse") {
-    setUploadedFile(null);
-  }
+    if (dataSource === "clickhouse") setUploadedFile(null);
   }, [dataSource]);
 
   useEffect(() => {
@@ -629,7 +623,6 @@ export default function CDNTriageApp() {
       }))
       .filter((p: TimeseriesPoint) => Boolean(p.ts));
 
-
     return {
       bucketSeconds: ts.bucketSeconds == null ? null : Number(ts.bucketSeconds),
       startTs: ts.startTs ? String(ts.startTs) : null,
@@ -657,6 +650,7 @@ export default function CDNTriageApp() {
 
   async function runTriageRequest(inputs: {
     dataSource: DataSource;
+    partner: Partner;
     csvUrl: string;
     file: File | null;
     service: string;
@@ -666,7 +660,10 @@ export default function CDNTriageApp() {
     debug: boolean;
   }) {
     const formData = new FormData();
+
+    // ✅ FIX: must send dataSource or server will default to CSV
     formData.append("dataSource", inputs.dataSource);
+    formData.append("partner", inputs.partner || "acme_media");
 
     formData.append("csvUrl", inputs.csvUrl || "");
     formData.append("service", inputs.service);
@@ -682,23 +679,14 @@ export default function CDNTriageApp() {
     try {
       data = await response.json();
     } catch {
-      // If the server returns HTML or empty body, response.json() will throw
       throw new Error(`Non-JSON response (HTTP ${response.status})`);
     }
 
-    console.log("triage status:", response.status, response.ok);
-    console.log("triage data keys:", Object.keys(data || {}));
-    console.log("triage ok:", data?.ok);
-    console.log("summaryText len:", data?.summaryText?.length);
-    console.log("metricsJson keys:", Object.keys(data?.metricsJson || {}));
-
-    // ✅ IMPORTANT: check HTTP status AND app-level ok flag
     if (!response.ok || !data?.ok) {
       throw new Error(data?.error || `Request failed (HTTP ${response.status})`);
     }
 
     return data;
-
   }
 
   async function handleRunTriage() {
@@ -720,6 +708,7 @@ export default function CDNTriageApp() {
     try {
       const data = await runTriageRequest({
         dataSource,
+        partner,
         csvUrl,
         file: uploadedFile,
         service,
@@ -737,6 +726,7 @@ export default function CDNTriageApp() {
         timestamp: getCurrentTimestamp(),
         inputs: {
           dataSource,
+          partner,
           csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
           fileName: uploadedFile ? uploadedFile.name : "",
           service,
@@ -767,10 +757,7 @@ export default function CDNTriageApp() {
     setErrorMessage("");
 
     if (isGreetingOrSmallTalk(text)) {
-      addChatMessage(
-        "assistant",
-        "Hey! 👋 I can triage CDN logs.\n\nTry:\nservice=vod region=usw2 pop=sjc win=60"
-      );
+      addChatMessage("assistant", "Hey! 👋 I can triage CDN logs.\n\nTry:\nservice=vod region=usw2 pop=sjc win=60");
       return;
     }
 
@@ -808,9 +795,7 @@ export default function CDNTriageApp() {
     if (invalids.length) {
       addChatMessage(
         "assistant",
-        `I couldn’t run that because some values are invalid:\n- ${invalids.join(
-          "\n- "
-        )}\n\nTry:\nservice=vod region=usw2 pop=sjc win=60`
+        `I couldn’t run that because some values are invalid:\n- ${invalids.join("\n- ")}\n\nTry:\nservice=vod region=usw2 pop=sjc win=60`
       );
       return;
     }
@@ -837,13 +822,14 @@ export default function CDNTriageApp() {
 
     addChatMessage(
       "system",
-      `Running triage (${dataSource}) with svc=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
+      `Running triage (${dataSource}${dataSource === "clickhouse" ? `, partner=${partner}` : ""}) with svc=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
     );
 
     setIsLoading(true);
     try {
       const data = await runTriageRequest({
         dataSource,
+        partner,
         csvUrl,
         file: uploadedFile,
         service: nextService,
@@ -862,6 +848,7 @@ export default function CDNTriageApp() {
         timestamp: getCurrentTimestamp(),
         inputs: {
           dataSource,
+          partner, // ✅ FIX: store partner in history
           csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
           fileName: uploadedFile ? uploadedFile.name : "",
           service: nextService,
@@ -891,7 +878,9 @@ export default function CDNTriageApp() {
     setSummaryText(run.summaryText || "");
     setMetricsJson(run.metricsJson || null);
 
-    setDataSource(run.inputs?.dataSource || "csv");
+    // ✅ FIX: restore dataSource + partner from history
+    setDataSource((run.inputs?.dataSource || "csv") as DataSource);
+    setPartner((run.inputs?.partner as Partner) || "acme_media");
 
     setUploadedFile(null);
     setCsvUrl(run.inputs?.csvUrl || DEFAULT_CSV_URL);
@@ -958,8 +947,14 @@ export default function CDNTriageApp() {
                   {runHistory.map((run) => {
                     const isActive = run.id === selectedRunId;
                     const inp = run.inputs || ({} as any);
-                    const title = inp.fileName ? `file: ${inp.fileName}` : inp.dataSource === "clickhouse" ? "source: clickhouse" : "url: csv";
-                    const subtitle = `${inp.dataSource || "csv"} • svc=${inp.service} region=${inp.region} pop=${inp.pop} win=${inp.windowMinutes}m`;
+                    const title =
+                      inp.fileName
+                        ? `file: ${inp.fileName}`
+                        : inp.dataSource === "clickhouse"
+                        ? "source: clickhouse"
+                        : "url: csv";
+                    const partnerText = inp.dataSource === "clickhouse" ? ` • partner=${inp.partner || "acme_media"}` : "";
+                    const subtitle = `${inp.dataSource || "csv"}${partnerText} • svc=${inp.service} region=${inp.region} pop=${inp.pop} win=${inp.windowMinutes}m`;
 
                     return (
                       <div
@@ -968,7 +963,9 @@ export default function CDNTriageApp() {
                           isActive ? "bg-blue-50 border-blue-300" : "bg-white border-gray-200 hover:bg-gray-50"
                         }`}
                       >
-                        <div className="text-xs font-semibold text-gray-900">{formatTimestampClientSafe(run.timestamp, mounted)}</div>
+                        <div className="text-xs font-semibold text-gray-900">
+                          {formatTimestampClientSafe(run.timestamp, mounted)}
+                        </div>
                         <div className="text-xs text-gray-600 mt-1">{subtitle}</div>
                         <div className="text-xs text-gray-500 mt-1 truncate">{title}</div>
 
@@ -1001,7 +998,7 @@ export default function CDNTriageApp() {
               <div className="space-y-4 min-w-0">
                 <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                   <div className="space-y-4">
-                    {/* ✅ Data source selector */}
+                    {/* Data source selector */}
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">Data Source</label>
                       <select
@@ -1019,6 +1016,30 @@ export default function CDNTriageApp() {
                           : "Uses ClickHouse (mock for now; next step = real queries). CSV fields below are ignored."}
                       </div>
                     </div>
+
+                    {/* ✅ Partner selector (ClickHouse only) */}
+                    {dataSource === "clickhouse" && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Partner</label>
+                        <select
+                          className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm
+                                     focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          value={partner}
+                          onChange={(e) => setPartner(e.target.value as Partner)}
+                          disabled={isLoading}
+                        >
+                          {PARTNER_OPTIONS.map((p) => (
+                            <option key={p} value={p}>
+                              {p}
+                            </option>
+                          ))}
+                        </select>
+
+                        <div className="text-xs text-gray-500 mt-2">
+                          Public-safe mock partner routing (real partner → DB mapping later).
+                        </div>
+                      </div>
+                    )}
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">CSV URL</label>
@@ -1098,15 +1119,14 @@ export default function CDNTriageApp() {
 
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">Window (minutes)</label>
-                       <input
+                        <input
                           type="number"
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           value={Number.isFinite(windowMinutes) ? windowMinutes : 60}
                           onChange={(e) => {
-                            const raw = e.target.value; // string
+                            const raw = e.target.value;
                             if (raw === "") {
-                              // user cleared input temporarily — keep it controlled + sane
-                              setWindowMinutes(60); // or 1 if you prefer
+                              setWindowMinutes(60);
                               return;
                             }
                             const n = Number(raw);
@@ -1115,7 +1135,6 @@ export default function CDNTriageApp() {
                           min={1}
                           disabled={isLoading}
                         />
-
                       </div>
                     </div>
 
@@ -1294,7 +1313,10 @@ export default function CDNTriageApp() {
               <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm flex flex-col h-[680px] min-w-0">
                 <div className="font-medium text-gray-900 mb-3">Chat (deterministic for now)</div>
 
-                <div ref={chatScrollRef} className="flex-1 overflow-y-auto rounded-lg border border-gray-200 p-4 bg-white mb-2">
+                <div
+                  ref={chatScrollRef}
+                  className="flex-1 overflow-y-auto rounded-lg border border-gray-200 p-4 bg-white mb-2"
+                >
                   <div className="space-y-4">
                     {chatMessages.map((msg) => (
                       <div key={msg.id}>
