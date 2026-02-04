@@ -2,26 +2,22 @@
 // Ported from n8n Function node to a plain JS module.
 // Returns { summaryText, metricsJson }.
 
-// ✅ tiny export to help debug “module has no exports” build errors
-export const __exportsCheck = true;
-
 // ------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------
 function normLower(v) { return String(v ?? "").trim().toLowerCase(); }
 function normUpper(v) { return String(v ?? "").trim().toUpperCase(); }
 
-function matchDim(value, expected) {
+function matchDim(value, expected, dimName = "unknown") {
   if (!expected || expected === "all") return true;
-  return normLower(value) === normLower(expected);
+  const valNorm = normLower(value);
+  const expNorm = normLower(expected);
+  return valNorm === expNorm;
 }
 
 function percentile(arr, p) {
   if (!arr || arr.length === 0) return null;
-  const cleaned = arr.map(Number).filter((x) => Number.isFinite(x));
-  if (cleaned.length === 0) return null;
-
-  const sorted = [...cleaned].sort((a, b) => a - b);
+  const sorted = [...arr].sort((a, b) => a - b);
   const idx = (p / 100) * (sorted.length - 1);
   const lo = Math.floor(idx);
   const hi = Math.ceil(idx);
@@ -67,45 +63,68 @@ function topCounts(rows, key, limit = 6) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
 }
 
+function topKeys(rows, key, limit = 24) {
+  return topCounts(rows, key, limit).map(([v]) => String(v).trim()).filter(Boolean);
+}
+
 function topValuesPretty(rows, key, limit = 6) {
   const entries = topCounts(rows, key, limit);
   if (!entries.length) return "n/a";
   return entries.map(([v, c]) => `${v} (${c})`).join(", ");
 }
 
-function deriveRegionPopFromUrl(u) {
-  const s = String(u || "");
-  const m = s.match(/:\/\/edge-([a-z0-9]+)-([a-z0-9]+)\b/i);
-  if (!m) return { region: null, pop: null };
-  return { region: m[1].toLowerCase(), pop: m[2].toLowerCase() };
-}
+/**
+ * Robust hostname parser:
+ * - Accepts full URL OR hostname OR hostname/path
+ * - Extracts:
+ *   - edge_host: first DNS label
+ *   - svc: hostname without first label (suffix host)
+ *   - region/pop: best-effort
+ *     - cdn-<tier>-<site>-<node> => region=site, pop=site-node
+ *     - legacy edge-<region>-<pop> => region/pop from pattern
+ */
+function deriveHostSvcRegionPopFromUrl(u) {
+  const s = String(u || "").trim();
+  if (!s) return { edge_host: null, svc: null, region: null, pop: null, hostname: null };
 
-// ✅ NEW: host extraction (uses URL() when possible; regex fallback otherwise)
-function deriveHostFromUrl(u) {
-  const s = String(u ?? "").trim();
-  if (!s) return null;
+  const hasScheme = /^[a-z]+:\/\//i.test(s);
 
+  let hostname = "";
   try {
-    const host = new URL(s).hostname;
-    return host ? host.toLowerCase() : null;
+    const url = new URL(hasScheme ? s : `https://${s}`);
+    hostname = url.hostname || "";
   } catch {
-    const m = s.match(/^https?:\/\/([^/]+)/i);
-    return m?.[1]?.toLowerCase() ?? null;
+    hostname = (s.split("/")[0] || "").split("?")[0].split("#")[0].trim();
   }
-}
 
-// ✅ NEW: tiny map helpers for breakdowns
-function incMap(map, key, by = 1) {
-  const k = String(key ?? "").trim();
-  if (!k) return;
-  map.set(k, (map.get(k) ?? 0) + by);
-}
+  if (!hostname) return { edge_host: null, svc: null, region: null, pop: null, hostname: null };
 
-function mapToTopObject(map, limit = 12) {
-  const out = Object.create(null);
-  const arr = [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
-  for (const [k, v] of arr) out[k] = v;
-  return out;
+  const parts = hostname.split(".");
+  const edge_host = parts[0] || null;
+  const svc = parts.length > 1 ? parts.slice(1).join(".") : null;
+
+  let region = null;
+  let pop = null;
+
+  // cdn-<tier>-<site>-<node>
+  const m = String(edge_host).match(/^cdn-([a-z]{2,4})-([a-z]{2,8})-([a-z0-9]+)(?:-.+)?$/i);
+  if (m) {
+    const site = (m[2] || "").toLowerCase();
+    const node = (m[3] || "").toLowerCase();
+    region = site;
+    pop = `${site}-${node}`;
+  }
+
+  // legacy edge-<region>-<pop>
+  if (!region || !pop) {
+    const m2 = hostname.match(/(^|\.)edge-([a-z0-9]+)-([a-z0-9]+)\b/i);
+    if (m2) {
+      region = m2[2].toLowerCase();
+      pop = m2[3].toLowerCase();
+    }
+  }
+
+  return { edge_host, svc, region, pop, hostname };
 }
 
 function normalizeIsoToMsUtc(ts) {
@@ -141,6 +160,23 @@ function deriveCrcClass(crcRaw) {
   if (["TCP_HIT", "TCP_CF_HIT", "TCP_REF_FAIL_HIT", "TCP_REFRESH_HIT"].includes(c)) return "hit";
   if (["TCP_MISS", "TCP_REFRESH_MISS"].includes(c)) return "miss";
   if (["TCP_CLIENT_REFRESH"].includes(c)) return "client";
+
+  return "other";
+}
+
+// ✅ NEW: service bucket so UI service=live|vod works even if CSV has different fields
+function deriveServiceBucket(row) {
+  const s = normLower(row?.service);
+  const svc = normLower(row?.svc);
+
+  // If the CSV already has live/vod, keep it
+  if (s === "live" || s === "vod") return s;
+
+  const hay = `${s} ${svc}`;
+
+  // Heuristics (safe-ish defaults)
+  if (/\blive\b/.test(hay)) return "live";
+  if (/\bvod\b/.test(hay) || /\bipvod\b/.test(hay) || /\bvod-/.test(hay)) return "vod";
 
   return "other";
 }
@@ -194,12 +230,10 @@ function prettyStatusCounts(statusCounts, limit = 12) {
 // Timeseries helpers
 // ------------------------------------------------------------
 function chooseBucketSeconds(spanMinutes) {
-  // 1m buckets for up to 3h spans; else 15m
   return Number(spanMinutes) <= 180 ? 60 : 900;
 }
 
 function percentileSorted(sortedArr, p) {
-  // p is 0..1
   if (!sortedArr || sortedArr.length === 0) return null;
   const idx = (sortedArr.length - 1) * p;
   const lo = Math.floor(idx);
@@ -224,20 +258,6 @@ function computeSpanMinutes(rows) {
   return Math.max(0, (maxMs - minMs) / (60 * 1000));
 }
 
-/**
- * Timeseries point output:
- * {
- *   ts,
- *   totalRequests,
- *   error5xxCount,
- *   errorRatePct,
- *   p95TtmsMs,
- *   p99TtmsMs,
- *   statusCounts: { "200": 190, "302": 8, "500": 6, ... },
- *   crcCounts:    { "TCP_HIT": 120, "TCP_MISS": 30, "ERR_TIMEOUT": 5, ... },
- *   hostCounts:   { "edge.foo.com": 90, "api.bar.com": 20, ... }
- * }
- */
 function buildTimeseriesPoints(rows, spanMinutes) {
   const bucketSeconds = chooseBucketSeconds(spanMinutes);
   const bucketMs = bucketSeconds * 1000;
@@ -257,86 +277,43 @@ function buildTimeseriesPoints(rows, spanMinutes) {
 
     let acc = buckets.get(b);
     if (!acc) {
-      acc = {
-        total: 0,
-        err5xx: 0,
-        ttms: [],
-        statusCounts: Object.create(null),
-
-        // ✅ NEW
-        crcCounts: Object.create(null),
-        hostCounts: Object.create(null),
-      };
+      acc = { total: 0, err5xx: 0, ttms: [] };
       buckets.set(b, acc);
     }
 
     acc.total += 1;
 
-    // statusCounts + 5xx
     const edgeStatus = Number(r.edge_status);
-    if (Number.isFinite(edgeStatus) && edgeStatus >= 100 && edgeStatus <= 599) {
-      const k = String(edgeStatus);
-      acc.statusCounts[k] = (acc.statusCounts[k] || 0) + 1;
-
-      if (edgeStatus >= 500 && edgeStatus < 600) {
-        acc.err5xx += 1;
-      }
+    if (Number.isFinite(edgeStatus) && edgeStatus >= 500 && edgeStatus < 600) {
+      acc.err5xx += 1;
     }
 
-    // ttms
     const ttms = Number(r.ttms_ms);
     if (Number.isFinite(ttms)) acc.ttms.push(ttms);
-
-    // ✅ crcCounts
-    const crc = String(r.crc ?? "").trim();
-    if (crc) {
-      acc.crcCounts[crc] = (acc.crcCounts[crc] || 0) + 1;
-    }
-
-    // ✅ hostCounts (prefer r.host computed in parseCsv)
-    const host = String(r.host ?? deriveHostFromUrl(r.url) ?? "").trim().toLowerCase();
-    if (host) {
-      acc.hostCounts[host] = (acc.hostCounts[host] || 0) + 1;
-    }
   }
 
   const keys = [...buckets.keys()].sort((a, b) => a - b);
 
   const points = keys.map((k) => {
-    const acc = buckets.get(k) || {
-      total: 0,
-      err5xx: 0,
-      ttms: [],
-      statusCounts: Object.create(null),
-      crcCounts: Object.create(null),
-      hostCounts: Object.create(null),
-    };
+    const acc = buckets.get(k);
+    acc.ttms.sort((a, b) => a - b);
 
-    const ttmsSorted = (acc.ttms || []).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
-
-    const p95 = percentileSorted(ttmsSorted, 0.95);
-    const p99 = percentileSorted(ttmsSorted, 0.99);
-
+    const p95 = percentileSorted(acc.ttms, 0.95);
+    const p99 = percentileSorted(acc.ttms, 0.99);
     const errorRatePct = acc.total ? (acc.err5xx / acc.total) * 100 : 0;
 
     return {
       ts: new Date(k).toISOString(),
       totalRequests: acc.total,
       error5xxCount: acc.err5xx,
-      errorRatePct: Number.isFinite(errorRatePct) ? errorRatePct : 0,
+      errorRatePct,
       p95TtmsMs: p95,
       p99TtmsMs: p99,
-
-      statusCounts: acc.statusCounts || Object.create(null),
-      crcCounts: acc.crcCounts || Object.create(null),
-      hostCounts: acc.hostCounts || Object.create(null),
     };
   });
 
-  const startTs =
-    minMs == null ? null : new Date(Math.floor(minMs / bucketMs) * bucketMs).toISOString();
-  const endTs =
-    maxMs == null ? null : new Date(Math.floor(maxMs / bucketMs) * bucketMs).toISOString();
+  const startTs = minMs == null ? null : new Date(Math.floor(minMs / bucketMs) * bucketMs).toISOString();
+  const endTs = maxMs == null ? null : new Date(Math.floor(maxMs / bucketMs) * bucketMs).toISOString();
 
   return { bucketSeconds, startTs, endTs, points };
 }
@@ -400,60 +377,61 @@ function parseCsv(csvText) {
 
     const has = (k) => obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== "";
 
-    // Status
+    // URL aliasing
+    if (!has("url")) {
+      if (has("uri")) obj.url = obj.uri;
+      else if (has("request")) obj.url = obj.request;
+      else if (has("req")) obj.url = obj.req;
+      else if (has("path")) obj.url = obj.path;
+    }
+
+    // Host aliasing
+    if (!has("host")) {
+      if (has("hostname")) obj.host = obj.hostname;
+      else if (has("edge")) obj.host = obj.edge;
+      else if (has("edge_host")) obj.host = obj.edge_host;
+      else if (has("edgeHost")) obj.host = obj.edgeHost;
+    }
+
+    // Status normalization
     if (!has("edge_status")) {
       if (has("status")) obj.edge_status = obj.status;
       else if (has("http_status")) obj.edge_status = obj.http_status;
       else if (has("response_code")) obj.edge_status = obj.response_code;
     }
-    if (has("edge_status")) {
-      const n = Number(obj.edge_status);
-      obj.edge_status = Number.isFinite(n) ? n : NaN;
-    }
+    if (has("edge_status")) obj.edge_status = Number(obj.edge_status);
 
-    // Mid status
-    if (has("mid_status")) {
-      const n = Number(obj.mid_status);
-      obj.mid_status = Number.isFinite(n) ? n : NaN;
-    }
+    // Mid status optional
+    if (has("mid_status")) obj.mid_status = Number(obj.mid_status);
 
-    // TTMS
+    // TTMS normalization
     if (!has("ttms_ms")) {
       if (has("ttms")) obj.ttms_ms = obj.ttms;
       else if (has("time_to_first_byte")) obj.ttms_ms = obj.time_to_first_byte;
+      else if (has("ttfb_ms")) obj.ttms_ms = obj.ttfb_ms;
     }
-    if (has("ttms_ms")) {
-      const n = Number(obj.ttms_ms);
-      obj.ttms_ms = Number.isFinite(n) ? n : NaN;
-    }
+    if (has("ttms_ms")) obj.ttms_ms = Number(obj.ttms_ms);
 
-    // Bytes + cache hit
-    if (has("upstream_bytes")) {
-      const n = Number(obj.upstream_bytes);
-      obj.upstream_bytes = Number.isFinite(n) ? n : NaN;
-    }
-    if (has("edge_cache_hit")) {
-      const n = Number(obj.edge_cache_hit);
-      obj.edge_cache_hit = Number.isFinite(n) ? n : NaN;
-    }
+    // Bytes/cache hit optional
+    if (has("upstream_bytes")) obj.upstream_bytes = Number(obj.upstream_bytes);
+    if (has("edge_cache_hit")) obj.edge_cache_hit = Number(obj.edge_cache_hit);
 
     // Canonical dims
     obj.service = normLower(obj.delivery_service ?? obj.service) || "unknown";
     obj.crc = normUpper(obj.crc) || "UNKNOWN";
     obj.crc_class = deriveCrcClass(obj.crc);
 
-    const rp = deriveRegionPopFromUrl(obj.url);
-    obj.region = normLower(obj.region ?? rp.region) || "unknown";
-    obj.pop = normLower(obj.pop ?? rp.pop) || "unknown";
+    // Host/URL parsing strategy
+    const hpHost = deriveHostSvcRegionPopFromUrl(obj.host || obj.hostname || "");
+    const hpUrl = deriveHostSvcRegionPopFromUrl(obj.url || "");
 
-    // ✅ host (store once; used by timeseries + hostBreakdown)
-    // If your CSV already has host/req_host/hostname, prefer it; otherwise derive from url.
-    if (!has("host")) {
-      if (has("req_host")) obj.host = obj.req_host;
-      else if (has("hostname")) obj.host = obj.hostname;
-      else obj.host = deriveHostFromUrl(obj.url) || "unknown";
-    }
-    obj.host = normLower(obj.host) || "unknown";
+    obj.svc = normLower(obj.svc ?? hpUrl.svc ?? hpHost.svc) || "unknown";
+    obj.edge_host = normLower(obj.edge_host ?? hpHost.edge_host ?? hpUrl.edge_host) || "unknown";
+    obj.region = normLower(obj.region ?? hpHost.region ?? hpUrl.region) || "unknown";
+    obj.pop = normLower(obj.pop ?? hpHost.pop ?? hpUrl.pop) || "unknown";
+
+    // ✅ NEW: stable "service bucket" used for UI filter live/vod/all
+    obj.service_bucket = deriveServiceBucket(obj);
 
     rows.push(obj);
   }
@@ -462,7 +440,7 @@ function parseCsv(csvText) {
 }
 
 // ------------------------------------------------------------
-// Debug helpers (unchanged)
+// Debug helpers
 // ------------------------------------------------------------
 function buildDebugObj({ rows, inWindow, filtered, startISO, endISO, anchorISO, dq, warnings }) {
   const sample = filtered[0] ?? inWindow[0] ?? null;
@@ -470,6 +448,9 @@ function buildDebugObj({ rows, inWindow, filtered, startISO, endISO, anchorISO, 
     ? {
         ts: sample.ts,
         service: sample.service,
+        service_bucket: sample.service_bucket,
+        svc: sample.svc,
+        edge_host: sample.edge_host,
         region: sample.region,
         pop: sample.pop,
         crc: sample.crc,
@@ -487,10 +468,12 @@ function buildDebugObj({ rows, inWindow, filtered, startISO, endISO, anchorISO, 
     rows_filtered: filtered.length,
     time: { anchor: anchorISO, start: startISO, end: endISO },
     available: {
+      service_bucket: topValuesPretty(inWindow, "service_bucket", 8),
       service: topValuesPretty(inWindow, "service", 8),
-      region: topValuesPretty(inWindow, "region", 8),
-      pop: topValuesPretty(inWindow, "pop", 8),
-      host: topValuesPretty(inWindow, "host", 8),
+      svc: topValuesPretty(inWindow, "svc", 8),
+      edge_host: topValuesPretty(inWindow, "edge_host", 8),
+      region: topValuesPretty(inWindow, "region", 12),
+      pop: topValuesPretty(inWindow, "pop", 12),
       crc_class: topValuesPretty(inWindow, "crc_class", 8),
       crc: topValuesPretty(inWindow, "crc", 8),
       edge_status: topValuesPretty(inWindow, "edge_status", 12),
@@ -514,10 +497,12 @@ function debugBlock(dbg) {
     `anchor=${dbg.time.anchor}`,
     `start=${dbg.time.start}`,
     `end=${dbg.time.end}`,
+    `avail_service_bucket=${dbg.available.service_bucket}`,
     `avail_service=${dbg.available.service}`,
+    `avail_svc=${dbg.available.svc}`,
+    `avail_edge_host=${dbg.available.edge_host}`,
     `avail_region=${dbg.available.region}`,
     `avail_pop=${dbg.available.pop}`,
-    `avail_host=${dbg.available.host}`,
     `avail_crc_class=${dbg.available.crc_class}`,
     `avail_crc=${dbg.available.crc}`,
     `avail_edge_status=${dbg.available.edge_status}`,
@@ -539,7 +524,6 @@ export function runTriage({
   filters = [],
   debug = false,
 }) {
-  // Accept filters as JSON string or object, but normalize to array
   let filtersArr = [];
   if (Array.isArray(filters)) filtersArr = filters;
   else if (typeof filters === "string" && filters.trim()) {
@@ -550,7 +534,9 @@ export function runTriage({
     }
   } else filtersArr = [];
 
-  if (!csvText) throw new Error("No CSV text found.");
+  if (!csvText) {
+    throw new Error("No CSV text found.");
+  }
 
   const rows = parseCsv(csvText);
   if (rows.length === 0) {
@@ -560,12 +546,13 @@ export function runTriage({
   // Data quality counters (whole dataset)
   const dqAll = {
     invalid_ts: rows.filter((r) => !r.ts || Number.isNaN(toMs(r.ts))).length,
-    missing_edge_status: rows.filter((r) => !Number.isFinite(Number(r.edge_status))).length,
+    missing_edge_status: rows.filter((r) => !Number.isFinite(r.edge_status)).length,
     unknown_service: rows.filter((r) => r.service === "unknown").length,
     unknown_crc: rows.filter((r) => r.crc === "UNKNOWN").length,
     unknown_region: rows.filter((r) => r.region === "unknown").length,
     unknown_pop: rows.filter((r) => r.pop === "unknown").length,
-    unknown_host: rows.filter((r) => r.host === "unknown").length,
+    unknown_svc: rows.filter((r) => r.svc === "unknown").length,
+    unknown_edge_host: rows.filter((r) => r.edge_host === "unknown").length,
   };
 
   // Anchor on MAX timestamp and compute window
@@ -584,12 +571,7 @@ export function runTriage({
     throw new Error("No valid timestamps found. Check ts format (expected ISO-like).");
   }
 
-  const windowM = Number(windowMinutes);
-  if (!Number.isFinite(windowM) || windowM <= 0) {
-    throw new Error("windowMinutes must be a positive number.");
-  }
-
-  const start = anchor - windowM * 60 * 1000;
+  const start = anchor - Number(windowMinutes) * 60 * 1000;
   const end = anchor;
 
   const inWindow = rows.filter((r) => {
@@ -605,42 +587,73 @@ export function runTriage({
   // Data quality counters (window)
   const dqWindow = {
     invalid_ts: inWindow.filter((r) => !r.ts || Number.isNaN(toMs(r.ts))).length,
-    missing_edge_status: inWindow.filter((r) => !Number.isFinite(Number(r.edge_status))).length,
+    missing_edge_status: inWindow.filter((r) => !Number.isFinite(r.edge_status)).length,
     unknown_service: inWindow.filter((r) => r.service === "unknown").length,
     unknown_crc: inWindow.filter((r) => r.crc === "UNKNOWN").length,
     unknown_region: inWindow.filter((r) => r.region === "unknown").length,
     unknown_pop: inWindow.filter((r) => r.pop === "unknown").length,
-    unknown_host: inWindow.filter((r) => r.host === "unknown").length,
+    unknown_svc: inWindow.filter((r) => r.svc === "unknown").length,
+    unknown_edge_host: inWindow.filter((r) => r.edge_host === "unknown").length,
   };
 
-  // Apply filters + dimensions
-  let filtered = inWindow
-    .filter((r) => matchDim(r.service, service))
-    .filter((r) => matchDim(r.region, region))
-    .filter((r) => matchDim(r.pop, pop));
+  // ✅ NEW: always-present available arrays (used by UI regardless of debug)
+  // Use inWindow (not filtered) so options show what's possible in the selected window.
+  const available = {
+    // what UI needs
+    regions: topKeys(inWindow, "region", 80),
+    pops: topKeys(inWindow, "pop", 120),
 
-  for (const f of filtersArr) {
-    filtered = filtered.filter((r) => passesFilter(r, f));
-  }
+    // extras (handy later)
+    serviceBuckets: topKeys(inWindow, "service_bucket", 12),
+    svcs: topKeys(inWindow, "svc", 24),
+    edgeHosts: topKeys(inWindow, "edge_host", 24),
+    crcClasses: topKeys(inWindow, "crc_class", 12),
+    crcs: topKeys(inWindow, "crc", 24),
+    statusCodes: topKeys(inWindow, "edge_status", 24),
+  };
 
-  // Warnings
+  // Warnings (we’ll append as we go)
   const warnings = [];
-  if (service !== "all" && filtered.length === inWindow.length && inWindow.length > 0) {
-    warnings.push(`Service filter '${service}' did not reduce dataset (possible schema mismatch).`);
+
+  // Apply filters
+  let filtered = inWindow;
+
+  // ✅ IMPORTANT: UI "service" means live/vod/all -> filter service_bucket
+  const beforeService = filtered.length;
+  filtered = filtered.filter((r) => matchDim(r.service_bucket, service, "service_bucket"));
+  if (service !== "all") {
+    // Only warn if it didn't reduce AND data exists
+    if (inWindow.length > 0 && filtered.length === beforeService) {
+      warnings.push(`Service filter '${service}' did not reduce dataset (check service_bucket derivation).`);
+    }
   }
-  if (region !== "all" && filtered.length === inWindow.length && inWindow.length > 0) {
+
+  const beforeRegion = filtered.length;
+  filtered = filtered.filter((r) => matchDim(r.region, region, "region"));
+  if (region !== "all" && inWindow.length > 0 && filtered.length === beforeRegion) {
     warnings.push(`Region filter '${region}' did not reduce dataset.`);
   }
-  if (pop !== "all" && filtered.length === inWindow.length && inWindow.length > 0) {
+
+  const beforePop = filtered.length;
+  filtered = filtered.filter((r) => matchDim(r.pop, pop, "pop"));
+  if (pop !== "all" && inWindow.length > 0 && filtered.length === beforePop) {
     warnings.push(`POP filter '${pop}' did not reduce dataset.`);
   }
+
+  // Apply additional filters
+  for (const f of filtersArr) {
+    const beforeFilter = filtered.length;
+    filtered = filtered.filter((r) => passesFilter(r, f));
+    if (beforeFilter > 0 && filtered.length === 0) {
+      warnings.push(`Additional filter removed all rows: ${JSON.stringify(f)}`);
+    }
+  }
+
   if (inWindow.length > 0 && filtered.length === 0) {
-    warnings.push(`Filters removed all rows. Check available values in DEBUG.`);
+    warnings.push(`Filters removed all rows. Check available values (metricsJson.available).`);
   }
   if (dqWindow.missing_edge_status > 0) {
-    warnings.push(
-      `Some rows missing edge_status (${dqWindow.missing_edge_status}). Response code totals may not sum perfectly.`
-    );
+    warnings.push(`Some rows missing edge_status (${dqWindow.missing_edge_status}).`);
   }
   if (dqWindow.invalid_ts > 0) {
     warnings.push(`Some rows have invalid ts in window (${dqWindow.invalid_ts}).`);
@@ -665,7 +678,7 @@ export function runTriage({
       `🧭 *CDN TRIAGE SUMMARY*`,
       `No data found in requested time window.`,
       `• Scope: service=\`${service}\`  region=\`${region}\`  pop=\`${pop}\``,
-      `• Window: \`${windowM}m\`  • Filters: \`${prettyFilters(filtersArr)}\``,
+      `• Window: \`${windowMinutes}m\`  • Filters: \`${prettyFilters(filtersArr)}\``,
       `• Time (UTC): \`${startISO}\` → \`${endISO}\``,
       ...(warnings.length ? ["", `⚠️ *Warnings*`, ...warnings.map((w) => `• ${w}`)] : []),
       ...(debug && dbg ? ["", "```", debugBlock(dbg), "```"] : []),
@@ -674,6 +687,7 @@ export function runTriage({
     return {
       summaryText,
       metricsJson: {
+        available,
         timeRangeUTC: { start: startISO, end: endISO },
         totalRequests: 0,
         p95TtmsMs: null,
@@ -681,9 +695,9 @@ export function runTriage({
         cacheHitPct: null,
         cacheMissPct: null,
         statusCounts: [],
+        error5xxCount: 0,
+        errorRatePct: null,
         timeseries: emptyTimeseries(),
-        hostBreakdown: [],
-        crcByHost: [],
         warnings,
         dataQuality: { all: dqAll, window: dqWindow },
         debug: dbg,
@@ -696,15 +710,12 @@ export function runTriage({
     const summaryText = [
       `🧭 *CDN TRIAGE SUMMARY*`,
       `No rows matched your filters.`,
-      `• Requested: service=\`${service}\` region=\`${region}\` pop=\`${pop}\` window=\`${windowM}m\``,
+      `• Requested: service=\`${service}\` region=\`${region}\` pop=\`${pop}\` window=\`${windowMinutes}m\``,
       `• Filters: \`${prettyFilters(filtersArr)}\``,
       `• Available (this window):`,
-      `   - service: ${topValuesPretty(inWindow, "service")}`,
-      `   - region: ${topValuesPretty(inWindow, "region")}`,
-      `   - pop: ${topValuesPretty(inWindow, "pop")}`,
-      `   - host: ${topValuesPretty(inWindow, "host")}`,
-      `   - crc_class: ${topValuesPretty(inWindow, "crc_class")}`,
-      `   - edge_status: ${topValuesPretty(inWindow, "edge_status")}`,
+      `   - serviceBuckets: ${(available.serviceBuckets || []).join(", ") || "n/a"}`,
+      `   - regions: ${(available.regions || []).slice(0, 20).join(", ") || "n/a"}${(available.regions || []).length > 20 ? " ..." : ""}`,
+      `   - pops: ${(available.pops || []).slice(0, 20).join(", ") || "n/a"}${(available.pops || []).length > 20 ? " ..." : ""}`,
       ...(warnings.length ? ["", `⚠️ *Warnings*`, ...warnings.map((w) => `• ${w}`)] : []),
       ...(debug && dbg ? ["", "```", debugBlock(dbg), "```"] : []),
     ].join("\n");
@@ -712,6 +723,7 @@ export function runTriage({
     return {
       summaryText,
       metricsJson: {
+        available,
         timeRangeUTC: { start: startISO, end: endISO },
         totalRequests: 0,
         p95TtmsMs: null,
@@ -719,9 +731,9 @@ export function runTriage({
         cacheHitPct: null,
         cacheMissPct: null,
         statusCounts: [],
+        error5xxCount: 0,
+        errorRatePct: null,
         timeseries: emptyTimeseries(),
-        hostBreakdown: [],
-        crcByHost: [],
         warnings,
         dataQuality: { all: dqAll, window: dqWindow },
         debug: dbg,
@@ -729,12 +741,10 @@ export function runTriage({
     };
   }
 
-  // ------------------------------------------------------------
-  // Metrics (window-level)
-  // ------------------------------------------------------------
+  // Metrics
   const total = filtered.length;
 
-  // ✅ Bucket choice based on ACTUAL span, not user input
+  // Bucket choice based on ACTUAL span
   const spanMinutes = Math.max(1, computeSpanMinutes(filtered));
   const timeseries = buildTimeseriesPoints(filtered, spanMinutes);
 
@@ -750,73 +760,13 @@ export function runTriage({
 
   const statusCountsPairs = countBy(filtered, "edge_status");
 
-  const errorRows = filtered.filter((r) => {
-    const s = Number(r.edge_status);
-    return Number.isFinite(s) && s >= 500;
-  });
+  const errorRows = filtered.filter((r) => Number(r.edge_status) >= 500);
   const errorCount = errorRows.length;
   const errorRate = total ? (errorCount / total) * 100 : null;
 
   const topCrcClass = topCounts(filtered, "crc_class", 4);
   const topErrorsByCrc = topCounts(errorRows, "crc", 4);
 
-  // ------------------------------------------------------------
-  // ✅ NEW: Host breakdown (p95/p99 by host + crcCounts per host + statusCounts per host)
-  // ------------------------------------------------------------
-  const HOST_LIMIT = 12;
-  const CRC_PER_HOST_LIMIT = 12;
-  const STATUS_PER_HOST_LIMIT = 12;
-
-  const hostAgg = new Map(); // host -> { total, ttms: [], crcCounts: Map, statusCounts: Map }
-
-  for (const r of filtered) {
-    const host = String(r.host ?? "unknown").trim().toLowerCase() || "unknown";
-    let acc = hostAgg.get(host);
-    if (!acc) {
-      acc = { total: 0, ttms: [], crcCounts: new Map(), statusCounts: new Map() };
-      hostAgg.set(host, acc);
-    }
-
-    acc.total += 1;
-
-    const tt = Number(r.ttms_ms);
-    if (Number.isFinite(tt)) acc.ttms.push(tt);
-
-    const crc = String(r.crc ?? "UNKNOWN").trim().toUpperCase() || "UNKNOWN";
-    incMap(acc.crcCounts, crc, 1);
-
-    const st = Number(r.edge_status);
-    if (Number.isFinite(st) && st >= 100 && st <= 599) {
-      incMap(acc.statusCounts, String(st), 1);
-    }
-  }
-
-  const hostBreakdown = [...hostAgg.entries()]
-    .sort((a, b) => b[1].total - a[1].total)
-    .slice(0, HOST_LIMIT)
-    .map(([host, acc]) => ({
-      host,
-      totalRequests: acc.total,
-      p95TtmsMs: percentile(acc.ttms, 95),
-      p99TtmsMs: percentile(acc.ttms, 99),
-      crcCounts: mapToTopObject(acc.crcCounts, CRC_PER_HOST_LIMIT),
-      statusCounts: mapToTopObject(acc.statusCounts, STATUS_PER_HOST_LIMIT),
-    }));
-
-  // ✅ Optional but handy: flatten for “Top CRCs by host” tables
-  // [{host, crc, count}]
-  const crcByHost = [];
-  for (const hb of hostBreakdown) {
-    const host = hb.host;
-    const crcCountsObj = hb.crcCounts || {};
-    for (const crc of Object.keys(crcCountsObj)) {
-      const count = Number(crcCountsObj[crc]) || 0;
-      if (count > 0) crcByHost.push({ host, crc, count });
-    }
-  }
-  crcByHost.sort((a, b) => b.count - a.count);
-
-  // Evidence
   const evidence = [];
   if (errorCount > 0) {
     const topErr = topErrorsByCrc[0];
@@ -828,10 +778,9 @@ export function runTriage({
   evidence.push(`Cache hit ratio ${formatPct(hitRatio)} (miss ${formatPct(missRatio)}).`);
   evidence.push(`Latency p95/p99 TTMS = ${formatMs(p95)}/${formatMs(p99)}.`);
 
-  // Pretty summary
   const header = `🧭 *CDN TRIAGE SUMMARY*`;
   const scopeLine = `• Scope: service=\`${service}\`  region=\`${region}\`  pop=\`${pop}\``;
-  const windowLine = `• Window: \`${windowM}m\`  • Time (UTC): \`${startISO}\` → \`${endISO}\``;
+  const windowLine = `• Window: \`${windowMinutes}m\`  • Time (UTC): \`${startISO}\` → \`${endISO}\``;
   const filterLine = `• Filters: \`${prettyFilters(filtersArr)}\``;
 
   const trafficPerf = [
@@ -846,10 +795,11 @@ export function runTriage({
 
   const breakdown = [
     `🧩 *Top breakdowns*`,
-    `• service: ${topValuesPretty(filtered, "service", 4)}`,
-    `• region: ${topValuesPretty(filtered, "region", 4)}`,
-    `• pop: ${topValuesPretty(filtered, "pop", 4)}`,
-    `• host: ${topValuesPretty(filtered, "host", 4)}`,
+    `• service_bucket: ${topValuesPretty(filtered, "service_bucket", 4)}`,
+    `• svc: ${topValuesPretty(filtered, "svc", 4)}`,
+    `• edge_host: ${topValuesPretty(filtered, "edge_host", 4)}`,
+    `• region: ${topValuesPretty(filtered, "region", 6)}`,
+    `• pop: ${topValuesPretty(filtered, "pop", 6)}`,
     `• crc_class: ${
       topCrcClass.length ? topCrcClass.map(([v, c]) => `${v} (${c})`).join(", ") : "n/a"
     }`,
@@ -864,15 +814,17 @@ export function runTriage({
     dqWindow.unknown_crc ||
     dqWindow.unknown_region ||
     dqWindow.unknown_pop ||
-    dqWindow.unknown_host
+    dqWindow.unknown_svc ||
+    dqWindow.unknown_edge_host
   ) {
     dqLines.push(`⚠️ *Data Quality (window)*`);
     if (dqWindow.missing_edge_status) dqLines.push(`• missing edge_status: ${dqWindow.missing_edge_status}`);
     if (dqWindow.unknown_service) dqLines.push(`• unknown service: ${dqWindow.unknown_service}`);
+    if (dqWindow.unknown_svc) dqLines.push(`• unknown svc: ${dqWindow.unknown_svc}`);
+    if (dqWindow.unknown_edge_host) dqLines.push(`• unknown edge_host: ${dqWindow.unknown_edge_host}`);
     if (dqWindow.unknown_crc) dqLines.push(`• unknown crc: ${dqWindow.unknown_crc}`);
     if (dqWindow.unknown_region) dqLines.push(`• unknown region: ${dqWindow.unknown_region}`);
     if (dqWindow.unknown_pop) dqLines.push(`• unknown pop: ${dqWindow.unknown_pop}`);
-    if (dqWindow.unknown_host) dqLines.push(`• unknown host: ${dqWindow.unknown_host}`);
   }
 
   const warnLines = warnings.length ? [`⚠️ *Warnings*`, ...warnings.map((w) => `• ${w}`)] : [];
@@ -901,28 +853,19 @@ export function runTriage({
   return {
     summaryText,
     metricsJson: {
+      available,
       timeRangeUTC: { start: startISO, end: endISO },
       totalRequests: total,
       p95TtmsMs: p95,
       p99TtmsMs: p99,
       cacheHitPct: hitRatio,
       cacheMissPct: missRatio,
-
-      // unchanged (used in summary block)
       statusCounts: statusCountsPairs.map(([code, count]) => ({ code: Number(code), count })),
-
       error5xxCount: errorCount,
       errorRatePct: errorRate,
       topCrcClass: topCrcClass.map(([k, v]) => ({ crc_class: k, count: v })),
       topErrorCrc: topErrorsByCrc.map(([k, v]) => ({ crc: k, count: v })),
-
-      // ✅ timeseries includes statusCounts + crcCounts + hostCounts per bucket
       timeseries,
-
-      // ✅ NEW window-level breakdowns (for your “P95/99 by host + CRC counts by host”)
-      hostBreakdown,
-      crcByHost,
-
       warnings,
       dataQuality: { all: dqAll, window: dqWindow },
       debug: dbg,

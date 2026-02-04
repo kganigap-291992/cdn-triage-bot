@@ -5,26 +5,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 // Configuration
 const DEFAULT_CSV_URL =
   "https://raw.githubusercontent.com/kganigap-291992/cdn-triage-bot/refs/heads/main/data/cdn_logs_6h_80k_stresstest.csv";
-
 const STORAGE_KEY = "cdn-triage-history-v1";
 const MAX_HISTORY = 10;
 
 // Allowed values for chat parsing (keeps demo deterministic)
 const ALLOWED = {
   service: new Set(["all", "live", "vod"]),
-  region: new Set(["all", "use1", "usw2", "usw1", "euw1", "apse1"]),
-  pop: new Set(["all", "iad", "sjc", "dfw", "mia", "ord", "lhr"]),
 } as const;
 
 function optionsFromSet(set: Set<string>) {
   const arr = Array.from(set);
   return arr.sort((a, b) => (a === "all" ? -1 : b === "all" ? 1 : a.localeCompare(b)));
 }
-const SERVICE_OPTIONS = optionsFromSet(ALLOWED.service);
-const REGION_OPTIONS = optionsFromSet(ALLOWED.region);
-const POP_OPTIONS = optionsFromSet(ALLOWED.pop);
 
-// Types
+const SERVICE_OPTIONS = optionsFromSet(ALLOWED.service);
+
 type ChatMessage = {
   id: string;
   role: "system" | "user" | "assistant";
@@ -47,14 +42,11 @@ type Partner = (typeof PARTNER_OPTIONS)[number];
 type TriageInputs = {
   dataSource: DataSource;
   partner: Partner;
-
   csvUrl: string;
   fileName: string;
-
   service: string;
   region: string;
   pop: string;
-
   windowMinutes: number;
   debug: boolean;
 };
@@ -82,7 +74,6 @@ type TimeseriesPoint = {
   errorRatePct: number;
   p95TtmsMs: number | null;
   p99TtmsMs: number | null;
-
   statusCounts?: Record<string, number>;
   crcCounts?: Record<string, number>;
   hostCounts?: Record<string, number>;
@@ -140,11 +131,9 @@ function normalizeText(text: string): string {
 function isGreetingOrSmallTalk(text: string): boolean {
   const normalized = normalizeText(text);
   if (!normalized) return true;
-
   if (normalized.length <= 3) {
     return ["hi", "hey", "yo", "ok", "k"].includes(normalized);
   }
-
   const greetingPatterns = [
     /^hi\b/,
     /^hey\b/,
@@ -157,16 +146,13 @@ function isGreetingOrSmallTalk(text: string): boolean {
     /^sup\b/,
     /^what'?s up\b/,
   ];
-
   return greetingPatterns.some((pattern) => pattern.test(normalized));
 }
 
 function looksLikeTriageQuery(text: string): boolean {
   const normalized = normalizeText(text);
   if (!normalized) return false;
-
   if (normalized.includes("=")) return true;
-
   const keywords = ["service", "region", "pop", "win", "window", "errors", "p95", "p99", "ttms", "triage"];
   return keywords.some((keyword) => normalized.includes(keyword));
 }
@@ -202,7 +188,6 @@ function getMetricValue(p: TimeseriesPoint, metric: ChartMetric): number | null 
     const n = p.hostCounts?.[h];
     return Number.isFinite(Number(n)) ? Number(n) : 0;
   }
-
   switch (metric) {
     case "errorRatePct":
       return Number.isFinite(p.errorRatePct) ? p.errorRatePct : 0;
@@ -223,7 +208,6 @@ function metricLabel(metric: ChartMetric) {
   if (metric.startsWith("status:")) return `Status ${metric.slice("status:".length)} (count)`;
   if (metric.startsWith("crc:")) return `CRC ${metric.slice("crc:".length)} (count)`;
   if (metric.startsWith("host:")) return `Host ${metric.slice("host:".length)} (count)`;
-
   switch (metric) {
     case "errorRatePct":
       return "5xx%";
@@ -264,15 +248,13 @@ function TooltipBubble({ text }: { text: string }) {
         pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2
         opacity-0 translate-y-1 scale-[0.98]
         group-hover:opacity-100 group-hover:translate-y-0 group-hover:scale-100
-        transition-all duration-150 ease-out
-        z-20
+        transition-all duration-150 ease-out z-20
       "
     >
       <div
         className="
           rounded-xl border border-gray-200 bg-white/95 backdrop-blur
-          px-2.5 py-1.5 text-[11px] text-gray-900 shadow-lg
-          whitespace-nowrap
+          px-2.5 py-1.5 text-[11px] text-gray-900 shadow-lg whitespace-nowrap
         "
       >
         {text}
@@ -280,8 +262,7 @@ function TooltipBubble({ text }: { text: string }) {
       <div
         className="
           mx-auto h-2 w-2 rotate-45 -mt-1
-          border-r border-b border-gray-200
-          bg-white/95
+          border-r border-b border-gray-200 bg-white/95
         "
       />
     </div>
@@ -300,14 +281,11 @@ function MiniBars({
   maxBars?: number;
 }) {
   const slice = points.slice(-maxBars);
-
   const values = slice
     .map((p) => getMetricValue(p, metric))
     .filter((v): v is number => v != null && Number.isFinite(v));
-
   const minV = values.length ? Math.min(...values) : 0;
   const maxV = values.length ? Math.max(...values) : 1;
-
   const span = maxV - minV;
   const safeSpan = span === 0 ? 1 : span;
 
@@ -315,7 +293,6 @@ function MiniBars({
   const lastV = last ? getMetricValue(last, metric) : null;
 
   const isErrorMetric = metric === "errorRatePct" || metric === "error5xxCount";
-
   const barBase = "rounded-[3px] shadow-[0_1px_0_rgba(0,0,0,0.06)] transition-all duration-150 ease-out";
   const barColor = isErrorMetric
     ? "bg-gradient-to-t from-red-500/70 to-red-500/35"
@@ -328,7 +305,6 @@ function MiniBars({
           <div className="text-xs text-gray-500">Mini chart</div>
           <div className="text-sm font-semibold text-gray-900">{metricLabel(metric)}</div>
         </div>
-
         <div className="text-right">
           <div className="text-xs text-gray-500">Latest</div>
           <div className="text-sm font-semibold text-gray-900">{formatMetric(metric, lastV)}</div>
@@ -351,7 +327,6 @@ function MiniBars({
               const v = getMetricValue(p, metric);
               const normalized = v == null ? 0 : clamp01((v - minV) / safeSpan);
               const hPct = Math.max(0.06, normalized) * 100;
-
               const tip = `${formatTimestampClientSafe(p.ts, mounted)} • ${metricLabel(metric)}: ${formatMetric(
                 metric,
                 v
@@ -394,7 +369,6 @@ function MiniBars({
 
 function TimeseriesPanel({ points, mounted }: { points: TimeseriesPoint[]; mounted: boolean }) {
   const [metric, setMetric] = useState<ChartMetric>("errorRatePct");
-
   const maxBars = 48;
   const recent = useMemo(() => points.slice(-maxBars), [points]);
 
@@ -420,19 +394,12 @@ function TimeseriesPanel({ points, mounted }: { points: TimeseriesPoint[]; mount
 
   const topStatusCodes = useMemo(
     () => topKeysFromCounts((p) => p.statusCounts, 12).sort((a, b) => Number(a) - Number(b)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [recent]
   );
-  const topCrcs = useMemo(
-    () => topKeysFromCounts((p) => p.crcCounts, 12),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [recent]
-  );
-  const topHosts = useMemo(
-    () => topKeysFromCounts((p) => p.hostCounts, 12),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [recent]
-  );
+
+  const topCrcs = useMemo(() => topKeysFromCounts((p) => p.crcCounts, 12), [recent]);
+
+  const topHosts = useMemo(() => topKeysFromCounts((p) => p.hostCounts, 12), [recent]);
 
   useEffect(() => {
     if (metric.startsWith("status:")) {
@@ -451,13 +418,11 @@ function TimeseriesPanel({ points, mounted }: { points: TimeseriesPoint[]; mount
     <div className="mt-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="text-xs text-gray-500">View</div>
-
         <div className="flex items-center gap-2">
           <select
             value={metric}
             onChange={(e) => setMetric(e.target.value as ChartMetric)}
-            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900
-                       focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           >
             <optgroup label="Core">
               <option value="errorRatePct">5xx%</option>
@@ -497,7 +462,6 @@ function TimeseriesPanel({ points, mounted }: { points: TimeseriesPoint[]; mount
               </optgroup>
             )}
           </select>
-
           <div className="text-xs text-gray-400 hidden sm:block">last {maxBars} buckets</div>
         </div>
       </div>
@@ -515,7 +479,6 @@ export default function CDNTriageApp() {
   const [dataSource, setDataSource] = useState<DataSource>("csv");
   const [partner, setPartner] = useState<Partner>("acme_media");
   const [csvUrl, setCsvUrl] = useState(DEFAULT_CSV_URL);
-
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [service, setService] = useState("all");
   const [region, setRegion] = useState("all");
@@ -550,17 +513,15 @@ export default function CDNTriageApp() {
   useEffect(() => {
     if (!mounted) return;
     if (chatMessages.length > 0) return;
-
     setChatMessages([
       {
         id: "welcome",
         role: "system",
-        text: "Chat ready. Type a message and I'll run triage using the current filters.",
+        text: "Chat ready. Type a message and I’ll run triage using the current filters.",
         timestamp: getCurrentTimestamp(),
       },
     ]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mounted]);
+  }, [mounted, chatMessages.length]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -578,7 +539,6 @@ export default function CDNTriageApp() {
   useEffect(() => {
     const lastMessage = chatMessages[chatMessages.length - 1];
     if (!lastMessage) return;
-
     if (lastMessageIdRef.current !== lastMessage.id) {
       lastMessageIdRef.current = lastMessage.id;
       const el = chatScrollRef.current;
@@ -591,6 +551,31 @@ export default function CDNTriageApp() {
     if (dataSource === "clickhouse") return true;
     return Boolean(uploadedFile) || (csvUrl && csvUrl.trim().length > 0);
   }, [dataSource, uploadedFile, csvUrl]);
+
+  // ✅ NEW: dynamic Region/POP options come from metricsJson.available (always present once a run happens)
+  const available = metricsJson?.available ?? {};
+
+  const REGION_OPTIONS = useMemo(() => {
+    const arr = Array.isArray(available.regions) ? available.regions : [];
+    const cleaned = arr.map((x: any) => String(x || "").trim().toLowerCase()).filter(Boolean);
+    const uniq = Array.from(new Set(cleaned));
+    uniq.sort((a, b) => a.localeCompare(b));
+    return ["all", ...uniq];
+  }, [available.regions]);
+
+  const POP_OPTIONS = useMemo(() => {
+    const arr = Array.isArray(available.pops) ? available.pops : [];
+    const cleaned = arr.map((x: any) => String(x || "").trim().toLowerCase()).filter(Boolean);
+    const uniq = Array.from(new Set(cleaned));
+    uniq.sort((a, b) => a.localeCompare(b));
+    return ["all", ...uniq];
+  }, [available.pops]);
+
+  // ✅ Safety guard: reset invalid region/pop (from history or old state) once options change
+  useEffect(() => {
+    if (!REGION_OPTIONS.includes(region)) setRegion("all");
+    if (!POP_OPTIONS.includes(pop)) setPop("all");
+  }, [REGION_OPTIONS, POP_OPTIONS, region, pop]);
 
   const parsedMetrics = useMemo((): MetricsData | null => {
     if (!metricsJson) return null;
@@ -605,10 +590,8 @@ export default function CDNTriageApp() {
 
   const parsedTimeseries = useMemo((): TimeseriesData | null => {
     if (!metricsJson?.timeseries) return null;
-
     const ts = metricsJson.timeseries;
     const pointsRaw = Array.isArray(ts.points) ? ts.points : [];
-
     const points: TimeseriesPoint[] = pointsRaw
       .map((p: any) => ({
         ts: String(p.ts || ""),
@@ -617,9 +600,13 @@ export default function CDNTriageApp() {
         errorRatePct: Number(p.errorRatePct) || 0,
         p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
         p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
-        statusCounts: p.statusCounts && typeof p.statusCounts === "object" ? (p.statusCounts as Record<string, number>) : undefined,
+        statusCounts:
+          p.statusCounts && typeof p.statusCounts === "object"
+            ? (p.statusCounts as Record<string, number>)
+            : undefined,
         crcCounts: p.crcCounts && typeof p.crcCounts === "object" ? (p.crcCounts as Record<string, number>) : undefined,
-        hostCounts: p.hostCounts && typeof p.hostCounts === "object" ? (p.hostCounts as Record<string, number>) : undefined,
+        hostCounts:
+          p.hostCounts && typeof p.hostCounts === "object" ? (p.hostCounts as Record<string, number>) : undefined,
       }))
       .filter((p: TimeseriesPoint) => Boolean(p.ts));
 
@@ -660,11 +647,8 @@ export default function CDNTriageApp() {
     debug: boolean;
   }) {
     const formData = new FormData();
-
-    // ✅ FIX: must send dataSource or server will default to CSV
     formData.append("dataSource", inputs.dataSource);
     formData.append("partner", inputs.partner || "acme_media");
-
     formData.append("csvUrl", inputs.csvUrl || "");
     formData.append("service", inputs.service);
     formData.append("region", inputs.region);
@@ -674,18 +658,15 @@ export default function CDNTriageApp() {
     if (inputs.debug) formData.append("debug", "true");
 
     const response = await fetch("/api/triage", { method: "POST", body: formData });
-
     let data: any = null;
     try {
       data = await response.json();
     } catch {
       throw new Error(`Non-JSON response (HTTP ${response.status})`);
     }
-
     if (!response.ok || !data?.ok) {
       throw new Error(data?.error || `Request failed (HTTP ${response.status})`);
     }
-
     return data;
   }
 
@@ -727,7 +708,7 @@ export default function CDNTriageApp() {
         inputs: {
           dataSource,
           partner,
-          csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
+          csvUrl: uploadedFile || dataSource === "clickhouse" ? "" : (csvUrl || ""),
           fileName: uploadedFile ? uploadedFile.name : "",
           service,
           region,
@@ -738,7 +719,6 @@ export default function CDNTriageApp() {
         summaryText: data.summaryText || "",
         metricsJson: data.metricsJson || null,
       };
-
       setRunHistory((prev) => [newRun, ...prev].slice(0, MAX_HISTORY));
     } catch (error: any) {
       setErrorMessage(error?.message || "Something went wrong");
@@ -767,7 +747,6 @@ export default function CDNTriageApp() {
     }
 
     const lowerText = text.toLowerCase();
-
     const serviceMatch = lowerText.match(/\b(service|svc)\s*=\s*([a-z0-9_]+)\b/);
     const regionMatch = lowerText.match(/\bregion\s*=\s*([a-z0-9_]+)\b/);
     const popMatch = lowerText.match(/\bpop\s*=\s*([a-z0-9_]+)\b/);
@@ -779,15 +758,23 @@ export default function CDNTriageApp() {
     const candidateWindow = windowMatch?.[2] ? Number(windowMatch[2]) : null;
 
     const invalids: string[] = [];
+
     if (candidateService && !ALLOWED.service.has(candidateService)) {
       invalids.push(`service=${candidateService} (allowed: ${Array.from(ALLOWED.service).join("|")})`);
     }
-    if (candidateRegion && !ALLOWED.region.has(candidateRegion)) {
-      invalids.push(`region=${candidateRegion} (allowed: ${Array.from(ALLOWED.region).join("|")})`);
+
+    // Only validate region/pop if we actually have discovered options from a prior run.
+    // (First-time users can still run with all, or run once to populate options.)
+    const hasRegionOptions = REGION_OPTIONS.length > 1;
+    const hasPopOptions = POP_OPTIONS.length > 1;
+
+    if (candidateRegion && hasRegionOptions && !REGION_OPTIONS.includes(candidateRegion)) {
+      invalids.push(`region=${candidateRegion} (allowed: ${REGION_OPTIONS.join("|")})`);
     }
-    if (candidatePop && !ALLOWED.pop.has(candidatePop)) {
-      invalids.push(`pop=${candidatePop} (allowed: ${Array.from(ALLOWED.pop).join("|")})`);
+    if (candidatePop && hasPopOptions && !POP_OPTIONS.includes(candidatePop)) {
+      invalids.push(`pop=${candidatePop} (allowed: ${POP_OPTIONS.join("|")})`);
     }
+
     if (candidateWindow != null && (!Number.isFinite(candidateWindow) || candidateWindow <= 0)) {
       invalids.push(`win=${String(candidateWindow)} (must be a positive number)`);
     }
@@ -795,7 +782,9 @@ export default function CDNTriageApp() {
     if (invalids.length) {
       addChatMessage(
         "assistant",
-        `I couldn’t run that because some values are invalid:\n- ${invalids.join("\n- ")}\n\nTry:\nservice=vod region=usw2 pop=sjc win=60`
+        `I couldn't run that because some values are invalid:\n- ${invalids.join(
+          "\n- "
+        )}\n\nTry:\nservice=vod region=usw2 pop=sjc win=60`
       );
       return;
     }
@@ -848,8 +837,8 @@ export default function CDNTriageApp() {
         timestamp: getCurrentTimestamp(),
         inputs: {
           dataSource,
-          partner, // ✅ FIX: store partner in history
-          csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
+          partner,
+          csvUrl: uploadedFile || dataSource === "clickhouse" ? "" : (csvUrl || ""),
           fileName: uploadedFile ? uploadedFile.name : "",
           service: nextService,
           region: nextRegion,
@@ -860,8 +849,8 @@ export default function CDNTriageApp() {
         summaryText: data.summaryText || "",
         metricsJson: data.metricsJson || null,
       };
-
       setRunHistory((prev) => [newRun, ...prev].slice(0, MAX_HISTORY));
+
       addChatMessage("assistant", data.summaryText || "(no summary)");
     } catch (error: any) {
       const msg = error?.message || "Something went wrong";
@@ -878,10 +867,8 @@ export default function CDNTriageApp() {
     setSummaryText(run.summaryText || "");
     setMetricsJson(run.metricsJson || null);
 
-    // ✅ FIX: restore dataSource + partner from history
     setDataSource((run.inputs?.dataSource || "csv") as DataSource);
     setPartner((run.inputs?.partner as Partner) || "acme_media");
-
     setUploadedFile(null);
     setCsvUrl(run.inputs?.csvUrl || DEFAULT_CSV_URL);
     setService(run.inputs?.service || "all");
@@ -947,13 +934,13 @@ export default function CDNTriageApp() {
                   {runHistory.map((run) => {
                     const isActive = run.id === selectedRunId;
                     const inp = run.inputs || ({} as any);
-                    const title =
-                      inp.fileName
-                        ? `file: ${inp.fileName}`
-                        : inp.dataSource === "clickhouse"
-                        ? "source: clickhouse"
-                        : "url: csv";
-                    const partnerText = inp.dataSource === "clickhouse" ? ` • partner=${inp.partner || "acme_media"}` : "";
+                    const title = inp.fileName
+                      ? `file: ${inp.fileName}`
+                      : inp.dataSource === "clickhouse"
+                      ? "source: clickhouse"
+                      : "url: csv";
+                    const partnerText =
+                      inp.dataSource === "clickhouse" ? ` • partner=${inp.partner || "acme_media"}` : "";
                     const subtitle = `${inp.dataSource || "csv"}${partnerText} • svc=${inp.service} region=${inp.region} pop=${inp.pop} win=${inp.windowMinutes}m`;
 
                     return (
@@ -968,7 +955,6 @@ export default function CDNTriageApp() {
                         </div>
                         <div className="text-xs text-gray-600 mt-1">{subtitle}</div>
                         <div className="text-xs text-gray-500 mt-1 truncate">{title}</div>
-
                         <div className="flex gap-2 mt-3">
                           <button
                             onClick={() => loadHistoricalRun(run)}
@@ -1017,13 +1003,12 @@ export default function CDNTriageApp() {
                       </div>
                     </div>
 
-                    {/* ✅ Partner selector (ClickHouse only) */}
+                    {/* Partner selector */}
                     {dataSource === "clickhouse" && (
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">Partner</label>
                         <select
-                          className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm
-                                     focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           value={partner}
                           onChange={(e) => setPartner(e.target.value as Partner)}
                           disabled={isLoading}
@@ -1034,7 +1019,6 @@ export default function CDNTriageApp() {
                             </option>
                           ))}
                         </select>
-
                         <div className="text-xs text-gray-500 mt-2">
                           Public-safe mock partner routing (real partner → DB mapping later).
                         </div>
@@ -1064,7 +1048,7 @@ export default function CDNTriageApp() {
                       />
                       {uploadedFile && <div className="text-xs text-gray-600 mt-2">Selected: {uploadedFile.name}</div>}
                       <div className="text-xs text-gray-500 mt-2">
-                        Note: history can reload URL-based runs. File uploads can’t be reloaded (browser limitation).
+                        Note: history can reload URL-based runs. File uploads can't be reloaded (browser limitation).
                       </div>
                     </div>
 
@@ -1099,6 +1083,9 @@ export default function CDNTriageApp() {
                             </option>
                           ))}
                         </select>
+                        {REGION_OPTIONS.length <= 1 && (
+                          <div className="text-[11px] text-gray-400 mt-2">Run once to populate region options.</div>
+                        )}
                       </div>
 
                       <div>
@@ -1115,6 +1102,9 @@ export default function CDNTriageApp() {
                             </option>
                           ))}
                         </select>
+                        {POP_OPTIONS.length <= 1 && (
+                          <div className="text-[11px] text-gray-400 mt-2">Run once to populate POP options.</div>
+                        )}
                       </div>
 
                       <div>
@@ -1199,7 +1189,6 @@ export default function CDNTriageApp() {
                           : "Run triage to load timeseries."}
                       </div>
                     </div>
-
                     <div className="text-xs text-gray-500">
                       {parsedTimeseries?.bucketSeconds ? `bucket=${parsedTimeseries.bucketSeconds}s` : "bucket=n/a"}
                     </div>
@@ -1212,88 +1201,7 @@ export default function CDNTriageApp() {
                   )}
                 </div>
 
-                {/* Host breakdown */}
-                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
-                  <div className="flex items-center justify-between gap-3 mb-2">
-                    <div>
-                      <div className="font-medium text-gray-900">Host Breakdown</div>
-                      <div className="text-xs text-gray-500">Requests + p95/p99 + top CRCs per host</div>
-                    </div>
-                  </div>
-
-                  {parsedHostBreakdown.length === 0 ? (
-                    <div className="text-sm text-gray-500">No host breakdown yet (run triage).</div>
-                  ) : (
-                    <div className="overflow-auto">
-                      <table className="min-w-full text-sm">
-                        <thead>
-                          <tr className="text-left text-xs text-gray-500 border-b">
-                            <th className="py-2 pr-4">Host</th>
-                            <th className="py-2 pr-4">Requests</th>
-                            <th className="py-2 pr-4">p95</th>
-                            <th className="py-2 pr-4">p99</th>
-                            <th className="py-2 pr-4">Top CRCs</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {parsedHostBreakdown.map((h) => {
-                            const crcEntries = Object.entries(h.crcCounts || {})
-                              .sort((a, b) => Number(b[1]) - Number(a[1]))
-                              .slice(0, 6);
-
-                            return (
-                              <tr key={h.host} className="border-b last:border-b-0">
-                                <td className="py-2 pr-4 font-medium text-gray-900 whitespace-nowrap">{h.host}</td>
-                                <td className="py-2 pr-4 text-gray-700">{(h.totalRequests || 0).toLocaleString()}</td>
-                                <td className="py-2 pr-4 text-gray-700">{formatMsOrNA(h.p95TtmsMs)}</td>
-                                <td className="py-2 pr-4 text-gray-700">{formatMsOrNA(h.p99TtmsMs)}</td>
-                                <td className="py-2 pr-4 text-gray-700">
-                                  {crcEntries.length ? crcEntries.map(([k, v]) => `${k} (${v})`).join(", ") : "n/a"}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-
-                {/* CRC-by-host */}
-                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
-                  <div className="flex items-center justify-between gap-3 mb-2">
-                    <div>
-                      <div className="font-medium text-gray-900">CRC by Host (Top)</div>
-                      <div className="text-xs text-gray-500">From metricsJson.crcByHost (sorted by count)</div>
-                    </div>
-                  </div>
-
-                  {parsedCrcByHost.length === 0 ? (
-                    <div className="text-sm text-gray-500">No crcByHost yet (run triage).</div>
-                  ) : (
-                    <div className="overflow-auto">
-                      <table className="min-w-full text-sm">
-                        <thead>
-                          <tr className="text-left text-xs text-gray-500 border-b">
-                            <th className="py-2 pr-4">Host</th>
-                            <th className="py-2 pr-4">CRC</th>
-                            <th className="py-2 pr-4">Count</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {parsedCrcByHost.slice(0, 30).map((r, idx) => (
-                            <tr key={`${r.host}-${r.crc}-${idx}`} className="border-b last:border-b-0">
-                              <td className="py-2 pr-4 font-medium text-gray-900 whitespace-nowrap">{r.host}</td>
-                              <td className="py-2 pr-4 text-gray-700 whitespace-nowrap">{r.crc}</td>
-                              <td className="py-2 pr-4 text-gray-700">{Number(r.count || 0).toLocaleString()}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-
+                {/* Summary */}
                 <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                   <div className="font-medium text-gray-900 mb-2">Summary</div>
                   <pre className="whitespace-pre-wrap text-sm text-gray-700 font-mono">
@@ -1337,9 +1245,7 @@ export default function CDNTriageApp() {
                     <input
                       type="text"
                       disabled={isLoading}
-                      className="flex-1 rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm
-                                 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 placeholder-gray-400
-                                 disabled:opacity-60 disabled:cursor-not-allowed"
+                      className="flex-1 rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 placeholder-gray-400 disabled:opacity-60 disabled:cursor-not-allowed"
                       placeholder="Try: service=vod region=usw2 pop=sjc win=60"
                       value={chatInput ?? ""}
                       onChange={(e) => setChatInput(e.target.value)}
@@ -1358,9 +1264,8 @@ export default function CDNTriageApp() {
                       {isLoading ? "Running..." : "Send"}
                     </button>
                   </div>
-
                   <div className="text-xs text-gray-500">
-                    {chatInput.trim() ? "Enter sends • Shift+Enter for newline" : "Try: service=vod region=usw2 pop=sjc win=60"}
+                    {chatInput.trim() ? "Enter sends" : "Try: service=vod region=usw2 pop=sjc win=60"}
                   </div>
                 </div>
               </div>
