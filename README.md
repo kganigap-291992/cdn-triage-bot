@@ -129,9 +129,26 @@ Chat is not an LLM yet. It is a control surface:
 - `service=vod region=usw2 pop=sjc win=60`
 - `svc=live win=15`
 
+
 ### Why deterministic first?
 We intentionally keep metrics computation deterministic for:
 - reproducibility
 - debugging
 - future ClickHouse swap without changing the UI
+
+---
+
+## Update (2026-02-04) — V2 Freeze
+
+V2 is now frozen as a deterministic analytics platform.
+
+- Unified CSV + ClickHouse metrics contract
+- Fixed 5-minute bucket sizing
+- Stacked status / host / CRC timeseries
+- Stable legend ordering
+- Hardened chat controller
+- Production-shape ClickHouse mock
+
+All AI/LLM features are deferred to V3.
+
 
