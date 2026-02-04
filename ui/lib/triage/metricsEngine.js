@@ -164,17 +164,15 @@ function deriveCrcClass(crcRaw) {
   return "other";
 }
 
-// ✅ NEW: service bucket so UI service=live|vod works even if CSV has different fields
+// ✅ service bucket so UI service=live|vod works even if CSV has different fields
 function deriveServiceBucket(row) {
   const s = normLower(row?.service);
   const svc = normLower(row?.svc);
 
-  // If the CSV already has live/vod, keep it
   if (s === "live" || s === "vod") return s;
 
   const hay = `${s} ${svc}`;
 
-  // Heuristics (safe-ish defaults)
   if (/\blive\b/.test(hay)) return "live";
   if (/\bvod\b/.test(hay) || /\bipvod\b/.test(hay) || /\bvod-/.test(hay)) return "vod";
 
@@ -229,8 +227,10 @@ function prettyStatusCounts(statusCounts, limit = 12) {
 // ------------------------------------------------------------
 // Timeseries helpers
 // ------------------------------------------------------------
-function chooseBucketSeconds(spanMinutes) {
-  return Number(spanMinutes) <= 180 ? 60 : 900;
+
+// ✅ Force 5-minute buckets for BOTH csv + clickhouse parity
+function chooseBucketSeconds() {
+  return 300; // 5 minutes
 }
 
 function percentileSorted(sortedArr, p) {
@@ -243,23 +243,23 @@ function percentileSorted(sortedArr, p) {
   return sortedArr[lo] * (1 - w) + sortedArr[hi] * w;
 }
 
-function computeSpanMinutes(rows) {
-  let minMs = null;
-  let maxMs = null;
-
-  for (const r of rows) {
-    const t = toMs(r.ts);
-    if (Number.isNaN(t)) continue;
-    if (minMs == null || t < minMs) minMs = t;
-    if (maxMs == null || t > maxMs) maxMs = t;
+// Build a stable series list from points’ count maps
+function unionSeriesFromPoints(points, key, limit = 12) {
+  const totals = new Map();
+  for (const p of points) {
+    const m = p?.[key] || {};
+    for (const k of Object.keys(m)) {
+      totals.set(k, (totals.get(k) ?? 0) + Number(m[k] ?? 0));
+    }
   }
-
-  if (minMs == null || maxMs == null) return 0;
-  return Math.max(0, (maxMs - minMs) / (60 * 1000));
+  return [...totals.entries()]
+    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+    .slice(0, limit)
+    .map(([k]) => String(k));
 }
 
-function buildTimeseriesPoints(rows, spanMinutes) {
-  const bucketSeconds = chooseBucketSeconds(spanMinutes);
+function buildTimeseriesPoints(rows) {
+  const bucketSeconds = chooseBucketSeconds();
   const bucketMs = bucketSeconds * 1000;
 
   const buckets = new Map();
@@ -277,15 +277,35 @@ function buildTimeseriesPoints(rows, spanMinutes) {
 
     let acc = buckets.get(b);
     if (!acc) {
-      acc = { total: 0, err5xx: 0, ttms: [] };
+      acc = {
+        total: 0,
+        err5xx: 0,
+        ttms: [],
+        statusCountsByCode: {},
+        hostCountsByHost: {},
+        crcCountsByCrc: {},
+      };
       buckets.set(b, acc);
     }
 
     acc.total += 1;
 
     const edgeStatus = Number(r.edge_status);
-    if (Number.isFinite(edgeStatus) && edgeStatus >= 500 && edgeStatus < 600) {
-      acc.err5xx += 1;
+    if (Number.isFinite(edgeStatus)) {
+      const codeKey = String(edgeStatus);
+      acc.statusCountsByCode[codeKey] = (acc.statusCountsByCode[codeKey] ?? 0) + 1;
+
+      if (edgeStatus >= 500 && edgeStatus < 600) acc.err5xx += 1;
+    }
+
+    const host = String(r.edge_host ?? "").trim().toLowerCase();
+    if (host) {
+      acc.hostCountsByHost[host] = (acc.hostCountsByHost[host] ?? 0) + 1;
+    }
+
+    const crc = String(r.crc ?? "").trim().toUpperCase();
+    if (crc) {
+      acc.crcCountsByCrc[crc] = (acc.crcCountsByCrc[crc] ?? 0) + 1;
     }
 
     const ttms = Number(r.ttms_ms);
@@ -296,10 +316,11 @@ function buildTimeseriesPoints(rows, spanMinutes) {
 
   const points = keys.map((k) => {
     const acc = buckets.get(k);
-    acc.ttms.sort((a, b) => a - b);
+    const tt = acc?.ttms ?? [];
+    tt.sort((a, b) => a - b);
 
-    const p95 = percentileSorted(acc.ttms, 0.95);
-    const p99 = percentileSorted(acc.ttms, 0.99);
+    const p95 = percentileSorted(tt, 0.95);
+    const p99 = percentileSorted(tt, 0.99);
     const errorRatePct = acc.total ? (acc.err5xx / acc.total) * 100 : 0;
 
     return {
@@ -309,17 +330,37 @@ function buildTimeseriesPoints(rows, spanMinutes) {
       errorRatePct,
       p95TtmsMs: p95,
       p99TtmsMs: p99,
+
+      // ✅ stacked-series payloads
+      statusCountsByCode: acc.statusCountsByCode,
+      hostCountsByHost: acc.hostCountsByHost,
+      crcCountsByCrc: acc.crcCountsByCrc,
     };
   });
+
+  // Stable legend ordering
+  const statusCodeSeries = unionSeriesFromPoints(points, "statusCountsByCode", 24)
+    .sort((a, b) => Number(a) - Number(b));
+
+  const hostSeries = unionSeriesFromPoints(points, "hostCountsByHost", 10); // top 10 hosts
+  const crcSeries = unionSeriesFromPoints(points, "crcCountsByCrc", 10);   // top 10 crc codes
 
   const startTs = minMs == null ? null : new Date(Math.floor(minMs / bucketMs) * bucketMs).toISOString();
   const endTs = maxMs == null ? null : new Date(Math.floor(maxMs / bucketMs) * bucketMs).toISOString();
 
-  return { bucketSeconds, startTs, endTs, points };
+  return { bucketSeconds, startTs, endTs, points, statusCodeSeries, hostSeries, crcSeries };
 }
 
 function emptyTimeseries() {
-  return { bucketSeconds: null, startTs: null, endTs: null, points: [] };
+  return {
+    bucketSeconds: null,
+    startTs: null,
+    endTs: null,
+    points: [],
+    statusCodeSeries: [],
+    hostSeries: [],
+    crcSeries: [],
+  };
 }
 
 // ------------------------------------------------------------
@@ -430,7 +471,7 @@ function parseCsv(csvText) {
     obj.region = normLower(obj.region ?? hpHost.region ?? hpUrl.region) || "unknown";
     obj.pop = normLower(obj.pop ?? hpHost.pop ?? hpUrl.pop) || "unknown";
 
-    // ✅ NEW: stable "service bucket" used for UI filter live/vod/all
+    // stable "service bucket" used for UI filter live/vod/all
     obj.service_bucket = deriveServiceBucket(obj);
 
     rows.push(obj);
@@ -440,7 +481,7 @@ function parseCsv(csvText) {
 }
 
 // ------------------------------------------------------------
-// Debug helpers
+// Debug helpers (kept as-is)
 // ------------------------------------------------------------
 function buildDebugObj({ rows, inWindow, filtered, startISO, endISO, anchorISO, dq, warnings }) {
   const sample = filtered[0] ?? inWindow[0] ?? null;
@@ -527,23 +568,14 @@ export function runTriage({
   let filtersArr = [];
   if (Array.isArray(filters)) filtersArr = filters;
   else if (typeof filters === "string" && filters.trim()) {
-    try {
-      filtersArr = JSON.parse(filters);
-    } catch {
-      filtersArr = [];
-    }
+    try { filtersArr = JSON.parse(filters); } catch { filtersArr = []; }
   } else filtersArr = [];
 
-  if (!csvText) {
-    throw new Error("No CSV text found.");
-  }
+  if (!csvText) throw new Error("No CSV text found.");
 
   const rows = parseCsv(csvText);
-  if (rows.length === 0) {
-    throw new Error("Parsed 0 rows from CSV. Check delimiter/quotes/header line.");
-  }
+  if (rows.length === 0) throw new Error("Parsed 0 rows from CSV. Check delimiter/quotes/header line.");
 
-  // Data quality counters (whole dataset)
   const dqAll = {
     invalid_ts: rows.filter((r) => !r.ts || Number.isNaN(toMs(r.ts))).length,
     missing_edge_status: rows.filter((r) => !Number.isFinite(r.edge_status)).length,
@@ -555,10 +587,8 @@ export function runTriage({
     unknown_edge_host: rows.filter((r) => r.edge_host === "unknown").length,
   };
 
-  // Anchor on MAX timestamp and compute window
   let anchor = null;
   let validTsCount = 0;
-
   for (const r of rows) {
     const ms = toMs(r.ts);
     if (!Number.isNaN(ms)) {
@@ -566,7 +596,6 @@ export function runTriage({
       anchor = anchor == null ? ms : Math.max(anchor, ms);
     }
   }
-
   if (validTsCount === 0 || anchor == null) {
     throw new Error("No valid timestamps found. Check ts format (expected ISO-like).");
   }
@@ -584,7 +613,6 @@ export function runTriage({
   const endISO = new Date(end).toISOString();
   const anchorISO = endISO;
 
-  // Data quality counters (window)
   const dqWindow = {
     invalid_ts: inWindow.filter((r) => !r.ts || Number.isNaN(toMs(r.ts))).length,
     missing_edge_status: inWindow.filter((r) => !Number.isFinite(r.edge_status)).length,
@@ -596,14 +624,9 @@ export function runTriage({
     unknown_edge_host: inWindow.filter((r) => r.edge_host === "unknown").length,
   };
 
-  // ✅ NEW: always-present available arrays (used by UI regardless of debug)
-  // Use inWindow (not filtered) so options show what's possible in the selected window.
   const available = {
-    // what UI needs
     regions: topKeys(inWindow, "region", 80),
     pops: topKeys(inWindow, "pop", 120),
-
-    // extras (handy later)
     serviceBuckets: topKeys(inWindow, "service_bucket", 12),
     svcs: topKeys(inWindow, "svc", 24),
     edgeHosts: topKeys(inWindow, "edge_host", 24),
@@ -612,20 +635,14 @@ export function runTriage({
     statusCodes: topKeys(inWindow, "edge_status", 24),
   };
 
-  // Warnings (we’ll append as we go)
   const warnings = [];
 
-  // Apply filters
   let filtered = inWindow;
 
-  // ✅ IMPORTANT: UI "service" means live/vod/all -> filter service_bucket
   const beforeService = filtered.length;
   filtered = filtered.filter((r) => matchDim(r.service_bucket, service, "service_bucket"));
-  if (service !== "all") {
-    // Only warn if it didn't reduce AND data exists
-    if (inWindow.length > 0 && filtered.length === beforeService) {
-      warnings.push(`Service filter '${service}' did not reduce dataset (check service_bucket derivation).`);
-    }
+  if (service !== "all" && inWindow.length > 0 && filtered.length === beforeService) {
+    warnings.push(`Service filter '${service}' did not reduce dataset (check service_bucket derivation).`);
   }
 
   const beforeRegion = filtered.length;
@@ -640,7 +657,6 @@ export function runTriage({
     warnings.push(`POP filter '${pop}' did not reduce dataset.`);
   }
 
-  // Apply additional filters
   for (const f of filtersArr) {
     const beforeFilter = filtered.length;
     filtered = filtered.filter((r) => passesFilter(r, f));
@@ -652,27 +668,13 @@ export function runTriage({
   if (inWindow.length > 0 && filtered.length === 0) {
     warnings.push(`Filters removed all rows. Check available values (metricsJson.available).`);
   }
-  if (dqWindow.missing_edge_status > 0) {
-    warnings.push(`Some rows missing edge_status (${dqWindow.missing_edge_status}).`);
-  }
-  if (dqWindow.invalid_ts > 0) {
-    warnings.push(`Some rows have invalid ts in window (${dqWindow.invalid_ts}).`);
-  }
+  if (dqWindow.missing_edge_status > 0) warnings.push(`Some rows missing edge_status (${dqWindow.missing_edge_status}).`);
+  if (dqWindow.invalid_ts > 0) warnings.push(`Some rows have invalid ts in window (${dqWindow.invalid_ts}).`);
 
   const dbg = debug
-    ? buildDebugObj({
-        rows,
-        inWindow,
-        filtered,
-        startISO,
-        endISO,
-        anchorISO,
-        dq: { all: dqAll, window: dqWindow },
-        warnings,
-      })
+    ? buildDebugObj({ rows, inWindow, filtered, startISO, endISO, anchorISO, dq: { all: dqAll, window: dqWindow }, warnings })
     : null;
 
-  // Empty window
   if (inWindow.length === 0) {
     const summaryText = [
       `🧭 *CDN TRIAGE SUMMARY*`,
@@ -705,7 +707,6 @@ export function runTriage({
     };
   }
 
-  // No matches after filters
   if (filtered.length === 0) {
     const summaryText = [
       `🧭 *CDN TRIAGE SUMMARY*`,
@@ -741,12 +742,10 @@ export function runTriage({
     };
   }
 
-  // Metrics
   const total = filtered.length;
 
-  // Bucket choice based on ACTUAL span
-  const spanMinutes = Math.max(1, computeSpanMinutes(filtered));
-  const timeseries = buildTimeseriesPoints(filtered, spanMinutes);
+  // ✅ fixed 5m bucket timeseries + stacked series maps
+  const timeseries = buildTimeseriesPoints(filtered);
 
   const ttmsVals = filtered.map((r) => Number(r.ttms_ms)).filter((v) => Number.isFinite(v));
   const p95 = percentile(ttmsVals, 95);
@@ -865,6 +864,8 @@ export function runTriage({
       errorRatePct: errorRate,
       topCrcClass: topCrcClass.map(([k, v]) => ({ crc_class: k, count: v })),
       topErrorCrc: topErrorsByCrc.map(([k, v]) => ({ crc: k, count: v })),
+
+      // ✅ includes status/host/crc series + per-bucket maps
       timeseries,
       warnings,
       dataQuality: { all: dqAll, window: dqWindow },

@@ -63,16 +63,15 @@ function buildAvailableFromUniverse(universe: {
     edgeHosts: uniqLower(universe.edgeHosts).slice(0, 24),
     crcClasses: uniqLower(universe.crcClasses).slice(0, 12),
     crcs: uniqLower(universe.crcs).slice(0, 24),
-    statusCodes: Array.from(
-      new Set(universe.statusCodes.map((x) => String(x)).filter(Boolean))
-    )
+    statusCodes: Array.from(new Set(universe.statusCodes.map((x) => String(x)).filter(Boolean)))
       .sort((a, b) => Number(a) - Number(b))
       .slice(0, 24),
   };
 }
 
-function chooseBucketSeconds(spanMinutes: number) {
-  return spanMinutes <= 180 ? 60 : 900;
+// ✅ Force parity with CSV: always 5-minute buckets
+function chooseBucketSeconds() {
+  return 300;
 }
 
 // -----------------------------
@@ -82,10 +81,9 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
   const { partner, service, region, pop, windowMinutes, debug } = inputs;
 
   const seed = hashToInt(`${partner}|${service}|${region}|${pop}|${windowMinutes}`);
-  const baseTraffic = 5000 + (seed % 25000); // 5k..30k
-  const noise = (seed % 1000) / 1000; // 0..1
+  const baseTraffic = 5000 + (seed % 25000);
+  const noise = (seed % 1000) / 1000;
 
-  // Mock universe (what "available" should show for this window)
   const regionUniverse = ["use1", "usw2", "eu1", "ap1", "bos", "nyc", "sjc", "sea", "lon", "fra", "sin"];
   const popUniverse = [
     "use1-iad",
@@ -116,11 +114,10 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
     "cdn-ec-lon-003",
   ];
 
-  const crcUniverse = ["TCP_HIT", "TCP_MISS", "TCP_CF_HIT", "ERR_TIMEOUT", "ERR_DNS", "TCP_CLIENT_REFRESH"];
+  const crcUniverse = ["TCP_HIT", "TCP_MISS", "TCP_CF_HIT", "ERR_TIMEOUT", "ERR_DNS", "TCP_CLIENT_REFRESH", "ERR_CONN_RESET", "ERR_ORIGIN_5XX"];
   const crcClassUniverse = ["hit", "miss", "client", "error", "other"];
   const statusUniverse = [200, 206, 304, 403, 404, 429, 500, 502, 503, 504];
 
-  // Filter the available lists *lightly* based on user-selected region/pop (so UI feels coherent)
   const regions = region === "all" ? regionUniverse : [region, ...regionUniverse].slice(0, 6);
   const pops =
     pop === "all"
@@ -144,19 +141,18 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
   const startISO = new Date(startMs).toISOString();
   const endISO = new Date(endMs).toISOString();
 
-  // Timeseries generation
   const spanMinutes = Math.max(1, windowMinutes);
-  const bucketSeconds = chooseBucketSeconds(spanMinutes);
+  const bucketSeconds = chooseBucketSeconds();
   const bucketMs = bucketSeconds * 1000;
 
   const buckets = Math.max(3, Math.min(96, Math.floor((spanMinutes * 60) / bucketSeconds)));
   const points: any[] = [];
 
-  // Base rates influenced by seed + service
   const baseErrorPct =
-    (service === "live" ? 0.9 : service === "vod" ? 0.5 : 0.7) + (noise * 1.2); // ~0.5%..2.1%
+    (service === "live" ? 0.9 : service === "vod" ? 0.5 : 0.7) + (noise * 1.2);
+
   const baseP95 =
-    (service === "live" ? 180 : service === "vod" ? 240 : 210) + (seed % 120); // ms
+    (service === "live" ? 180 : service === "vod" ? 240 : 210) + (seed % 120);
   const baseP99 = baseP95 + 120 + (seed % 180);
 
   let totalRequests = 0;
@@ -164,26 +160,75 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
   const ttmsP95Samples: number[] = [];
   const ttmsP99Samples: number[] = [];
 
+  // Stable series (legend order)
+  const statusCodeSeries = statusUniverse.map(String);
+  const hostSeries = edgeHostUniverse.map((h) => h.toLowerCase()).slice(0, 10);
+  const crcSeries = crcUniverse.map((c) => String(c).toUpperCase()).slice(0, 10);
+
   for (let i = buckets - 1; i >= 0; i--) {
     const t = endMs - i * bucketMs;
-    // Traffic wave
     const wave = 0.75 + 0.5 * Math.sin((i / Math.max(8, buckets)) * Math.PI * 2);
-    const req = round(baseTraffic * wave * (0.6 + noise * 0.8) / buckets * 60); // scaled
+    const req = round((baseTraffic * wave * (0.6 + noise * 0.8) / buckets) * 60);
 
-    // Error spike sometimes
     const spike = (seed % 7 === 0 && i < Math.floor(buckets / 4)) ? 2.5 : 1.0;
     const errPct = clamp(baseErrorPct * spike * (0.75 + 0.5 * Math.cos(i / 3)), 0, 25);
     const err5xx = round((req * errPct) / 100);
 
-    // Latency drift
     const p95 = round(baseP95 * (0.9 + 0.25 * Math.sin(i / 5)));
     const p99 = round(baseP99 * (0.9 + 0.25 * Math.cos(i / 6)));
 
     totalRequests += req;
     total5xx += err5xx;
-
     ttmsP95Samples.push(p95);
     ttmsP99Samples.push(p99);
+
+    // Build stacked maps (deterministic-ish)
+    const statusCountsByCode: Record<string, number> = {};
+    const hostCountsByHost: Record<string, number> = {};
+    const crcCountsByCrc: Record<string, number> = {};
+
+    // status distribution (mostly 200/206/304 + small errors)
+    const s200 = round(req * 0.78);
+    const s206 = round(req * 0.12);
+    const s304 = round(req * 0.03);
+    const s4xx = round(req * 0.03);
+    const s5xx = Math.max(0, err5xx);
+
+    statusCountsByCode["200"] = s200;
+    statusCountsByCode["206"] = s206;
+    statusCountsByCode["304"] = s304;
+    statusCountsByCode["403"] = round(s4xx * 0.25);
+    statusCountsByCode["404"] = round(s4xx * 0.35);
+    statusCountsByCode["429"] = Math.max(0, s4xx - statusCountsByCode["403"] - statusCountsByCode["404"]);
+    statusCountsByCode["500"] = round(s5xx * 0.22);
+    statusCountsByCode["502"] = round(s5xx * 0.18);
+    statusCountsByCode["503"] = round(s5xx * 0.35);
+    statusCountsByCode["504"] = Math.max(0, s5xx - statusCountsByCode["500"] - statusCountsByCode["502"] - statusCountsByCode["503"]);
+
+    // host distribution across top hosts
+    let remainingHost = req;
+    for (let hi = 0; hi < hostSeries.length; hi++) {
+      const share = hi === hostSeries.length - 1 ? remainingHost : round(req * (0.10 + (hi * 0.02)));
+      const v = clamp(share, 0, remainingHost);
+      hostCountsByHost[hostSeries[hi]] = v;
+      remainingHost -= v;
+      if (remainingHost <= 0) break;
+    }
+    if (remainingHost > 0) hostCountsByHost["other"] = (hostCountsByHost["other"] ?? 0) + remainingHost;
+
+    // crc distribution (bias to HIT/MISS + error crcs proportional to err5xx)
+    const hit = round(req * 0.70);
+    const miss = round(req * 0.10);
+    const client = round(req * 0.02);
+    const errs = Math.max(0, err5xx);
+
+    crcCountsByCrc["TCP_HIT"] = hit;
+    crcCountsByCrc["TCP_MISS"] = miss;
+    crcCountsByCrc["TCP_CLIENT_REFRESH"] = client;
+    crcCountsByCrc["ERR_TIMEOUT"] = round(errs * 0.42);
+    crcCountsByCrc["ERR_DNS"] = round(errs * 0.18);
+    crcCountsByCrc["ERR_CONN_RESET"] = round(errs * 0.12);
+    crcCountsByCrc["ERR_ORIGIN_5XX"] = Math.max(0, errs - crcCountsByCrc["ERR_TIMEOUT"] - crcCountsByCrc["ERR_DNS"] - crcCountsByCrc["ERR_CONN_RESET"]);
 
     points.push({
       ts: new Date(t - (t % bucketMs)).toISOString(),
@@ -192,25 +237,25 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
       errorRatePct: req ? (err5xx / req) * 100 : 0,
       p95TtmsMs: p95,
       p99TtmsMs: p99,
-      // keep these optional fields off unless you want to show status/crc mini-metrics:
-      // statusCounts: { "200": ..., "500": ... },
-      // crcCounts: { "TCP_HIT": ... },
-      // hostCounts: { "cdn-ec-bos-044": ... },
+
+      // ✅ stacked maps
+      statusCountsByCode,
+      hostCountsByHost,
+      crcCountsByCrc,
     });
   }
 
-  // Overall aggregates (match CSV fields)
-  const p95TtmsMs = ttmsP95Samples.length ? round(ttmsP95Samples.sort((a, b) => a - b)[Math.floor(ttmsP95Samples.length * 0.95)]) : null;
-  const p99TtmsMs = ttmsP99Samples.length ? round(ttmsP99Samples.sort((a, b) => a - b)[Math.floor(ttmsP99Samples.length * 0.99)]) : null;
+  const p95TtmsMs =
+    ttmsP95Samples.length ? round(ttmsP95Samples.sort((a, b) => a - b)[Math.floor(ttmsP95Samples.length * 0.95)]) : null;
+  const p99TtmsMs =
+    ttmsP99Samples.length ? round(ttmsP99Samples.sort((a, b) => a - b)[Math.floor(ttmsP99Samples.length * 0.99)]) : null;
 
-  // Cache hit/miss (mock)
   const cacheHitPct =
     service === "vod"
       ? clamp(82 + (seed % 12) - noise * 4, 20, 99)
       : clamp(68 + (seed % 18) - noise * 6, 10, 95);
   const cacheMissPct = clamp(100 - cacheHitPct, 0, 100);
 
-  // Status counts (simple)
   const statusCounts = [
     { code: 200, count: round(totalRequests * 0.78) },
     { code: 206, count: round(totalRequests * 0.12) },
@@ -224,7 +269,6 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
     { code: 504, count: round(total5xx * 0.25) },
   ].filter((x) => x.count > 0);
 
-  // CRC breakdown (mock)
   const topCrcClass = [
     { crc_class: "hit", count: round(totalRequests * (cacheHitPct / 100) * 0.95) },
     { crc_class: "miss", count: round(totalRequests * (cacheMissPct / 100) * 0.85) },
@@ -247,7 +291,6 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
     warnings.push(`Unknown service bucket '${service}' in ClickHouse mock. Expected live|vod|other|all.`);
   }
 
-  // Build summary text (same vibe as CSV)
   const summaryText = [
     `🧭 *CDN TRIAGE SUMMARY*`,
     `• Source: \`clickhouse (mock)\` • partner=\`${partner}\``,
@@ -268,7 +311,6 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
     `• Error responses: ${int(total5xx)}/${int(totalRequests)} (${pct(errorRatePct ?? 0)}).`,
   ].join("\n");
 
-  // Optional debug SQL (for UI route.ts: _debug.sql)
   const debugSql = debug
     ? [
         `-- MOCK SQL (public-safe)`,
@@ -292,7 +334,6 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
     : undefined;
 
   const metricsJson = {
-    // ✅ SAME CONTRACT AS CSV
     available,
     timeRangeUTC: { start: startISO, end: endISO },
     totalRequests,
@@ -303,7 +344,6 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
     statusCounts,
     error5xxCount: total5xx,
     errorRatePct,
-
     topCrcClass,
     topErrorCrc,
 
@@ -312,6 +352,11 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
       startTs: points.length ? points[0].ts : startISO,
       endTs: points.length ? points[points.length - 1].ts : endISO,
       points,
+
+      // ✅ stable legend ordering
+      statusCodeSeries,
+      hostSeries,
+      crcSeries,
     },
 
     warnings,
