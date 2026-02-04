@@ -148,4 +148,87 @@ No ClickHouse credentials are required to run or demo the system.
 The mock runner will be replaced with real 
 ClickHouse execution **without any UI or API changes**.
 
+## Update (2026-02-04) — V2 Freeze: Deterministic UI + Metrics Contract
+
+Today we **froze V2** as a fully deterministic triage system with a stable data contract.
+All LLM/agent features are deferred to **V3**.
+
+### What shipped in V2 (frozen)
+
+#### ✅ 1) One metrics contract for CSV + ClickHouse
+Both data sources now return the **same `metricsJson` shape**, so the UI never branches on datasource.
+
+Key contract:
+- `metricsJson.available` (regions/pops/statusCodes/etc)
+- `metricsJson.timeseries` with stable per-bucket points + series order
+
+#### ✅ 2) Fixed bucket sizing (parity across modes)
+Timeseries bucket size is now forced to:
+- **300 seconds (5 minutes)** for **CSV and ClickHouse**
+
+This fixes:
+- bucket mismatches
+- time legend drift
+- chart alignment errors between CSV vs ClickHouse
+
+#### ✅ 3) Timeseries expanded for stacked breakdowns
+Each timeseries point now includes stacked maps:
+
+- `statusCountsByCode` — counts by HTTP status code per bucket  
+- `hostCountsByHost` — counts by edge host per bucket  
+- `crcCountsByCrc` — counts by CRC error code per bucket  
+
+And the timeseries includes stable legend ordering:
+
+- `statusCodeSeries`
+- `hostSeries`
+- `crcSeries`
+
+#### ✅ 4) UI updated to reflect new timeseries fields
+UI now renders deterministic charts driven only from `metricsJson.timeseries`:
+- Stacked **status code** chart (existing)
+- **Total events by host** stacked chart (added)
+- **CRC error code** chart (added)
+- Correct bucket time labeling (client-safe formatting)
+
+#### ✅ 5) Chat controller hardening (no build breakers)
+Chat parsing + validation is stable:
+- `service` validated via `ALLOWED.service`
+- `region/pop` validated dynamically via discovered options
+- safety guard resets stale region/pop when options update
+
+#### ✅ 6) Metrics engine upgrades (CSV path)
+`lib/triage/metricsEngine.js` now includes:
+- robust CSV normalization and aliasing
+- host/url parsing → `edge_host`, `svc`, `region`, `pop`
+- service bucketing (`live|vod|other`) for deterministic filtering
+- per-bucket aggregation for status/host/crc stacked charts
+
+#### ✅ 7) ClickHouse mock upgraded (production-shape output)
+`lib/clickhouse/runMockClickhouseTriage.ts` now generates:
+- realistic distributions
+- deterministic totals and p95/p99
+- full stacked maps + stable series ordering
+- same timeseries bucket size as CSV
+
+### V2 Definition (frozen)
+**V2 is deterministic analytics only.**
+- UI + API + Metrics Engine must remain reproducible
+- No probabilistic reasoning in core outputs
+- ClickHouse real integration can replace mock **without changing UI contract**
+
+---
+
+## V3 (next) — LLM / Intelligence Layer (not part of V2)
+
+V3 will add an optional AI layer **on top of frozen V2 outputs**, never inside computation.
+
+Planned V3 capabilities:
+- LLM explanation of `summaryText` + evidence formatting
+- RAG over runbooks / traffic router / operational docs
+- “What changed?” comparisons between runs
+- Hypothesis generation (root cause candidates) using deterministic metrics as grounding
+- Guided drill-down prompts (next best query / filter suggestions)
+
+**Rule:** V3 can suggest and explain, but V2 remains source of truth for numbers.
 
