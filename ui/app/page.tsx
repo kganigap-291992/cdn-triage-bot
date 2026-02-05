@@ -18,7 +18,9 @@ const ALLOWED = {
 
 function optionsFromSet(set: Set<string>) {
   const arr = Array.from(set);
-  return arr.sort((a, b) => (a === "all" ? -1 : b === "all" ? 1 : a.localeCompare(b)));
+  return arr.sort((a, b) =>
+    a === "all" ? -1 : b === "all" ? 1 : a.localeCompare(b)
+  );
 }
 
 const SERVICE_OPTIONS = optionsFromSet(ALLOWED.service);
@@ -102,7 +104,7 @@ type TimeseriesPoint = {
   p95TtmsMs: number | null;
   p99TtmsMs: number | null;
 
-  // stacked maps (NEW)
+  // stacked
   statusCountsByCode?: Record<string, number>;
   hostCountsByHost?: Record<string, number>;
   crcCountsByCrc?: Record<string, number>;
@@ -164,7 +166,18 @@ function looksLikeTriageQuery(text: string): boolean {
   const normalized = normalizeText(text);
   if (!normalized) return false;
   if (normalized.includes("=")) return true;
-  const keywords = ["service", "region", "pop", "win", "window", "errors", "p95", "p99", "ttms", "triage"];
+  const keywords = [
+    "service",
+    "region",
+    "pop",
+    "win",
+    "window",
+    "errors",
+    "p95",
+    "p99",
+    "ttms",
+    "triage",
+  ];
   return keywords.some((keyword) => normalized.includes(keyword));
 }
 
@@ -197,270 +210,221 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
-// -------- Legend utilities (status/host/crc) --------
-function pickLegendOrder(
-  ts: TimeseriesData | null,
-  metricsJson: any,
-  kind: "status" | "host" | "crc"
-): string[] {
-  if (!ts) return [];
-
-  if (kind === "status") {
-    const a = (ts.statusCodeSeries || []).map(String).filter(Boolean);
-    if (a.length) return a;
-
-    const avail = metricsJson?.available?.statusCodes;
-    if (Array.isArray(avail) && avail.length) return avail.map(String);
-
-    const seen = new Set<string>();
-    for (const p of ts.points || []) {
-      const m = p.statusCountsByCode || {};
-      for (const k of Object.keys(m)) seen.add(String(k));
-    }
-    const observed = Array.from(seen).sort((x, y) => Number(x) - Number(y));
-    if (observed.length) return observed;
-    return ["200", "206", "304", "403", "404", "429", "500", "502", "503", "504"];
-  }
-
-  if (kind === "host") {
-    const a = (ts.hostSeries || []).map(String).filter(Boolean);
-    if (a.length) return a;
-
-    const avail = metricsJson?.available?.edgeHosts;
-    if (Array.isArray(avail) && avail.length) return avail.map(String).map((x: string) => x.toLowerCase());
-
-    const seen = new Set<string>();
-    for (const p of ts.points || []) {
-      const m = p.hostCountsByHost || {};
-      for (const k of Object.keys(m)) seen.add(String(k));
-    }
-    const observed = Array.from(seen).sort((a, b) => a.localeCompare(b));
-    if (observed.length) return observed;
-    return [];
-  }
-
-  // crc
-  const a = (ts.crcSeries || []).map(String).filter(Boolean);
-  if (a.length) return a;
-
-  const avail = metricsJson?.available?.crcs;
-  if (Array.isArray(avail) && avail.length) return avail.map(String).map((x: string) => x.toUpperCase());
-
-  const seen = new Set<string>();
-  for (const p of ts.points || []) {
-    const m = p.crcCountsByCrc || {};
-    for (const k of Object.keys(m)) seen.add(String(k));
-  }
-  const observed = Array.from(seen).sort((a, b) => a.localeCompare(b));
-  if (observed.length) return observed;
-  return [];
+function bucketLabel(bucketSeconds: number | null | undefined) {
+  const s = Number(bucketSeconds || 0);
+  if (!Number.isFinite(s) || s <= 0) return "bucket";
+  if (s % 3600 === 0) return `${s / 3600}h`;
+  if (s % 60 === 0) return `${s / 60}m`;
+  return `${s}s`;
 }
 
-// Deterministic palette for any series key
 function stableColorForKey(key: string) {
+  // stable-ish palette
   const palette = [
-    "#2563eb", // blue
-    "#60a5fa", // light blue
-    "#9ca3af", // gray
-    "#f59e0b", // amber
-    "#f97316", // orange
-    "#f43f5e", // rose
-    "#ef4444", // red
-    "#10b981", // green
-    "#22c55e", // green2
-    "#a78bfa", // purple
-    "#14b8a6", // teal
-    "#eab308", // yellow
+    "#2563eb",
+    "#60a5fa",
+    "#9ca3af",
+    "#f59e0b",
+    "#f97316",
+    "#f43f5e",
+    "#ef4444",
+    "#fb7185",
+    "#dc2626",
+    "#7f1d1d",
+    "#10b981",
+    "#22c55e",
+    "#0ea5e9",
+    "#a78bfa",
+    "#facc15",
+    "#14b8a6",
   ];
-
-  // simple string hash
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
   return palette[h % palette.length];
 }
 
-function prettyBucketLabel(ts: TimeseriesData, mounted: boolean) {
-  const b = ts.bucketSeconds;
-  const s = ts.startTs ? formatTimestampClientSafe(ts.startTs, mounted) : "n/a";
-  const e = ts.endTs ? formatTimestampClientSafe(ts.endTs, mounted) : "n/a";
-  const bucket = b ? `${Math.round(b / 60)}m` : "n/a";
-  return `${s} → ${e} (bucket: ${bucket})`;
+function timeLabelShort(tsIso: string, mounted: boolean) {
+  const s = formatTimestampClientSafe(tsIso, mounted);
+  // try to show just time portion if locale string has comma
+  const parts = s.split(",");
+  if (parts.length >= 2) return parts[1].trim();
+  return s;
 }
 
 // ------------------------------------------------------------
-// Generic stacked chart (status/host/crc) over time
+// Generic stacked bar chart (status / host / crc)
 // ------------------------------------------------------------
-function StackedKeyedTimeseries({
-  ts,
-  metricsJson,
-  mounted,
+function StackedBarTimeseries({
   title,
   subtitle,
-  kind,
-  height = 160,
-  maxBars = 36,
-  seriesLimit = 12,
+  ts,
+  mounted,
+  bucketSeconds,
+  seriesKeys,
+  getMap,
+  height = 180,
 }: {
-  ts: TimeseriesData;
-  metricsJson: any;
-  mounted: boolean;
   title: string;
-  subtitle?: string;
-  kind: "status" | "host" | "crc";
+  subtitle: string;
+  ts: TimeseriesData;
+  mounted: boolean;
+  bucketSeconds: number | null;
+  seriesKeys: string[]; // stable preferred order
+  getMap: (p: TimeseriesPoint) => Record<string, number> | undefined;
   height?: number;
-  maxBars?: number;
-  seriesLimit?: number;
 }) {
-  const points = (ts.points || []).slice(-maxBars);
+  const points = (ts.points || []).slice(-36);
+  if (!points.length) return null;
 
-  const legendOrder = pickLegendOrder(ts, metricsJson, kind);
-
-  // union + totals, then take top N (keeps legend tidy even for CSV)
-  const totals = new Map<string, number>();
+  // determine which keys are actually present
+  const present = new Map<string, number>(); // key -> total across window
   for (const p of points) {
-    const m =
-      kind === "status"
-        ? p.statusCountsByCode || {}
-        : kind === "host"
-        ? p.hostCountsByHost || {}
-        : p.crcCountsByCrc || {};
-    for (const [k, v] of Object.entries(m)) {
-      totals.set(k, (totals.get(k) ?? 0) + Number(v ?? 0));
+    const m = getMap(p) || {};
+    for (const k of Object.keys(m)) {
+      present.set(k, (present.get(k) ?? 0) + Number(m[k] ?? 0));
     }
   }
-
-  const presentKeys = Array.from(totals.entries())
+  const presentKeys = Array.from(present.entries())
     .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
     .map(([k]) => k);
 
-  // Respect stable order first, then append any missing observed keys.
   const ordered = [
-    ...legendOrder.filter((k) => totals.has(k)),
-    ...presentKeys.filter((k) => !legendOrder.includes(k)),
+    ...seriesKeys.filter((k) => present.has(k)),
+    ...presentKeys.filter((k) => !seriesKeys.includes(k)),
   ];
 
-  const keys = ordered.slice(0, seriesLimit);
+  const keys = ordered.slice(0, 10); // keep legend readable
   if (!keys.length) return null;
 
-  const totalsByPoint = points.map((p) => {
-    const m =
-      kind === "status"
-        ? p.statusCountsByCode || {}
-        : kind === "host"
-        ? p.hostCountsByHost || {}
-        : p.crcCountsByCrc || {};
+  const totals = points.map((p) => {
+    const m = getMap(p) || {};
     let sum = 0;
-    for (const k of keys) sum += Number(m[k] || 0);
+    for (const k of keys) sum += Number(m[k] ?? 0);
     return sum;
   });
+  const maxTotal = Math.max(1, ...totals);
 
-  const maxTotal = Math.max(1, ...totalsByPoint);
-
-  const w = 320;
+  // SVG layout
+  const w = 360;
   const h = height;
-  const padLeft = 44;
-  const padRight = 14;
-  const padTop = 10;
-  const padBottom = 34;
+  const padLeft = 54;
+  const padRight = 12;
+  const padTop = 12;
+  const padBottom = 44;
   const plotW = w - padLeft - padRight;
   const plotH = h - padTop - padBottom;
 
-  const barCount = Math.max(1, points.length);
-  const gap = clamp(Math.round(plotW / (barCount * 8)), 2, 6);
+  const barCount = points.length;
+  const gap = clamp(Math.round(plotW / (barCount * 10)), 2, 6);
   const barW = Math.max(4, Math.floor((plotW - gap * (barCount - 1)) / barCount));
 
-  const yTicks = 3;
+  // ticks
+  const yTicks = 4;
   const tickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
     Math.round((maxTotal * (yTicks - i)) / yTicks)
   );
 
   const xLabelEvery = Math.max(1, Math.floor(points.length / 6));
-  const xLabels = points.map((p, i) => ({
-    i,
-    label:
-      formatTimestampClientSafe(p.ts, mounted).split(",")[1]?.trim() ||
-      formatTimestampClientSafe(p.ts, mounted),
-    show: i % xLabelEvery === 0 || i === points.length - 1,
-  }));
 
   const latest = points[points.length - 1];
-  const latestTotal = totalsByPoint[totalsByPoint.length - 1] || 0;
-
-  const latestLine = latest
-    ? `${formatTimestampClientSafe(latest.ts, mounted)} • ${latestTotal.toLocaleString()} events`
-    : "n/a";
+  const latestTotal = totals[totals.length - 1] || 0;
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-xs text-gray-500">{subtitle || "Traffic timeseries"}</div>
+          <div className="text-xs text-gray-500">{subtitle}</div>
           <div className="text-sm font-semibold text-gray-900">{title}</div>
-          <div className="mt-1 text-[11px] text-gray-500">{prettyBucketLabel(ts, mounted)}</div>
+          <div className="text-[11px] text-gray-500 mt-1">
+            {ts.startTs && ts.endTs
+              ? `${formatTimestampClientSafe(ts.startTs, mounted)} → ${formatTimestampClientSafe(
+                  ts.endTs,
+                  mounted
+                )} (bucket: ${bucketLabel(bucketSeconds)})`
+              : `bucket: ${bucketLabel(bucketSeconds)}`}
+          </div>
         </div>
+
         <div className="text-right">
           <div className="text-xs text-gray-500">Latest</div>
-          <div className="text-[11px] text-gray-700">{latestLine}</div>
+          <div className="text-[11px] text-gray-700">
+            {latest
+              ? `${timeLabelShort(latest.ts, mounted)} • ${latestTotal.toLocaleString()} events`
+              : "n/a"}
+          </div>
         </div>
       </div>
 
       <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
         <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height }}>
-          {/* Axis labels */}
+          {/* axis titles */}
           <text
-            x={padLeft - 28}
+            x={padLeft - 38}
             y={padTop + plotH / 2}
             fontSize="10"
             fill="#6b7280"
-            transform={`rotate(-90 ${padLeft - 28} ${padTop + plotH / 2})`}
+            transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
           >
             Events
           </text>
-          <text x={padLeft + plotW / 2} y={h - 6} fontSize="10" fill="#6b7280" textAnchor="middle">
-            Time (bucket)
+          <text
+            x={padLeft + plotW / 2}
+            y={h - 10}
+            fontSize="10"
+            fill="#6b7280"
+            textAnchor="middle"
+          >
+            Time ({bucketLabel(bucketSeconds)} buckets)
           </text>
 
-          {/* Y grid + ticks */}
+          {/* y grid + labels */}
           {tickVals.map((v, idx) => {
             const t = v / maxTotal;
             const y = padTop + (1 - t) * plotH;
             return (
               <g key={idx} opacity={0.35}>
-                <line x1={padLeft} y1={y} x2={padLeft + plotW} y2={y} stroke="currentColor" />
-                <text x={padLeft - 8} y={y + 3} fontSize="9" fill="#6b7280" textAnchor="end" opacity={0.9}>
+                <line
+                  x1={padLeft}
+                  y1={y}
+                  x2={padLeft + plotW}
+                  y2={y}
+                  stroke="currentColor"
+                />
+                <text
+                  x={padLeft - 10}
+                  y={y + 3}
+                  fontSize="10"
+                  fill="#6b7280"
+                  textAnchor="end"
+                  opacity={0.95}
+                >
                   {v >= 1000 ? `${Math.round(v / 1000)}k` : String(v)}
                 </text>
               </g>
             );
           })}
 
-          {/* Bars */}
+          {/* bars */}
           {points.map((p, i) => {
             const x = padLeft + i * (barW + gap);
-            const m =
-              kind === "status"
-                ? p.statusCountsByCode || {}
-                : kind === "host"
-                ? p.hostCountsByHost || {}
-                : p.crcCountsByCrc || {};
-
+            const m = getMap(p) || {};
             let yTop = padTop + plotH;
+
             return (
               <g key={p.ts}>
                 {keys.map((k) => {
-                  const val = Number(m[k] || 0);
+                  const val = Number(m[k] ?? 0);
                   if (!val) return null;
-                  const hSeg = (val / maxTotal) * plotH;
-                  const y = yTop - hSeg;
+                  const segH = (val / maxTotal) * plotH;
+                  const y = yTop - segH;
                   yTop = y;
-
                   return (
                     <rect
                       key={`${p.ts}-${k}`}
                       x={x}
                       y={y}
                       width={barW}
-                      height={Math.max(0, hSeg)}
+                      height={Math.max(0, segH)}
                       rx={2}
                       fill={stableColorForKey(k)}
                       opacity={0.95}
@@ -471,30 +435,38 @@ function StackedKeyedTimeseries({
             );
           })}
 
-          {/* X labels */}
-          {xLabels.map((xl) => {
-            if (!xl.show) return null;
-            const x = padLeft + xl.i * (barW + gap) + barW / 2;
+          {/* x labels */}
+          {points.map((p, i) => {
+            const show = i % xLabelEvery === 0 || i === points.length - 1;
+            if (!show) return null;
+            const x = padLeft + i * (barW + gap) + barW / 2;
+            const label = timeLabelShort(p.ts, mounted);
             return (
-              <text key={xl.i} x={x} y={padTop + plotH + 16} fontSize="9" fill="#6b7280" textAnchor="middle">
-                {xl.label}
+              <text
+                key={`xl-${p.ts}`}
+                x={x}
+                y={padTop + plotH + 18}
+                fontSize="10"
+                fill="#6b7280"
+                textAnchor="middle"
+              >
+                {label}
               </text>
             );
           })}
         </svg>
 
-        {/* Legend */}
+        {/* legend */}
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-600">
           {keys.map((k) => (
             <div key={k} className="flex items-center gap-1.5">
-              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: stableColorForKey(k) }} />
-              <span className="truncate max-w-[240px]">{k}</span>
+              <span
+                className="inline-block h-2.5 w-2.5 rounded-full"
+                style={{ background: stableColorForKey(k) }}
+              />
+              <span className="truncate max-w-[220px]">{k}</span>
             </div>
           ))}
-        </div>
-
-        <div className="mt-2 text-[11px] text-gray-500">
-          Stacked by <span className="text-gray-700">{kind === "status" ? "statusCountsByCode" : kind === "host" ? "hostCountsByHost" : "crcCountsByCrc"}</span>
         </div>
       </div>
     </div>
@@ -502,54 +474,71 @@ function StackedKeyedTimeseries({
 }
 
 // ------------------------------------------------------------
-// Minimal line chart: p95 + p99 (bucketed)
+// Latency line chart with real X/Y ticks
 // ------------------------------------------------------------
-function TimeseriesLines({
+function LatencyTimeseriesLines({
   points,
   mounted,
-  height = 120,
-  bucketLabel,
+  bucketSeconds,
+  height = 180,
 }: {
   points: TimeseriesPoint[];
   mounted: boolean;
+  bucketSeconds: number | null;
   height?: number;
-  bucketLabel?: string;
 }) {
   const slice = points.slice(-60);
+  if (!slice.length) return null;
+
   const vals: number[] = [];
   for (const p of slice) {
     if (p.p95TtmsMs != null && Number.isFinite(p.p95TtmsMs)) vals.push(Number(p.p95TtmsMs));
     if (p.p99TtmsMs != null && Number.isFinite(p.p99TtmsMs)) vals.push(Number(p.p99TtmsMs));
   }
+
   const minV = vals.length ? Math.min(...vals) : 0;
   const maxV = vals.length ? Math.max(...vals) : 1;
   const span = maxV - minV || 1;
 
-  const w = Math.max(1, slice.length - 1);
+  // SVG layout
+  const w = 360;
+  const h = height;
+  const padLeft = 54;
+  const padRight = 12;
+  const padTop = 12;
+  const padBottom = 44;
+  const plotW = w - padLeft - padRight;
+  const plotH = h - padTop - padBottom;
 
+  const n = slice.length;
+  const denom = Math.max(1, n - 1);
+
+  function x(i: number) {
+    return padLeft + (i / denom) * plotW;
+  }
   function y(v: number | null) {
     if (v == null || !Number.isFinite(Number(v))) return null;
-    const t = (Number(v) - minV) / span;
-    return Math.round((1 - t) * (height - 28) + 12);
+    const t = (Number(v) - minV) / span; // 0..1
+    return padTop + (1 - t) * plotH;
   }
 
   const p95Pts: string[] = [];
   const p99Pts: string[] = [];
-
   slice.forEach((p, i) => {
-    const x = Math.round((i / w) * 300);
-    const y95 = y(p.p95TtmsMs);
-    const y99 = y(p.p99TtmsMs);
-    if (y95 != null) p95Pts.push(`${x},${y95}`);
-    if (y99 != null) p99Pts.push(`${x},${y99}`);
+    const yy95 = y(p.p95TtmsMs);
+    const yy99 = y(p.p99TtmsMs);
+    const xx = x(i);
+    if (yy95 != null) p95Pts.push(`${xx},${yy95}`);
+    if (yy99 != null) p99Pts.push(`${xx},${yy99}`);
   });
 
+  const yTicks = 4;
+  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
+    Math.round(minV + ((span * (yTicks - i)) / yTicks))
+  );
+
+  const xLabelEvery = Math.max(1, Math.floor(n / 6));
   const latest = slice[slice.length - 1];
-  const latestText = latest
-    ? `${formatTimestampClientSafe(latest.ts, mounted)} • p95=${formatMsOrNA(latest.p95TtmsMs)} • p99=${formatMsOrNA(
-        latest.p99TtmsMs
-      )}`
-    : "n/a";
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
@@ -557,65 +546,127 @@ function TimeseriesLines({
         <div className="min-w-0">
           <div className="text-xs text-gray-500">Latency timeseries</div>
           <div className="text-sm font-semibold text-gray-900">p95 / p99 TTMS</div>
-          {bucketLabel ? <div className="mt-1 text-[11px] text-gray-500">{bucketLabel}</div> : null}
+          <div className="text-[11px] text-gray-500 mt-1">
+            {slice.length
+              ? `${formatTimestampClientSafe(slice[0].ts, mounted)} → ${formatTimestampClientSafe(
+                  slice[slice.length - 1].ts,
+                  mounted
+                )} (bucket: ${bucketLabel(bucketSeconds)})`
+              : `bucket: ${bucketLabel(bucketSeconds)}`}
+          </div>
         </div>
         <div className="text-right">
           <div className="text-xs text-gray-500">Latest</div>
-          <div className="text-[11px] text-gray-700">{latestText}</div>
+          <div className="text-[11px] text-gray-700">
+            {latest
+              ? `${timeLabelShort(latest.ts, mounted)} • p95=${formatMsOrNA(latest.p95TtmsMs)} • p99=${formatMsOrNA(
+                  latest.p99TtmsMs
+                )}`
+              : "n/a"}
+          </div>
         </div>
       </div>
 
       <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
-        <svg viewBox="0 0 300 120" className="w-full" style={{ height }}>
-          <text x="8" y="60" fontSize="10" fill="#6b7280" transform="rotate(-90 8 60)">
-            ms
+        <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height }}>
+          {/* axis titles */}
+          <text
+            x={padLeft - 38}
+            y={padTop + plotH / 2}
+            fontSize="10"
+            fill="#6b7280"
+            transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
+          >
+            Latency (ms)
           </text>
-          <text x="150" y="116" fontSize="10" fill="#6b7280" textAnchor="middle">
-            time (bucket)
+          <text
+            x={padLeft + plotW / 2}
+            y={h - 10}
+            fontSize="10"
+            fill="#6b7280"
+            textAnchor="middle"
+          >
+            Time ({bucketLabel(bucketSeconds)} buckets)
           </text>
 
-          <g opacity={0.35}>
-            <line x1="0" y1="30" x2="300" y2="30" stroke="currentColor" />
-            <line x1="0" y1="60" x2="300" y2="60" stroke="currentColor" />
-            <line x1="0" y1="90" x2="300" y2="90" stroke="currentColor" />
-          </g>
+          {/* y grid + numeric ticks */}
+          {tickVals.map((v, idx) => {
+            const t = (v - minV) / span;
+            const yy = padTop + (1 - t) * plotH;
+            return (
+              <g key={idx} opacity={0.35}>
+                <line x1={padLeft} y1={yy} x2={padLeft + plotW} y2={yy} stroke="currentColor" />
+                <text
+                  x={padLeft - 10}
+                  y={yy + 3}
+                  fontSize="10"
+                  fill="#6b7280"
+                  textAnchor="end"
+                  opacity={0.95}
+                >
+                  {v}
+                </text>
+              </g>
+            );
+          })}
 
+          {/* lines */}
           <polyline
             fill="none"
             stroke="rgba(37,99,235,0.92)"
             strokeWidth="2.75"
             strokeLinecap="round"
             strokeLinejoin="round"
-            opacity="1"
             points={p95Pts.join(" ")}
           />
           <polyline
             fill="none"
-            stroke="rgba(17,24,39,0.38)"
+            stroke="rgba(17,24,39,0.45)"
             strokeWidth="2.75"
             strokeLinecap="round"
             strokeLinejoin="round"
-            opacity="1"
             points={p99Pts.join(" ")}
           />
+
+          {/* x labels */}
+          {slice.map((p, i) => {
+            const show = i % xLabelEvery === 0 || i === slice.length - 1;
+            if (!show) return null;
+            const xx = x(i);
+            const label = timeLabelShort(p.ts, mounted);
+            return (
+              <text
+                key={`xl-${p.ts}`}
+                x={xx}
+                y={padTop + plotH + 18}
+                fontSize="10"
+                fill="#6b7280"
+                textAnchor="middle"
+              >
+                {label}
+              </text>
+            );
+          })}
         </svg>
 
-        <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500">
-          <div>
-            min <span className="text-gray-700">{formatMsOrNA(minV)}</span>
-          </div>
-          <div>
-            max <span className="text-gray-700">{formatMsOrNA(maxV)}</span>
-          </div>
-        </div>
-        <div className="mt-2 flex items-center justify-center gap-4 text-[11px] text-gray-600">
+        <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-600">
           <div className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(37,99,235,0.92)" }} />
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-full"
+              style={{ background: "rgba(37,99,235,0.92)" }}
+            />
             <span>p95</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(17,24,39,0.38)" }} />
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-full"
+              style={{ background: "rgba(17,24,39,0.45)" }}
+            />
             <span>p99</span>
+          </div>
+          <div className="text-gray-400">
+            min <span className="text-gray-700">{Math.round(minV)}ms</span> • max{" "}
+            <span className="text-gray-700">{Math.round(maxV)}ms</span>
           </div>
         </div>
       </div>
@@ -676,7 +727,9 @@ function ChatPanel({
         </div>
       </div>
 
-      <div className="text-xs text-gray-400 mb-3">{isLoading ? "⏳ Running..." : "\u00A0"}</div>
+      <div className="text-xs text-gray-400 mb-3">
+        {isLoading ? "⏳ Running..." : "\u00A0"}
+      </div>
 
       <div className="space-y-2">
         <div className="flex gap-2">
@@ -741,7 +794,7 @@ export default function CDNTriageApp() {
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
-  // Refs
+  // Refs (TWO scroll containers, so chat exists in both places)
   const chatScrollLeftRef = useRef<HTMLDivElement | null>(null);
   const chatScrollRightRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
@@ -789,6 +842,7 @@ export default function CDNTriageApp() {
     if (!lastMessage) return;
     if (lastMessageIdRef.current !== lastMessage.id) {
       lastMessageIdRef.current = lastMessage.id;
+
       const els = [chatScrollLeftRef.current, chatScrollRightRef.current].filter(Boolean) as HTMLDivElement[];
       for (const el of els) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     }
@@ -860,7 +914,6 @@ export default function CDNTriageApp() {
       startTs: t.startTs ? String(t.startTs) : null,
       endTs: t.endTs ? String(t.endTs) : null,
       points,
-
       statusCodeSeries: Array.isArray(t.statusCodeSeries) ? t.statusCodeSeries.map(String) : undefined,
       hostSeries: Array.isArray(t.hostSeries) ? t.hostSeries.map(String) : undefined,
       crcSeries: Array.isArray(t.crcSeries) ? t.crcSeries.map(String) : undefined,
@@ -1173,7 +1226,7 @@ export default function CDNTriageApp() {
     );
   }
 
-  const bucketLabel = ts ? prettyBucketLabel(ts, mounted) : "";
+  const bucketSeconds = ts?.bucketSeconds ?? metricsJson?.timeseries?.bucketSeconds ?? null;
 
   return (
     <main className="min-h-screen w-full bg-gray-50 px-6 py-6">
@@ -1217,9 +1270,7 @@ export default function CDNTriageApp() {
                           isActive ? "bg-blue-50 border-blue-300" : "bg-white border-gray-200 hover:bg-gray-50"
                         }`}
                       >
-                        <div className="text-xs font-semibold text-gray-900">
-                          {formatTimestampClientSafe(run.timestamp, mounted)}
-                        </div>
+                        <div className="text-xs font-semibold text-gray-900">{formatTimestampClientSafe(run.timestamp, mounted)}</div>
                         <div className="text-xs text-gray-600 mt-1">{subtitle}</div>
                         <div className="text-xs text-gray-500 mt-1 truncate">{title}</div>
                         <div className="flex gap-2 mt-3">
@@ -1298,9 +1349,7 @@ export default function CDNTriageApp() {
                             </option>
                           ))}
                         </select>
-                        <div className="text-xs text-gray-500 mt-2">
-                          Public-safe mock partner routing (real partner → DB mapping later).
-                        </div>
+                        <div className="text-xs text-gray-500 mt-2">Public-safe mock partner routing (real partner → DB mapping later).</div>
                       </div>
                     )}
 
@@ -1326,9 +1375,7 @@ export default function CDNTriageApp() {
                         disabled={csvInputsDisabled}
                       />
                       {uploadedFile && <div className="text-xs text-gray-600 mt-2">Selected: {uploadedFile.name}</div>}
-                      <div className="text-xs text-gray-500 mt-2">
-                        Note: history can reload URL-based runs. File uploads can't be reloaded (browser limitation).
-                      </div>
+                      <div className="text-xs text-gray-500 mt-2">Note: history can reload URL-based runs. File uploads can't be reloaded (browser limitation).</div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
@@ -1362,9 +1409,7 @@ export default function CDNTriageApp() {
                             </option>
                           ))}
                         </select>
-                        {REGION_OPTIONS.length <= 1 ? (
-                          <div className="text-[11px] text-gray-400 mt-2">Run once to populate region options.</div>
-                        ) : null}
+                        {REGION_OPTIONS.length <= 1 && <div className="text-[11px] text-gray-400 mt-2">Run once to populate region options.</div>}
                       </div>
 
                       <div>
@@ -1381,9 +1426,7 @@ export default function CDNTriageApp() {
                             </option>
                           ))}
                         </select>
-                        {POP_OPTIONS.length <= 1 ? (
-                          <div className="text-[11px] text-gray-400 mt-2">Run once to populate POP options.</div>
-                        ) : null}
+                        {POP_OPTIONS.length <= 1 && <div className="text-[11px] text-gray-400 mt-2">Run once to populate POP options.</div>}
                       </div>
 
                       <div>
@@ -1428,17 +1471,17 @@ export default function CDNTriageApp() {
                       </button>
                     </div>
 
-                    {errorMessage ? (
+                    {errorMessage && (
                       <div className="rounded-lg border border-red-300 bg-red-50 p-3">
                         <p className="text-sm text-red-800">
                           <strong>Error:</strong> {errorMessage}
                         </p>
                       </div>
-                    ) : null}
+                    )}
                   </div>
                 </div>
 
-                {parsedMetrics ? (
+                {parsedMetrics && (
                   <div className="grid grid-cols-2 gap-3">
                     <MetricCard label="totalRequests" value={formatIntOrNA(parsedMetrics.totalRequests)} />
                     <MetricCard label="p95TtmsMs" value={formatMsOrNA(parsedMetrics.p95TtmsMs)} />
@@ -1453,14 +1496,12 @@ export default function CDNTriageApp() {
                       }
                     />
                   </div>
-                ) : null}
+                )}
 
                 {/* Summary */}
                 <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                   <div className="font-medium text-gray-900 mb-2">Summary</div>
-                  <pre className="whitespace-pre-wrap text-sm text-gray-700 font-mono">
-                    {summaryText || "Run triage to see results..."}
-                  </pre>
+                  <pre className="whitespace-pre-wrap text-sm text-gray-700 font-mono">{summaryText || "Run triage to see results..."}</pre>
                 </div>
 
                 <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -1475,41 +1516,45 @@ export default function CDNTriageApp() {
               <div className="space-y-4 min-w-0">
                 {ts && ts.points.length > 0 ? (
                   <>
-                    {/* Status codes (stacked) */}
-                    <StackedKeyedTimeseries
-                      ts={ts}
-                      metricsJson={metricsJson}
-                      mounted={mounted}
-                      kind="status"
+                    <StackedBarTimeseries
                       title="Total events by status code (stacked)"
                       subtitle="Traffic timeseries"
-                      seriesLimit={14}
+                      ts={ts}
+                      mounted={mounted}
+                      bucketSeconds={bucketSeconds}
+                      seriesKeys={ts.statusCodeSeries || []}
+                      getMap={(p) => p.statusCountsByCode}
+                      height={190}
                     />
 
-                    {/* ✅ NEW: Total events by host (stacked) */}
-                    <StackedKeyedTimeseries
-                      ts={ts}
-                      metricsJson={metricsJson}
-                      mounted={mounted}
-                      kind="host"
+                    <StackedBarTimeseries
                       title="Total events by host (stacked)"
-                      subtitle="Host distribution"
-                      seriesLimit={10}
-                    />
-
-                    {/* ✅ NEW: CRC error code chart (stacked) */}
-                    <StackedKeyedTimeseries
+                      subtitle="Traffic timeseries"
                       ts={ts}
-                      metricsJson={metricsJson}
                       mounted={mounted}
-                      kind="crc"
-                      title="Total events by CRC code (stacked)"
-                      subtitle="CRC distribution"
-                      seriesLimit={10}
+                      bucketSeconds={bucketSeconds}
+                      seriesKeys={ts.hostSeries || []}
+                      getMap={(p) => p.hostCountsByHost}
+                      height={190}
                     />
 
-                    {/* Latency chart */}
-                    <TimeseriesLines points={ts.points} mounted={mounted} bucketLabel={bucketLabel} />
+                    <StackedBarTimeseries
+                      title="Total events by CRC code (stacked)"
+                      subtitle="Cache / response classification"
+                      ts={ts}
+                      mounted={mounted}
+                      bucketSeconds={bucketSeconds}
+                      seriesKeys={ts.crcSeries || []}
+                      getMap={(p) => p.crcCountsByCrc}
+                      height={190}
+                    />
+
+                    <LatencyTimeseriesLines
+                      points={ts.points}
+                      mounted={mounted}
+                      bucketSeconds={bucketSeconds}
+                      height={190}
+                    />
                   </>
                 ) : (
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">
@@ -1517,7 +1562,6 @@ export default function CDNTriageApp() {
                   </div>
                 )}
 
-                {/* Chat panel on the right */}
                 <ChatPanel
                   title="Chat (Main panel)"
                   mounted={mounted}
