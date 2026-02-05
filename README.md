@@ -1,24 +1,17 @@
-# CDN Incident Triage Bot  
+# CDN Incident Triage Bot
 
-**Author & Maintainer:** Krishna Reddy 
+**V1 (n8n + Slack) → V2 (Standalone UI + API)**  
+**Author & Maintainer:** Krishna Reddy
 
-**V1 (n8n + Slack) → V2 (Standalone UI + API)**
- 
+An automated CDN incident triage system that analyzes delivery telemetry (edge, mid-tier, cache, URL patterns, and client signals) and produces **evidence-backed diagnosis and drill-down insights**.
 
-An automated CDN incident triage system that analyzes delivery telemetry
-(edge, mid-tier, cache, URL patterns, and client signals) and produces
-**evidence-backed diagnosis and drill-down insights**.
-
-This project mirrors real-world CDN/video operations and demonstrates
-how operational analytics, automation, and tooling evolution can be
-applied safely in production-style workflows.
+This project mirrors real-world CDN/video operations and demonstrates how operational analytics, automation, and tooling evolution can be applied safely in production-style workflows.
 
 ---
 
 ## Data Safety
 
-All telemetry used in this project is **synthetically generated** to mirror
-real-world CDN traffic patterns.
+All telemetry used in this project is **synthetically generated** to mirror real-world CDN traffic patterns.
 
 - No production logs
 - No customer data
@@ -30,45 +23,28 @@ real-world CDN traffic patterns.
 
 CDN incident triage is often:
 
-- manual and time-consuming  
-- dependent on tribal knowledge  
-- difficult to standardize across teams  
+- manual and time-consuming
+- dependent on tribal knowledge
+- difficult to standardize across teams
 
 Engineers must correlate:
-- edge vs upstream errors  
-- cache behavior  
-- latency spikes  
-- URL types (manifest vs segment)  
-- regional POP failures  
-- client / User-Agent patterns  
 
-**This project automates first-level triage** using deterministic rules,
-clear metrics, and explainable summaries.
+- edge vs upstream errors
+- cache behavior
+- latency spikes
+- URL types (manifest vs segment)
+- regional POP failures
+- client / User-Agent patterns
+
+**This project automates first-level triage** using deterministic rules, clear metrics, and explainable summaries.
 
 ---
 
-# V1 — n8n + Slack (Prototype Phase)
+## V1 — n8n + Slack (Prototype Phase)
 
 V1 focused on **speed of iteration and signal validation**.
 
-### Why a UI Was Required (Beyond Automation)
-
-While n8n worked well for automated, one-shot triage, it is not designed
-for interactive or conversational workflows.
-
-Chat-based triage requires:
-- deterministic and reproducible metrics
-- explicit request/response boundaries
-- inspectable intermediate state
-- clear separation between computation and explanation
-
-The move to a UI + API architecture in V2 was a prerequisite for any
-future chat or agent-based interface. The UI externalizes system state
-and makes reasoning observable, allowing conversational layers to sit
-on top without compromising correctness.
-
-
-## V1 High-Level Architecture
+### V1 High-Level Architecture
 
 ```mermaid
 flowchart LR
@@ -81,24 +57,23 @@ flowchart LR
 
 ### Why a UI Was Required (Beyond Automation)
 
-While n8n worked well for automated, one-shot triage, it is not designed
-for interactive or conversational workflows.
+While n8n worked well for automated, one-shot triage, it is not designed for interactive or conversational workflows.
 
 Chat-based triage requires:
+
 - deterministic and reproducible metrics
 - explicit request/response boundaries
 - inspectable intermediate state
 - clear separation between computation and explanation
 
-The move to a UI + API architecture in V2 was a prerequisite for any
-future chat or agent-based interface. The UI externalizes system state
-and makes reasoning observable, allowing conversational layers to sit
-on top without compromising correctness.
+The move to a UI + API architecture in V2 was a prerequisite for any future chat or agent-based interface. The UI externalizes system state and makes reasoning observable, allowing conversational layers to sit on top without compromising correctness.
 
+---
 
-## Demo UI (Deterministic) — Triage + Chat Controller
+## V2 — Demo UI (Deterministic) — Triage + Chat Controller
 
 This demo UI provides:
+
 - CSV URL or CSV file upload
 - Filter controls: service, region, pop, window (minutes)
 - Run History (last 10) stored in localStorage
@@ -113,9 +88,10 @@ This demo UI provides:
 - All requests flow through a single `/api/triage` endpoint.
 - CSV logs are used for demos; ClickHouse will replace CSV in future versions without changing the UI.
 
+### Chat Behavior (Phase B1)
 
-### Chat behavior (Phase B1)
 Chat is not an LLM yet. It is a control surface:
+
 - User types a message
 - We optionally parse simple overrides from text:
   - `service=vod` / `svc=vod`
@@ -124,31 +100,197 @@ Chat is not an LLM yet. It is a control surface:
   - `win=60` / `window=60`
 - Then the UI runs `/api/triage` deterministically and prints the summary
 
-### Example chat inputs
+### Example Chat Inputs
+
 - `run triage`
 - `service=vod region=usw2 pop=sjc win=60`
 - `svc=live win=15`
 
+### Why Deterministic First?
 
-### Why deterministic first?
 We intentionally keep metrics computation deterministic for:
+
 - reproducibility
 - debugging
 - future ClickHouse swap without changing the UI
 
+### ClickHouse (Mock Mode)
+
+The ClickHouse data path is wired end-to-end (UI → API → metrics → charts) using **simulated data**.
+
+This validates:
+
+- schema assumptions
+- API contracts
+- metrics shape
+- UI and chat behavior
+
+No ClickHouse credentials are required to run or demo the system.
+
+The mock runner will be replaced with real ClickHouse execution **without any UI or API changes**.
+
 ---
 
-## Update (2026-02-04) — V2 Freeze
+## Update (2026-02-04) — V2 Freeze: Deterministic UI + Metrics Contract
 
-V2 is now frozen as a deterministic analytics platform.
+Today we **froze V2** as a fully deterministic triage system with a stable data contract. All LLM/agent features are deferred to **V3**.
 
-- Unified CSV + ClickHouse metrics contract
-- Fixed 5-minute bucket sizing
-- Stacked status / host / CRC timeseries
-- Stable legend ordering
-- Hardened chat controller
-- Production-shape ClickHouse mock
+### What Shipped in V2 (Frozen)
 
-All AI/LLM features are deferred to V3.
+#### ✅ 1) One Metrics Contract for CSV + ClickHouse
 
+Both data sources now return the **same `metricsJson` shape**, so the UI never branches on datasource.
 
+Key contract:
+
+- `metricsJson.available` (regions/pops/statusCodes/etc)
+- `metricsJson.timeseries` with stable per-bucket points + series order
+
+#### ✅ 2) Fixed Bucket Sizing (Parity Across Modes)
+
+Timeseries bucket size is now forced to:
+
+- **300 seconds (5 minutes)** for **CSV and ClickHouse**
+
+This fixes:
+
+- bucket mismatches
+- time legend drift
+- chart alignment errors between CSV vs ClickHouse
+
+#### ✅ 3) Timeseries Expanded for Stacked Breakdowns
+
+Each timeseries point now includes stacked maps:
+
+- `statusCountsByCode` — counts by HTTP status code per bucket
+- `hostCountsByHost` — counts by edge host per bucket
+- `crcCountsByCrc` — counts by CRC error code per bucket
+
+And the timeseries includes stable legend ordering:
+
+- `statusCodeSeries`
+- `hostSeries`
+- `crcSeries`
+
+#### ✅ 4) UI Updated to Reflect New Timeseries Fields
+
+UI now renders deterministic charts driven only from `metricsJson.timeseries`:
+
+- Stacked **status code** chart (existing)
+- **Total events by host** stacked chart (added)
+- **CRC error code** chart (added)
+- Correct bucket time labeling (client-safe formatting)
+
+#### ✅ 5) Chat Controller Hardening (No Build Breakers)
+
+Chat parsing + validation is stable:
+
+- `service` validated via `ALLOWED.service`
+- `region/pop` validated dynamically via discovered options
+- safety guard resets stale region/pop when options update
+
+#### ✅ 6) Metrics Engine Upgrades (CSV Path)
+
+`lib/triage/metricsEngine.js` now includes:
+
+- robust CSV normalization and aliasing
+- host/url parsing → `edge_host`, `svc`, `region`, `pop`
+- service bucketing (`live|vod|other`) for deterministic filtering
+- per-bucket aggregation for status/host/crc stacked charts
+
+#### ✅ 7) ClickHouse Mock Upgraded (Production-Shape Output)
+
+`lib/clickhouse/runMockClickhouseTriage.ts` now generates:
+
+- realistic distributions
+- deterministic totals and p95/p99
+- full stacked maps + stable series ordering
+- same timeseries bucket size as CSV
+
+### V2 Definition (Frozen)
+
+**V2 is deterministic analytics only.**
+
+- UI + API + Metrics Engine must remain reproducible
+- No probabilistic reasoning in core outputs
+- ClickHouse real integration can replace mock **without changing UI contract**
+
+---
+
+## V3 (Next) — LLM / Intelligence Layer (Not Part of V2)
+
+V3 will add an optional AI layer **on top of frozen V2 outputs**, never inside computation.
+
+Planned V3 capabilities:
+
+- LLM explanation of `summaryText` + evidence formatting
+- RAG over runbooks / traffic router / operational docs
+- "What changed?" comparisons between runs
+- Hypothesis generation (root cause candidates) using deterministic metrics as grounding
+- Guided drill-down prompts (next best query / filter suggestions)
+
+**Rule:** V3 can suggest and explain, but V2 remains source of truth for numbers.
+
+---
+
+## Chat → Execution Architecture (Deterministic, LLM-safe)
+
+This project intentionally separates **natural language interaction** from **execution and data access**.
+
+> **The UI owns execution context.  
+> Chat (LLM now or later) only provides hints.  
+> Deterministic code decides what actually runs.**
+
+This design is critical for:
+
+- safety
+- reproducibility
+- auditability
+- clean migration from demo → production
+
+---
+
+## High-Level Flow
+
+```mermaid
+flowchart TD
+    User[User<br/>Chat or UI] --> UI[UI State<br/>dataSource, partner]
+    User --> Chat[Chat / LLM<br/>Intent + Hints]
+    Chat -->|Hints only| Resolver[Deterministic Resolver]
+    UI -->|Execution Context| Resolver
+    Resolver -->|Resolved Filters| Engine[Metrics Engine]
+    Engine -->|metricsJson| UI
+```
+
+---
+
+## Authoritative Execution Flow
+
+```javascript
+// 1) UI owns execution context (source of truth)
+const executionContext = {
+  dataSource, // "csv" | "clickhouse"
+  partner     // ClickHouse only
+};
+
+// 2) Chat / LLM provides hints only (NO execution decisions)
+const hints = {
+  serviceHint,  // "vod", "live"
+  regionHint,   // "usw2", "boston"
+  windowHint    // minutes (e.g. 60, 360)
+};
+
+// 3) Deterministic resolver applies hints safely
+const resolvedFilters = applyHints({
+  currentFilters,
+  hints,
+  availableRegions,
+  availablePops
+});
+
+// 4) Triage runs ONLY on the selected engine
+runTriage({
+  ...executionContext,
+  ...resolvedFilters
+});
+```
