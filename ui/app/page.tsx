@@ -177,6 +177,7 @@ function looksLikeTriageQuery(text: string): boolean {
     "p99",
     "ttms",
     "triage",
+    "run",
   ];
   return keywords.some((keyword) => normalized.includes(keyword));
 }
@@ -279,6 +280,128 @@ function formatCountTick(v: number): string {
 function timeLabelShort(tsIso: string) {
   // Keep ticks simple + deterministic (UTC)
   return formatUtcHM(tsIso);
+}
+
+// ------------------------------------------------------------
+// Chat "AI-smart" helpers (NO LLM)
+// ------------------------------------------------------------
+type ChatIntent = {
+  command: "help" | "reset" | "show_filters" | "explain" | "run" | null;
+  service?: string | null;
+  region?: string | null;
+  pop?: string | null;
+  windowMinutes?: number | null;
+  mentionedRegion?: boolean;
+  mentionedPop?: boolean;
+};
+
+function normalizeToken(v: string) {
+  return String(v || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^["']|["']$/g, "");
+}
+
+function parseWindowToMinutes(raw: string): number | null {
+  const s = normalizeToken(raw);
+  if (!s) return null;
+
+  // formats: 60, 60m, 2h, 6hr, 90min
+  const m = s.match(
+    /^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$/
+  );
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return null;
+
+  const unit = m[2] || "m";
+  if (unit.startsWith("h")) return n * 60;
+  return n;
+}
+
+function parseChatIntent(text: string): ChatIntent {
+  const t = normalizeText(text);
+
+  // commands
+  if (
+    t === "help" ||
+    t === "?" ||
+    t.startsWith("help ") ||
+    t.includes("what can you do")
+  )
+    return { command: "help" };
+
+  if (t === "reset" || t === "clear" || t === "start over" || t === "wipe")
+    return { command: "reset" };
+
+  if (
+    t === "filters" ||
+    t === "show filters" ||
+    t === "show filter" ||
+    t === "current filters"
+  )
+    return { command: "show_filters" };
+
+  if (t === "explain" || t.startsWith("explain ") || t.includes("what is this"))
+    return { command: "explain" };
+
+  if (t === "run" || t === "triage" || t === "go" || t === "execute")
+    return { command: "run" };
+
+  // extraction (supports key=value AND natural-ish phrasing)
+  const serviceKV = t.match(/\b(service|svc)\s*=\s*([a-z0-9_]+)\b/);
+  const serviceWord = t.match(/\b(service|svc)\s+([a-z0-9_]+)\b/);
+  let service = serviceKV?.[2] || serviceWord?.[2] || null;
+
+  if (!service) {
+    const svcLoose = t.match(/\b(vod|live|all)\b/);
+    service = svcLoose?.[1] || null;
+  }
+
+  const regionKV = t.match(/\bregion\s*=\s*([a-z0-9_]+)\b/);
+  const regionWord = t.match(/\bregion\s+([a-z0-9_]+)\b/);
+  const regionIn = t.match(/\bin\s+([a-z0-9_]+)\b/);
+  const region = regionKV?.[1] || regionWord?.[1] || regionIn?.[1] || null;
+
+  const popKV = t.match(/\bpop\s*=\s*([a-z0-9_\-]+)\b/);
+  const popWord = t.match(/\bpop\s+([a-z0-9_\-]+)\b/);
+  const popAt = t.match(/\bat\s+([a-z0-9_\-]+)\b/);
+  const pop = popKV?.[1] || popWord?.[1] || popAt?.[1] || null;
+
+  const winKV = t.match(/\b(win|window)\s*=\s*([0-9a-z]+)\b/);
+  const winWord = t.match(/\b(win|window)\s+([0-9a-z]+)\b/);
+  const lastWord = t.match(/\blast\s+([0-9a-z]+)\b/);
+  const windowMinutes =
+    parseWindowToMinutes(winKV?.[2] || winWord?.[2] || lastWord?.[1] || "") ??
+    null;
+
+  const mentionedRegion = /\bregion\b|\bin\b/.test(t);
+  const mentionedPop = /\bpop\b|\bat\b/.test(t);
+
+  return {
+    command: null,
+    service: service ? normalizeToken(service) : null,
+    region: region ? normalizeToken(region) : null,
+    pop: pop ? normalizeToken(pop) : null,
+    windowMinutes,
+    mentionedRegion,
+    mentionedPop,
+  };
+}
+
+function buildFiltersSummary(args: {
+  dataSource: DataSource;
+  partner: Partner;
+  service: string;
+  region: string;
+  pop: string;
+  windowMinutes: number;
+}) {
+  const { dataSource, partner, service, region, pop, windowMinutes } = args;
+  const base = `svc=${service}, region=${region}, pop=${pop}, win=${windowMinutes}m`;
+  return dataSource === "clickhouse"
+    ? `source=clickhouse, partner=${partner}, ${base}`
+    : `source=csv, ${base}`;
 }
 
 // ------------------------------------------------------------
@@ -716,7 +839,7 @@ function LatencyTimeseriesLines({
 }
 
 // ------------------------------------------------------------
-// Chat Panel (reusable — rendered in TWO places)
+// Chat Panel (single instance - Option A)
 // ------------------------------------------------------------
 function ChatPanel({
   title,
@@ -784,7 +907,7 @@ function ChatPanel({
             type="text"
             disabled={isLoading}
             className="flex-1 rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 placeholder-gray-400 disabled:opacity-60 disabled:cursor-not-allowed"
-            placeholder="Try: service=vod region=usw2 pop=sjc win=60"
+            placeholder="Try: vod in usw2 at sjc last 60m"
             value={chatInput ?? ""}
             onChange={(e) => setChatInput(e.target.value)}
             onKeyDown={(e) => {
@@ -803,7 +926,9 @@ function ChatPanel({
           </button>
         </div>
         <div className="text-xs text-gray-500">
-          {chatInput.trim() ? "Enter sends" : "Try: service=vod region=usw2 pop=sjc win=60"}
+          {chatInput.trim()
+            ? "Enter sends"
+            : "Try: help • filters • reset • explain • run"}
         </div>
       </div>
     </div>
@@ -841,9 +966,8 @@ export default function CDNTriageApp() {
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
-  // Refs (TWO scroll containers, so chat exists in both places)
-  const chatScrollLeftRef = useRef<HTMLDivElement | null>(null);
-  const chatScrollRightRef = useRef<HTMLDivElement | null>(null);
+  // Refs (single chat scroll container - Option A)
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
 
   useEffect(() => setMounted(true), []);
@@ -862,7 +986,7 @@ export default function CDNTriageApp() {
         type: "text",
         role: "system",
         text:
-          "Chat ready. Type a message and I’ll run triage using the current filters.\n\nTry:\nservice=vod region=usw2 pop=sjc win=60",
+          "Chat ready. Type a message and I’ll run triage using the current filters.\n\nExamples:\n- vod in usw2 at sjc last 60m\n- service=live region=all win=360\n\nCommands: help • filters • reset • explain • run",
         timestamp: getCurrentTimestamp(),
       },
     ]);
@@ -883,18 +1007,14 @@ export default function CDNTriageApp() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(runHistory));
   }, [runHistory, mounted]);
 
-  // Auto scroll BOTH chat panels
+  // Auto scroll chat panel
   useEffect(() => {
     const lastMessage = chatMessages[chatMessages.length - 1];
     if (!lastMessage) return;
     if (lastMessageIdRef.current !== lastMessage.id) {
       lastMessageIdRef.current = lastMessage.id;
-
-      const els = [chatScrollLeftRef.current, chatScrollRightRef.current].filter(
-        Boolean
-      ) as HTMLDivElement[];
-      for (const el of els)
-        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      const el = chatScrollRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     }
   }, [chatMessages]);
 
@@ -1122,56 +1242,180 @@ export default function CDNTriageApp() {
     setChatInput("");
     setErrorMessage("");
 
+    // Small talk shortcut
     if (isGreetingOrSmallTalk(text)) {
       addChatText(
         "assistant",
-        "Hey! 👋 I can triage CDN logs.\n\nTry:\nservice=vod region=usw2 pop=sjc win=60"
+        "Hey 👋\n\nTry:\n- `vod in usw2 at sjc last 60m`\n- `service=live region=all win=360`\n\nCommands: `help`, `filters`, `reset`, `explain`, `run`"
       );
       return;
     }
 
-    if (!looksLikeTriageQuery(text)) {
+    const intent = parseChatIntent(text);
+
+    // ---- commands (no triage) ----
+    if (intent.command === "help") {
       addChatText(
         "assistant",
-        "I didn't see filters yet.\n\nTry:\nservice=vod region=usw2 pop=sjc win=60"
+        [
+          "I can run deterministic triage from chat (no LLM needed).",
+          "",
+          "Examples:",
+          "- `vod in usw2 at sjc last 60m`",
+          "- `service=live region=all pop=all win=360`",
+          "- `window 120`",
+          "",
+          "Commands:",
+          "- `filters` → show current filters",
+          "- `reset` → reset filters to defaults",
+          "- `explain` → what metrics/charts mean",
+          "- `run` → run triage with current filters",
+        ].join("\n")
       );
       return;
     }
 
-    const lowerText = text.toLowerCase();
-    const serviceMatch = lowerText.match(/\b(service|svc)\s*=\s*([a-z0-9_]+)\b/);
-    const regionMatch = lowerText.match(/\bregion\s*=\s*([a-z0-9_]+)\b/);
-    const popMatch = lowerText.match(/\bpop\s*=\s*([a-z0-9_]+)\b/);
-    const windowMatch = lowerText.match(/\b(win|window)\s*=\s*(\d+)\b/);
+    if (intent.command === "show_filters") {
+      addChatText(
+        "assistant",
+        `Current filters:\n${buildFiltersSummary({
+          dataSource,
+          partner,
+          service,
+          region,
+          pop,
+          windowMinutes,
+        })}`
+      );
+      return;
+    }
 
-    const candidateService = serviceMatch?.[2];
-    const candidateRegion = regionMatch?.[1];
-    const candidatePop = popMatch?.[1];
-    const candidateWindow = windowMatch?.[2] ? Number(windowMatch[2]) : null;
+    if (intent.command === "reset") {
+      setService("all");
+      setRegion("all");
+      setPop("all");
+      setWindowMinutes(60);
+      addChatText(
+        "assistant",
+        `Reset ✅\n${buildFiltersSummary({
+          dataSource,
+          partner,
+          service: "all",
+          region: "all",
+          pop: "all",
+          windowMinutes: 60,
+        })}\n\nType \`run\` to execute.`
+      );
+      return;
+    }
+
+    if (intent.command === "explain") {
+      addChatText(
+        "assistant",
+        [
+          "What this computes (deterministic):",
+          "- totalRequests",
+          "- error5xxCount + errorRatePct",
+          "- p95 / p99 TTMS (latency)",
+          "",
+          "Charts:",
+          "- Status stacked: events by HTTP status over time",
+          "- Host stacked: events by host over time",
+          "- CRC stacked: cache/response classification over time",
+          "- Latency line: p95/p99 TTMS over time",
+          "",
+          "Tip: Run once with `region=all pop=all` to discover available region/pop options, then narrow down.",
+        ].join("\n")
+      );
+      return;
+    }
+
+    // ---- apply candidate filters (if any) ----
+    const hasRegionOptions = REGION_OPTIONS.length > 1;
+    const hasPopOptions = POP_OPTIONS.length > 1;
+
+    // If user tried to set region/pop before we have options, nudge them
+    if ((intent.region || intent.pop) && (!hasRegionOptions || !hasPopOptions)) {
+      // allow them to still set service/window even if region/pop can't be validated yet
+      const pending: string[] = [];
+      if (intent.region && !hasRegionOptions)
+        pending.push("region (options not discovered yet)");
+      if (intent.pop && !hasPopOptions)
+        pending.push("pop (options not discovered yet)");
+
+      const svcOk =
+        intent.service == null || ALLOWED.service.has(intent.service);
+      const winOk =
+        intent.windowMinutes == null ||
+        (Number.isFinite(intent.windowMinutes) && intent.windowMinutes > 0);
+
+      if (!svcOk || !winOk) {
+        addChatText(
+          "assistant",
+          "I can’t apply that yet—some values look invalid. Try `help` for examples."
+        );
+        return;
+      }
+
+      // Apply what we can safely apply
+      let changed: string[] = [];
+      if (intent.service != null && intent.service !== service) {
+        setService(intent.service);
+        changed.push(`service=${intent.service}`);
+      }
+      if (
+        intent.windowMinutes != null &&
+        intent.windowMinutes !== windowMinutes
+      ) {
+        setWindowMinutes(intent.windowMinutes);
+        changed.push(`win=${intent.windowMinutes}m`);
+      }
+
+      addChatText(
+        "assistant",
+        [
+          changed.length ? `Updated ✅ (${changed.join(", ")})` : "Got it ✅",
+          "",
+          `I can’t validate ${pending.join(
+            " + "
+          )} until we discover them from data.`,
+          "Run once with broad filters:",
+          "- `region=all pop=all` (or just click “Run Triage”)",
+          "Then try your region/pop again.",
+        ].join("\n")
+      );
+
+      // If user explicitly said "run", run with current/broad filters
+      if (intent.command === "run") {
+        // fall through to run logic below using current state
+      } else {
+        return;
+      }
+    }
 
     const invalids: string[] = [];
 
-    if (candidateService && !ALLOWED.service.has(candidateService)) {
+    if (intent.service && !ALLOWED.service.has(intent.service)) {
       invalids.push(
-        `service=${candidateService} (allowed: ${Array.from(ALLOWED.service).join(
+        `service=${intent.service} (allowed: ${Array.from(ALLOWED.service).join(
           "|"
         )})`
       );
     }
 
-    // validate region/pop only if options discovered from a prior run
-    const hasRegionOptions = REGION_OPTIONS.length > 1;
-    const hasPopOptions = POP_OPTIONS.length > 1;
-
-    if (candidateRegion && hasRegionOptions && !REGION_OPTIONS.includes(candidateRegion)) {
-      invalids.push(`region=${candidateRegion} (allowed: ${REGION_OPTIONS.join("|")})`);
-    }
-    if (candidatePop && hasPopOptions && !POP_OPTIONS.includes(candidatePop)) {
-      invalids.push(`pop=${candidatePop} (allowed: ${POP_OPTIONS.join("|")})`);
+    if (intent.region && hasRegionOptions && !REGION_OPTIONS.includes(intent.region)) {
+      invalids.push(`region=${intent.region} (allowed: ${REGION_OPTIONS.join("|")})`);
     }
 
-    if (candidateWindow != null && (!Number.isFinite(candidateWindow) || candidateWindow <= 0)) {
-      invalids.push(`win=${String(candidateWindow)} (must be a positive number)`);
+    if (intent.pop && hasPopOptions && !POP_OPTIONS.includes(intent.pop)) {
+      invalids.push(`pop=${intent.pop} (allowed: ${POP_OPTIONS.join("|")})`);
+    }
+
+    if (
+      intent.windowMinutes != null &&
+      (!Number.isFinite(intent.windowMinutes) || intent.windowMinutes <= 0)
+    ) {
+      invalids.push(`win=${String(intent.windowMinutes)} (must be positive)`);
     }
 
     if (invalids.length) {
@@ -1179,20 +1423,49 @@ export default function CDNTriageApp() {
         "assistant",
         `I couldn't run that because some values are invalid:\n- ${invalids.join(
           "\n- "
-        )}\n\nTry:\nservice=vod region=usw2 pop=sjc win=60`
+        )}\n\nTry:\n- vod in usw2 at sjc last 60m\n- service=live region=all win=360`
       );
       return;
     }
 
-    const nextService = candidateService ?? service;
-    const nextRegion = candidateRegion ?? region;
-    const nextPop = candidatePop ?? pop;
-    const nextWindow = candidateWindow ?? windowMinutes;
+    const nextService = intent.service ?? service;
+    const nextRegion = intent.region ?? region;
+    const nextPop = intent.pop ?? pop;
+    const nextWindow = intent.windowMinutes ?? windowMinutes;
 
-    if (candidateService) setService(nextService);
-    if (candidateRegion) setRegion(nextRegion);
-    if (candidatePop) setPop(nextPop);
-    if (candidateWindow != null) setWindowMinutes(nextWindow);
+    const changed: string[] = [];
+    if (intent.service && intent.service !== service) {
+      setService(intent.service);
+      changed.push(`service=${intent.service}`);
+    }
+    if (intent.region && intent.region !== region) {
+      setRegion(intent.region);
+      changed.push(`region=${intent.region}`);
+    }
+    if (intent.pop && intent.pop !== pop) {
+      setPop(intent.pop);
+      changed.push(`pop=${intent.pop}`);
+    }
+    if (intent.windowMinutes != null && intent.windowMinutes !== windowMinutes) {
+      setWindowMinutes(intent.windowMinutes);
+      changed.push(`win=${intent.windowMinutes}m`);
+    }
+
+    // Decide whether to run:
+    // - explicit command "run"
+    // - or message contains triage-ish content / filter changes
+    const shouldRun =
+      intent.command === "run" ||
+      looksLikeTriageQuery(text) ||
+      changed.length > 0;
+
+    if (!shouldRun) {
+      addChatText(
+        "assistant",
+        "I didn’t catch a triage command or filters.\nType `help` for examples."
+      );
+      return;
+    }
 
     if (!canRunTriage) {
       addChatText(
@@ -1204,11 +1477,20 @@ export default function CDNTriageApp() {
       return;
     }
 
+    if (changed.length) {
+      addChatText("assistant", `Updated ✅ ${changed.join(", ")}`);
+    }
+
     addChatText(
       "system",
-      `Running triage (${dataSource}${
-        dataSource === "clickhouse" ? `, partner=${partner}` : ""
-      }) with svc=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
+      `Running triage with ${buildFiltersSummary({
+        dataSource,
+        partner,
+        service: nextService,
+        region: nextRegion,
+        pop: nextPop,
+        windowMinutes: nextWindow,
+      })}`
     );
 
     setIsLoading(true);
@@ -1399,22 +1681,22 @@ export default function CDNTriageApp() {
                 </div>
               )}
             </div>
+          </aside>
 
-            {/* Chat panel in sidebar */}
+          {/* Main */}
+          <section className="lg:col-span-9 min-w-0">
+          <div className="mb-6">
             <ChatPanel
-              title="Chat (Filters sidebar)"
+              title="Chat"
               mounted={mounted}
               isLoading={isLoading}
               chatMessages={chatMessages}
               chatInput={chatInput}
               setChatInput={setChatInput}
               onSend={handleChatSend}
-              chatScrollRef={chatScrollLeftRef}
+              chatScrollRef={chatScrollRef}
             />
-          </aside>
-
-          {/* Main */}
-          <section className="lg:col-span-9 min-w-0">
+          </div>
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
               {/* Left */}
               <div className="space-y-4 min-w-0">
@@ -1714,16 +1996,6 @@ export default function CDNTriageApp() {
                   </div>
                 )}
 
-                <ChatPanel
-                  title="Chat (Main panel)"
-                  mounted={mounted}
-                  isLoading={isLoading}
-                  chatMessages={chatMessages}
-                  chatInput={chatInput}
-                  setChatInput={setChatInput}
-                  onSend={handleChatSend}
-                  chatScrollRef={chatScrollRightRef}
-                />
               </div>
               {/* /Right */}
             </div>
@@ -1733,4 +2005,3 @@ export default function CDNTriageApp() {
     </main>
   );
 }
-
