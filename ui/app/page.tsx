@@ -196,6 +196,7 @@ function formatIntOrNA(x: number | null | undefined): string {
   return `${Math.round(Number(x)).toLocaleString()}`;
 }
 
+// Keep this for chat/history (local client-safe formatting is okay there)
 function formatTimestampClientSafe(iso: string, mounted: boolean): string {
   if (!iso) return "";
   if (!mounted) return iso.replace("T", " ").replace(".000Z", "Z");
@@ -243,12 +244,41 @@ function stableColorForKey(key: string) {
   return palette[h % palette.length];
 }
 
-function timeLabelShort(tsIso: string, mounted: boolean) {
-  const s = formatTimestampClientSafe(tsIso, mounted);
-  // try to show just time portion if locale string has comma
-  const parts = s.split(",");
-  if (parts.length >= 2) return parts[1].trim();
-  return s;
+// ---- UTC + axis formatting (charts) ----
+function formatUtcHM(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function formatUtcYmdHm(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const y = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const da = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${y}-${mo}-${da} ${hh}:${mm}`;
+}
+
+function formatCountTick(v: number): string {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "";
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return Math.round(n).toString();
+}
+
+function timeLabelShort(tsIso: string) {
+  // Keep ticks simple + deterministic (UTC)
+  return formatUtcHM(tsIso);
 }
 
 // ------------------------------------------------------------
@@ -316,7 +346,10 @@ function StackedBarTimeseries({
 
   const barCount = points.length;
   const gap = clamp(Math.round(plotW / (barCount * 10)), 2, 6);
-  const barW = Math.max(4, Math.floor((plotW - gap * (barCount - 1)) / barCount));
+  const barW = Math.max(
+    4,
+    Math.floor((plotW - gap * (barCount - 1)) / barCount)
+  );
 
   // ticks
   const yTicks = 4;
@@ -337,11 +370,10 @@ function StackedBarTimeseries({
           <div className="text-sm font-semibold text-gray-900">{title}</div>
           <div className="text-[11px] text-gray-500 mt-1">
             {ts.startTs && ts.endTs
-              ? `${formatTimestampClientSafe(ts.startTs, mounted)} → ${formatTimestampClientSafe(
-                  ts.endTs,
-                  mounted
-                )} (bucket: ${bucketLabel(bucketSeconds)})`
-              : `bucket: ${bucketLabel(bucketSeconds)}`}
+              ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(
+                  ts.endTs
+                )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
+              : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
           </div>
         </div>
 
@@ -349,7 +381,7 @@ function StackedBarTimeseries({
           <div className="text-xs text-gray-500">Latest</div>
           <div className="text-[11px] text-gray-700">
             {latest
-              ? `${timeLabelShort(latest.ts, mounted)} • ${latestTotal.toLocaleString()} events`
+              ? `${formatUtcHM(latest.ts)} UTC • ${latestTotal.toLocaleString()} events`
               : "n/a"}
           </div>
         </div>
@@ -374,7 +406,7 @@ function StackedBarTimeseries({
             fill="#6b7280"
             textAnchor="middle"
           >
-            Time ({bucketLabel(bucketSeconds)} buckets)
+            Time (UTC, {bucketLabel(bucketSeconds)} buckets)
           </text>
 
           {/* y grid + labels */}
@@ -398,7 +430,7 @@ function StackedBarTimeseries({
                   textAnchor="end"
                   opacity={0.95}
                 >
-                  {v >= 1000 ? `${Math.round(v / 1000)}k` : String(v)}
+                  {formatCountTick(v)}
                 </text>
               </g>
             );
@@ -440,7 +472,7 @@ function StackedBarTimeseries({
             const show = i % xLabelEvery === 0 || i === points.length - 1;
             if (!show) return null;
             const x = padLeft + i * (barW + gap) + barW / 2;
-            const label = timeLabelShort(p.ts, mounted);
+            const label = timeLabelShort(p.ts);
             return (
               <text
                 key={`xl-${p.ts}`}
@@ -492,8 +524,10 @@ function LatencyTimeseriesLines({
 
   const vals: number[] = [];
   for (const p of slice) {
-    if (p.p95TtmsMs != null && Number.isFinite(p.p95TtmsMs)) vals.push(Number(p.p95TtmsMs));
-    if (p.p99TtmsMs != null && Number.isFinite(p.p99TtmsMs)) vals.push(Number(p.p99TtmsMs));
+    if (p.p95TtmsMs != null && Number.isFinite(p.p95TtmsMs))
+      vals.push(Number(p.p95TtmsMs));
+    if (p.p99TtmsMs != null && Number.isFinite(p.p99TtmsMs))
+      vals.push(Number(p.p99TtmsMs));
   }
 
   const minV = vals.length ? Math.min(...vals) : 0;
@@ -534,7 +568,7 @@ function LatencyTimeseriesLines({
 
   const yTicks = 4;
   const tickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
-    Math.round(minV + ((span * (yTicks - i)) / yTicks))
+    Math.round(minV + (span * (yTicks - i)) / yTicks)
   );
 
   const xLabelEvery = Math.max(1, Math.floor(n / 6));
@@ -545,23 +579,24 @@ function LatencyTimeseriesLines({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs text-gray-500">Latency timeseries</div>
-          <div className="text-sm font-semibold text-gray-900">p95 / p99 TTMS</div>
+          <div className="text-sm font-semibold text-gray-900">
+            p95 / p99 TTMS
+          </div>
           <div className="text-[11px] text-gray-500 mt-1">
             {slice.length
-              ? `${formatTimestampClientSafe(slice[0].ts, mounted)} → ${formatTimestampClientSafe(
-                  slice[slice.length - 1].ts,
-                  mounted
-                )} (bucket: ${bucketLabel(bucketSeconds)})`
-              : `bucket: ${bucketLabel(bucketSeconds)}`}
+              ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
+                  slice[slice.length - 1].ts
+                )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
+              : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
           </div>
         </div>
         <div className="text-right">
           <div className="text-xs text-gray-500">Latest</div>
           <div className="text-[11px] text-gray-700">
             {latest
-              ? `${timeLabelShort(latest.ts, mounted)} • p95=${formatMsOrNA(latest.p95TtmsMs)} • p99=${formatMsOrNA(
-                  latest.p99TtmsMs
-                )}`
+              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(
+                  latest.p95TtmsMs
+                )} • p99=${formatMsOrNA(latest.p99TtmsMs)}`
               : "n/a"}
           </div>
         </div>
@@ -586,7 +621,7 @@ function LatencyTimeseriesLines({
             fill="#6b7280"
             textAnchor="middle"
           >
-            Time ({bucketLabel(bucketSeconds)} buckets)
+            Time (UTC, {bucketLabel(bucketSeconds)} buckets)
           </text>
 
           {/* y grid + numeric ticks */}
@@ -595,7 +630,13 @@ function LatencyTimeseriesLines({
             const yy = padTop + (1 - t) * plotH;
             return (
               <g key={idx} opacity={0.35}>
-                <line x1={padLeft} y1={yy} x2={padLeft + plotW} y2={yy} stroke="currentColor" />
+                <line
+                  x1={padLeft}
+                  y1={yy}
+                  x2={padLeft + plotW}
+                  y2={yy}
+                  stroke="currentColor"
+                />
                 <text
                   x={padLeft - 10}
                   y={yy + 3}
@@ -633,7 +674,7 @@ function LatencyTimeseriesLines({
             const show = i % xLabelEvery === 0 || i === slice.length - 1;
             if (!show) return null;
             const xx = x(i);
-            const label = timeLabelShort(p.ts, mounted);
+            const label = timeLabelShort(p.ts);
             return (
               <text
                 key={`xl-${p.ts}`}
@@ -665,8 +706,8 @@ function LatencyTimeseriesLines({
             <span>p99</span>
           </div>
           <div className="text-gray-400">
-            min <span className="text-gray-700">{Math.round(minV)}ms</span> • max{" "}
-            <span className="text-gray-700">{Math.round(maxV)}ms</span>
+            min <span className="text-gray-700">{Math.round(minV)}ms</span> •
+            max <span className="text-gray-700">{Math.round(maxV)}ms</span>
           </div>
         </div>
       </div>
@@ -708,15 +749,21 @@ function ChatPanel({
           {chatMessages.map((msg) => (
             <div key={msg.id}>
               <div className="text-xs text-gray-500 mb-1">
-                <span className="font-medium capitalize text-gray-700">{msg.role}</span> •{" "}
-                {formatTimestampClientSafe(msg.timestamp, mounted)}
+                <span className="font-medium capitalize text-gray-700">
+                  {msg.role}
+                </span>{" "}
+                • {formatTimestampClientSafe(msg.timestamp, mounted)}
               </div>
 
               {msg.type === "text" ? (
-                <pre className="whitespace-pre-wrap text-sm text-gray-900">{msg.text}</pre>
+                <pre className="whitespace-pre-wrap text-sm text-gray-900">
+                  {msg.text}
+                </pre>
               ) : (
                 <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
-                  <div className="text-xs text-gray-600 font-medium mb-2">Triage run</div>
+                  <div className="text-xs text-gray-600 font-medium mb-2">
+                    Triage run
+                  </div>
                   <pre className="whitespace-pre-wrap text-xs text-gray-700">
                     {msg.run.summaryText || "(no summary)"}
                   </pre>
@@ -843,8 +890,11 @@ export default function CDNTriageApp() {
     if (lastMessageIdRef.current !== lastMessage.id) {
       lastMessageIdRef.current = lastMessage.id;
 
-      const els = [chatScrollLeftRef.current, chatScrollRightRef.current].filter(Boolean) as HTMLDivElement[];
-      for (const el of els) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      const els = [chatScrollLeftRef.current, chatScrollRightRef.current].filter(
+        Boolean
+      ) as HTMLDivElement[];
+      for (const el of els)
+        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     }
   }, [chatMessages]);
 
@@ -859,7 +909,9 @@ export default function CDNTriageApp() {
 
   const REGION_OPTIONS = useMemo(() => {
     const arr = Array.isArray(available.regions) ? available.regions : [];
-    const cleaned = arr.map((x: any) => String(x || "").trim().toLowerCase()).filter(Boolean);
+    const cleaned = arr
+      .map((x: any) => String(x || "").trim().toLowerCase())
+      .filter(Boolean);
     const uniq = Array.from(new Set(cleaned));
     uniq.sort((a, b) => a.localeCompare(b));
     return ["all", ...uniq];
@@ -867,7 +919,9 @@ export default function CDNTriageApp() {
 
   const POP_OPTIONS = useMemo(() => {
     const arr = Array.isArray(available.pops) ? available.pops : [];
-    const cleaned = arr.map((x: any) => String(x || "").trim().toLowerCase()).filter(Boolean);
+    const cleaned = arr
+      .map((x: any) => String(x || "").trim().toLowerCase())
+      .filter(Boolean);
     const uniq = Array.from(new Set(cleaned));
     uniq.sort((a, b) => a.localeCompare(b));
     return ["all", ...uniq];
@@ -883,10 +937,16 @@ export default function CDNTriageApp() {
     if (!metricsJson) return null;
     return {
       totalRequests: Number(metricsJson.totalRequests) || 0,
-      p95TtmsMs: metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs),
-      p99TtmsMs: metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs),
-      error5xxCount: metricsJson.error5xxCount == null ? null : Number(metricsJson.error5xxCount),
-      errorRatePct: metricsJson.errorRatePct == null ? null : Number(metricsJson.errorRatePct),
+      p95TtmsMs:
+        metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs),
+      p99TtmsMs:
+        metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs),
+      error5xxCount:
+        metricsJson.error5xxCount == null
+          ? null
+          : Number(metricsJson.error5xxCount),
+      errorRatePct:
+        metricsJson.errorRatePct == null ? null : Number(metricsJson.errorRatePct),
     };
   }, [metricsJson]);
 
@@ -903,9 +963,15 @@ export default function CDNTriageApp() {
         p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
         p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
 
-        statusCountsByCode: p.statusCountsByCode ? (p.statusCountsByCode as Record<string, number>) : undefined,
-        hostCountsByHost: p.hostCountsByHost ? (p.hostCountsByHost as Record<string, number>) : undefined,
-        crcCountsByCrc: p.crcCountsByCrc ? (p.crcCountsByCrc as Record<string, number>) : undefined,
+        statusCountsByCode: p.statusCountsByCode
+          ? (p.statusCountsByCode as Record<string, number>)
+          : undefined,
+        hostCountsByHost: p.hostCountsByHost
+          ? (p.hostCountsByHost as Record<string, number>)
+          : undefined,
+        crcCountsByCrc: p.crcCountsByCrc
+          ? (p.crcCountsByCrc as Record<string, number>)
+          : undefined,
       }))
       .filter((p) => Boolean(p.ts));
 
@@ -914,8 +980,12 @@ export default function CDNTriageApp() {
       startTs: t.startTs ? String(t.startTs) : null,
       endTs: t.endTs ? String(t.endTs) : null,
       points,
-      statusCodeSeries: Array.isArray(t.statusCodeSeries) ? t.statusCodeSeries.map(String) : undefined,
-      hostSeries: Array.isArray(t.hostSeries) ? t.hostSeries.map(String) : undefined,
+      statusCodeSeries: Array.isArray(t.statusCodeSeries)
+        ? t.statusCodeSeries.map(String)
+        : undefined,
+      hostSeries: Array.isArray(t.hostSeries)
+        ? t.hostSeries.map(String)
+        : undefined,
       crcSeries: Array.isArray(t.crcSeries) ? t.crcSeries.map(String) : undefined,
     };
   }, [metricsJson]);
@@ -970,7 +1040,10 @@ export default function CDNTriageApp() {
     if (inputs.file) formData.append("file", inputs.file);
     if (inputs.debug) formData.append("debug", "true");
 
-    const response = await fetch("/api/triage", { method: "POST", body: formData });
+    const response = await fetch("/api/triage", {
+      method: "POST",
+      body: formData,
+    });
     let data: any = null;
     try {
       data = await response.json();
@@ -1050,12 +1123,18 @@ export default function CDNTriageApp() {
     setErrorMessage("");
 
     if (isGreetingOrSmallTalk(text)) {
-      addChatText("assistant", "Hey! 👋 I can triage CDN logs.\n\nTry:\nservice=vod region=usw2 pop=sjc win=60");
+      addChatText(
+        "assistant",
+        "Hey! 👋 I can triage CDN logs.\n\nTry:\nservice=vod region=usw2 pop=sjc win=60"
+      );
       return;
     }
 
     if (!looksLikeTriageQuery(text)) {
-      addChatText("assistant", "I didn't see filters yet.\n\nTry:\nservice=vod region=usw2 pop=sjc win=60");
+      addChatText(
+        "assistant",
+        "I didn't see filters yet.\n\nTry:\nservice=vod region=usw2 pop=sjc win=60"
+      );
       return;
     }
 
@@ -1073,7 +1152,11 @@ export default function CDNTriageApp() {
     const invalids: string[] = [];
 
     if (candidateService && !ALLOWED.service.has(candidateService)) {
-      invalids.push(`service=${candidateService} (allowed: ${Array.from(ALLOWED.service).join("|")})`);
+      invalids.push(
+        `service=${candidateService} (allowed: ${Array.from(ALLOWED.service).join(
+          "|"
+        )})`
+      );
     }
 
     // validate region/pop only if options discovered from a prior run
@@ -1094,7 +1177,9 @@ export default function CDNTriageApp() {
     if (invalids.length) {
       addChatText(
         "assistant",
-        `I couldn't run that because some values are invalid:\n- ${invalids.join("\n- ")}\n\nTry:\nservice=vod region=usw2 pop=sjc win=60`
+        `I couldn't run that because some values are invalid:\n- ${invalids.join(
+          "\n- "
+        )}\n\nTry:\nservice=vod region=usw2 pop=sjc win=60`
       );
       return;
     }
@@ -1121,7 +1206,9 @@ export default function CDNTriageApp() {
 
     addChatText(
       "system",
-      `Running triage (${dataSource}${dataSource === "clickhouse" ? `, partner=${partner}` : ""}) with svc=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
+      `Running triage (${dataSource}${
+        dataSource === "clickhouse" ? `, partner=${partner}` : ""
+      }) with svc=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
     );
 
     setIsLoading(true);
@@ -1216,7 +1303,15 @@ export default function CDNTriageApp() {
     setMetricsJson(null);
   }
 
-  function MetricCard({ label, value, subtitle }: { label: string; value: string; subtitle?: string | null }) {
+  function MetricCard({
+    label,
+    value,
+    subtitle,
+  }: {
+    label: string;
+    value: string;
+    subtitle?: string | null;
+  }) {
     return (
       <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
         <div className="text-xs text-gray-600 font-medium">{label}</div>
@@ -1238,7 +1333,9 @@ export default function CDNTriageApp() {
           <aside className="lg:col-span-3 space-y-6">
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="font-semibold text-gray-900 text-sm">Run History (last {MAX_HISTORY})</h2>
+                <h2 className="font-semibold text-gray-900 text-sm">
+                  Run History (last {MAX_HISTORY})
+                </h2>
                 <button
                   onClick={clearAllHistory}
                   disabled={runHistory.length === 0}
@@ -1249,7 +1346,9 @@ export default function CDNTriageApp() {
               </div>
 
               {runHistory.length === 0 ? (
-                <div className="text-sm text-gray-500">No history yet. Run triage once and it will appear here.</div>
+                <div className="text-sm text-gray-500">
+                  No history yet. Run triage once and it will appear here.
+                </div>
               ) : (
                 <div className="space-y-3">
                   {runHistory.map((run) => {
@@ -1260,17 +1359,24 @@ export default function CDNTriageApp() {
                       : inp.dataSource === "clickhouse"
                       ? "source: clickhouse"
                       : "url: csv";
-                    const partnerText = inp.dataSource === "clickhouse" ? ` • partner=${inp.partner || "acme_media"}` : "";
+                    const partnerText =
+                      inp.dataSource === "clickhouse"
+                        ? ` • partner=${inp.partner || "acme_media"}`
+                        : "";
                     const subtitle = `${inp.dataSource || "csv"}${partnerText} • svc=${inp.service} region=${inp.region} pop=${inp.pop} win=${inp.windowMinutes}m`;
 
                     return (
                       <div
                         key={run.id}
                         className={`rounded-lg border p-3 transition-colors ${
-                          isActive ? "bg-blue-50 border-blue-300" : "bg-white border-gray-200 hover:bg-gray-50"
+                          isActive
+                            ? "bg-blue-50 border-blue-300"
+                            : "bg-white border-gray-200 hover:bg-gray-50"
                         }`}
                       >
-                        <div className="text-xs font-semibold text-gray-900">{formatTimestampClientSafe(run.timestamp, mounted)}</div>
+                        <div className="text-xs font-semibold text-gray-900">
+                          {formatTimestampClientSafe(run.timestamp, mounted)}
+                        </div>
                         <div className="text-xs text-gray-600 mt-1">{subtitle}</div>
                         <div className="text-xs text-gray-500 mt-1 truncate">{title}</div>
                         <div className="flex gap-2 mt-3">
@@ -1316,7 +1422,9 @@ export default function CDNTriageApp() {
                   <div className="space-y-4">
                     {/* Data source selector */}
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Data Source</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Data Source
+                      </label>
                       <select
                         className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         value={dataSource}
@@ -1336,7 +1444,9 @@ export default function CDNTriageApp() {
                     {/* Partner selector */}
                     {dataSource === "clickhouse" && (
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Partner</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Partner
+                        </label>
                         <select
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           value={partner}
@@ -1349,12 +1459,16 @@ export default function CDNTriageApp() {
                             </option>
                           ))}
                         </select>
-                        <div className="text-xs text-gray-500 mt-2">Public-safe mock partner routing (real partner → DB mapping later).</div>
+                        <div className="text-xs text-gray-500 mt-2">
+                          Public-safe mock partner routing (real partner → DB mapping later).
+                        </div>
                       </div>
                     )}
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">CSV URL</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        CSV URL
+                      </label>
                       <input
                         type="text"
                         className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
@@ -1366,7 +1480,9 @@ export default function CDNTriageApp() {
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Or upload CSV</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Or upload CSV
+                      </label>
                       <input
                         type="file"
                         accept=".csv,text/csv"
@@ -1374,13 +1490,22 @@ export default function CDNTriageApp() {
                         className="text-sm text-gray-700"
                         disabled={csvInputsDisabled}
                       />
-                      {uploadedFile && <div className="text-xs text-gray-600 mt-2">Selected: {uploadedFile.name}</div>}
-                      <div className="text-xs text-gray-500 mt-2">Note: history can reload URL-based runs. File uploads can't be reloaded (browser limitation).</div>
+                      {uploadedFile && (
+                        <div className="text-xs text-gray-600 mt-2">
+                          Selected: {uploadedFile.name}
+                        </div>
+                      )}
+                      <div className="text-xs text-gray-500 mt-2">
+                        Note: history can reload URL-based runs. File uploads can't be
+                        reloaded (browser limitation).
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Service</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Service
+                        </label>
                         <select
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           value={service}
@@ -1396,7 +1521,9 @@ export default function CDNTriageApp() {
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Region</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Region
+                        </label>
                         <select
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           value={region}
@@ -1409,11 +1536,17 @@ export default function CDNTriageApp() {
                             </option>
                           ))}
                         </select>
-                        {REGION_OPTIONS.length <= 1 && <div className="text-[11px] text-gray-400 mt-2">Run once to populate region options.</div>}
+                        {REGION_OPTIONS.length <= 1 && (
+                          <div className="text-[11px] text-gray-400 mt-2">
+                            Run once to populate region options.
+                          </div>
+                        )}
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">POP</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          POP
+                        </label>
                         <select
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           value={pop}
@@ -1426,11 +1559,17 @@ export default function CDNTriageApp() {
                             </option>
                           ))}
                         </select>
-                        {POP_OPTIONS.length <= 1 && <div className="text-[11px] text-gray-400 mt-2">Run once to populate POP options.</div>}
+                        {POP_OPTIONS.length <= 1 && (
+                          <div className="text-[11px] text-gray-400 mt-2">
+                            Run once to populate POP options.
+                          </div>
+                        )}
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Window (minutes)</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Window (minutes)
+                        </label>
                         <input
                           type="number"
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
@@ -1483,9 +1622,18 @@ export default function CDNTriageApp() {
 
                 {parsedMetrics && (
                   <div className="grid grid-cols-2 gap-3">
-                    <MetricCard label="totalRequests" value={formatIntOrNA(parsedMetrics.totalRequests)} />
-                    <MetricCard label="p95TtmsMs" value={formatMsOrNA(parsedMetrics.p95TtmsMs)} />
-                    <MetricCard label="p99TtmsMs" value={formatMsOrNA(parsedMetrics.p99TtmsMs)} />
+                    <MetricCard
+                      label="totalRequests"
+                      value={formatIntOrNA(parsedMetrics.totalRequests)}
+                    />
+                    <MetricCard
+                      label="p95TtmsMs"
+                      value={formatMsOrNA(parsedMetrics.p95TtmsMs)}
+                    />
+                    <MetricCard
+                      label="p99TtmsMs"
+                      value={formatMsOrNA(parsedMetrics.p99TtmsMs)}
+                    />
                     <MetricCard
                       label="errorRate (5xx)"
                       value={formatPctOrNA(parsedMetrics.errorRatePct)}
@@ -1501,11 +1649,15 @@ export default function CDNTriageApp() {
                 {/* Summary */}
                 <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                   <div className="font-medium text-gray-900 mb-2">Summary</div>
-                  <pre className="whitespace-pre-wrap text-sm text-gray-700 font-mono">{summaryText || "Run triage to see results..."}</pre>
+                  <pre className="whitespace-pre-wrap text-sm text-gray-700 font-mono">
+                    {summaryText || "Run triage to see results..."}
+                  </pre>
                 </div>
 
                 <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                  <div className="font-medium text-gray-900 mb-2">Raw metricsJson (debug)</div>
+                  <div className="font-medium text-gray-900 mb-2">
+                    Raw metricsJson (debug)
+                  </div>
                   <pre className="whitespace-pre-wrap text-xs text-gray-600 font-mono overflow-auto max-h-64">
                     {metricsJson ? JSON.stringify(metricsJson, null, 2) : "No metricsJson yet."}
                   </pre>
