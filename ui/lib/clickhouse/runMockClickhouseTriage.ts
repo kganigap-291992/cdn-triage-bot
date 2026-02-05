@@ -60,6 +60,7 @@ function buildAvailableFromUniverse(universe: {
     pops: uniqLower(universe.pops).slice(0, 120),
     serviceBuckets: uniqLower(universe.serviceBuckets).slice(0, 12),
     svcs: uniqLower(universe.svcs).slice(0, 24),
+    // IMPORTANT: edgeHosts should reflect the scoped pool so legends match filters
     edgeHosts: uniqLower(universe.edgeHosts).slice(0, 24),
     crcClasses: uniqLower(universe.crcClasses).slice(0, 12),
     crcs: uniqLower(universe.crcs).slice(0, 24),
@@ -72,6 +73,99 @@ function buildAvailableFromUniverse(universe: {
 // ✅ Force parity with CSV: always 5-minute buckets
 function chooseBucketSeconds() {
   return 300;
+}
+
+// -----------------------------
+// Region/POP model for mock data
+// (hosts are GENERATED from region+pop so legend is always coherent)
+// -----------------------------
+const REGION_POOLS: Record<string, string[]> = {
+  use1: ["use1-iad", "use1-atl", "use1-nyc", "use1-bos"],
+  usw2: ["usw2-sjc", "usw2-sea", "usw2-pdx"],
+  eu1: ["eu1-lon", "eu1-fra", "eu1-ams"],
+  ap1: ["ap1-sin", "ap1-tyo", "ap1-syd"],
+};
+
+// allow your “city-ish” region filters to map into a macro region
+const REGION_ALIASES: Record<string, string> = {
+  bos: "use1",
+  nyc: "use1",
+  iad: "use1",
+  atl: "use1",
+  sjc: "usw2",
+  sea: "usw2",
+  lon: "eu1",
+  fra: "eu1",
+  sin: "ap1",
+  tyo: "ap1",
+  syd: "ap1",
+};
+
+function normalizeScopeRegion(region: string) {
+  const r = String(region || "all").toLowerCase();
+  if (r === "all") return "all";
+  if (REGION_POOLS[r]) return r;
+  if (REGION_ALIASES[r]) return REGION_ALIASES[r];
+  return r;
+}
+
+function generateHostsForPop(macroRegion: string, pop: string, seed: number, count = 5) {
+  const out: string[] = [];
+  for (let i = 1; i <= count; i++) {
+    const id = String(((seed + i * 97) % 999) + 1).padStart(3, "0");
+    out.push(`cdn-ec-${macroRegion}-${pop}-${id}`.toLowerCase());
+  }
+  return out;
+}
+
+function stablePick<T>(arr: T[], seed: number, n: number): T[] {
+  if (!arr.length) return [];
+  const out: T[] = [];
+  for (let i = 0; i < Math.min(n, arr.length); i++) {
+    const idx = (seed + i * 17) % arr.length;
+    out.push(arr[idx]);
+  }
+  const seen = new Set<any>();
+  return out.filter((x) => (seen.has(x) ? false : (seen.add(x), true)));
+}
+
+/**
+ * Returns:
+ * - scopedPops: the pops that should exist under the current scope
+ * - hostSeries: stable list of hosts shown in legend + used in point maps
+ */
+function buildScopedPopsAndHosts(region: string, pop: string, seed: number) {
+  const macro = normalizeScopeRegion(region);
+  const p = String(pop || "all").toLowerCase();
+
+  let scopedPops: string[] = [];
+  if (p !== "all") {
+    // pop is explicit; derive macro region if possible
+    const parts = p.split("-");
+    const macroFromPop = parts[0]; // e.g. ap1
+    const macroResolved = REGION_POOLS[macroFromPop] ? macroFromPop : macro === "all" ? macroFromPop : macro;
+    scopedPops = [p];
+    // hosts strictly from that pop
+    const hostSeries = generateHostsForPop(macroResolved, p, seed, 6);
+    return { scopedPops, hostSeries };
+  }
+
+  if (macro !== "all" && REGION_POOLS[macro]) {
+    // region scoped, pop=all -> show a couple pops within region
+    scopedPops = stablePick(REGION_POOLS[macro], seed, 2);
+    const hostSeries = scopedPops.flatMap((pp, idx) => generateHostsForPop(macro, pp, seed + idx * 101, 3));
+    return { scopedPops, hostSeries };
+  }
+
+  // all/all -> show a small cross-region set
+  const macros = Object.keys(REGION_POOLS);
+  const chosenMacros = stablePick(macros, seed, 3);
+  scopedPops = chosenMacros.flatMap((m, idx) => stablePick(REGION_POOLS[m], seed + idx * 131, 1));
+  const hostSeries = scopedPops.flatMap((pp, idx) => {
+    const m = pp.split("-")[0];
+    return generateHostsForPop(m, pp, seed + idx * 151, 2);
+  });
+  return { scopedPops, hostSeries };
 }
 
 // -----------------------------
@@ -106,24 +200,28 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
     "vod-library.xcr.comcast.net",
   ];
 
-  const edgeHostUniverse = ["cdn-ec-bos-044", "cdn-ec-nyc-012", "cdn-ec-sjc-101", "cdn-ec-sea-007", "cdn-ec-lon-003"];
-
   const crcUniverse = ["TCP_HIT", "TCP_MISS", "TCP_CF_HIT", "ERR_TIMEOUT", "ERR_DNS", "TCP_CLIENT_REFRESH", "ERR_CONN_RESET", "ERR_ORIGIN_5XX"];
   const crcClassUniverse = ["hit", "miss", "client", "error", "other"];
   const statusUniverse = [200, 206, 304, 403, 404, 429, 500, 502, 503, 504];
 
   const regions = region === "all" ? regionUniverse : [region, ...regionUniverse].slice(0, 6);
+
+  // ✅ scoped pops + hosts (THE KEY CHANGE)
+  const { scopedPops, hostSeries } = buildScopedPopsAndHosts(region, pop, seed);
+
+  // keep POP options realistic for dropdowns:
   const pops =
     pop === "all"
-      ? popUniverse.filter((p) => (region === "all" ? true : p.startsWith(`${region}-`) || p.includes(`${region}`)))
+      ? popUniverse.filter((pp) => (region === "all" ? true : pp.startsWith(`${normalizeScopeRegion(region)}-`) || pp.includes(`${region}`)))
       : [pop, ...popUniverse].slice(0, 8);
 
+  // available.edgeHosts will match what host chart can show
   const available = buildAvailableFromUniverse({
     regions,
-    pops,
+    pops: pop === "all" ? pops : [pop, ...pops].slice(0, 12),
     serviceBuckets: ["live", "vod", "other"],
     svcs: svcUniverse,
-    edgeHosts: edgeHostUniverse,
+    edgeHosts: hostSeries,
     crcClasses: crcClassUniverse,
     crcs: crcUniverse,
     statusCodes: statusUniverse,
@@ -156,7 +254,6 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
 
   // Stable series (legend order)
   const statusCodeSeries = statusUniverse.map(String);
-  const hostSeries = edgeHostUniverse.map((h) => h.toLowerCase()).slice(0, 10);
   const crcSeries = crcUniverse.map((c) => String(c).toUpperCase()).slice(0, 10);
 
   const points: any[] = [];
@@ -203,10 +300,12 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
     statusCountsByCode["503"] = round(s5xx * 0.35);
     statusCountsByCode["504"] = Math.max(0, s5xx - statusCountsByCode["500"] - statusCountsByCode["502"] - statusCountsByCode["503"]);
 
-    // host distribution
+    // ✅ host distribution: ONLY among hostSeries (which is region/pop coherent)
     let remainingHost = req;
     for (let hi = 0; hi < hostSeries.length; hi++) {
-      const share = hi === hostSeries.length - 1 ? remainingHost : round(req * (0.10 + hi * 0.02));
+      const baseShare = 0.18 - hi * 0.02; // 18%,16%,14%...
+      const share =
+        hi === hostSeries.length - 1 ? remainingHost : round(req * clamp(baseShare, 0.04, 0.18));
       const v = clamp(share, 0, remainingHost);
       hostCountsByHost[hostSeries[hi]] = v;
       remainingHost -= v;
@@ -283,6 +382,9 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
   if (totalRequests === 0) warnings.push("No rows matched (mock produced 0 requests).");
   if (service !== "all" && !["live", "vod", "other"].includes(service)) {
     warnings.push(`Unknown service bucket '${service}' in ClickHouse mock. Expected live|vod|other|all.`);
+  }
+  if ((region !== "all" || pop !== "all") && hostSeries.length === 0) {
+    warnings.push(`No scoped hosts generated for region='${region}' pop='${pop}' in mock (unexpected).`);
   }
 
   const summaryText = [
