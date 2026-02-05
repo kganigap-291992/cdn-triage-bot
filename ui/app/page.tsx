@@ -9,6 +9,7 @@ const DEFAULT_CSV_URL =
   "https://raw.githubusercontent.com/kganigap-291992/cdn-triage-bot/refs/heads/main/data/cdn_logs_6h_80k_stresstest.csv";
 
 const STORAGE_KEY = "cdn-triage-history-v1";
+const CHAT_MODE_KEY = "cdn-triage-chatmode-v1";
 const MAX_HISTORY = 10;
 
 // Allowed values for chat parsing (keeps demo deterministic)
@@ -38,6 +39,8 @@ const PARTNER_OPTIONS = [
 // ------------------------------------------------------------
 type DataSource = "csv" | "clickhouse";
 type Partner = (typeof PARTNER_OPTIONS)[number];
+type PartnerOrMissing = Partner | "";
+type ChatMode = "deterministic" | "llm";
 
 type ChatTextMessage = {
   id: string;
@@ -55,7 +58,7 @@ type ChatTriageMessage = {
   run: {
     inputs: {
       dataSource: DataSource;
-      partner: Partner;
+      partner: PartnerOrMissing;
       service: string;
       region: string;
       pop: string;
@@ -70,7 +73,7 @@ type ChatMessage = ChatTextMessage | ChatTriageMessage;
 
 type TriageInputs = {
   dataSource: DataSource;
-  partner: Partner;
+  partner: PartnerOrMissing;
   csvUrl: string;
   fileName: string;
   service: string;
@@ -391,7 +394,7 @@ function parseChatIntent(text: string): ChatIntent {
 
 function buildFiltersSummary(args: {
   dataSource: DataSource;
-  partner: Partner;
+  partner: PartnerOrMissing;
   service: string;
   region: string;
   pop: string;
@@ -400,7 +403,7 @@ function buildFiltersSummary(args: {
   const { dataSource, partner, service, region, pop, windowMinutes } = args;
   const base = `svc=${service}, region=${region}, pop=${pop}, win=${windowMinutes}m`;
   return dataSource === "clickhouse"
-    ? `source=clickhouse, partner=${partner}, ${base}`
+    ? `source=clickhouse, partner=${partner || "(missing)"}, ${base}`
     : `source=csv, ${base}`;
 }
 
@@ -850,6 +853,14 @@ function ChatPanel({
   setChatInput,
   onSend,
   chatScrollRef,
+
+  // NEW
+  chatMode,
+  setChatMode,
+  execLabel,
+  showPartnerMissing,
+  partnerOptions,
+  onPickPartner,
 }: {
   title: string;
   mounted: boolean;
@@ -859,10 +870,87 @@ function ChatPanel({
   setChatInput: (v: string) => void;
   onSend: () => void;
   chatScrollRef: React.RefObject<HTMLDivElement | null>;
+
+  chatMode: ChatMode;
+  setChatMode: (m: ChatMode) => void;
+  execLabel: string;
+  showPartnerMissing: boolean;
+  partnerOptions: readonly string[];
+  onPickPartner: (p: string) => void;
 }) {
+  const placeholder =
+    chatMode === "llm"
+      ? "Try: boston live last 1hr"
+      : "Try: vod in usw2 at sjc last 60m";
+
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm flex flex-col h-[420px] min-w-0">
-      <div className="font-medium text-gray-900 mb-3">{title}</div>
+      {/* Header row: title + mode toggle + exec pill */}
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div className="font-medium text-gray-900">{title}</div>
+
+        <div className="flex items-center gap-2">
+          {/* Mode toggle (segmented) */}
+          <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+            <button
+              type="button"
+              onClick={() => setChatMode("deterministic")}
+              className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                chatMode === "deterministic"
+                  ? "bg-white text-gray-900 shadow-sm"
+                  : "text-gray-600 hover:text-gray-900"
+              }`}
+              disabled={isLoading}
+              title="Use deterministic parser only"
+            >
+              Deterministic
+            </button>
+            <button
+              type="button"
+              onClick={() => setChatMode("llm")}
+              className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                chatMode === "llm"
+                  ? "bg-white text-gray-900 shadow-sm"
+                  : "text-gray-600 hover:text-gray-900"
+              }`}
+              disabled={isLoading}
+              title="LLM Assist (hints only) — resolver still deterministic"
+            >
+              LLM Assist
+            </button>
+          </div>
+
+          {/* Execution context pill */}
+          <div className="text-[11px] text-gray-600 border border-gray-200 rounded-full px-2.5 py-1 bg-white">
+            {execLabel}
+          </div>
+        </div>
+      </div>
+
+      {/* Partner-missing banner + quick picks */}
+      {showPartnerMissing && (
+        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <div className="text-sm font-medium text-amber-900">
+            ClickHouse selected — partner required
+          </div>
+          <div className="text-xs text-amber-800 mt-1">
+            Pick a partner below or select one in the filters panel.
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {partnerOptions.map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => onPickPartner(p)}
+                className="px-2.5 py-1 text-xs font-semibold rounded-md border border-amber-200 bg-white hover:bg-amber-100 text-amber-900"
+                disabled={isLoading}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div
         ref={chatScrollRef}
@@ -907,7 +995,7 @@ function ChatPanel({
             type="text"
             disabled={isLoading}
             className="flex-1 rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 placeholder-gray-400 disabled:opacity-60 disabled:cursor-not-allowed"
-            placeholder="Try: vod in usw2 at sjc last 60m"
+            placeholder={placeholder}
             value={chatInput ?? ""}
             onChange={(e) => setChatInput(e.target.value)}
             onKeyDown={(e) => {
@@ -943,7 +1031,8 @@ export default function CDNTriageApp() {
 
   // Form inputs
   const [dataSource, setDataSource] = useState<DataSource>("csv");
-  const [partner, setPartner] = useState<Partner>("acme_media");
+  // NOTE: partner can be "" to demo “missing partner” follow-up
+  const [partner, setPartner] = useState<PartnerOrMissing>("acme_media");
   const [csvUrl, setCsvUrl] = useState(DEFAULT_CSV_URL);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [service, setService] = useState("all");
@@ -951,6 +1040,9 @@ export default function CDNTriageApp() {
   const [pop, setPop] = useState("all");
   const [windowMinutes, setWindowMinutes] = useState(60);
   const [debugMode, setDebugMode] = useState(false);
+
+  // Chat mode toggle (NEW)
+  const [chatMode, setChatMode] = useState<ChatMode>("deterministic");
 
   // State
   const [isLoading, setIsLoading] = useState(false);
@@ -975,6 +1067,21 @@ export default function CDNTriageApp() {
   useEffect(() => {
     if (dataSource === "clickhouse") setUploadedFile(null);
   }, [dataSource]);
+
+  // Load chat mode from localStorage (NEW)
+  useEffect(() => {
+    if (!mounted) return;
+    const stored = localStorage.getItem(CHAT_MODE_KEY);
+    if (!stored) return;
+    const m = stored === "llm" ? "llm" : "deterministic";
+    setChatMode(m);
+  }, [mounted]);
+
+  // Persist chat mode (NEW)
+  useEffect(() => {
+    if (!mounted) return;
+    localStorage.setItem(CHAT_MODE_KEY, chatMode);
+  }, [chatMode, mounted]);
 
   // Welcome message
   useEffect(() => {
@@ -1018,11 +1125,13 @@ export default function CDNTriageApp() {
     }
   }, [chatMessages]);
 
-  // Allow ClickHouse runs without CSV
+  const partnerMissing = dataSource === "clickhouse" && !partner;
+
+  // Allow ClickHouse runs without CSV, but REQUIRE partner (NEW)
   const canRunTriage = useMemo(() => {
-    if (dataSource === "clickhouse") return true;
+    if (dataSource === "clickhouse") return Boolean(partner);
     return Boolean(uploadedFile) || (csvUrl && csvUrl.trim().length > 0);
-  }, [dataSource, uploadedFile, csvUrl]);
+  }, [dataSource, partner, uploadedFile, csvUrl]);
 
   // Dynamic Region/POP options from metricsJson.available (if present)
   const available = metricsJson?.available ?? {};
@@ -1066,7 +1175,9 @@ export default function CDNTriageApp() {
           ? null
           : Number(metricsJson.error5xxCount),
       errorRatePct:
-        metricsJson.errorRatePct == null ? null : Number(metricsJson.errorRatePct),
+        metricsJson.errorRatePct == null
+          ? null
+          : Number(metricsJson.errorRatePct),
     };
   }, [metricsJson]);
 
@@ -1140,7 +1251,7 @@ export default function CDNTriageApp() {
 
   async function runTriageRequest(inputs: {
     dataSource: DataSource;
-    partner: Partner;
+    partner: PartnerOrMissing;
     csvUrl: string;
     file: File | null;
     service: string;
@@ -1151,7 +1262,7 @@ export default function CDNTriageApp() {
   }) {
     const formData = new FormData();
     formData.append("dataSource", inputs.dataSource);
-    formData.append("partner", inputs.partner || "acme_media");
+    formData.append("partner", inputs.partner || "");
     formData.append("csvUrl", inputs.csvUrl || "");
     formData.append("service", inputs.service);
     formData.append("region", inputs.region);
@@ -1185,7 +1296,7 @@ export default function CDNTriageApp() {
     if (!canRunTriage) {
       setErrorMessage(
         dataSource === "clickhouse"
-          ? "ClickHouse mode should be runnable (unexpected)."
+          ? "Please select a Partner to run ClickHouse triage."
           : "Please provide a CSV URL or upload a CSV file."
       );
       return;
@@ -1242,6 +1353,21 @@ export default function CDNTriageApp() {
     setChatInput("");
     setErrorMessage("");
 
+    // If ClickHouse + partner missing: ask (NEW)
+    if (partnerMissing) {
+      addChatText(
+        "assistant",
+        [
+          "ClickHouse mode is selected but partner is missing.",
+          "",
+          "Pick a partner in the dropdown (left panel) or click one of the quick buttons above.",
+          "",
+          `Available partners: ${PARTNER_OPTIONS.join(", ")}`,
+        ].join("\n")
+      );
+      return;
+    }
+
     // Small talk shortcut
     if (isGreetingOrSmallTalk(text)) {
       addChatText(
@@ -1251,6 +1377,8 @@ export default function CDNTriageApp() {
       return;
     }
 
+    // For now: both modes still use deterministic parsing.
+    // (LLM Assist will later call /api/chat to get hints, then the resolver runs the same way.)
     const intent = parseChatIntent(text);
 
     // ---- commands (no triage) ----
@@ -1258,7 +1386,7 @@ export default function CDNTriageApp() {
       addChatText(
         "assistant",
         [
-          "I can run deterministic triage from chat (no LLM needed).",
+          `Chat mode: ${chatMode === "llm" ? "LLM Assist" : "Deterministic"}`,
           "",
           "Examples:",
           "- `vod in usw2 at sjc last 60m`",
@@ -1336,15 +1464,13 @@ export default function CDNTriageApp() {
 
     // If user tried to set region/pop before we have options, nudge them
     if ((intent.region || intent.pop) && (!hasRegionOptions || !hasPopOptions)) {
-      // allow them to still set service/window even if region/pop can't be validated yet
       const pending: string[] = [];
       if (intent.region && !hasRegionOptions)
         pending.push("region (options not discovered yet)");
       if (intent.pop && !hasPopOptions)
         pending.push("pop (options not discovered yet)");
 
-      const svcOk =
-        intent.service == null || ALLOWED.service.has(intent.service);
+      const svcOk = intent.service == null || ALLOWED.service.has(intent.service);
       const winOk =
         intent.windowMinutes == null ||
         (Number.isFinite(intent.windowMinutes) && intent.windowMinutes > 0);
@@ -1358,15 +1484,12 @@ export default function CDNTriageApp() {
       }
 
       // Apply what we can safely apply
-      let changed: string[] = [];
+      const changed: string[] = [];
       if (intent.service != null && intent.service !== service) {
         setService(intent.service);
         changed.push(`service=${intent.service}`);
       }
-      if (
-        intent.windowMinutes != null &&
-        intent.windowMinutes !== windowMinutes
-      ) {
+      if (intent.windowMinutes != null && intent.windowMinutes !== windowMinutes) {
         setWindowMinutes(intent.windowMinutes);
         changed.push(`win=${intent.windowMinutes}m`);
       }
@@ -1376,18 +1499,15 @@ export default function CDNTriageApp() {
         [
           changed.length ? `Updated ✅ (${changed.join(", ")})` : "Got it ✅",
           "",
-          `I can’t validate ${pending.join(
-            " + "
-          )} until we discover them from data.`,
+          `I can’t validate ${pending.join(" + ")} until we discover them from data.`,
           "Run once with broad filters:",
           "- `region=all pop=all` (or just click “Run Triage”)",
           "Then try your region/pop again.",
         ].join("\n")
       );
 
-      // If user explicitly said "run", run with current/broad filters
       if (intent.command === "run") {
-        // fall through to run logic below using current state
+        // fall through
       } else {
         return;
       }
@@ -1397,9 +1517,7 @@ export default function CDNTriageApp() {
 
     if (intent.service && !ALLOWED.service.has(intent.service)) {
       invalids.push(
-        `service=${intent.service} (allowed: ${Array.from(ALLOWED.service).join(
-          "|"
-        )})`
+        `service=${intent.service} (allowed: ${Array.from(ALLOWED.service).join("|")})`
       );
     }
 
@@ -1451,13 +1569,8 @@ export default function CDNTriageApp() {
       changed.push(`win=${intent.windowMinutes}m`);
     }
 
-    // Decide whether to run:
-    // - explicit command "run"
-    // - or message contains triage-ish content / filter changes
     const shouldRun =
-      intent.command === "run" ||
-      looksLikeTriageQuery(text) ||
-      changed.length > 0;
+      intent.command === "run" || looksLikeTriageQuery(text) || changed.length > 0;
 
     if (!shouldRun) {
       addChatText(
@@ -1471,7 +1584,7 @@ export default function CDNTriageApp() {
       addChatText(
         "assistant",
         dataSource === "clickhouse"
-          ? "ClickHouse mode should be runnable (unexpected)."
+          ? "Please select a partner first (ClickHouse mode)."
           : "Please upload a CSV or provide a CSV URL first."
       );
       return;
@@ -1481,9 +1594,10 @@ export default function CDNTriageApp() {
       addChatText("assistant", `Updated ✅ ${changed.join(", ")}`);
     }
 
+    // mode indicator in system message (NEW)
     addChatText(
       "system",
-      `Running triage with ${buildFiltersSummary({
+      `mode=${chatMode} • Running triage with ${buildFiltersSummary({
         dataSource,
         partner,
         service: nextService,
@@ -1558,7 +1672,7 @@ export default function CDNTriageApp() {
     setMetricsJson(run.metricsJson || null);
 
     setDataSource((run.inputs?.dataSource || "csv") as DataSource);
-    setPartner((run.inputs?.partner as Partner) || "acme_media");
+    setPartner((run.inputs?.partner as PartnerOrMissing) || "");
     setUploadedFile(null);
     setCsvUrl(run.inputs?.csvUrl || DEFAULT_CSV_URL);
     setService(run.inputs?.service || "all");
@@ -1603,12 +1717,20 @@ export default function CDNTriageApp() {
     );
   }
 
-  const bucketSeconds = ts?.bucketSeconds ?? metricsJson?.timeseries?.bucketSeconds ?? null;
+  const bucketSeconds =
+    ts?.bucketSeconds ?? metricsJson?.timeseries?.bucketSeconds ?? null;
+
+  const execLabel =
+    dataSource === "csv"
+      ? "Exec: CSV"
+      : `Exec: ClickHouse • partner=${partner || "missing"}`;
 
   return (
     <main className="min-h-screen w-full bg-gray-50 px-6 py-6">
       <div className="mx-auto w-full">
-        <h1 className="text-2xl font-bold text-gray-900 mb-6">CDN Triage UI (REPO)</h1>
+        <h1 className="text-2xl font-bold text-gray-900 mb-6">
+          CDN Triage UI (REPO)
+        </h1>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Sidebar */}
@@ -1643,9 +1765,11 @@ export default function CDNTriageApp() {
                       : "url: csv";
                     const partnerText =
                       inp.dataSource === "clickhouse"
-                        ? ` • partner=${inp.partner || "acme_media"}`
+                        ? ` • partner=${inp.partner || "(missing)"}`
                         : "";
-                    const subtitle = `${inp.dataSource || "csv"}${partnerText} • svc=${inp.service} region=${inp.region} pop=${inp.pop} win=${inp.windowMinutes}m`;
+                    const subtitle = `${inp.dataSource || "csv"}${partnerText} • svc=${
+                      inp.service
+                    } region=${inp.region} pop=${inp.pop} win=${inp.windowMinutes}m`;
 
                     return (
                       <div
@@ -1660,7 +1784,9 @@ export default function CDNTriageApp() {
                           {formatTimestampClientSafe(run.timestamp, mounted)}
                         </div>
                         <div className="text-xs text-gray-600 mt-1">{subtitle}</div>
-                        <div className="text-xs text-gray-500 mt-1 truncate">{title}</div>
+                        <div className="text-xs text-gray-500 mt-1 truncate">
+                          {title}
+                        </div>
                         <div className="flex gap-2 mt-3">
                           <button
                             onClick={() => loadHistoricalRun(run)}
@@ -1685,18 +1811,25 @@ export default function CDNTriageApp() {
 
           {/* Main */}
           <section className="lg:col-span-9 min-w-0">
-          <div className="mb-6">
-            <ChatPanel
-              title="Chat"
-              mounted={mounted}
-              isLoading={isLoading}
-              chatMessages={chatMessages}
-              chatInput={chatInput}
-              setChatInput={setChatInput}
-              onSend={handleChatSend}
-              chatScrollRef={chatScrollRef}
-            />
-          </div>
+            <div className="mb-6">
+              <ChatPanel
+                title="Chat"
+                mounted={mounted}
+                isLoading={isLoading}
+                chatMessages={chatMessages}
+                chatInput={chatInput}
+                setChatInput={setChatInput}
+                onSend={handleChatSend}
+                chatScrollRef={chatScrollRef}
+                chatMode={chatMode}
+                setChatMode={setChatMode}
+                execLabel={execLabel}
+                showPartnerMissing={partnerMissing}
+                partnerOptions={PARTNER_OPTIONS}
+                onPickPartner={(p) => setPartner(p as Partner)}
+              />
+            </div>
+
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
               {/* Left */}
               <div className="space-y-4 min-w-0">
@@ -1710,7 +1843,9 @@ export default function CDNTriageApp() {
                       <select
                         className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         value={dataSource}
-                        onChange={(e) => setDataSource(e.target.value as DataSource)}
+                        onChange={(e) =>
+                          setDataSource(e.target.value as DataSource)
+                        }
                         disabled={isLoading}
                       >
                         <option value="csv">CSV</option>
@@ -1732,9 +1867,12 @@ export default function CDNTriageApp() {
                         <select
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           value={partner}
-                          onChange={(e) => setPartner(e.target.value as Partner)}
+                          onChange={(e) =>
+                            setPartner(e.target.value as PartnerOrMissing)
+                          }
                           disabled={isLoading}
                         >
+                          <option value="">Select partner…</option>
                           {PARTNER_OPTIONS.map((p) => (
                             <option key={p} value={p}>
                               {p}
@@ -1768,7 +1906,9 @@ export default function CDNTriageApp() {
                       <input
                         type="file"
                         accept=".csv,text/csv"
-                        onChange={(e) => setUploadedFile(e.target.files?.[0] ?? null)}
+                        onChange={(e) =>
+                          setUploadedFile(e.target.files?.[0] ?? null)
+                        }
                         className="text-sm text-gray-700"
                         disabled={csvInputsDisabled}
                       />
@@ -1887,6 +2027,11 @@ export default function CDNTriageApp() {
                         onClick={handleRunTriage}
                         disabled={isLoading || !canRunTriage}
                         className="px-6 py-2 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        title={
+                          !canRunTriage && dataSource === "clickhouse"
+                            ? "Select a partner to run ClickHouse triage"
+                            : undefined
+                        }
                       >
                         {isLoading ? "Running..." : "Run Triage"}
                       </button>
@@ -1946,7 +2091,7 @@ export default function CDNTriageApp() {
                 </div>
               </div>
 
-              {/* Right: Charts + Chat */}
+              {/* Right: Charts */}
               <div className="space-y-4 min-w-0">
                 {ts && ts.points.length > 0 ? (
                   <>
@@ -1995,7 +2140,6 @@ export default function CDNTriageApp() {
                     Run triage to see charts.
                   </div>
                 )}
-
               </div>
               {/* /Right */}
             </div>
