@@ -1386,29 +1386,27 @@ export default function CDNTriageApp() {
       return;
     }
 
-    //------------------------------------------------------------
+    // ------------------------------------------------------------
     // LLM Assist mode: /api/chat handles BOTH small talk + triage hints
     // ------------------------------------------------------------
     if (chatMode === "llm") {
       setIsLoading(true);
       try {
-        // ✅ B) Resume pending "which partner?" flow
-        // If we previously asked for partner, treat THIS message as the partner answer
-        if (pendingLlmRunRef.current) {
+        // ✅ 0) Resume pending "which partner?" flow FIRST (no LLM call)
+        // Only treat the next message as a partner if:
+        //  - we're in clickhouse mode, AND
+        //  - we previously asked a partner question (pendingLlmRunRef set)
+        if (dataSource === "clickhouse" && pendingLlmRunRef.current) {
           const maybe = String(text || "").trim();
-          const isValid = (PARTNER_OPTIONS as readonly string[]).includes(maybe);
 
+          const isValid = (PARTNER_OPTIONS as readonly string[]).includes(maybe);
           if (!isValid) {
-            addChatText(
-              "assistant",
-              `Pick one of: ${PARTNER_OPTIONS.join(", ")}`
-            );
+            addChatText("assistant", `Pick one of: ${PARTNER_OPTIONS.join(", ")}`);
             return;
           }
 
-          // Apply partner + run with stored filters (no extra LLM call)
+          // apply partner
           setPartner(maybe as Partner);
-
           const pending = pendingLlmRunRef.current;
           pendingLlmRunRef.current = null;
 
@@ -1416,9 +1414,10 @@ export default function CDNTriageApp() {
 
           addChatText(
             "assistant",
-            `Cachey 🤖: Okay — using partner=${runPartner}. Running triage…`
+            `Cachey 🤖: Got it — partner=${runPartner}. Running triage…`
           );
 
+          // run triage with stored filters
           const data = await runTriageRequest({
             dataSource,
             partner: runPartner,
@@ -1470,14 +1469,14 @@ export default function CDNTriageApp() {
           return;
         }
 
-        // ✅ Small-talk guard (ONLY ONCE)
+        // ✅ 1) Small-talk guard (ONLY ONCE) — should NOT call triage
         if (isGreetingOrSmallTalk(text)) {
           const out = await callChatApi(text, nextHistory);
           addChatText("assistant", String(out?.reply || "Hey 👋"));
           return;
         }
 
-        // ✅ Normal LLM call: get hints OR general reply
+        // ✅ 2) Normal LLM call: get hints OR general reply
         const out = await callChatApi(text, nextHistory);
 
         // A) General chat
@@ -1486,21 +1485,36 @@ export default function CDNTriageApp() {
           return;
         }
 
-        // B) Triage hints
-        const nextService = out.serviceHint ?? service;
-        const nextRegion = out.regionHint ?? region;
-        const nextPop = out.popHint ?? pop;
-        const nextWindow = out.windowHint ?? windowMinutes;
+        // B) Triage hints (fall back to current UI filters)
+        const nextService: string = out?.serviceHint ?? service;
+        const nextRegion: string = out?.regionHint ?? region;
+        const nextPop: string = out?.popHint ?? pop;
+        const nextWindow: number = Number(out?.windowHint ?? windowMinutes);
 
-        if (out.serviceHint) setService(out.serviceHint);
-        if (out.regionHint) setRegion(String(out.regionHint));
-        if (out.popHint) setPop(String(out.popHint));
-        if (out.windowHint) setWindowMinutes(Number(out.windowHint));
+        // apply hints to UI state (so left panel updates)
+        if (out?.serviceHint) setService(String(out.serviceHint));
+        if (out?.regionHint) setRegion(String(out.regionHint));
+        if (out?.popHint) setPop(String(out.popHint));
+        if (out?.windowHint != null && Number.isFinite(nextWindow) && nextWindow > 0) {
+          setWindowMinutes(nextWindow);
+        }
 
+        // ✅ 3) Service disambiguation (prevents “it picked live randomly”)
+        // If service is still "all" and user didn't explicitly mention live/vod and LLM didn't give one,
+        // ask instead of defaulting.
+        const userMentionedService = /\b(live|vod|service|svc)\b/i.test(text);
+        const llmProvidedService = Boolean(out?.serviceHint);
+        if (!userMentionedService && !llmProvidedService && String(service) === "all") {
+          addChatText("assistant", "Which service should I use: `live` or `vod`?");
+          return;
+        }
+
+        // ✅ 4) Partner logic (clickhouse only)
         let nextPartner: PartnerOrMissing = partner;
 
         if (dataSource === "clickhouse") {
-          if (out.partnerHint) {
+          // accept explicit partner hint from LLM if valid
+          if (out?.partnerHint) {
             const p = String(out.partnerHint).trim();
             if ((PARTNER_OPTIONS as readonly string[]).includes(p)) {
               setPartner(p as Partner);
@@ -1508,35 +1522,43 @@ export default function CDNTriageApp() {
             }
           }
 
-          if (out.needsPartnerQuestion) {
+          // LLM asked us to ask the user
+          if (out?.needsPartnerQuestion) {
             pendingLlmRunRef.current = {
               service: nextService,
               region: nextRegion,
               pop: nextPop,
-              windowMinutes: nextWindow,
+              windowMinutes: Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
             };
 
             addChatText(
               "assistant",
-              String(out.partnerQuestion || "Which partner should I use?")
+              String(out.partnerQuestion || `Which partner should I use? (${PARTNER_OPTIONS.join(", ")})`)
             );
             return;
           }
 
+          // still missing partner => ask deterministically
           if (!nextPartner) {
-            addChatText(
-              "assistant",
-              `Pick a partner: ${PARTNER_OPTIONS.join(", ")}`
-            );
+            pendingLlmRunRef.current = {
+              service: nextService,
+              region: nextRegion,
+              pop: nextPop,
+              windowMinutes: Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
+            };
+
+            addChatText("assistant", `Which partner should I use? (${PARTNER_OPTIONS.join(", ")})`);
             return;
           }
         }
 
+        // ✅ 5) Deterministic “parsed” line (so it feels consistent)
         addChatText(
           "assistant",
           `Parsed ✅ service=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
         );
 
+        // ✅ 6) Can-run validation
         const canRunNow =
           dataSource === "clickhouse"
             ? Boolean(nextPartner)
@@ -1552,6 +1574,7 @@ export default function CDNTriageApp() {
           return;
         }
 
+        // ✅ 7) Run triage
         addChatText(
           "system",
           `mode=llm • Running triage with ${buildFiltersSummary({
@@ -1566,7 +1589,7 @@ export default function CDNTriageApp() {
 
         const data = await runTriageRequest({
           dataSource,
-          partner: dataSource === "clickhouse" ? nextPartner : partner,
+          partner: dataSource === "clickhouse" ? (nextPartner as PartnerOrMissing) : partner,
           csvUrl,
           file: uploadedFile,
           service: nextService,
@@ -1585,7 +1608,7 @@ export default function CDNTriageApp() {
           timestamp: getCurrentTimestamp(),
           inputs: {
             dataSource,
-            partner: dataSource === "clickhouse" ? nextPartner : partner,
+            partner: dataSource === "clickhouse" ? (nextPartner as PartnerOrMissing) : partner,
             csvUrl: uploadedFile || dataSource === "clickhouse" ? "" : csvUrl || "",
             fileName: uploadedFile ? uploadedFile.name : "",
             service: nextService,
@@ -1602,7 +1625,7 @@ export default function CDNTriageApp() {
         addChatTriage({
           inputs: {
             dataSource,
-            partner: dataSource === "clickhouse" ? nextPartner : partner,
+            partner: dataSource === "clickhouse" ? (nextPartner as PartnerOrMissing) : partner,
             service: nextService,
             region: nextRegion,
             pop: nextPop,
