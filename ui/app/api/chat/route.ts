@@ -73,6 +73,73 @@ function isGreetingOnly(text: string) {
   );
 }
 
+/* ===========================
+   0) General FAQ intercepts (local, no LLM)
+   - prevents generic / identity drift
+   - avoids repeating intro after first assistant message
+   =========================== */
+function isNameQuestion(text: string) {
+  const t = stripPunctAndSpaces(text);
+  return /\b(your name|who are you|what are you)\b/.test(t) || t === "name";
+}
+
+function isCapabilitiesQuestion(text: string) {
+  const t = stripPunctAndSpaces(text);
+  return /\b(what can you do|what do you do|help me with|what r u able to do|what are you capable of)\b/.test(
+    t
+  );
+}
+
+function isCacheyMisspell(text: string) {
+  const t = stripPunctAndSpaces(text);
+  // handles: cachey, chacey, chacy, cachy
+  return /\b(cachey|chacey|chacy|cachy)\b/.test(t);
+}
+
+function assistantHasSpoken(msgs: ChatMsg[]) {
+  return msgs.some((m) => m.role === "assistant");
+}
+
+function faqGeneralReply(text: string, msgs: ChatMsg[]): string | null {
+  const raw = String(text ?? "").trim();
+  const t = stripPunctAndSpaces(raw);
+  if (!t) return null;
+
+  const alreadyIntroduced = assistantHasSpoken(msgs);
+
+  // Greeting-only
+  if (isGreetingOnly(raw)) {
+    if (!alreadyIntroduced) {
+      return `Hey — I’m Cachey 🤖. Tell me what to check (live/vod, region/POP, last 30m) and I’ll help you triage.`;
+    }
+    return `All good — what are we looking at?`;
+  }
+
+  // Greeting + Cachey mention
+  if (/^(hi|hello|hey|yo|gm)\b/.test(t) && isCacheyMisspell(raw)) {
+    return alreadyIntroduced
+      ? `All good — what do you want to check?`
+      : `Hey — I’m Cachey 🤖. Tell me what to check (live/vod, region/POP, last 30m) and I’ll help you triage.`;
+  }
+
+  // "Cachey?" / "chacey?"
+  if (isCacheyMisspell(raw) && t.length <= 12) {
+    return alreadyIntroduced
+      ? `Yep — what do you want to check?`
+      : `Yep — Cachey 🤖. What are we looking at?`;
+  }
+
+  if (isNameQuestion(raw)) {
+    return `I’m Cachey 🤖.`;
+  }
+
+  if (isCapabilitiesQuestion(raw)) {
+    return `I can help you triage CDN issues: summarize errors/latency/traffic, narrow by live/vod + region/POP + time window, and suggest next checks. Ask like “live Boston last 30m”.`;
+  }
+
+  return null;
+}
+
 // For ClickHouse: accept only UI partner names (public-safe)
 function extractPartnerFromText(text: string): string | null {
   const t = String(text || "").trim();
@@ -197,27 +264,22 @@ Important:
    ② General chat prompt (Cachey 🤖)
    - concise
    - no forced greeting
-   - subtle humor ONLY when things are healthy/normal
+   - no ownership mention
    =========================== */
 function buildGeneralPrompt() {
   return `
-You are Cachey 🤖, Krishna's personal CDN assistant inside a triage app.
+You are Cachey 🤖, a calm CDN incident triage assistant inside a web app.
 
 Rules (STRICT):
-- Do NOT introduce yourself unless the user asks who you are.
-- Do NOT start with a greeting unless the user greeted first.
+- Your name is "Cachey" (never mention internal ownership like "Krishna's assistant").
 - Keep replies 1–2 sentences max.
-- Ask at most ONE follow-up question only if needed to proceed.
-- No long feature lists unless the user explicitly asks.
+- Do NOT claim you actively change infrastructure or "optimize apps by caching data".
+- Focus on triage: errors, latency, traffic, service (live/vod), region, POP, time windows.
+- Ask at most ONE follow-up question only if needed.
 
 Humor rule:
-- Add subtle humor ONLY when you are describing healthy/normal status (e.g., "looks stable", "no spikes", "all good").
-- If anything looks degraded (errors/latency/etc), be serious and direct.
-
-Tone:
-- Chill
-- Technical
-- Direct
+- Add subtle humor ONLY when the user is casual AND the situation sounds healthy/normal.
+- If anything sounds degraded, be serious and direct.
 `.trim();
 }
 
@@ -227,6 +289,9 @@ Tone:
    =========================== */
 function sanitizeGeneralReply(text: string) {
   let s = String(text ?? "").trim();
+
+  // If the reply is basically just the name, keep it
+  if (/^\s*i\s*(am|'m)\s*cachey\b/i.test(s)) return s;
 
   // Remove greeting prefixes if they sneak in (we handle greetings locally)
   s = s.replace(
@@ -391,16 +456,16 @@ export async function POST(req: Request) {
 
     /* ===========================
        GENERAL CHAT PATH
-       - greeting gets a nice branded intro (local)
-       - otherwise LLM with temp ~0.5
+       - local FAQ intercept (identity/capabilities/greetings)
+       - otherwise LLM with a little higher temp
        =========================== */
     if (!looksLikeTriageText(lastUser)) {
-      if (isGreetingOnly(lastUser)) {
+      const canned = faqGeneralReply(lastUser, msgs);
+      if (canned) {
         return NextResponse.json({
           kind: "general",
-          reply:
-            "Hey 👋 I’m Cachey 🤖 — your personal CDN bot. Tell me what you want to check (live/vod, region/pop, last 30m, etc).",
-          _debug: { keyPresent, modelUsed: "local-greeting", failures },
+          reply: canned,
+          _debug: { keyPresent, modelUsed: "local-faq", failures },
         } satisfies GeneralResponse);
       }
 
@@ -412,8 +477,8 @@ export async function POST(req: Request) {
             model,
             messages: msgs,
             systemPrompt: generalPrompt,
-            temperature: 0.5,
-            maxTokens: 140,
+            temperature: 0.75, // 👈 a little higher than 0.5
+            maxTokens: 180,
           });
 
           return NextResponse.json({

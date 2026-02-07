@@ -1027,9 +1027,20 @@ export default function CDNTriageApp() {
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
+  // ✅ Step 1: track pending partner question (short-term conversation state)
+  const [awaitingPartner, setAwaitingPartner] = useState(false);
+
+
   // Refs
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
+  const pendingLlmRunRef = useRef<{
+  service: string;
+  region: string;
+  pop: string;
+  windowMinutes: number;
+  } | null>(null);
+
 
   useEffect(() => setMounted(true), []);
 
@@ -1246,25 +1257,43 @@ export default function CDNTriageApp() {
     return data;
   }
 
-  async function callChatApi(userText: string) {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: [{ role: "user", content: userText }],
-        context: {
-          mode: dataSource,
-          availableRegions: REGION_OPTIONS,
-          availablePops: POP_OPTIONS,
-          availablePartners: Array.from(PARTNER_OPTIONS),
-        },
-      }),
-    });
+  async function callChatApi(userText: string, history?: ChatMessage[]) {
+  // Only send text messages to the LLM API (no triage_result payloads)
+  const safeHistory = Array.isArray(history) ? history : [];
+  const wireMsgs = safeHistory
+    .filter((m): m is ChatTextMessage => m.type === "text")
 
-    const json = await res.json().catch(() => null);
-    if (!json) throw new Error("api/chat returned non-JSON");
-    return json as any;
+    .slice(-12) // keep it tight
+    .map((m) => ({ role: m.role, content: m.text }));
+
+  // Make sure the last message is the current user text (belt + suspenders)
+  if (wireMsgs.length === 0) {
+    wireMsgs.push({ role: "user", content: userText });
+  } else {
+    const last = wireMsgs[wireMsgs.length - 1];
+    if (last.role !== "user") wireMsgs.push({ role: "user", content: userText });
+    else last.content = userText; // keep last user msg in sync
   }
+
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messages: wireMsgs,
+      context: {
+        mode: dataSource,
+        availableRegions: REGION_OPTIONS,
+        availablePops: POP_OPTIONS,
+        availablePartners: Array.from(PARTNER_OPTIONS),
+      },
+    }),
+  });
+
+  const json = await res.json().catch(() => null);
+  if (!json) throw new Error("api/chat returned non-JSON");
+  return json as any;
+}
+
 
   async function handleRunTriage() {
     setErrorMessage("");
@@ -1338,7 +1367,9 @@ export default function CDNTriageApp() {
       text,
       timestamp: getCurrentTimestamp(),
     };
-    setChatMessages((prev) => [...prev, userMsg]);
+
+    const nextHistory = [...chatMessages, userMsg];
+    setChatMessages(nextHistory);
 
     // Deterministic blocks clickhouse without partner
     if (partnerMissing && chatMode !== "llm") {
@@ -1355,16 +1386,102 @@ export default function CDNTriageApp() {
       return;
     }
 
-    // ------------------------------------------------------------
+    //------------------------------------------------------------
     // LLM Assist mode: /api/chat handles BOTH small talk + triage hints
     // ------------------------------------------------------------
     if (chatMode === "llm") {
       setIsLoading(true);
       try {
-        const out = await callChatApi(text);
+        // ✅ B) Resume pending "which partner?" flow
+        // If we previously asked for partner, treat THIS message as the partner answer
+        if (pendingLlmRunRef.current) {
+          const maybe = String(text || "").trim();
+          const isValid = (PARTNER_OPTIONS as readonly string[]).includes(maybe);
+
+          if (!isValid) {
+            addChatText(
+              "assistant",
+              `Pick one of: ${PARTNER_OPTIONS.join(", ")}`
+            );
+            return;
+          }
+
+          // Apply partner + run with stored filters (no extra LLM call)
+          setPartner(maybe as Partner);
+
+          const pending = pendingLlmRunRef.current;
+          pendingLlmRunRef.current = null;
+
+          const runPartner = maybe as Partner;
+
+          addChatText(
+            "assistant",
+            `Cachey 🤖: Okay — using partner=${runPartner}. Running triage…`
+          );
+
+          const data = await runTriageRequest({
+            dataSource,
+            partner: runPartner,
+            csvUrl,
+            file: uploadedFile,
+            service: pending.service,
+            region: pending.region,
+            pop: pending.pop,
+            windowMinutes: pending.windowMinutes,
+            debug: debugMode,
+          });
+
+          setSummaryText(data.summaryText || "");
+          setMetricsJson(data.metricsJson || null);
+          setSelectedRunId(null);
+
+          const newRun: TriageRun = {
+            id: `${Date.now()}`,
+            timestamp: getCurrentTimestamp(),
+            inputs: {
+              dataSource,
+              partner: runPartner,
+              csvUrl: uploadedFile || dataSource === "clickhouse" ? "" : csvUrl || "",
+              fileName: uploadedFile ? uploadedFile.name : "",
+              service: pending.service,
+              region: pending.region,
+              pop: pending.pop,
+              windowMinutes: pending.windowMinutes,
+              debug: debugMode,
+            },
+            summaryText: data.summaryText || "",
+            metricsJson: data.metricsJson || null,
+          };
+          setRunHistory((prev) => [newRun, ...prev].slice(0, MAX_HISTORY));
+
+          addChatTriage({
+            inputs: {
+              dataSource,
+              partner: runPartner,
+              service: pending.service,
+              region: pending.region,
+              pop: pending.pop,
+              windowMinutes: pending.windowMinutes,
+            },
+            summaryText: data.summaryText || "",
+            metricsJson: data.metricsJson || null,
+          });
+
+          return;
+        }
+
+        // ✅ Small-talk guard (ONLY ONCE)
+        if (isGreetingOrSmallTalk(text)) {
+          const out = await callChatApi(text, nextHistory);
+          addChatText("assistant", String(out?.reply || "Hey 👋"));
+          return;
+        }
+
+        // ✅ Normal LLM call: get hints OR general reply
+        const out = await callChatApi(text, nextHistory);
 
         // A) General chat
-        if (out.kind === "general") {
+        if (out?.kind === "general") {
           addChatText("assistant", String(out.reply || "Hey 👋"));
           return;
         }
@@ -1381,6 +1498,7 @@ export default function CDNTriageApp() {
         if (out.windowHint) setWindowMinutes(Number(out.windowHint));
 
         let nextPartner: PartnerOrMissing = partner;
+
         if (dataSource === "clickhouse") {
           if (out.partnerHint) {
             const p = String(out.partnerHint).trim();
@@ -1391,6 +1509,13 @@ export default function CDNTriageApp() {
           }
 
           if (out.needsPartnerQuestion) {
+            pendingLlmRunRef.current = {
+              service: nextService,
+              region: nextRegion,
+              pop: nextPop,
+              windowMinutes: nextWindow,
+            };
+
             addChatText(
               "assistant",
               String(out.partnerQuestion || "Which partner should I use?")
@@ -1401,7 +1526,7 @@ export default function CDNTriageApp() {
           if (!nextPartner) {
             addChatText(
               "assistant",
-              "ClickHouse requires a partner. Please pick one from the Partner dropdown."
+              `Pick a partner: ${PARTNER_OPTIONS.join(", ")}`
             );
             return;
           }
@@ -1412,7 +1537,12 @@ export default function CDNTriageApp() {
           `Parsed ✅ service=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
         );
 
-        if (!canRunTriage) {
+        const canRunNow =
+          dataSource === "clickhouse"
+            ? Boolean(nextPartner)
+            : Boolean(uploadedFile) || Boolean(csvUrl && csvUrl.trim().length > 0);
+
+        if (!canRunNow) {
           addChatText(
             "assistant",
             dataSource === "clickhouse"
@@ -1492,6 +1622,7 @@ export default function CDNTriageApp() {
         setIsLoading(false);
       }
     }
+
 
     // ------------------------------------------------------------
     // Deterministic mode (existing behavior)
