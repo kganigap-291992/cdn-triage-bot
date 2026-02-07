@@ -1,7 +1,6 @@
 # CDN Incident Triage Bot
 
-**V1 (n8n + Slack) → V2 (Standalone UI + API)**  
-**Author & Maintainer:** Krishna Reddy
+**V1 (n8n + Slack) → V2 (Standalone UI + API)**
 
 An automated CDN incident triage system that analyzes delivery telemetry (edge, mid-tier, cache, URL patterns, and client signals) and produces **evidence-backed diagnosis and drill-down insights**.
 
@@ -9,13 +8,24 @@ This project mirrors real-world CDN/video operations and demonstrates how operat
 
 ---
 
+## 📋 Table of Contents
+
+- [Data Safety](#data-safety)
+- [Why This Project Exists](#why-this-project-exists)
+- [V1 — n8n + Slack (Prototype Phase)](#v1--n8n--slack-prototype-phase)
+- [🤖 LLM Integration & Intelligent Chat](#-llm-integration--intelligent-chat)
+- [Architecture](#architecture)
+- [Getting Started](#getting-started)
+
+---
+
 ## Data Safety
 
 All telemetry used in this project is **synthetically generated** to mirror real-world CDN traffic patterns.
 
-- No production logs
-- No customer data
-- No proprietary systems
+* No production logs
+* No customer data
+* No proprietary systems
 
 ---
 
@@ -23,30 +33,43 @@ All telemetry used in this project is **synthetically generated** to mirror real
 
 CDN incident triage is often:
 
-- manual and time-consuming
-- dependent on tribal knowledge
-- difficult to standardize across teams
+* manual and time-consuming
+* dependent on tribal knowledge
+* difficult to standardize across teams
 
 Engineers must correlate:
 
-- edge vs upstream errors
-- cache behavior
-- latency spikes
-- URL types (manifest vs segment)
-- regional POP failures
-- client / User-Agent patterns
+* edge vs upstream errors
+* cache behavior
+* latency spikes
+* URL types (manifest vs segment)
+* regional POP failures
+* client / User-Agent patterns
 
 **This project automates first-level triage** using deterministic rules, clear metrics, and explainable summaries.
 
 ---
 
-## V1 — n8n + Slack (Prototype Phase)
+# V1 — n8n + Slack (Prototype Phase)
 
 V1 focused on **speed of iteration and signal validation**.
 
-### V1 High-Level Architecture
+### Why a UI Was Required (Beyond Automation)
 
-```mermaid
+While n8n worked well for automated, one-shot triage, it is not designed for interactive or conversational workflows.
+
+Chat-based triage requires:
+
+* deterministic and reproducible metrics
+* explicit request/response boundaries
+* inspectable intermediate state
+* clear separation between computation and explanation
+
+The move to a UI + API architecture in V2 was a prerequisite for any future chat or agent-based interface. The UI externalizes system state and makes reasoning observable, allowing conversational layers to sit on top without compromising correctness.
+
+## V1 High-Level Architecture
+
+```
 flowchart LR
     A[Slack<br/>/triage command] -->|HTTP POST| B[n8n Webhook]
     B --> C[Parser<br/>Parse filters & window]
@@ -55,242 +78,189 @@ flowchart LR
     E --> F[Slack<br/>Summary Response]
 ```
 
-### Why a UI Was Required (Beyond Automation)
+---
 
-While n8n worked well for automated, one-shot triage, it is not designed for interactive or conversational workflows.
+# 🤖 LLM Integration & Intelligent Chat
 
-Chat-based triage requires:
+## Overview
 
-- deterministic and reproducible metrics
-- explicit request/response boundaries
-- inspectable intermediate state
-- clear separation between computation and explanation
-
-The move to a UI + API architecture in V2 was a prerequisite for any future chat or agent-based interface. The UI externalizes system state and makes reasoning observable, allowing conversational layers to sit on top without compromising correctness.
+The CDN Triage Bot features an integrated Large Language Model (LLM) powered assistant named **Cachey 🤖** that enables natural language interaction and intelligent incident triage through conversational interfaces.
 
 ---
 
-## V2 — Demo UI (Deterministic) — Triage + Chat Controller
+## 🚀 Key Features
 
-This demo UI provides:
+### 1. OpenRouter LLM Integration
 
-- CSV URL or CSV file upload
-- Filter controls: service, region, pop, window (minutes)
-- Run History (last 10) stored in localStorage
-- Metrics summary + raw metricsJson
-- **Chat panel (Phase B1)**: chat-shaped controller that runs the same deterministic triage using the current filters
+Seamless integration with OpenRouter API for robust model access:
 
-### Architecture
+- **Multi-model support** with automatic fallback for reliability
+- **Automatic retry handling** for rate limits (HTTP 429)
+- **Environment-based configuration** for easy deployment
 
-- The application is a single Next.js web UI.
-- Users can run triage either via filters or via chat.
-- Chat is currently deterministic and acts as a controller.
-- All requests flow through a single `/api/triage` endpoint.
-- CSV logs are used for demos; ClickHouse will replace CSV in future versions without changing the UI.
-
-### Chat Behavior (Phase B1)
-
-Chat is not an LLM yet. It is a control surface:
-
-- User types a message
-- We optionally parse simple overrides from text:
-  - `service=vod` / `svc=vod`
-  - `region=use1`
-  - `pop=sjc`
-  - `win=60` / `window=60`
-- Then the UI runs `/api/triage` deterministically and prints the summary
-
-### Example Chat Inputs
-
-- `run triage`
-- `service=vod region=usw2 pop=sjc win=60`
-- `svc=live win=15`
-
-### Why Deterministic First?
-
-We intentionally keep metrics computation deterministic for:
-
-- reproducibility
-- debugging
-- future ClickHouse swap without changing the UI
-
-### ClickHouse (Mock Mode)
-
-The ClickHouse data path is wired end-to-end (UI → API → metrics → charts) using **simulated data**.
-
-This validates:
-
-- schema assumptions
-- API contracts
-- metrics shape
-- UI and chat behavior
-
-No ClickHouse credentials are required to run or demo the system.
-
-The mock runner will be replaced with real ClickHouse execution **without any UI or API changes**.
-
----
-
-## Update (2026-02-04) — V2 Freeze: Deterministic UI + Metrics Contract
-
-Today we **froze V2** as a fully deterministic triage system with a stable data contract. All LLM/agent features are deferred to **V3**.
-
-### What Shipped in V2 (Frozen)
-
-#### ✅ 1) One Metrics Contract for CSV + ClickHouse
-
-Both data sources now return the **same `metricsJson` shape**, so the UI never branches on datasource.
-
-Key contract:
-
-- `metricsJson.available` (regions/pops/statusCodes/etc)
-- `metricsJson.timeseries` with stable per-bucket points + series order
-
-#### ✅ 2) Fixed Bucket Sizing (Parity Across Modes)
-
-Timeseries bucket size is now forced to:
-
-- **300 seconds (5 minutes)** for **CSV and ClickHouse**
-
-This fixes:
-
-- bucket mismatches
-- time legend drift
-- chart alignment errors between CSV vs ClickHouse
-
-#### ✅ 3) Timeseries Expanded for Stacked Breakdowns
-
-Each timeseries point now includes stacked maps:
-
-- `statusCountsByCode` — counts by HTTP status code per bucket
-- `hostCountsByHost` — counts by edge host per bucket
-- `crcCountsByCrc` — counts by CRC error code per bucket
-
-And the timeseries includes stable legend ordering:
-
-- `statusCodeSeries`
-- `hostSeries`
-- `crcSeries`
-
-#### ✅ 4) UI Updated to Reflect New Timeseries Fields
-
-UI now renders deterministic charts driven only from `metricsJson.timeseries`:
-
-- Stacked **status code** chart (existing)
-- **Total events by host** stacked chart (added)
-- **CRC error code** chart (added)
-- Correct bucket time labeling (client-safe formatting)
-
-#### ✅ 5) Chat Controller Hardening (No Build Breakers)
-
-Chat parsing + validation is stable:
-
-- `service` validated via `ALLOWED.service`
-- `region/pop` validated dynamically via discovered options
-- safety guard resets stale region/pop when options update
-
-#### ✅ 6) Metrics Engine Upgrades (CSV Path)
-
-`lib/triage/metricsEngine.js` now includes:
-
-- robust CSV normalization and aliasing
-- host/url parsing → `edge_host`, `svc`, `region`, `pop`
-- service bucketing (`live|vod|other`) for deterministic filtering
-- per-bucket aggregation for status/host/crc stacked charts
-
-#### ✅ 7) ClickHouse Mock Upgraded (Production-Shape Output)
-
-`lib/clickhouse/runMockClickhouseTriage.ts` now generates:
-
-- realistic distributions
-- deterministic totals and p95/p99
-- full stacked maps + stable series ordering
-- same timeseries bucket size as CSV
-
-### V2 Definition (Frozen)
-
-**V2 is deterministic analytics only.**
-
-- UI + API + Metrics Engine must remain reproducible
-- No probabilistic reasoning in core outputs
-- ClickHouse real integration can replace mock **without changing UI contract**
-
----
-
-## V3 (Next) — LLM / Intelligence Layer (Not Part of V2)
-
-V3 will add an optional AI layer **on top of frozen V2 outputs**, never inside computation.
-
-Planned V3 capabilities:
-
-- LLM explanation of `summaryText` + evidence formatting
-- RAG over runbooks / traffic router / operational docs
-- "What changed?" comparisons between runs
-- Hypothesis generation (root cause candidates) using deterministic metrics as grounding
-- Guided drill-down prompts (next best query / filter suggestions)
-
-**Rule:** V3 can suggest and explain, but V2 remains source of truth for numbers.
-
----
-
-## Chat → Execution Architecture (Deterministic, LLM-safe)
-
-This project intentionally separates **natural language interaction** from **execution and data access**.
-
-> **The UI owns execution context.  
-> Chat (LLM now or later) only provides hints.  
-> Deterministic code decides what actually runs.**
-
-This design is critical for:
-
-- safety
-- reproducibility
-- auditability
-- clean migration from demo → production
-
----
-
-## High-Level Flow
-
-```mermaid
-flowchart TD
-    User[User<br/>Chat or UI] --> UI[UI State<br/>dataSource, partner]
-    User --> Chat[Chat / LLM<br/>Intent + Hints]
-    Chat -->|Hints only| Resolver[Deterministic Resolver]
-    UI -->|Execution Context| Resolver
-    Resolver -->|Resolved Filters| Engine[Metrics Engine]
-    Engine -->|metricsJson| UI
+**Configuration:**
+```env
+OPENROUTER_API_KEY=your_api_key_here
+OPENROUTER_MODELS=anthropic/claude-3.5-sonnet,openai/gpt-4
+OPENROUTER_SITE_URL=https://your-app.com
+OPENROUTER_APP_NAME=CDN Triage Bot
 ```
 
 ---
 
-## Authoritative Execution Flow
+### 2. Dedicated Chat API Endpoint
 
-```javascript
-// 1) UI owns execution context (source of truth)
-const executionContext = {
-  dataSource, // "csv" | "clickhouse"
-  partner     // ClickHouse only
-};
+**Route:** `/api/chat`
 
-// 2) Chat / LLM provides hints only (NO execution decisions)
-const hints = {
-  serviceHint,  // "vod", "live"
-  regionHint,   // "usw2", "boston"
-  windowHint    // minutes (e.g. 60, 360)
-};
+Handles intelligent conversation and incident parsing with:
 
-// 3) Deterministic resolver applies hints safely
-const resolvedFilters = applyHints({
-  currentFilters,
-  hints,
-  availableRegions,
-  availablePops
-});
+- **Message history management** for contextual responses
+- **Dynamic context injection** (regions, POPs, partners)
+- **Model fallback mechanism** for high availability
+- **Response normalization** for consistent output
 
-// 4) Triage runs ONLY on the selected engine
-runTriage({
-  ...executionContext,
-  ...resolvedFilters
-});
+**Key capabilities:**
+- General conversational interaction
+- Structured incident triage parsing
+- Intelligent routing between operational modes
+
+---
+
+### 3. Dual-Mode Chat System
+
+The chat system operates in two intelligent modes based on user intent:
+
+#### A. General Chat Mode
+
+**Used for:**
+- Greetings and casual conversation
+- Application questions and help requests
+- High-level system discussions
+
+**Features:**
+- Balanced temperature (~0.5) for natural responses
+- Concise replies (1-2 sentences)
+- Automatic greeting detection
+- Anti-rambling safeguards
+- Professional tone maintenance
+
+**Example interaction:**
 ```
+User: hi
+Cachey: Hey 👋 I'm Cachey 🤖 — your personal CDN bot. What would you like to check?
+```
+
+#### B. Triage Parsing Mode
+
+**Activated for:** Incident-related queries
+
+**Features:**
+- Deterministic JSON-only output
+- Temperature = 0 for maximum stability
+- Strict schema enforcement
+- Context-aware parsing with real-time validation
+- ClickHouse partner verification
+
+**Parsed output structure:**
+```json
+{
+  "service": "live | vod | all",
+  "region": "string",
+  "pop": "string",
+  "timeWindow": "string",
+  "partner": "string",
+  "requiresFollowUp": boolean
+}
+```
+
+---
+
+### 4. Intelligent Intent Detection
+
+Advanced classification system to distinguish between:
+
+- ✅ Casual conversation
+- 📊 Monitoring queries
+- 🚨 Incident triage requests
+
+**Benefits:**
+- Prevents unnecessary LLM parsing calls
+- Improves response accuracy
+- Reduces latency for simple queries
+- Optimizes API usage
+
+---
+
+### 5. Assistant Personality & UX
+
+**Identity:**
+- **Name:** Cachey 🤖
+- **Role:** Personal CDN Triage Assistant
+
+**Behavior guidelines:**
+- ✅ Professional during incidents
+- ✅ Concise and helpful responses
+- ❌ No unnecessary greetings
+- ❌ No repetitive self-introductions
+- ❌ No feature dumping
+- 😄 Subtle humor only when systems are healthy
+
+This ensures credibility during critical outages while maintaining an approachable demo experience.
+
+---
+
+### 6. Safety & Reliability
+
+**Output normalization safeguards:**
+
+- **JSON recovery** for malformed LLM responses
+- **Regex-based extraction** for partner names
+- **Reply sanitization** to remove artifacts
+- **Token limits** to prevent excessive responses
+- **Strict validation** against known schema
+
+**Benefits:**
+- Reduces hallucinations
+- Improves parsing stability
+- Ensures consistent behavior
+- Handles edge cases gracefully
+
+---
+
+## 🛠️ Technical Architecture
+
+```
+User Input
+    ↓
+Intent Detection
+    ↓
+    ├─→ General Chat Mode (conversational)
+    │   └─→ LLM Response (temp: 0.5)
+    │
+    └─→ Triage Mode (incident parsing)
+        └─→ LLM Parsing (temp: 0) → JSON validation → ClickHouse verification
+```
+
+---
+
+## 📋 Usage Examples
+
+### General Conversation
+```
+User: What can you help me with?
+Cachey: I can help you check CDN status, analyze incidents, and monitor traffic across regions and POPs.
+```
+
+### Incident Triage
+```
+User: check live streaming issues in APAC for the last hour
+Cachey: [Parsed structure]
+{
+  "service": "live",
+  "region": "APAC",
+  "timeWindow": "1h",
+  "partner": null
+}
+```
+
+---
