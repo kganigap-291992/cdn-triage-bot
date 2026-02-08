@@ -5,8 +5,12 @@
 // ------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------
-function normLower(v) { return String(v ?? "").trim().toLowerCase(); }
-function normUpper(v) { return String(v ?? "").trim().toUpperCase(); }
+function normLower(v) {
+  return String(v ?? "").trim().toLowerCase();
+}
+function normUpper(v) {
+  return String(v ?? "").trim().toUpperCase();
+}
 
 function matchDim(value, expected, dimName = "unknown") {
   if (!expected || expected === "all") return true;
@@ -47,7 +51,8 @@ function prettyFilters(filters) {
     .map((f) => {
       if (f?.type === "range") return `${f.key}=${f.min}-${f.max}`;
       if (f?.type === "eq") return `${f.key}=${f.value}`;
-      if (f?.type === "in") return `${f.key} in (${(f.values ?? []).join(",")})`;
+      if (f?.type === "in")
+        return `${f.key} in (${(f.values ?? []).join(",")})`;
       return `${f?.key ?? "filter"}`;
     })
     .join(", ");
@@ -60,11 +65,15 @@ function topCounts(rows, key, limit = 6) {
     if (!v) continue;
     counts.set(v, (counts.get(v) ?? 0) + 1);
   }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit);
 }
 
 function topKeys(rows, key, limit = 24) {
-  return topCounts(rows, key, limit).map(([v]) => String(v).trim()).filter(Boolean);
+  return topCounts(rows, key, limit)
+    .map(([v]) => String(v).trim())
+    .filter(Boolean);
 }
 
 function topValuesPretty(rows, key, limit = 6) {
@@ -85,7 +94,14 @@ function topValuesPretty(rows, key, limit = 6) {
  */
 function deriveHostSvcRegionPopFromUrl(u) {
   const s = String(u || "").trim();
-  if (!s) return { edge_host: null, svc: null, region: null, pop: null, hostname: null };
+  if (!s)
+    return {
+      edge_host: null,
+      svc: null,
+      region: null,
+      pop: null,
+      hostname: null,
+    };
 
   const hasScheme = /^[a-z]+:\/\//i.test(s);
 
@@ -94,10 +110,20 @@ function deriveHostSvcRegionPopFromUrl(u) {
     const url = new URL(hasScheme ? s : `https://${s}`);
     hostname = url.hostname || "";
   } catch {
-    hostname = (s.split("/")[0] || "").split("?")[0].split("#")[0].trim();
+    hostname = (s.split("/")[0] || "")
+      .split("?")[0]
+      .split("#")[0]
+      .trim();
   }
 
-  if (!hostname) return { edge_host: null, svc: null, region: null, pop: null, hostname: null };
+  if (!hostname)
+    return {
+      edge_host: null,
+      svc: null,
+      region: null,
+      pop: null,
+      hostname: null,
+    };
 
   const parts = hostname.split(".");
   const edge_host = parts[0] || null;
@@ -107,7 +133,9 @@ function deriveHostSvcRegionPopFromUrl(u) {
   let pop = null;
 
   // cdn-<tier>-<site>-<node>
-  const m = String(edge_host).match(/^cdn-([a-z]{2,4})-([a-z]{2,8})-([a-z0-9]+)(?:-.+)?$/i);
+  const m = String(edge_host).match(
+    /^cdn-([a-z]{2,4})-([a-z]{2,8})-([a-z0-9]+)(?:-.+)?$/i
+  );
   if (m) {
     const site = (m[2] || "").toLowerCase();
     const node = (m[3] || "").toLowerCase();
@@ -157,7 +185,10 @@ function deriveCrcClass(crcRaw) {
   if (!c || c === "UNKNOWN") return "unknown";
   if (c.startsWith("ERR_")) return "error";
 
-  if (["TCP_HIT", "TCP_CF_HIT", "TCP_REF_FAIL_HIT", "TCP_REFRESH_HIT"].includes(c)) return "hit";
+  if (
+    ["TCP_HIT", "TCP_CF_HIT", "TCP_REF_FAIL_HIT", "TCP_REFRESH_HIT"].includes(c)
+  )
+    return "hit";
   if (["TCP_MISS", "TCP_REFRESH_MISS"].includes(c)) return "miss";
   if (["TCP_CLIENT_REFRESH"].includes(c)) return "client";
 
@@ -174,7 +205,8 @@ function deriveServiceBucket(row) {
   const hay = `${s} ${svc}`;
 
   if (/\blive\b/.test(hay)) return "live";
-  if (/\bvod\b/.test(hay) || /\bipvod\b/.test(hay) || /\bvod-/.test(hay)) return "vod";
+  if (/\bvod\b/.test(hay) || /\bipvod\b/.test(hay) || /\bvod-/.test(hay))
+    return "vod";
 
   return "other";
 }
@@ -293,7 +325,8 @@ function buildTimeseriesPoints(rows) {
     const edgeStatus = Number(r.edge_status);
     if (Number.isFinite(edgeStatus)) {
       const codeKey = String(edgeStatus);
-      acc.statusCountsByCode[codeKey] = (acc.statusCountsByCode[codeKey] ?? 0) + 1;
+      acc.statusCountsByCode[codeKey] =
+        (acc.statusCountsByCode[codeKey] ?? 0) + 1;
 
       if (edgeStatus >= 500 && edgeStatus < 600) acc.err5xx += 1;
     }
@@ -339,16 +372,31 @@ function buildTimeseriesPoints(rows) {
   });
 
   // Stable legend ordering
-  const statusCodeSeries = unionSeriesFromPoints(points, "statusCountsByCode", 24)
-    .sort((a, b) => Number(a) - Number(b));
+  const statusCodeSeries = unionSeriesFromPoints(points, "statusCountsByCode", 24).sort(
+    (a, b) => Number(a) - Number(b)
+  );
 
   const hostSeries = unionSeriesFromPoints(points, "hostCountsByHost", 10); // top 10 hosts
-  const crcSeries = unionSeriesFromPoints(points, "crcCountsByCrc", 10);   // top 10 crc codes
+  const crcSeries = unionSeriesFromPoints(points, "crcCountsByCrc", 10); // top 10 crc codes
 
-  const startTs = minMs == null ? null : new Date(Math.floor(minMs / bucketMs) * bucketMs).toISOString();
-  const endTs = maxMs == null ? null : new Date(Math.floor(maxMs / bucketMs) * bucketMs).toISOString();
+  const startTs =
+    minMs == null
+      ? null
+      : new Date(Math.floor(minMs / bucketMs) * bucketMs).toISOString();
+  const endTs =
+    maxMs == null
+      ? null
+      : new Date(Math.floor(maxMs / bucketMs) * bucketMs).toISOString();
 
-  return { bucketSeconds, startTs, endTs, points, statusCodeSeries, hostSeries, crcSeries };
+  return {
+    bucketSeconds,
+    startTs,
+    endTs,
+    points,
+    statusCodeSeries,
+    hostSeries,
+    crcSeries,
+  };
 }
 
 function emptyTimeseries() {
@@ -360,6 +408,586 @@ function emptyTimeseries() {
     statusCodeSeries: [],
     hostSeries: [],
     crcSeries: [],
+  };
+}
+
+// ------------------------------------------------------------
+// Phase 1 Anomaly Detection + Confidence
+// ------------------------------------------------------------
+function clamp01(x) {
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(1, x));
+}
+
+function median(nums) {
+  const arr = (nums ?? [])
+    .filter((x) => Number.isFinite(x))
+    .slice()
+    .sort((a, b) => a - b);
+  if (!arr.length) return null;
+  const mid = Math.floor(arr.length / 2);
+  if (arr.length % 2 === 1) return arr[mid];
+  return (arr[mid - 1] + arr[mid]) / 2;
+}
+
+function mad(nums, med) {
+  const m = Number.isFinite(med) ? med : median(nums);
+  if (m == null) return null;
+  const dev = (nums ?? [])
+    .filter((x) => Number.isFinite(x))
+    .map((x) => Math.abs(x - m));
+  return median(dev);
+}
+
+function rollingBaseline(values, idx, windowBuckets) {
+  const start = Math.max(0, idx - windowBuckets);
+  const slice = values.slice(start, idx).filter((x) => Number.isFinite(x));
+  if (slice.length < Math.max(3, Math.floor(windowBuckets / 4))) {
+    return { baseline: null, mad: null, n: slice.length };
+  }
+  const med = median(slice);
+  const m = mad(slice, med);
+  return { baseline: med, mad: m, n: slice.length };
+}
+
+function consecutiveTrue(flags, fromIdx, lookback) {
+  // counts consecutive true ending at fromIdx, checking at most lookback elements
+  let c = 0;
+  for (let i = fromIdx; i >= 0 && c < lookback; i--) {
+    if (flags[i]) c++;
+    else break;
+  }
+  return c;
+}
+
+function severityFrom({ kind, ratio, currentAbs, trafficShare }) {
+  // Simple, predictable rules
+  if (kind === "latency") {
+    if (ratio >= 3 && trafficShare >= 0.2) return "critical";
+    if (ratio >= 2 && trafficShare >= 0.1) return "high";
+    if (ratio >= 1.6 && trafficShare >= 0.05) return "medium";
+    if (ratio >= 1.4) return "low";
+    return "low";
+  }
+  if (kind === "error") {
+    // currentAbs is errorRatePct
+    if (currentAbs >= 10 && trafficShare >= 0.2) return "critical";
+    if (currentAbs >= 5 && trafficShare >= 0.1) return "high";
+    if (currentAbs >= 2) return "medium";
+    return "low";
+  }
+  if (kind === "traffic") {
+    // ratio means baseline/current (drop severity)
+    if (ratio >= 2.5 && trafficShare >= 0.2) return "high";
+    if (ratio >= 1.8 && trafficShare >= 0.1) return "medium";
+    return "low";
+  }
+  return "low";
+}
+
+function computeConfidence({ strengthScore, durationScore, impactScore, dataQualityScore }) {
+  const conf =
+    0.40 * clamp01(strengthScore) +
+    0.25 * clamp01(durationScore) +
+    0.25 * clamp01(impactScore) +
+    0.10 * clamp01(dataQualityScore);
+  return clamp01(conf);
+}
+
+function dataQualityScoreFrom(dqWindow, totalRows) {
+  const total = Math.max(1, Number(totalRows) || 1);
+  const bad =
+    (dqWindow?.invalid_ts ?? 0) +
+    (dqWindow?.missing_edge_status ?? 0) +
+    (dqWindow?.unknown_region ?? 0) +
+    (dqWindow?.unknown_pop ?? 0);
+  const badRatio = bad / total;
+  return clamp01(1 - badRatio * 2); // degrade faster; if 25% bad => ~0.5
+}
+
+function buildBucketIndex(rows, bucketSeconds) {
+  const bucketMs = bucketSeconds * 1000;
+  const idx = new Map(); // bucketMs -> { total, pops:Map, hosts:Map }
+  let total = 0;
+
+  for (const r of rows) {
+    const t = toMs(r.ts);
+    if (!Number.isFinite(t)) continue;
+    const b = Math.floor(t / bucketMs) * bucketMs;
+
+    let acc = idx.get(b);
+    if (!acc) {
+      acc = { total: 0, pops: new Map(), hosts: new Map() };
+      idx.set(b, acc);
+    }
+
+    acc.total += 1;
+    total += 1;
+
+    const pop = String(r.pop ?? "").trim().toLowerCase();
+    if (pop) acc.pops.set(pop, (acc.pops.get(pop) ?? 0) + 1);
+
+    const host = String(r.edge_host ?? "").trim().toLowerCase();
+    if (host) acc.hosts.set(host, (acc.hosts.get(host) ?? 0) + 1);
+  }
+
+  return { idx, total };
+}
+
+function blastRadiusForBuckets(bucketIndex, bucketMsList, totalRows) {
+  const pops = new Set();
+  const hosts = new Set();
+  let affected = 0;
+
+  const popCounts = new Map();
+
+  for (const b of bucketMsList) {
+    const acc = bucketIndex.get(b);
+    if (!acc) continue;
+    affected += acc.total;
+
+    for (const [p, c] of acc.pops.entries()) {
+      pops.add(p);
+      popCounts.set(p, (popCounts.get(p) ?? 0) + c);
+    }
+    for (const h of acc.hosts.keys()) {
+      hosts.add(h);
+    }
+  }
+
+  const trafficShare = totalRows ? affected / totalRows : 0;
+
+  const top3 = [...popCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3);
+  const top3Sum = top3.reduce((s, [, c]) => s + c, 0);
+  const concentrationTop3Pops = affected ? top3Sum / affected : 0;
+
+  return {
+    affectedCount: affected,
+    trafficShare: clamp01(trafficShare),
+    affectedPops: pops.size,
+    affectedHosts: hosts.size,
+    concentrationTop3Pops: clamp01(concentrationTop3Pops),
+  };
+}
+
+// ✅ user-friendly + SRE-level formatting helpers
+function fmtShare(x) {
+  if (!Number.isFinite(x)) return "0%";
+  return `${Math.round(x * 100)}%`;
+}
+function fmtConfidence(x) {
+  if (!Number.isFinite(x)) return "0%";
+  return `${Math.round(x * 100)}%`;
+}
+function fmtDurationBuckets(buckets, bucketSeconds) {
+  const b = Math.max(1, Number(buckets) || 1);
+  const mins = (b * (Number(bucketSeconds) || 300)) / 60;
+  if (mins >= 120) return `${Math.round(mins / 60)}h`;
+  if (mins >= 60) return `${(mins / 60).toFixed(1)}h`;
+  return `${Math.round(mins)}m`;
+}
+
+function computeAnomalies({ timeseries, filteredRows, dqWindow, scope }) {
+  const points = timeseries?.points ?? [];
+  const bucketSeconds = Number(timeseries?.bucketSeconds) || chooseBucketSeconds();
+
+  if (!points.length) {
+    return {
+      health: "healthy",
+      overallConfidence: 0,
+      summary: "No timeseries points available for anomaly detection.",
+      signals: [],
+      blastRadius: {
+        trafficShare: 0,
+        affectedPops: 0,
+        affectedHosts: 0,
+        concentrationTop3Pops: 0,
+      },
+    };
+  }
+
+  const totalRows = filteredRows?.length ?? 0;
+  const dqScore = dataQualityScoreFrom(dqWindow, totalRows);
+
+  // Prepare arrays
+  const tsMs = points.map((p) => Date.parse(p.ts));
+  const p95 = points.map((p) =>
+    Number.isFinite(p.p95TtmsMs) ? Number(p.p95TtmsMs) : null
+  );
+  const errPct = points.map((p) =>
+    Number.isFinite(p.errorRatePct) ? Number(p.errorRatePct) : null
+  );
+  const traffic = points.map((p) =>
+    Number.isFinite(p.totalRequests) ? Number(p.totalRequests) : 0
+  );
+
+  // Only detect near "now" (end of window) for Phase 1.
+  const lastIdx = points.length - 1;
+  const lookback = Math.min(3, points.length); // check last up to 3 buckets
+  const baselineWindow = Math.min(24, Math.max(6, points.length - lookback)); // try up to 2h baseline
+  const minReqPerBucket = 100;
+
+  // Build row bucket index for blast radius
+  const { idx: bucketIndex } = buildBucketIndex(filteredRows || [], bucketSeconds);
+
+  const signals = [];
+
+  function makeTimeObj(bucketMsList) {
+    if (!bucketMsList.length) {
+      return { startTs: points[lastIdx].ts, endTs: points[lastIdx].ts, buckets: 1 };
+    }
+    const s = Math.min(...bucketMsList);
+    const e = Math.max(...bucketMsList);
+    return {
+      startTs: new Date(s).toISOString(),
+      endTs: new Date(e).toISOString(),
+      buckets: bucketMsList.length,
+    };
+  }
+
+  // Helper to convert indices -> bucketMs list
+  function indicesToBucketMs(indices) {
+    const out = [];
+    for (const i of indices) {
+      const ms = tsMs[i];
+      if (Number.isFinite(ms)) out.push(ms);
+    }
+    return out;
+  }
+
+  // -----------------------------
+  // Signal 1: Latency p95 spike
+  // -----------------------------
+  {
+    const flags = new Array(points.length).fill(false);
+    const ratios = new Array(points.length).fill(null);
+    const baselines = new Array(points.length).fill(null);
+    const mads = new Array(points.length).fill(null);
+
+    for (let i = 0; i < points.length; i++) {
+      const cur = p95[i];
+      const req = traffic[i] || 0;
+      if (!Number.isFinite(cur) || req < minReqPerBucket) continue;
+
+      const { baseline, mad: m, n } = rollingBaseline(p95, i, baselineWindow);
+      if (!Number.isFinite(baseline) || baseline <= 0 || n < 3) continue;
+
+      const ratio = cur / baseline;
+      ratios[i] = ratio;
+      baselines[i] = baseline;
+      mads[i] = m;
+
+      // gate with ratio threshold
+      if (ratio >= 1.6) flags[i] = true;
+    }
+
+    // Check most recent sustained buckets
+    const recentIdx = [];
+    for (let i = Math.max(0, lastIdx - (lookback - 1)); i <= lastIdx; i++)
+      recentIdx.push(i);
+
+    const recentTrues = recentIdx.filter((i) => flags[i]);
+    const consec = consecutiveTrue(flags, lastIdx, lookback);
+
+    if (recentTrues.length > 0) {
+      const focusIdx =
+        consec >= 2
+          ? recentTrues.slice(-consec)
+          : [recentTrues[recentTrues.length - 1]];
+      const bucketMsList = indicesToBucketMs(focusIdx);
+
+      const i = focusIdx[focusIdx.length - 1];
+      const cur = p95[i];
+      const base = baselines[i];
+      const ratio = ratios[i] ?? (base ? cur / base : null);
+
+      const br = blastRadiusForBuckets(bucketIndex, bucketMsList, totalRows);
+
+      const strengthScore = clamp01((Number(ratio) - 1) / 2); // ratio 3 => 1
+      const durationScore = clamp01((focusIdx.length - 1) / 2); // 1 bucket => 0, 3 buckets => 1
+      const impactScore = clamp01(br.trafficShare / 0.25); // 25% => 1
+
+      const confidence = computeConfidence({
+        strengthScore,
+        durationScore,
+        impactScore,
+        dataQualityScore: dqScore,
+      });
+
+      const severity = severityFrom({
+        kind: "latency",
+        ratio: Number(ratio) || 1,
+        currentAbs: Number(cur) || 0,
+        trafficShare: br.trafficShare,
+      });
+
+      const z =
+        Number.isFinite(mads[i]) && mads[i] > 0
+          ? (cur - base) / (1.4826 * mads[i])
+          : null;
+
+      const durationStr = fmtDurationBuckets(focusIdx.length, bucketSeconds);
+
+      signals.push({
+        id: "latency_p95_spike",
+        severity,
+        confidence,
+        scope: { service: scope?.service, region: scope?.region, pop: scope?.pop },
+        time: makeTimeObj(bucketMsList),
+        baseline: { method: "rolling_median_mad", windowBuckets: baselineWindow, value: base },
+        current: { value: cur, ratio: Number(ratio), z: Number.isFinite(z) ? Number(z) : null },
+        blastRadius: {
+          trafficShare: br.trafficShare,
+          affectedPops: br.affectedPops,
+          affectedHosts: br.affectedHosts,
+          concentrationTop3Pops: br.concentrationTop3Pops,
+        },
+        // ✅ friendly + SRE detail
+        explanation:
+          `Latency spike: P95 is ${Number(ratio).toFixed(2)}× baseline ` +
+          `(${formatMs(base)} → ${formatMs(cur)}), lasting ~${durationStr}. ` +
+          `Blast radius ${fmtShare(br.trafficShare)} of scoped traffic (${br.affectedPops} pops, ${br.affectedHosts} hosts).`,
+      });
+    }
+  }
+
+  // -----------------------------
+  // Signal 2: Error rate spike (5xx)
+  // -----------------------------
+  {
+    const flags = new Array(points.length).fill(false);
+    const ratios = new Array(points.length).fill(null);
+    const baselines = new Array(points.length).fill(null);
+
+    for (let i = 0; i < points.length; i++) {
+      const cur = errPct[i];
+      const req = traffic[i] || 0;
+      if (!Number.isFinite(cur) || req < minReqPerBucket) continue;
+
+      const { baseline, n } = rollingBaseline(errPct, i, baselineWindow);
+      if (!Number.isFinite(baseline) || n < 3) continue;
+
+      const ratio = (cur + 0.1) / (baseline + 0.1);
+      ratios[i] = ratio;
+      baselines[i] = baseline;
+
+      // gate: either ratio jump OR absolute jump
+      if (ratio >= 2.0 || cur >= baseline + 2.0) flags[i] = true;
+    }
+
+    const recentIdx = [];
+    for (let i = Math.max(0, lastIdx - (lookback - 1)); i <= lastIdx; i++)
+      recentIdx.push(i);
+    const recentTrues = recentIdx.filter((i) => flags[i]);
+    const consec = consecutiveTrue(flags, lastIdx, lookback);
+
+    if (recentTrues.length > 0) {
+      const focusIdx =
+        consec >= 2
+          ? recentTrues.slice(-consec)
+          : [recentTrues[recentTrues.length - 1]];
+      const bucketMsList = indicesToBucketMs(focusIdx);
+
+      const i = focusIdx[focusIdx.length - 1];
+      const cur = errPct[i];
+      const base = baselines[i];
+      const ratio = ratios[i] ?? (base != null ? (cur + 0.1) / (base + 0.1) : 1);
+
+      const br = blastRadiusForBuckets(bucketIndex, bucketMsList, totalRows);
+
+      const strengthScore = clamp01((Number(ratio) - 1) / 3); // ratio 4 => 1
+      const durationScore = clamp01((focusIdx.length - 1) / 2);
+      const impactScore = clamp01(br.trafficShare / 0.25);
+
+      const confidence = computeConfidence({
+        strengthScore,
+        durationScore,
+        impactScore,
+        dataQualityScore: dqScore,
+      });
+
+      const severity = severityFrom({
+        kind: "error",
+        ratio: Number(ratio) || 1,
+        currentAbs: Number(cur) || 0,
+        trafficShare: br.trafficShare,
+      });
+
+      const durationStr = fmtDurationBuckets(focusIdx.length, bucketSeconds);
+
+      signals.push({
+        id: "error_rate_spike_5xx",
+        severity,
+        confidence,
+        scope: { service: scope?.service, region: scope?.region, pop: scope?.pop },
+        time: makeTimeObj(bucketMsList),
+        baseline: { method: "rolling_median_mad", windowBuckets: baselineWindow, value: base },
+        current: { value: cur, ratio: Number(ratio), z: null },
+        blastRadius: {
+          trafficShare: br.trafficShare,
+          affectedPops: br.affectedPops,
+          affectedHosts: br.affectedHosts,
+          concentrationTop3Pops: br.concentrationTop3Pops,
+        },
+        explanation:
+          `Error spike: 5xx rate increased from ${formatPct(base)} → ${formatPct(cur)} ` +
+          `(${Number(ratio).toFixed(2)}×), lasting ~${durationStr}. ` +
+          `Blast radius ${fmtShare(br.trafficShare)} of scoped traffic.`,
+      });
+    }
+  }
+
+  // -----------------------------
+  // Signal 3: Traffic drop
+  // -----------------------------
+  {
+    const flags = new Array(points.length).fill(false);
+    const ratios = new Array(points.length).fill(null);
+    const baselines = new Array(points.length).fill(null);
+
+    for (let i = 0; i < points.length; i++) {
+      const cur = traffic[i] || 0;
+
+      const { baseline, n } = rollingBaseline(traffic, i, baselineWindow);
+      if (!Number.isFinite(baseline) || baseline <= 0 || n < 3) continue;
+
+      baselines[i] = baseline;
+
+      // drop ratio defined as baseline / current
+      const ratio = baseline / Math.max(1, cur);
+      ratios[i] = ratio;
+
+      if (cur <= baseline * 0.6) flags[i] = true;
+    }
+
+    const recentIdx = [];
+    for (let i = Math.max(0, lastIdx - (lookback - 1)); i <= lastIdx; i++)
+      recentIdx.push(i);
+    const recentTrues = recentIdx.filter((i) => flags[i]);
+    const consec = consecutiveTrue(flags, lastIdx, lookback);
+
+    if (recentTrues.length > 0) {
+      const focusIdx =
+        consec >= 2
+          ? recentTrues.slice(-consec)
+          : [recentTrues[recentTrues.length - 1]];
+      const bucketMsList = indicesToBucketMs(focusIdx);
+
+      const i = focusIdx[focusIdx.length - 1];
+      const cur = traffic[i] || 0;
+      const base = baselines[i];
+      const ratio = ratios[i] ?? (base ? base / Math.max(1, cur) : 1);
+
+      const br = blastRadiusForBuckets(bucketIndex, bucketMsList, totalRows);
+
+      const strengthScore = clamp01((Number(ratio) - 1) / 2); // baseline 3x current => 1
+      const durationScore = clamp01((focusIdx.length - 1) / 2);
+      const impactScore = clamp01(br.trafficShare / 0.25);
+
+      const confidence = computeConfidence({
+        strengthScore,
+        durationScore,
+        impactScore,
+        dataQualityScore: dqScore,
+      });
+
+      const severity = severityFrom({
+        kind: "traffic",
+        ratio: Number(ratio) || 1,
+        currentAbs: Number(cur) || 0,
+        trafficShare: br.trafficShare,
+      });
+
+      const dropPct = base && base > 0 ? (1 - cur / base) * 100 : null;
+      const durationStr = fmtDurationBuckets(focusIdx.length, bucketSeconds);
+
+      signals.push({
+        id: "traffic_drop",
+        severity,
+        confidence,
+        scope: { service: scope?.service, region: scope?.region, pop: scope?.pop },
+        time: makeTimeObj(bucketMsList),
+        baseline: { method: "rolling_median_mad", windowBuckets: baselineWindow, value: base },
+        current: { value: cur, ratio: Number(ratio), z: null },
+        blastRadius: {
+          trafficShare: br.trafficShare,
+          affectedPops: br.affectedPops,
+          affectedHosts: br.affectedHosts,
+          concentrationTop3Pops: br.concentrationTop3Pops,
+        },
+        explanation:
+          `Traffic dip: down ${dropPct != null ? dropPct.toFixed(0) : "?"}% vs baseline ` +
+          `(${formatInt(base ?? 0)} → ${formatInt(cur)} req/5m), lasting ~${durationStr}. ` +
+          `Blast radius ${fmtShare(br.trafficShare)} of scoped traffic.`,
+      });
+    }
+  }
+
+  // Overall blast radius = union of all signal buckets (best-effort)
+  const unionBucketMs = new Set();
+  for (const s of signals) {
+    const start = Date.parse(s.time.startTs);
+    const end = Date.parse(s.time.endTs);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+
+    // add buckets between start..end at bucketSeconds granularity
+    const step = bucketSeconds * 1000;
+    for (let t = start; t <= end; t += step) unionBucketMs.add(t);
+  }
+  const overallBR = blastRadiusForBuckets(bucketIndex, [...unionBucketMs], totalRows);
+
+  // Overall confidence = max signal confidence
+  const overallConfidence = signals.reduce(
+    (m, s) => Math.max(m, Number(s.confidence) || 0),
+    0
+  );
+
+  // Health classification
+  const hasIncidentSignal = signals.some(
+    (s) =>
+      (s.severity === "high" || s.severity === "critical") &&
+      (Number(s.confidence) || 0) >= 0.7 &&
+      (Number(s.blastRadius?.trafficShare) || 0) >= 0.1
+  );
+
+  const hasWatchSignal = signals.some((s) => (Number(s.confidence) || 0) >= 0.5);
+
+  const health = hasIncidentSignal ? "incident" : hasWatchSignal ? "watch" : "healthy";
+
+  // Summary: pick strongest (severity + confidence)
+  function sevRank(sev) {
+    if (sev === "critical") return 4;
+    if (sev === "high") return 3;
+    if (sev === "medium") return 2;
+    return 1;
+  }
+  const top = [...signals].sort((a, b) => {
+    const r = sevRank(b.severity) - sevRank(a.severity);
+    if (r !== 0) return r;
+    return (Number(b.confidence) || 0) - (Number(a.confidence) || 0);
+  })[0];
+
+  // ✅ user-friendly summary line with SRE signal
+  const summary = top
+    ? `${health.toUpperCase()}: ${top.explanation} ` +
+      `(confidence ${fmtConfidence(top.confidence)}, window share ${fmtShare(
+        top.blastRadius.trafficShare
+      )}, ${top.time.buckets <= 1 ? "single-bucket" : "multi-bucket"}).`
+    : "HEALTHY: No anomalies detected in the last few buckets.";
+
+  return {
+    health,
+    overallConfidence: clamp01(overallConfidence),
+    summary,
+    signals,
+    blastRadius: {
+      trafficShare: overallBR.trafficShare,
+      affectedPops: overallBR.affectedPops,
+      affectedHosts: overallBR.affectedHosts,
+      concentrationTop3Pops: overallBR.concentrationTop3Pops,
+    },
   };
 }
 
@@ -416,7 +1044,8 @@ function parseCsv(csvText) {
       obj[key] = val;
     }
 
-    const has = (k) => obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== "";
+    const has = (k) =>
+      obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== "";
 
     // URL aliasing
     if (!has("url")) {
@@ -568,13 +1197,18 @@ export function runTriage({
   let filtersArr = [];
   if (Array.isArray(filters)) filtersArr = filters;
   else if (typeof filters === "string" && filters.trim()) {
-    try { filtersArr = JSON.parse(filters); } catch { filtersArr = []; }
+    try {
+      filtersArr = JSON.parse(filters);
+    } catch {
+      filtersArr = [];
+    }
   } else filtersArr = [];
 
   if (!csvText) throw new Error("No CSV text found.");
 
   const rows = parseCsv(csvText);
-  if (rows.length === 0) throw new Error("Parsed 0 rows from CSV. Check delimiter/quotes/header line.");
+  if (rows.length === 0)
+    throw new Error("Parsed 0 rows from CSV. Check delimiter/quotes/header line.");
 
   const dqAll = {
     invalid_ts: rows.filter((r) => !r.ts || Number.isNaN(toMs(r.ts))).length,
@@ -642,7 +1276,9 @@ export function runTriage({
   const beforeService = filtered.length;
   filtered = filtered.filter((r) => matchDim(r.service_bucket, service, "service_bucket"));
   if (service !== "all" && inWindow.length > 0 && filtered.length === beforeService) {
-    warnings.push(`Service filter '${service}' did not reduce dataset (check service_bucket derivation).`);
+    warnings.push(
+      `Service filter '${service}' did not reduce dataset (check service_bucket derivation).`
+    );
   }
 
   const beforeRegion = filtered.length;
@@ -668,14 +1304,35 @@ export function runTriage({
   if (inWindow.length > 0 && filtered.length === 0) {
     warnings.push(`Filters removed all rows. Check available values (metricsJson.available).`);
   }
-  if (dqWindow.missing_edge_status > 0) warnings.push(`Some rows missing edge_status (${dqWindow.missing_edge_status}).`);
-  if (dqWindow.invalid_ts > 0) warnings.push(`Some rows have invalid ts in window (${dqWindow.invalid_ts}).`);
+  if (dqWindow.missing_edge_status > 0)
+    warnings.push(`Some rows missing edge_status (${dqWindow.missing_edge_status}).`);
+  if (dqWindow.invalid_ts > 0)
+    warnings.push(`Some rows have invalid ts in window (${dqWindow.invalid_ts}).`);
 
   const dbg = debug
-    ? buildDebugObj({ rows, inWindow, filtered, startISO, endISO, anchorISO, dq: { all: dqAll, window: dqWindow }, warnings })
+    ? buildDebugObj({
+        rows,
+        inWindow,
+        filtered,
+        startISO,
+        endISO,
+        anchorISO,
+        dq: { all: dqAll, window: dqWindow },
+        warnings,
+      })
     : null;
 
+  // ----------------------------
+  // Empty-window fast return
+  // ----------------------------
   if (inWindow.length === 0) {
+    const anomalies = computeAnomalies({
+      timeseries: emptyTimeseries(),
+      filteredRows: [],
+      dqWindow,
+      scope: { service, region, pop },
+    });
+
     const summaryText = [
       `🧭 *CDN TRIAGE SUMMARY*`,
       `No data found in requested time window.`,
@@ -700,6 +1357,7 @@ export function runTriage({
         error5xxCount: 0,
         errorRatePct: null,
         timeseries: emptyTimeseries(),
+        anomalies,
         warnings,
         dataQuality: { all: dqAll, window: dqWindow },
         debug: dbg,
@@ -707,7 +1365,17 @@ export function runTriage({
     };
   }
 
+  // ----------------------------
+  // No-match fast return
+  // ----------------------------
   if (filtered.length === 0) {
+    const anomalies = computeAnomalies({
+      timeseries: emptyTimeseries(),
+      filteredRows: [],
+      dqWindow,
+      scope: { service, region, pop },
+    });
+
     const summaryText = [
       `🧭 *CDN TRIAGE SUMMARY*`,
       `No rows matched your filters.`,
@@ -715,8 +1383,12 @@ export function runTriage({
       `• Filters: \`${prettyFilters(filtersArr)}\``,
       `• Available (this window):`,
       `   - serviceBuckets: ${(available.serviceBuckets || []).join(", ") || "n/a"}`,
-      `   - regions: ${(available.regions || []).slice(0, 20).join(", ") || "n/a"}${(available.regions || []).length > 20 ? " ..." : ""}`,
-      `   - pops: ${(available.pops || []).slice(0, 20).join(", ") || "n/a"}${(available.pops || []).length > 20 ? " ..." : ""}`,
+      `   - regions: ${(available.regions || []).slice(0, 20).join(", ") || "n/a"}${
+        (available.regions || []).length > 20 ? " ..." : ""
+      }`,
+      `   - pops: ${(available.pops || []).slice(0, 20).join(", ") || "n/a"}${
+        (available.pops || []).length > 20 ? " ..." : ""
+      }`,
       ...(warnings.length ? ["", `⚠️ *Warnings*`, ...warnings.map((w) => `• ${w}`)] : []),
       ...(debug && dbg ? ["", "```", debugBlock(dbg), "```"] : []),
     ].join("\n");
@@ -735,6 +1407,7 @@ export function runTriage({
         error5xxCount: 0,
         errorRatePct: null,
         timeseries: emptyTimeseries(),
+        anomalies,
         warnings,
         dataQuality: { all: dqAll, window: dqWindow },
         debug: dbg,
@@ -747,9 +1420,19 @@ export function runTriage({
   // ✅ fixed 5m bucket timeseries + stacked series maps
   const timeseries = buildTimeseriesPoints(filtered);
 
-  const ttmsVals = filtered.map((r) => Number(r.ttms_ms)).filter((v) => Number.isFinite(v));
-  const p95 = percentile(ttmsVals, 95);
-  const p99 = percentile(ttmsVals, 99);
+  // ✅ Phase 1 anomalies (latency spike, error spike, traffic drop + blast radius + confidence)
+  const anomalies = computeAnomalies({
+    timeseries,
+    filteredRows: filtered,
+    dqWindow,
+    scope: { service, region, pop },
+  });
+
+  const ttmsVals = filtered
+    .map((r) => Number(r.ttms_ms))
+    .filter((v) => Number.isFinite(v));
+  const p95Val = percentile(ttmsVals, 95);
+  const p99Val = percentile(ttmsVals, 99);
 
   const hitCount = filtered.filter((r) => Number(r.edge_cache_hit) === 1).length;
   const hitRatio = total ? (hitCount / total) * 100 : null;
@@ -769,13 +1452,28 @@ export function runTriage({
   const evidence = [];
   if (errorCount > 0) {
     const topErr = topErrorsByCrc[0];
-    if (topErr) evidence.push(`Error responses are dominated by \`${topErr[0]}\` (${topErr[1]} of ${errorCount}).`);
+    if (topErr)
+      evidence.push(
+        `Error responses are dominated by \`${topErr[0]}\` (${topErr[1]} of ${errorCount}).`
+      );
     evidence.push(`Error responses: ${errorCount}/${total} (${formatPct(errorRate)}).`);
   } else {
     evidence.push(`No 5xx responses observed.`);
   }
   evidence.push(`Cache hit ratio ${formatPct(hitRatio)} (miss ${formatPct(missRatio)}).`);
-  evidence.push(`Latency p95/p99 TTMS = ${formatMs(p95)}/${formatMs(p99)}.`);
+  evidence.push(`Latency p95/p99 TTMS = ${formatMs(p95Val)}/${formatMs(p99Val)}.`);
+
+  // Optional: include anomalies in summary text (nice UX)
+  const anomalyLines = [];
+  if (anomalies?.signals?.length) {
+    anomalyLines.push(`🚨 *Anomalies*`);
+    anomalyLines.push(
+      `• Health: *${String(anomalies.health).toUpperCase()}* (confidence ${Math.round(
+        anomalies.overallConfidence * 100
+      )}%)`
+    );
+    anomalyLines.push(`• ${anomalies.summary}`);
+  }
 
   const header = `🧭 *CDN TRIAGE SUMMARY*`;
   const scopeLine = `• Scope: service=\`${service}\`  region=\`${region}\`  pop=\`${pop}\``;
@@ -785,8 +1483,8 @@ export function runTriage({
   const trafficPerf = [
     `📊 *Traffic & Performance*`,
     `• Requests: *${formatInt(total)}*`,
-    `• P95 TTMS: *${formatMs(p95)}*`,
-    `• P99 TTMS: *${formatMs(p99)}*`,
+    `• P95 TTMS: *${formatMs(p95Val)}*`,
+    `• P99 TTMS: *${formatMs(p99Val)}*`,
     `• Cache Hit: *${formatPct(hitRatio)}*  (miss ${formatPct(missRatio)})`,
   ].join("\n");
 
@@ -817,7 +1515,8 @@ export function runTriage({
     dqWindow.unknown_edge_host
   ) {
     dqLines.push(`⚠️ *Data Quality (window)*`);
-    if (dqWindow.missing_edge_status) dqLines.push(`• missing edge_status: ${dqWindow.missing_edge_status}`);
+    if (dqWindow.missing_edge_status)
+      dqLines.push(`• missing edge_status: ${dqWindow.missing_edge_status}`);
     if (dqWindow.unknown_service) dqLines.push(`• unknown service: ${dqWindow.unknown_service}`);
     if (dqWindow.unknown_svc) dqLines.push(`• unknown svc: ${dqWindow.unknown_svc}`);
     if (dqWindow.unknown_edge_host) dqLines.push(`• unknown edge_host: ${dqWindow.unknown_edge_host}`);
@@ -836,6 +1535,7 @@ export function runTriage({
     filterLine,
     ...(warnLines.length ? ["", ...warnLines] : []),
     ...(dqLines.length ? ["", ...dqLines] : []),
+    ...(anomalyLines.length ? ["", ...anomalyLines] : []),
     "",
     trafficPerf,
     "",
@@ -855,8 +1555,8 @@ export function runTriage({
       available,
       timeRangeUTC: { start: startISO, end: endISO },
       totalRequests: total,
-      p95TtmsMs: p95,
-      p99TtmsMs: p99,
+      p95TtmsMs: p95Val,
+      p99TtmsMs: p99Val,
       cacheHitPct: hitRatio,
       cacheMissPct: missRatio,
       statusCounts: statusCountsPairs.map(([code, count]) => ({ code: Number(code), count })),
@@ -867,6 +1567,10 @@ export function runTriage({
 
       // ✅ includes status/host/crc series + per-bucket maps
       timeseries,
+
+      // ✅ NEW: anomalies + confidence + blast radius
+      anomalies,
+
       warnings,
       dataQuality: { all: dqAll, window: dqWindow },
       debug: dbg,

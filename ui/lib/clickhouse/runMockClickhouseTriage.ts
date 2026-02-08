@@ -20,6 +20,11 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
+function clamp01(n: number) {
+  if (!Number.isFinite(n)) return 0;
+  return clamp(n, 0, 1);
+}
+
 function round(n: number) {
   return Math.round(n);
 }
@@ -40,7 +45,9 @@ function int(n: number) {
 }
 
 function uniqLower(arr: string[]) {
-  const out = Array.from(new Set(arr.map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)));
+  const out = Array.from(
+    new Set(arr.map((x) => String(x || "").trim().toLowerCase()).filter(Boolean))
+  );
   out.sort((a, b) => a.localeCompare(b));
   return out;
 }
@@ -143,7 +150,8 @@ function buildScopedPopsAndHosts(region: string, pop: string, seed: number) {
     // pop is explicit; derive macro region if possible
     const parts = p.split("-");
     const macroFromPop = parts[0]; // e.g. ap1
-    const macroResolved = REGION_POOLS[macroFromPop] ? macroFromPop : macro === "all" ? macroFromPop : macro;
+    const macroResolved =
+      REGION_POOLS[macroFromPop] ? macroFromPop : macro === "all" ? macroFromPop : macro;
     scopedPops = [p];
     // hosts strictly from that pop
     const hostSeries = generateHostsForPop(macroResolved, p, seed, 6);
@@ -153,7 +161,9 @@ function buildScopedPopsAndHosts(region: string, pop: string, seed: number) {
   if (macro !== "all" && REGION_POOLS[macro]) {
     // region scoped, pop=all -> show a couple pops within region
     scopedPops = stablePick(REGION_POOLS[macro], seed, 2);
-    const hostSeries = scopedPops.flatMap((pp, idx) => generateHostsForPop(macro, pp, seed + idx * 101, 3));
+    const hostSeries = scopedPops.flatMap((pp, idx) =>
+      generateHostsForPop(macro, pp, seed + idx * 101, 3)
+    );
     return { scopedPops, hostSeries };
   }
 
@@ -169,9 +179,469 @@ function buildScopedPopsAndHosts(region: string, pop: string, seed: number) {
 }
 
 // -----------------------------
+// Phase 1 anomalies (match CSV shape)
+// -----------------------------
+type AnomalySeverity = "low" | "medium" | "high" | "critical";
+type AnomalyHealth = "healthy" | "watch" | "incident";
+
+type AnomalySignal = {
+  id: string;
+  severity: AnomalySeverity;
+  confidence: number; // 0..1
+  scope: { service?: string; region?: string; pop?: string };
+  time: { startTs: string; endTs: string; buckets: number };
+  baseline: { method: "rolling_median_mad"; windowBuckets: number; value: number | null };
+  current: { value: number | null; ratio: number | null; z: number | null };
+  blastRadius: {
+    trafficShare: number; // 0..1
+    affectedPops: number;
+    affectedHosts: number;
+    concentrationTop3Pops: number; // 0..1
+  };
+  explanation: string;
+};
+
+type AnomaliesBlock = {
+  health: AnomalyHealth;
+  overallConfidence: number; // 0..1
+  summary: string;
+  signals: AnomalySignal[];
+  blastRadius: {
+    trafficShare: number;
+    affectedPops: number;
+    affectedHosts: number;
+    concentrationTop3Pops: number;
+  };
+};
+
+function median(nums: Array<number | null | undefined>) {
+  const arr = (nums ?? [])
+    .filter((x): x is number => Number.isFinite(x as number))
+    .slice()
+    .sort((a, b) => a - b);
+  if (!arr.length) return null;
+  const mid = Math.floor(arr.length / 2);
+  if (arr.length % 2 === 1) return arr[mid];
+  return (arr[mid - 1] + arr[mid]) / 2;
+}
+
+function mad(nums: Array<number | null | undefined>, med: number | null) {
+  const m = Number.isFinite(med as number) ? (med as number) : median(nums);
+  if (m == null) return null;
+  const dev = (nums ?? [])
+    .filter((x): x is number => Number.isFinite(x as number))
+    .map((x) => Math.abs(x - m));
+  return median(dev);
+}
+
+function rollingBaseline(values: Array<number | null>, idx: number, windowBuckets: number) {
+  const start = Math.max(0, idx - windowBuckets);
+  const slice = values.slice(start, idx).filter((x): x is number => Number.isFinite(x as number));
+  if (slice.length < Math.max(3, Math.floor(windowBuckets / 4))) {
+    return { baseline: null as number | null, mad: null as number | null, n: slice.length };
+  }
+  const med = median(slice);
+  const m = mad(slice, med);
+  return { baseline: med, mad: m, n: slice.length };
+}
+
+function consecutiveTrue(flags: boolean[], fromIdx: number, lookback: number) {
+  let c = 0;
+  for (let i = fromIdx; i >= 0 && c < lookback; i--) {
+    if (flags[i]) c++;
+    else break;
+  }
+  return c;
+}
+
+function sevRank(sev: AnomalySeverity) {
+  if (sev === "critical") return 4;
+  if (sev === "high") return 3;
+  if (sev === "medium") return 2;
+  return 1;
+}
+
+function severityFrom(
+  kind: "latency" | "error" | "traffic",
+  ratio: number,
+  currentAbs: number,
+  trafficShare: number
+): AnomalySeverity {
+  if (kind === "latency") {
+    if (ratio >= 3 && trafficShare >= 0.2) return "critical";
+    if (ratio >= 2 && trafficShare >= 0.1) return "high";
+    if (ratio >= 1.6 && trafficShare >= 0.05) return "medium";
+    if (ratio >= 1.4) return "low";
+    return "low";
+  }
+  if (kind === "error") {
+    if (currentAbs >= 10 && trafficShare >= 0.2) return "critical";
+    if (currentAbs >= 5 && trafficShare >= 0.1) return "high";
+    if (currentAbs >= 2) return "medium";
+    return "low";
+  }
+  // traffic drop: ratio is baseline/current
+  if (ratio >= 2.5 && trafficShare >= 0.2) return "high";
+  if (ratio >= 1.8 && trafficShare >= 0.1) return "medium";
+  return "low";
+}
+
+function computeConfidence(
+  strengthScore: number,
+  durationScore: number,
+  impactScore: number,
+  dataQualityScore: number
+) {
+  const conf =
+    0.40 * clamp01(strengthScore) +
+    0.25 * clamp01(durationScore) +
+    0.25 * clamp01(impactScore) +
+    0.10 * clamp01(dataQualityScore);
+  return clamp01(conf);
+}
+
+// host looks like: cdn-ec-<macro>-<popA>-<popB>-<id>
+// In our generator, pop is typically two segments (e.g. use1-iad, bos-044).
+function popFromHost(host: string) {
+  const h = String(host || "").trim().toLowerCase();
+  if (!h) return null;
+  const parts = h.split("-");
+  // expected: ["cdn","ec",macro,popPart1,popPart2,id]
+  if (parts.length >= 6 && parts[0] === "cdn" && parts[1] === "ec") {
+    const pop1 = parts[3] ?? "";
+    const pop2 = parts[4] ?? "";
+    if (pop1 && pop2) return `${pop1}-${pop2}`;
+  }
+  // fallback: last two before id
+  if (parts.length >= 3) {
+    const pop1 = parts[parts.length - 3] ?? "";
+    const pop2 = parts[parts.length - 2] ?? "";
+    if (pop1 && pop2 && pop1 !== "ec") return `${pop1}-${pop2}`;
+  }
+  return null;
+}
+
+function blastRadiusFromPoints(points: any[], indices: number[], totalWindowRequests: number) {
+  const hosts = new Set<string>();
+  const pops = new Set<string>();
+  const popCounts = new Map<string, number>();
+
+  let affectedReq = 0;
+
+  for (const i of indices) {
+    const p = points[i];
+    if (!p) continue;
+
+    const req = Number(p.totalRequests) || 0;
+    affectedReq += req;
+
+    const hostMap: Record<string, number> = p.hostCountsByHost || {};
+    for (const [h, cRaw] of Object.entries(hostMap)) {
+      const c = Number(cRaw) || 0;
+      if (!h) continue;
+
+      // ignore synthetic "other"
+      if (h !== "other") {
+        hosts.add(h);
+        const pop = popFromHost(h);
+        if (pop) {
+          pops.add(pop);
+          popCounts.set(pop, (popCounts.get(pop) ?? 0) + c);
+        }
+      }
+    }
+  }
+
+  const trafficShare = totalWindowRequests ? affectedReq / totalWindowRequests : 0;
+
+  const top3 = [...popCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const top3Sum = top3.reduce((s, [, c]) => s + c, 0);
+  const concentrationTop3Pops = affectedReq ? top3Sum / affectedReq : 0;
+
+  return {
+    trafficShare: clamp01(trafficShare),
+    affectedPops: pops.size,
+    affectedHosts: hosts.size,
+    concentrationTop3Pops: clamp01(concentrationTop3Pops),
+  };
+}
+
+function computeAnomaliesFromTimeseries(args: {
+  points: any[];
+  bucketSeconds: number;
+  totalWindowRequests: number;
+  scope: { service: string; region: string; pop: string };
+}): AnomaliesBlock {
+  const { points, bucketSeconds, totalWindowRequests, scope } = args;
+
+  if (!points?.length) {
+    return {
+      health: "healthy",
+      overallConfidence: 0,
+      summary: "No timeseries points available for anomaly detection.",
+      signals: [],
+      blastRadius: { trafficShare: 0, affectedPops: 0, affectedHosts: 0, concentrationTop3Pops: 0 },
+    };
+  }
+
+  // mock: data quality is perfect
+  const dqScore = 1.0;
+
+  // detect only near "now"
+  const lookback = Math.min(3, points.length);
+  const baselineWindow = Math.min(24, Math.max(6, points.length - lookback));
+  const minReqPerBucket = 100;
+
+  const tsMs = points.map((p) => Date.parse(p.ts));
+  const p95 = points.map((p) => (Number.isFinite(p?.p95TtmsMs) ? Number(p.p95TtmsMs) : null));
+  const errPct = points.map((p) => (Number.isFinite(p?.errorRatePct) ? Number(p.errorRatePct) : null));
+  const traffic = points.map((p) => (Number.isFinite(p?.totalRequests) ? Number(p.totalRequests) : 0));
+
+  const lastIdx = points.length - 1;
+
+  function makeTime(indices: number[]) {
+    const msList = indices.map((i) => tsMs[i]).filter((x) => Number.isFinite(x));
+    if (!msList.length) {
+      const ts = points[lastIdx]?.ts ?? new Date().toISOString();
+      return { startTs: ts, endTs: ts, buckets: 1 };
+    }
+    const s = Math.min(...msList);
+    const e = Math.max(...msList);
+    return { startTs: new Date(s).toISOString(), endTs: new Date(e).toISOString(), buckets: msList.length };
+  }
+
+  const signals: AnomalySignal[] = [];
+
+  // -----------------------------
+  // 1) Latency p95 spike
+  // -----------------------------
+  {
+    const flags = new Array(points.length).fill(false);
+    const ratios: Array<number | null> = new Array(points.length).fill(null);
+    const baselines: Array<number | null> = new Array(points.length).fill(null);
+    const mads: Array<number | null> = new Array(points.length).fill(null);
+
+    for (let i = 0; i < points.length; i++) {
+      const cur = p95[i];
+      const req = traffic[i] || 0;
+      if (!Number.isFinite(cur as number) || req < minReqPerBucket) continue;
+
+      const { baseline, mad: m, n } = rollingBaseline(p95, i, baselineWindow);
+      if (!Number.isFinite(baseline as number) || (baseline as number) <= 0 || n < 3) continue;
+
+      const ratio = (cur as number) / (baseline as number);
+      ratios[i] = ratio;
+      baselines[i] = baseline;
+      mads[i] = m;
+
+      if (ratio >= 1.6) flags[i] = true;
+    }
+
+    const recentIdx: number[] = [];
+    for (let i = Math.max(0, lastIdx - (lookback - 1)); i <= lastIdx; i++) recentIdx.push(i);
+    const recentTrues = recentIdx.filter((i) => flags[i]);
+    const consec = consecutiveTrue(flags, lastIdx, lookback);
+
+    if (recentTrues.length > 0) {
+      const focusIdx = consec >= 2 ? recentTrues.slice(-consec) : [recentTrues[recentTrues.length - 1]];
+
+      const i = focusIdx[focusIdx.length - 1];
+      const cur = p95[i];
+      const base = baselines[i];
+      const ratio = ratios[i] ?? (base ? (cur as number) / base : null);
+
+      const br = blastRadiusFromPoints(points, focusIdx, totalWindowRequests);
+
+      const strengthScore = clamp01(((ratio ?? 1) - 1) / 2);
+      const durationScore = clamp01((focusIdx.length - 1) / 2);
+      const impactScore = clamp01(br.trafficShare / 0.25);
+
+      const confidence = computeConfidence(strengthScore, durationScore, impactScore, dqScore);
+      const severity = severityFrom("latency", ratio ?? 1, cur ?? 0, br.trafficShare);
+
+      const z =
+        Number.isFinite(mads[i] as number) &&
+        (mads[i] as number) > 0 &&
+        Number.isFinite(cur as number) &&
+        Number.isFinite(base as number)
+          ? ((cur as number) - (base as number)) / (1.4826 * (mads[i] as number))
+          : null;
+
+      signals.push({
+        id: "latency_p95_spike",
+        severity,
+        confidence,
+        scope: { service: scope.service, region: scope.region, pop: scope.pop },
+        time: makeTime(focusIdx),
+        baseline: { method: "rolling_median_mad", windowBuckets: baselineWindow, value: base },
+        current: { value: cur, ratio: ratio ?? null, z: z != null && Number.isFinite(z) ? z : null },
+        blastRadius: br,
+        explanation: `P95 latency is ${(ratio ?? 1).toFixed(2)}× baseline (${ms(base)} → ${ms(cur ?? null)}).`,
+      });
+    }
+  }
+
+  // -----------------------------
+  // 2) Error rate spike (5xx)
+  // -----------------------------
+  {
+    const flags = new Array(points.length).fill(false);
+    const ratios: Array<number | null> = new Array(points.length).fill(null);
+    const baselines: Array<number | null> = new Array(points.length).fill(null);
+
+    for (let i = 0; i < points.length; i++) {
+      const cur = errPct[i];
+      const req = traffic[i] || 0;
+      if (!Number.isFinite(cur as number) || req < minReqPerBucket) continue;
+
+      const { baseline, n } = rollingBaseline(errPct, i, baselineWindow);
+      if (!Number.isFinite(baseline as number) || n < 3) continue;
+
+      const ratio = ((cur as number) + 0.1) / ((baseline as number) + 0.1);
+      ratios[i] = ratio;
+      baselines[i] = baseline;
+
+      if (ratio >= 2.0 || (cur as number) >= (baseline as number) + 2.0) flags[i] = true;
+    }
+
+    const recentIdx: number[] = [];
+    for (let i = Math.max(0, lastIdx - (lookback - 1)); i <= lastIdx; i++) recentIdx.push(i);
+    const recentTrues = recentIdx.filter((i) => flags[i]);
+    const consec = consecutiveTrue(flags, lastIdx, lookback);
+
+    if (recentTrues.length > 0) {
+      const focusIdx = consec >= 2 ? recentTrues.slice(-consec) : [recentTrues[recentTrues.length - 1]];
+
+      const i = focusIdx[focusIdx.length - 1];
+      const cur = errPct[i];
+      const base = baselines[i];
+      const ratio = ratios[i] ?? (base != null && cur != null ? (cur + 0.1) / (base + 0.1) : null);
+
+      const br = blastRadiusFromPoints(points, focusIdx, totalWindowRequests);
+
+      const strengthScore = clamp01(((ratio ?? 1) - 1) / 3);
+      const durationScore = clamp01((focusIdx.length - 1) / 2);
+      const impactScore = clamp01(br.trafficShare / 0.25);
+
+      const confidence = computeConfidence(strengthScore, durationScore, impactScore, dqScore);
+      const severity = severityFrom("error", ratio ?? 1, cur ?? 0, br.trafficShare);
+
+      signals.push({
+        id: "error_rate_spike_5xx",
+        severity,
+        confidence,
+        scope: { service: scope.service, region: scope.region, pop: scope.pop },
+        time: makeTime(focusIdx),
+        baseline: { method: "rolling_median_mad", windowBuckets: baselineWindow, value: base },
+        current: { value: cur, ratio: ratio ?? null, z: null },
+        blastRadius: br,
+        explanation: `5xx error rate is elevated (${pct(base ?? 0)} → ${pct(cur ?? 0)}).`,
+      });
+    }
+  }
+
+  // -----------------------------
+  // 3) Traffic drop
+  // -----------------------------
+  {
+    const flags = new Array(points.length).fill(false);
+    const ratios: Array<number | null> = new Array(points.length).fill(null);
+    const baselines: Array<number | null> = new Array(points.length).fill(null);
+
+    for (let i = 0; i < points.length; i++) {
+      const cur = traffic[i] || 0;
+
+      const { baseline, n } = rollingBaseline(traffic, i, baselineWindow);
+      if (!Number.isFinite(baseline as number) || (baseline as number) <= 0 || n < 3) continue;
+
+      baselines[i] = baseline;
+
+      const ratio = (baseline as number) / Math.max(1, cur);
+      ratios[i] = ratio;
+
+      if (cur <= (baseline as number) * 0.6) flags[i] = true;
+    }
+
+    const recentIdx: number[] = [];
+    for (let i = Math.max(0, lastIdx - (lookback - 1)); i <= lastIdx; i++) recentIdx.push(i);
+    const recentTrues = recentIdx.filter((i) => flags[i]);
+    const consec = consecutiveTrue(flags, lastIdx, lookback);
+
+    if (recentTrues.length > 0) {
+      const focusIdx = consec >= 2 ? recentTrues.slice(-consec) : [recentTrues[recentTrues.length - 1]];
+
+      const i = focusIdx[focusIdx.length - 1];
+      const cur = traffic[i] || 0;
+      const base = baselines[i];
+      const ratio = ratios[i] ?? (base ? base / Math.max(1, cur) : null);
+
+      const br = blastRadiusFromPoints(points, focusIdx, totalWindowRequests);
+
+      const strengthScore = clamp01(((ratio ?? 1) - 1) / 2);
+      const durationScore = clamp01((focusIdx.length - 1) / 2);
+      const impactScore = clamp01(br.trafficShare / 0.25);
+
+      const confidence = computeConfidence(strengthScore, durationScore, impactScore, dqScore);
+      const severity = severityFrom("traffic", ratio ?? 1, cur ?? 0, br.trafficShare);
+
+      signals.push({
+        id: "traffic_drop",
+        severity,
+        confidence,
+        scope: { service: scope.service, region: scope.region, pop: scope.pop },
+        time: makeTime(focusIdx),
+        baseline: { method: "rolling_median_mad", windowBuckets: baselineWindow, value: base },
+        current: { value: cur, ratio: ratio ?? null, z: null },
+        blastRadius: br,
+        explanation: `Traffic dropped vs baseline (${int(base ?? 0)} → ${int(cur)} req/bucket).`,
+      });
+    }
+  }
+
+  const overallConfidence = clamp01(signals.reduce((m, s) => Math.max(m, s.confidence), 0));
+
+  const hasIncidentSignal = signals.some(
+    (s) =>
+      (s.severity === "high" || s.severity === "critical") &&
+      s.confidence >= 0.7 &&
+      s.blastRadius.trafficShare >= 0.1
+  );
+  const hasWatchSignal = signals.some((s) => s.confidence >= 0.5);
+
+  const health: AnomalyHealth = hasIncidentSignal ? "incident" : hasWatchSignal ? "watch" : "healthy";
+
+  const top = [...signals].sort((a, b) => {
+    const r = sevRank(b.severity) - sevRank(a.severity);
+    if (r !== 0) return r;
+    return b.confidence - a.confidence;
+  })[0];
+
+  const summary = top
+    ? `${health.toUpperCase()}: ${top.explanation} (confidence ${(top.confidence * 100).toFixed(
+        0
+      )}%, traffic ${(top.blastRadius.trafficShare * 100).toFixed(0)}%).`
+    : "HEALTHY: No anomalies detected in the last few buckets.";
+
+  // overall blast radius = from the strongest signal (simple, stable)
+  const overallBR = top
+    ? top.blastRadius
+    : { trafficShare: 0, affectedPops: 0, affectedHosts: 0, concentrationTop3Pops: 0 };
+
+  return {
+    health,
+    overallConfidence,
+    summary,
+    signals,
+    blastRadius: overallBR,
+  };
+}
+
+// -----------------------------
 // Mock runner
 // -----------------------------
-export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): Promise<ClickhouseTriageResult> {
+export async function runMockClickhouseTriage(
+  inputs: ClickhouseTriageInputs
+): Promise<ClickhouseTriageResult> {
   const { partner, service, region, pop, windowMinutes, debug } = inputs;
 
   const seed = hashToInt(`${partner}|${service}|${region}|${pop}|${windowMinutes}`);
@@ -200,19 +670,32 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
     "vod-library.xcr.comcast.net",
   ];
 
-  const crcUniverse = ["TCP_HIT", "TCP_MISS", "TCP_CF_HIT", "ERR_TIMEOUT", "ERR_DNS", "TCP_CLIENT_REFRESH", "ERR_CONN_RESET", "ERR_ORIGIN_5XX"];
+  const crcUniverse = [
+    "TCP_HIT",
+    "TCP_MISS",
+    "TCP_CF_HIT",
+    "ERR_TIMEOUT",
+    "ERR_DNS",
+    "TCP_CLIENT_REFRESH",
+    "ERR_CONN_RESET",
+    "ERR_ORIGIN_5XX",
+  ];
   const crcClassUniverse = ["hit", "miss", "client", "error", "other"];
   const statusUniverse = [200, 206, 304, 403, 404, 429, 500, 502, 503, 504];
 
   const regions = region === "all" ? regionUniverse : [region, ...regionUniverse].slice(0, 6);
 
   // ✅ scoped pops + hosts (THE KEY CHANGE)
-  const { scopedPops, hostSeries } = buildScopedPopsAndHosts(region, pop, seed);
+  const { hostSeries } = buildScopedPopsAndHosts(region, pop, seed);
 
   // keep POP options realistic for dropdowns:
   const pops =
     pop === "all"
-      ? popUniverse.filter((pp) => (region === "all" ? true : pp.startsWith(`${normalizeScopeRegion(region)}-`) || pp.includes(`${region}`)))
+      ? popUniverse.filter((pp) =>
+          region === "all"
+            ? true
+            : pp.startsWith(`${normalizeScopeRegion(region)}-`) || pp.includes(`${region}`)
+        )
       : [pop, ...popUniverse].slice(0, 8);
 
   // available.edgeHosts will match what host chart can show
@@ -256,21 +739,63 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
   const statusCodeSeries = statusUniverse.map(String);
   const crcSeries = crcUniverse.map((c) => String(c).toUpperCase()).slice(0, 10);
 
-  const points: any[] = [];
+  const points: Array<{
+    ts: string;
+    totalRequests: number;
+    error5xxCount: number;
+    errorRatePct: number;
+    p95TtmsMs: number;
+    p99TtmsMs: number;
+    statusCountsByCode: Record<string, number>;
+    hostCountsByHost: Record<string, number>;
+    crcCountsByCrc: Record<string, number>;
+  }> = [];
+
+  // ✅ FORCE a visible anomaly when debug=true (for UI testing)
+  // We'll force anomalies across the last N buckets so blastRadius trafficShare stays meaningful
+  const forceAnomaly = !!debug;
+  const forcedBuckets = 8; // 8 * 5m = 40 minutes (baseline stays clean)
+
 
   // ✅ points ascending order, aligned timestamps
   for (let bi = 0; bi <= spanBuckets; bi++) {
     const t = startAlignedMs + bi * bucketMs;
 
     const wave = 0.75 + 0.5 * Math.sin((bi / Math.max(8, spanBuckets)) * Math.PI * 2);
-    const req = round((baseTraffic * wave * (0.6 + noise * 0.8) / (spanBuckets + 1)) * 60);
 
-    const spike = seed % 7 === 0 && bi > Math.floor(spanBuckets * 0.75) ? 2.5 : 1.0;
-    const errPct = clamp(baseErrorPct * spike * (0.75 + 0.5 * Math.cos(bi / 3)), 0, 25);
+    // baseline req
+    let req = round((baseTraffic * wave * (0.6 + noise * 0.8) / (spanBuckets + 1)) * 60);
+
+    // ensure enough volume to trigger detectors (minReqPerBucket=100)
+    req = Math.max(req, 250);
+
+    const isForcedRange =
+      forceAnomaly && bi >= Math.max(0, spanBuckets - (forcedBuckets - 1));
+
+    // existing randomness
+    const randomErrSpike =
+      seed % 7 === 0 && bi > Math.floor(spanBuckets * 0.75) ? 2.5 : 1.0;
+
+    const randomP95Spike =
+      seed % 11 === 0 && bi > Math.floor(spanBuckets * 0.8) ? 2.2 : 1.0;
+
+    // ✅ debug forcing across the last forcedBuckets
+    const errSpike = isForcedRange ? 6.0 : randomErrSpike;
+    const p95Spike = isForcedRange ? 2.8 : randomP95Spike;
+
+    // ✅ do NOT drop traffic during forced anomalies (it reduces blast radius)
+
+    const errPct = clamp(
+      baseErrorPct * errSpike * (0.75 + 0.5 * Math.cos(bi / 3)),
+      0,
+      35
+    );
     const err5xx = round((req * errPct) / 100);
 
-    const p95 = round(baseP95 * (0.9 + 0.25 * Math.sin(bi / 5)));
-    const p99 = round(baseP99 * (0.9 + 0.25 * Math.cos(bi / 6)));
+    const p95 = round(baseP95 * p95Spike * (0.9 + 0.25 * Math.sin(bi / 5)));
+    const p99 = round(
+      baseP99 * Math.max(1.0, p95Spike * 0.9) * (0.9 + 0.25 * Math.cos(bi / 6))
+    );
 
     totalRequests += req;
     total5xx += err5xx;
@@ -294,24 +819,36 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
     statusCountsByCode["304"] = s304;
     statusCountsByCode["403"] = round(s4xx * 0.25);
     statusCountsByCode["404"] = round(s4xx * 0.35);
-    statusCountsByCode["429"] = Math.max(0, s4xx - statusCountsByCode["403"] - statusCountsByCode["404"]);
+    statusCountsByCode["429"] = Math.max(
+      0,
+      s4xx - statusCountsByCode["403"] - statusCountsByCode["404"]
+    );
     statusCountsByCode["500"] = round(s5xx * 0.22);
     statusCountsByCode["502"] = round(s5xx * 0.18);
     statusCountsByCode["503"] = round(s5xx * 0.35);
-    statusCountsByCode["504"] = Math.max(0, s5xx - statusCountsByCode["500"] - statusCountsByCode["502"] - statusCountsByCode["503"]);
+    statusCountsByCode["504"] = Math.max(
+      0,
+      s5xx -
+        statusCountsByCode["500"] -
+        statusCountsByCode["502"] -
+        statusCountsByCode["503"]
+    );
 
-    // ✅ host distribution: ONLY among hostSeries (which is region/pop coherent)
+    // host distribution: ONLY among hostSeries (which is region/pop coherent)
     let remainingHost = req;
     for (let hi = 0; hi < hostSeries.length; hi++) {
       const baseShare = 0.18 - hi * 0.02; // 18%,16%,14%...
       const share =
-        hi === hostSeries.length - 1 ? remainingHost : round(req * clamp(baseShare, 0.04, 0.18));
+        hi === hostSeries.length - 1
+          ? remainingHost
+          : round(req * clamp(baseShare, 0.04, 0.18));
       const v = clamp(share, 0, remainingHost);
       hostCountsByHost[hostSeries[hi]] = v;
       remainingHost -= v;
       if (remainingHost <= 0) break;
     }
-    if (remainingHost > 0) hostCountsByHost["other"] = (hostCountsByHost["other"] ?? 0) + remainingHost;
+    if (remainingHost > 0)
+      hostCountsByHost["other"] = (hostCountsByHost["other"] ?? 0) + remainingHost;
 
     // crc distribution
     const hit = round(req * 0.70);
@@ -325,7 +862,13 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
     crcCountsByCrc["ERR_TIMEOUT"] = round(errs * 0.42);
     crcCountsByCrc["ERR_DNS"] = round(errs * 0.18);
     crcCountsByCrc["ERR_CONN_RESET"] = round(errs * 0.12);
-    crcCountsByCrc["ERR_ORIGIN_5XX"] = Math.max(0, errs - crcCountsByCrc["ERR_TIMEOUT"] - crcCountsByCrc["ERR_DNS"] - crcCountsByCrc["ERR_CONN_RESET"]);
+    crcCountsByCrc["ERR_ORIGIN_5XX"] = Math.max(
+      0,
+      errs -
+        crcCountsByCrc["ERR_TIMEOUT"] -
+        crcCountsByCrc["ERR_DNS"] -
+        crcCountsByCrc["ERR_CONN_RESET"]
+    );
 
     points.push({
       ts: new Date(t).toISOString(),
@@ -341,12 +884,22 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
   }
 
   const p95TtmsMs =
-    ttmsP95Samples.length ? round(ttmsP95Samples.sort((a, b) => a - b)[Math.floor(ttmsP95Samples.length * 0.95)]) : null;
+    ttmsP95Samples.length
+      ? round(
+          ttmsP95Samples.sort((a, b) => a - b)[Math.floor(ttmsP95Samples.length * 0.95)]
+        )
+      : null;
   const p99TtmsMs =
-    ttmsP99Samples.length ? round(ttmsP99Samples.sort((a, b) => a - b)[Math.floor(ttmsP99Samples.length * 0.99)]) : null;
+    ttmsP99Samples.length
+      ? round(
+          ttmsP99Samples.sort((a, b) => a - b)[Math.floor(ttmsP99Samples.length * 0.99)]
+        )
+      : null;
 
   const cacheHitPct =
-    service === "vod" ? clamp(82 + (seed % 12) - noise * 4, 20, 99) : clamp(68 + (seed % 18) - noise * 6, 10, 95);
+    service === "vod"
+      ? clamp(82 + (seed % 12) - noise * 4, 20, 99)
+      : clamp(68 + (seed % 18) - noise * 6, 10, 95);
   const cacheMissPct = clamp(100 - cacheHitPct, 0, 100);
 
   const statusCounts = [
@@ -378,6 +931,14 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
 
   const errorRatePct = totalRequests ? (total5xx / totalRequests) * 100 : null;
 
+  // ✅ anomalies from timeseries (same shape as CSV runTriage() output)
+  const anomalies = computeAnomaliesFromTimeseries({
+    points,
+    bucketSeconds,
+    totalWindowRequests: totalRequests,
+    scope: { service, region, pop },
+  });
+
   const warnings: string[] = [];
   if (totalRequests === 0) warnings.push("No rows matched (mock produced 0 requests).");
   if (service !== "all" && !["live", "vod", "other"].includes(service)) {
@@ -386,12 +947,21 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
   if ((region !== "all" || pop !== "all") && hostSeries.length === 0) {
     warnings.push(`No scoped hosts generated for region='${region}' pop='${pop}' in mock (unexpected).`);
   }
+  if (forceAnomaly) warnings.push(`debug=true: forcing anomalies in last ${forcedBuckets} buckets for UI testing.`);
 
   const summaryText = [
     `🧭 *CDN TRIAGE SUMMARY*`,
     `• Source: \`clickhouse (mock)\` • partner=\`${partner}\``,
     `• Scope: service=\`${service}\`  region=\`${region}\`  pop=\`${pop}\``,
     `• Window: \`${windowMinutes}m\`  • Time (UTC): \`${startISO}\` → \`${endISO}\``,
+    ...(anomalies?.signals?.length
+      ? [
+          "",
+          `🚨 *Anomalies*`,
+          `• Health: *${anomalies.health.toUpperCase()}* (confidence ${(anomalies.overallConfidence * 100).toFixed(0)}%)`,
+          `• ${anomalies.summary}`,
+        ]
+      : []),
     ...(warnings.length ? ["", `⚠️ *Warnings*`, ...warnings.map((w) => `• ${w}`)] : []),
     "",
     `📊 *Traffic & Performance*`,
@@ -448,11 +1018,13 @@ export async function runMockClickhouseTriage(inputs: ClickhouseTriageInputs): P
       startTs: points.length ? points[0].ts : startISO,
       endTs: points.length ? points[points.length - 1].ts : endISO,
       points,
-
       statusCodeSeries,
       hostSeries,
       crcSeries,
     },
+
+    // ✅ NEW: anomalies block
+    anomalies,
 
     warnings,
     dataQuality: {
