@@ -505,7 +505,6 @@ function StackedBarTimeseries({
       </div>
 
       <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
-        {/* ✅ FIXED viewBox */}
         <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height }}>
           <text
             x={padLeft - 38}
@@ -812,8 +811,8 @@ function LatencyTimeseriesLines({
             <span>p99</span>
           </div>
           <div className="text-gray-400">
-            min <span className="text-gray-700">{Math.round(minV)}ms</span> • max{" "}
-            <span className="text-gray-700">{Math.round(maxV)}ms</span>
+            min <span className="text-gray-700">{Math.round(minV)}ms</span> •
+            max <span className="text-gray-700">{Math.round(maxV)}ms</span>
           </div>
         </div>
       </div>
@@ -857,7 +856,9 @@ function ChatPanel({
   onPickPartner: (p: string) => void;
 }) {
   const placeholder =
-    chatMode === "llm" ? "Try: boston live last 1hr" : "Try: vod in usw2 at sjc last 60m";
+    chatMode === "llm"
+      ? "Try: boston live last 1hr"
+      : "Try: vod in usw2 at sjc last 60m";
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm flex flex-col h-[420px] min-w-0">
@@ -986,7 +987,9 @@ function ChatPanel({
           </button>
         </div>
         <div className="text-xs text-gray-500">
-          {chatInput.trim() ? "Enter sends" : "Try: help • filters • reset • explain • run"}
+          {chatInput.trim()
+            ? "Enter sends"
+            : "Try: help • filters • reset • explain • run"}
         </div>
       </div>
     </div>
@@ -1027,20 +1030,9 @@ export default function CDNTriageApp() {
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
-  // ✅ Step 1: track pending partner question (short-term conversation state)
-  const [awaitingPartner, setAwaitingPartner] = useState(false);
-
-
   // Refs
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
-  const pendingLlmRunRef = useRef<{
-  service: string;
-  region: string;
-  pop: string;
-  windowMinutes: number;
-  } | null>(null);
-
 
   useEffect(() => setMounted(true), []);
 
@@ -1258,42 +1250,40 @@ export default function CDNTriageApp() {
   }
 
   async function callChatApi(userText: string, history?: ChatMessage[]) {
-  // Only send text messages to the LLM API (no triage_result payloads)
-  const safeHistory = Array.isArray(history) ? history : [];
-  const wireMsgs = safeHistory
-    .filter((m): m is ChatTextMessage => m.type === "text")
+    // Only send text messages to the LLM API (no triage_result payloads)
+    const safeHistory = Array.isArray(history) ? history : [];
+    const wireMsgs = safeHistory
+      .filter((m): m is ChatTextMessage => m.type === "text")
+      .slice(-12)
+      .map((m) => ({ role: m.role, content: m.text }));
 
-    .slice(-12) // keep it tight
-    .map((m) => ({ role: m.role, content: m.text }));
+    // Ensure the last message is the current user text
+    if (wireMsgs.length === 0) {
+      wireMsgs.push({ role: "user", content: userText });
+    } else {
+      const last = wireMsgs[wireMsgs.length - 1];
+      if (last.role !== "user") wireMsgs.push({ role: "user", content: userText });
+      else last.content = userText;
+    }
 
-  // Make sure the last message is the current user text (belt + suspenders)
-  if (wireMsgs.length === 0) {
-    wireMsgs.push({ role: "user", content: userText });
-  } else {
-    const last = wireMsgs[wireMsgs.length - 1];
-    if (last.role !== "user") wireMsgs.push({ role: "user", content: userText });
-    else last.content = userText; // keep last user msg in sync
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: wireMsgs,
+        context: {
+          mode: dataSource,
+          availableRegions: REGION_OPTIONS,
+          availablePops: POP_OPTIONS,
+          availablePartners: Array.from(PARTNER_OPTIONS),
+        },
+      }),
+    });
+
+    const json = await res.json().catch(() => null);
+    if (!json) throw new Error("api/chat returned non-JSON");
+    return json as any;
   }
-
-  const res = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      messages: wireMsgs,
-      context: {
-        mode: dataSource,
-        availableRegions: REGION_OPTIONS,
-        availablePops: POP_OPTIONS,
-        availablePartners: Array.from(PARTNER_OPTIONS),
-      },
-    }),
-  });
-
-  const json = await res.json().catch(() => null);
-  if (!json) throw new Error("api/chat returned non-JSON");
-  return json as any;
-}
-
 
   async function handleRunTriage() {
     setErrorMessage("");
@@ -1333,7 +1323,7 @@ export default function CDNTriageApp() {
         inputs: {
           dataSource,
           partner,
-          csvUrl: uploadedFile || dataSource === "clickhouse" ? "" : csvUrl || "",
+          csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
           fileName: uploadedFile ? uploadedFile.name : "",
           service,
           region,
@@ -1387,96 +1377,11 @@ export default function CDNTriageApp() {
     }
 
     // ------------------------------------------------------------
-    // LLM Assist mode: /api/chat handles BOTH small talk + triage hints
+    // LLM Assist mode: /api/chat handles general + triage hints + server memory
     // ------------------------------------------------------------
     if (chatMode === "llm") {
       setIsLoading(true);
       try {
-        // ✅ 0) Resume pending "which partner?" flow FIRST (no LLM call)
-        // Only treat the next message as a partner if:
-        //  - we're in clickhouse mode, AND
-        //  - we previously asked a partner question (pendingLlmRunRef set)
-        if (dataSource === "clickhouse" && pendingLlmRunRef.current) {
-          const maybe = String(text || "").trim();
-
-          const isValid = (PARTNER_OPTIONS as readonly string[]).includes(maybe);
-          if (!isValid) {
-            addChatText("assistant", `Pick one of: ${PARTNER_OPTIONS.join(", ")}`);
-            return;
-          }
-
-          // apply partner
-          setPartner(maybe as Partner);
-          const pending = pendingLlmRunRef.current;
-          pendingLlmRunRef.current = null;
-
-          const runPartner = maybe as Partner;
-
-          addChatText(
-            "assistant",
-            `Cachey 🤖: Got it — partner=${runPartner}. Running triage…`
-          );
-
-          // run triage with stored filters
-          const data = await runTriageRequest({
-            dataSource,
-            partner: runPartner,
-            csvUrl,
-            file: uploadedFile,
-            service: pending.service,
-            region: pending.region,
-            pop: pending.pop,
-            windowMinutes: pending.windowMinutes,
-            debug: debugMode,
-          });
-
-          setSummaryText(data.summaryText || "");
-          setMetricsJson(data.metricsJson || null);
-          setSelectedRunId(null);
-
-          const newRun: TriageRun = {
-            id: `${Date.now()}`,
-            timestamp: getCurrentTimestamp(),
-            inputs: {
-              dataSource,
-              partner: runPartner,
-              csvUrl: uploadedFile || dataSource === "clickhouse" ? "" : csvUrl || "",
-              fileName: uploadedFile ? uploadedFile.name : "",
-              service: pending.service,
-              region: pending.region,
-              pop: pending.pop,
-              windowMinutes: pending.windowMinutes,
-              debug: debugMode,
-            },
-            summaryText: data.summaryText || "",
-            metricsJson: data.metricsJson || null,
-          };
-          setRunHistory((prev) => [newRun, ...prev].slice(0, MAX_HISTORY));
-
-          addChatTriage({
-            inputs: {
-              dataSource,
-              partner: runPartner,
-              service: pending.service,
-              region: pending.region,
-              pop: pending.pop,
-              windowMinutes: pending.windowMinutes,
-            },
-            summaryText: data.summaryText || "",
-            metricsJson: data.metricsJson || null,
-          });
-
-          return;
-        }
-
-        // ✅ 1) Small-talk guard (ONLY ONCE) — should NOT call triage
-        if (isGreetingOrSmallTalk(text)) {
-          const out = await callChatApi(text, nextHistory);
-          addChatText("assistant", String(out?.reply || "Hey 👋"));
-          return;
-        }
-
-        // ✅ 2) Normal LLM call: get hints OR general reply
         const out = await callChatApi(text, nextHistory);
 
         // A) General chat
@@ -1485,7 +1390,16 @@ export default function CDNTriageApp() {
           return;
         }
 
-        // B) Triage hints (fall back to current UI filters)
+        // B) ClickHouse partner question (server owns awaitingPartner)
+        if (dataSource === "clickhouse" && out?.needsPartnerQuestion) {
+          addChatText(
+            "assistant",
+            String(out.partnerQuestion || `Which partner should I use? (${PARTNER_OPTIONS.join(", ")})`)
+          );
+          return;
+        }
+
+        // C) Server returns merged filters (memory + hints + shortcuts)
         const nextService: string = out?.serviceHint ?? service;
         const nextRegion: string = out?.regionHint ?? region;
         const nextPop: string = out?.popHint ?? pop;
@@ -1499,66 +1413,23 @@ export default function CDNTriageApp() {
           setWindowMinutes(nextWindow);
         }
 
-        // ✅ 3) Service disambiguation (prevents “it picked live randomly”)
-        // If service is still "all" and user didn't explicitly mention live/vod and LLM didn't give one,
-        // ask instead of defaulting.
-        const userMentionedService = /\b(live|vod|service|svc)\b/i.test(text);
-        const llmProvidedService = Boolean(out?.serviceHint);
-        if (!userMentionedService && !llmProvidedService && String(service) === "all") {
-          addChatText("assistant", "Which service should I use: `live` or `vod`?");
-          return;
-        }
-
-        // ✅ 4) Partner logic (clickhouse only)
+        // Partner (ClickHouse only): server may return partnerHint (from memory or user)
         let nextPartner: PartnerOrMissing = partner;
-
         if (dataSource === "clickhouse") {
-          // accept explicit partner hint from LLM if valid
-          if (out?.partnerHint) {
-            const p = String(out.partnerHint).trim();
-            if ((PARTNER_OPTIONS as readonly string[]).includes(p)) {
-              setPartner(p as Partner);
-              nextPartner = p as Partner;
-            }
-          }
-
-          // LLM asked us to ask the user
-          if (out?.needsPartnerQuestion) {
-            pendingLlmRunRef.current = {
-              service: nextService,
-              region: nextRegion,
-              pop: nextPop,
-              windowMinutes: Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
-            };
-
-            addChatText(
-              "assistant",
-              String(out.partnerQuestion || `Which partner should I use? (${PARTNER_OPTIONS.join(", ")})`)
-            );
-            return;
-          }
-
-          // still missing partner => ask deterministically
-          if (!nextPartner) {
-            pendingLlmRunRef.current = {
-              service: nextService,
-              region: nextRegion,
-              pop: nextPop,
-              windowMinutes: Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
-            };
-
-            addChatText("assistant", `Which partner should I use? (${PARTNER_OPTIONS.join(", ")})`);
-            return;
+          const p = String(out?.partnerHint || "").trim();
+          if (p && (PARTNER_OPTIONS as readonly string[]).includes(p)) {
+            setPartner(p as Partner);
+            nextPartner = p as Partner;
           }
         }
 
-        // ✅ 5) Deterministic “parsed” line (so it feels consistent)
+        // parsed line (consistent UX)
         addChatText(
           "assistant",
           `Parsed ✅ service=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
         );
 
-        // ✅ 6) Can-run validation
+        // Can-run validation
         const canRunNow =
           dataSource === "clickhouse"
             ? Boolean(nextPartner)
@@ -1574,7 +1445,7 @@ export default function CDNTriageApp() {
           return;
         }
 
-        // ✅ 7) Run triage
+        // Run triage
         addChatText(
           "system",
           `mode=llm • Running triage with ${buildFiltersSummary({
@@ -1609,7 +1480,7 @@ export default function CDNTriageApp() {
           inputs: {
             dataSource,
             partner: dataSource === "clickhouse" ? (nextPartner as PartnerOrMissing) : partner,
-            csvUrl: uploadedFile || dataSource === "clickhouse" ? "" : csvUrl || "",
+            csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
             fileName: uploadedFile ? uploadedFile.name : "",
             service: nextService,
             region: nextRegion,
@@ -1645,7 +1516,6 @@ export default function CDNTriageApp() {
         setIsLoading(false);
       }
     }
-
 
     // ------------------------------------------------------------
     // Deterministic mode (existing behavior)
@@ -1764,10 +1634,7 @@ export default function CDNTriageApp() {
         setService(intent.service);
         changed.push(`service=${intent.service}`);
       }
-      if (
-        intent.windowMinutes != null &&
-        intent.windowMinutes !== windowMinutes
-      ) {
+      if (intent.windowMinutes != null && intent.windowMinutes !== windowMinutes) {
         setWindowMinutes(intent.windowMinutes);
         changed.push(`win=${intent.windowMinutes}m`);
       }
@@ -1791,9 +1658,7 @@ export default function CDNTriageApp() {
 
     if (intent.service && !ALLOWED.service.has(intent.service)) {
       invalids.push(
-        `service=${intent.service} (allowed: ${Array.from(ALLOWED.service).join(
-          "|"
-        )})`
+        `service=${intent.service} (allowed: ${Array.from(ALLOWED.service).join("|")})`
       );
     }
 
@@ -1906,7 +1771,7 @@ export default function CDNTriageApp() {
         inputs: {
           dataSource,
           partner,
-          csvUrl: uploadedFile || dataSource === "clickhouse" ? "" : csvUrl || "",
+          csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
           fileName: uploadedFile ? uploadedFile.name : "",
           service: nextService,
           region: nextRegion,
@@ -1996,7 +1861,9 @@ export default function CDNTriageApp() {
     ts?.bucketSeconds ?? metricsJson?.timeseries?.bucketSeconds ?? null;
 
   const execLabel =
-    dataSource === "csv" ? "Exec: CSV" : `Exec: ClickHouse • partner=${partner || "missing"}`;
+    dataSource === "csv"
+      ? "Exec: CSV"
+      : `Exec: ClickHouse • partner=${partner || "missing"}`;
 
   return (
     <main className="min-h-screen w-full bg-gray-50 px-6 py-6">
@@ -2115,7 +1982,9 @@ export default function CDNTriageApp() {
                       <select
                         className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         value={dataSource}
-                        onChange={(e) => setDataSource(e.target.value as DataSource)}
+                        onChange={(e) =>
+                          setDataSource(e.target.value as DataSource)
+                        }
                         disabled={isLoading}
                       >
                         <option value="csv">CSV</option>
@@ -2136,7 +2005,9 @@ export default function CDNTriageApp() {
                         <select
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           value={partner}
-                          onChange={(e) => setPartner(e.target.value as PartnerOrMissing)}
+                          onChange={(e) =>
+                            setPartner(e.target.value as PartnerOrMissing)
+                          }
                           disabled={isLoading}
                         >
                           <option value="">Select partner…</option>
@@ -2173,7 +2044,9 @@ export default function CDNTriageApp() {
                       <input
                         type="file"
                         accept=".csv,text/csv"
-                        onChange={(e) => setUploadedFile(e.target.files?.[0] ?? null)}
+                        onChange={(e) =>
+                          setUploadedFile(e.target.files?.[0] ?? null)
+                        }
                         className="text-sm text-gray-700"
                         disabled={csvInputsDisabled}
                       />
