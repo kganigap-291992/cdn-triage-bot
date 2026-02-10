@@ -71,13 +71,15 @@ The move to a UI + API architecture in V2 was a prerequisite for any future chat
 
 ## V1 High-Level Architecture
 
-```
+
+```mermaid
 flowchart LR
-    A[Slack<br/>/triage command] -->|HTTP POST| B[n8n Webhook]
-    B --> C[Parser<br/>Parse filters & window]
-    C --> D[HTTP Request<br/>Fetch CSV]
-    D --> E[Metrics Engine<br/>Errors & P95 TTMS]
-    E --> F[Slack<br/>Summary Response]
+A[Slack<br/>/triage command] -->|HTTP POST| B[n8n Webhook]
+B --> C[Parser<br/>Parse filters & window]
+C --> D[HTTP Request<br/>Fetch CSV]
+D --> E[Metrics Engine<br/>Errors & P95 TTMS]
+E --> F[Slack<br/>Summary Response]
+
 ```
 
 ---
