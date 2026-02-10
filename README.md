@@ -268,3 +268,48 @@ Cachey: [Parsed structure]
 ```
 
 ---
+
+### Conversational Memory (V3)
+
+V3 introduces **explicit, server-side conversational memory** to support
+multi-turn triage workflows without compromising determinism.
+
+#### What Is Remembered
+Memory stores only **filter state**, never results or raw telemetry:
+
+- service (live / vod / all)
+- region
+- POP
+- time window (minutes)
+- partner (ClickHouse mode only)
+
+This enables natural follow-ups such as:
+- `same`
+- `again`
+- `last 2h`
+- `switch to vod`
+- partner clarification after a prompt
+
+#### What Is NOT Remembered
+- No metrics or computed results
+- No raw logs or telemetry
+- No user identity or PII
+- No cross-session data
+
+Memory is **session-scoped and ephemeral**.
+
+#### Implementation Model
+- Cookie-based session ID
+- Server-side in-memory store
+- Time-limited (TTL)
+- Automatic cleanup
+- Deterministic merge of:
+  - previous filters
+  - current user input
+  - LLM parsing hints
+
+#### Safety Guarantees
+- Deterministic metrics always override memory
+- Memory can only influence **input filters**
+- LLM failures do not corrupt or block memory
+- Stateless triage execution remains unchanged
