@@ -1333,13 +1333,13 @@ export default function CDNTriageApp() {
     const arr = Array.isArray(available.regions) ? available.regions : [];
 
     const cleaned = arr
-      .map((x: unknown) => (typeof x === "string" ? x.trim().toLowerCase() : ""))
-      .filter((x): x is string => x.length > 0);
+      .map((x: any) => String(x || "").trim().toLowerCase())
+      .filter((x): x is string => Boolean(x));
 
-    const uniq = Array.from(new Set<string>(cleaned));
+    const uniq = Array.from(new Set(cleaned));
     uniq.sort((a, b) => a.localeCompare(b));
-
     return ["all", ...uniq];
+
   }, [available.regions]);
 
 
@@ -1347,8 +1347,13 @@ export default function CDNTriageApp() {
     const arr = Array.isArray(available.pops) ? available.pops : [];
 
     const cleaned = arr
-      .map((x: unknown) => (typeof x === "string" ? x.trim().toLowerCase() : ""))
-      .filter((x): x is string => x.length > 0);
+      .map((x: any) => String(x || "").trim().toLowerCase())
+      .filter((x): x is string => Boolean(x));
+
+    const uniq = Array.from(new Set(cleaned));
+    uniq.sort((a, b) => a.localeCompare(b));
+    return ["all", ...uniq];
+
 
     const uniq = Array.from(new Set<string>(cleaned));
     uniq.sort((a, b) => a.localeCompare(b));
