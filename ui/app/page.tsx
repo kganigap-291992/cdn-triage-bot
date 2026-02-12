@@ -1331,21 +1331,28 @@ export default function CDNTriageApp() {
 
   const REGION_OPTIONS = useMemo(() => {
     const arr = Array.isArray(available.regions) ? available.regions : [];
+
     const cleaned = arr
-      .map((x: any) => String(x || "").trim().toLowerCase())
-      .filter(Boolean);
-    const uniq = Array.from(new Set(cleaned));
+      .map((x: unknown) => (typeof x === "string" ? x.trim().toLowerCase() : ""))
+      .filter((x): x is string => x.length > 0);
+
+    const uniq = Array.from(new Set<string>(cleaned));
     uniq.sort((a, b) => a.localeCompare(b));
+
     return ["all", ...uniq];
   }, [available.regions]);
 
+
   const POP_OPTIONS = useMemo(() => {
     const arr = Array.isArray(available.pops) ? available.pops : [];
+
     const cleaned = arr
-      .map((x: any) => String(x || "").trim().toLowerCase())
-      .filter(Boolean);
-    const uniq = Array.from(new Set(cleaned));
+      .map((x: unknown) => (typeof x === "string" ? x.trim().toLowerCase() : ""))
+      .filter((x): x is string => x.length > 0);
+
+    const uniq = Array.from(new Set<string>(cleaned));
     uniq.sort((a, b) => a.localeCompare(b));
+
     return ["all", ...uniq];
   }, [available.pops]);
 
