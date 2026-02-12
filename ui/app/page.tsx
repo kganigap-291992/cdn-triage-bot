@@ -1327,39 +1327,37 @@ export default function CDNTriageApp() {
   }, [dataSource, partner, uploadedFile, csvUrl]);
 
   // Dynamic Region/POP options from metricsJson.available (if present)
-  const available = metricsJson?.available ?? {};
+    const available = metricsJson?.available ?? {};
 
-  const REGION_OPTIONS = useMemo(() => {
-    const arr = Array.isArray(available.regions) ? available.regions : [];
+    const REGION_OPTIONS = useMemo(() => {
+      const arr = Array.isArray((available as any).regions)
+        ? (available as any).regions
+        : [];
 
-    const cleaned = arr
-      .map((x: any) => String(x || "").trim().toLowerCase())
-      .filter((x): x is string => Boolean(x)); // ✅ type guard
+      const cleaned = arr
+        .map((x: any) => String(x ?? "").trim().toLowerCase())
+        .filter((x: string) => Boolean(x));
 
-    const uniq = Array.from(new Set<string>(cleaned)); // ✅ typed Set
-    uniq.sort((a, b) => a.localeCompare(b));
+      const uniq = Array.from(new Set<string>(cleaned));
+      uniq.sort((a, b) => a.localeCompare(b));
 
+      return ["all", ...uniq];
+    }, [(available as any).regions]);
 
-  }, [available.regions]);
+    const POP_OPTIONS = useMemo(() => {
+      const arr = Array.isArray((available as any).pops)
+        ? (available as any).pops
+        : [];
 
+      const cleaned = arr
+        .map((x: any) => String(x ?? "").trim().toLowerCase())
+        .filter((x: string) => Boolean(x));
 
-  const POP_OPTIONS = useMemo(() => {
-    const arr = Array.isArray(available.pops) ? available.pops : [];
+      const uniq = Array.from(new Set<string>(cleaned));
+      uniq.sort((a, b) => a.localeCompare(b));
 
-    const cleaned = arr
-      .map((x: any) => String(x || "").trim().toLowerCase())
-      .filter((x): x is string => Boolean(x)); // ✅ type guard
-
-    const uniq = Array.from(new Set<string>(cleaned)); // ✅ typed Set
-    uniq.sort((a, b) => a.localeCompare(b));
-
-
-
-    const uniq = Array.from(new Set<string>(cleaned));
-    uniq.sort((a, b) => a.localeCompare(b));
-
-    return ["all", ...uniq];
-  }, [available.pops]);
+      return ["all", ...uniq];
+    }, [(available as any).pops]);
 
   useEffect(() => {
     if (!REGION_OPTIONS.includes(region)) setRegion("all");
