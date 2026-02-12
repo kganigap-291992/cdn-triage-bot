@@ -28,7 +28,7 @@ function normLower(s: any) {
   return norm(s).toLowerCase();
 }
 
-// deterministic-ish variety without needing persistent memory
+// deterministic-ish variety without persistent memory
 function hash32(str: string) {
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) {
@@ -39,7 +39,7 @@ function hash32(str: string) {
 }
 function pickOne<T>(arr: T[], seed: string) {
   if (!arr.length) throw new Error("pickOne called with empty array");
-  const idx = hash32(seed + "|" + String(Date.now()).slice(0, 9)) % arr.length;
+  const idx = hash32(seed) % arr.length;
   return arr[idx];
 }
 
@@ -63,6 +63,146 @@ function isGreetingOrSmallTalk(text: string) {
   );
 }
 
+// ------------------------------------------------------------
+// ATS Cache Result Codes Glossary (deterministic; no LLM/RAG)
+// ------------------------------------------------------------
+type GlossaryEntry = { title: string; meaning: string; opsHint?: string };
+
+const ATS_CRC_GLOSSARY: Record<string, GlossaryEntry> = {
+  tcp_hit: {
+    title: "TCP_HIT",
+    meaning:
+      "A valid copy of the requested object was in the cache and Traffic Server sent the object to the client.",
+    opsHint: "Healthy cache behavior. Expect lower origin traffic and lower latency.",
+  },
+  tcp_cf_hit: {
+    title: "TCP_CF_HIT",
+    meaning:
+      "A valid copy of the requested object is being updated in the cache and Traffic Server sent the object to the client.",
+    opsHint: "Often indicates refresh/revalidation while still serving a valid copy.",
+  },
+  tcp_miss: {
+    title: "TCP_MISS",
+    meaning:
+      "The requested object was not in cache, so Traffic Server retrieved the object from the origin server (or a parent proxy) and sent it to the client.",
+    opsHint: "Spikes can mean cold cache, cache-busting URLs, short TTLs, or new content.",
+  },
+  tcp_refresh_hit: {
+    title: "TCP_REFRESH_HIT",
+    meaning:
+      "The object was in the cache, but it was stale. Traffic Server made an if-modified-since request to the origin server and the origin server sent a 304 not-modified response. Traffic Server sent the cached object to the client.",
+    opsHint: "Revalidation succeeded (304). Usually fine; watch if it becomes excessive.",
+  },
+  tcp_ref_fail_hit: {
+    title: "TCP_REF_FAIL_HIT",
+    meaning:
+      "The object was in the cache but was stale. Traffic Server made an if-modified-since request to the origin server but the server did not respond. Traffic Server sent the cached object to the client.",
+    opsHint: "Origin may be unhealthy/timeout. ATS served stale to protect clients.",
+  },
+  tcp_refresh_miss: {
+    title: "TCP_REFRESH_MISS",
+    meaning:
+      "The object was in the cache but was stale. Traffic Server made an if-modified-since request to the origin server and the server returned a new object. Traffic Server served the new object to the client.",
+    opsHint: "Revalidation returned new content; can increase origin load if frequent.",
+  },
+  tcp_client_refresh: {
+    title: "TCP_CLIENT_REFRESH",
+    meaning:
+      "The client issued a request with a no-cache header. Traffic Server obtained the requested object from the origin server and sent a copy to the client. Traffic Server deleted the previous copy of the object from cache.",
+    opsHint: "Often indicates client/device forcing refresh (no-cache). Can look like cache thrash.",
+  },
+  tcp_ims_hit: {
+    title: "TCP_IMS_HIT",
+    meaning:
+      "The client issued an if-modified-since request and the object was in cache and fresher than the IMS date, or an if-modified-since request to the origin server revealed the cached object was fresh. Traffic Server served the cached object to the client.",
+    opsHint: "Conditional requests satisfied by cache. Usually good.",
+  },
+  tcp_ims_miss: {
+    title: "TCP_IMS_MISS",
+    meaning:
+      "The client issued an if-modified-since request and the object was either not in cache or was stale in cache. Traffic Server sent an if-modified-since request to the origin server and received the new object. Traffic Server sent the updated object to the client.",
+    opsHint: "Conditional request couldn’t be satisfied by cache; origin had to return updated content.",
+  },
+  tcp_swapfail: {
+    title: "TCP_SWAPFAIL",
+    meaning:
+      "The object was in the cache but could not be accessed. The client did not receive the object.",
+    opsHint: "Possible cache access/disk/corruption issue if non-trivial volume.",
+  },
+  err_client_abort: {
+    title: "ERR_CLIENT_ABORT",
+    meaning: "The client disconnected before the complete object was sent.",
+    opsHint: "Often user/device/network aborts. Watch spikes by region/device type.",
+  },
+  err_client_read_error: {
+    title: "ERR_CLIENT_READ_ERROR",
+    meaning: "The client had read errors (network problems).",
+    opsHint: "Commonly last-mile connectivity issues or flaky clients.",
+  },
+  err_connect_fail: {
+    title: "ERR_CONNECT_FAIL",
+    meaning: "Traffic Server could not reach the origin server.",
+    opsHint: "Origin unreachable (routing/firewall/outage). Check origin health/connectivity.",
+  },
+  err_dns_fail: {
+    title: "ERR_DNS_FAIL",
+    meaning:
+      "The Domain Name Server (DNS) could not resolve the origin server name, or no DNS could be reached.",
+    opsHint: "DNS outage/misconfig. Check resolvers, DNS latency, and origin hostname.",
+  },
+  err_invalid_req: {
+    title: "ERR_INVALID_REQ",
+    meaning:
+      "The client HTTP request was invalid. (Traffic Server forwards requests with unknown methods to the origin server.)",
+    opsHint: "Malformed clients/bots. Check samples + user agents.",
+  },
+  err_read_timeout: {
+    title: "ERR_READ_TIMEOUT",
+    meaning:
+      "The origin server did not respond to Traffic Server’s request within the timeout interval.",
+    opsHint: "Origin slow/unresponsive. Check origin latency, timeouts, upstream saturation.",
+  },
+  err_proxy_denied: {
+    title: "ERR_PROXY_DENIED",
+    meaning: "Client service was denied.",
+    opsHint: "ACL/auth/policy denial. Check rules, geo blocks, token/auth failures.",
+  },
+  err_unknown: {
+    title: "ERR_UNKNOWN",
+    meaning:
+      "The client connected, but subsequently disconnected without sending a request.",
+    opsHint: "Often connection churn/scans. Look at connection metrics and edge logs.",
+  },
+};
+
+function isDefinitionQuestion(text: string) {
+  const t = normLower(text);
+  if (!t) return false;
+  return (
+    t.startsWith("what is ") ||
+    t.startsWith("what’s ") ||
+    t.startsWith("whats ") ||
+    t.startsWith("define ") ||
+    t.startsWith("meaning of ") ||
+    t.startsWith("explain ")
+  );
+}
+
+function extractTermFromDefinitionQuestion(text: string) {
+  const t = norm(text);
+  const m =
+    t.match(/^(what is|what’s|whats|define|meaning of|explain)\s+(.+)$/i) || [];
+  const term = (m[2] || "").trim();
+  return term.replace(/[?.!]+$/, "").trim();
+}
+
+function lookupAtsCrc(raw: string): GlossaryEntry | null {
+  const k0 = normLower(raw);
+  if (!k0) return null;
+  const k = k0.replace(/\s+/g, "_");
+  return ATS_CRC_GLOSSARY[k] || null;
+}
+
 // -------- Command handling (NO LLM) --------
 type CommandKind = "help" | "filters" | "reset" | "explain" | "run" | null;
 
@@ -70,7 +210,7 @@ function parseCommand(text: string): CommandKind {
   const t = normLower(text);
   if (!t) return null;
 
-  // ✅ Treat capability questions as help (avoids LLM hiccup loops)
+  // ✅ Treat capability questions as help (avoids “LLM hiccup” loops)
   if (
     t === "help" ||
     t === "?" ||
@@ -106,7 +246,7 @@ function parseCommand(text: string): CommandKind {
   return null;
 }
 
-// ✅ Updated: more concierge/sophisticated receptionist tone
+// ✅ concierge tone
 function helpText(mode: "csv" | "clickhouse") {
   const lines = [
     "Certainly — here’s how I can help.",
@@ -328,7 +468,6 @@ function extractPartner(text: string, availablePartners: string[]): string | nul
   return null;
 }
 
-// ✅ Updated: more receptionist/concierge phrasing
 function makePartnerQuestion(partners: string[]) {
   const list = partners?.length
     ? partners.join(", ")
@@ -406,7 +545,6 @@ function safeJsonParse(s: string) {
   }
 }
 
-// ✅ Updated: sophisticated receptionist / concierge greeting variants
 function smallTalkReply(userText: string, mode: "csv" | "clickhouse") {
   const options = [
     "Good day — Cachey here 🤖. How may I assist with today’s CDN situation?",
@@ -415,7 +553,7 @@ function smallTalkReply(userText: string, mode: "csv" | "clickhouse") {
     "Hi there. If you tell me service + region/POP + a time window, I can run triage immediately.",
     "All set on my end. Shall we chase errors or latency first? (Try: `vod in bos last 60m`.)",
   ];
-  return pickOne(options, userText + "|" + mode);
+  return pickOne(options, `${mode}|${normLower(userText)}`);
 }
 
 export async function POST(req: Request) {
@@ -441,6 +579,22 @@ export async function POST(req: Request) {
 
   const partnerFromFollowup = collapsed.partner;
 
+  // ✅ Deterministic glossary answers for "what is tcp_hit" style questions
+  if (isDefinitionQuestion(userText)) {
+    const term = extractTermFromDefinitionQuestion(userText);
+    const entry = lookupAtsCrc(term);
+    if (entry) {
+      const reply = [
+        `${entry.title}`,
+        entry.meaning,
+        entry.opsHint ? `\nOps hint: ${entry.opsHint}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      return jsonOk({ ok: true, kind: "general", reply });
+    }
+  }
+
   // ✅ Commands are deterministic (NO LLM)
   const cmd = parseCommand(userText);
   if (cmd === "help") {
@@ -465,7 +619,6 @@ export async function POST(req: Request) {
     });
   }
   if (cmd === "run") {
-    // Let UI run triage with current filters — we just mark it triage-ish
     return jsonOk({
       ok: true,
       kind: "triage",
@@ -547,20 +700,17 @@ export async function POST(req: Request) {
 
     if (!llmOut || typeof llmOut !== "object") {
       const replyText =
-        typeof content === "string" && content.trim()
-          ? content.trim()
-          : "Understood.";
+        typeof content === "string" && content.trim() ? content.trim() : "Understood.";
       if (!triageish) return jsonOk({ ok: true, kind: "general", reply: replyText });
       llmOut = { kind: "triage", reply: replyText };
     }
   } catch (e: any) {
-    // If LLM fails, stay polite and still return parsed hints when triage-ish
     const msg = e?.message || "LLM failed";
     if (!triageish) {
       return jsonOk({
         ok: true,
         kind: "general",
-        reply: `Apologies — my “smart” channel had a moment (${msg}). You can still type \`help\` or run triage like: \`vod in bos last 1 day\`.`,
+        reply: `Apologies — my “smart” channel had a moment (${msg}). You can still type \`help\` or ask about cache codes like \`what is tcp_hit\`.`,
       });
     }
     llmOut = {

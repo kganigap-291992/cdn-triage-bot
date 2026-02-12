@@ -1280,9 +1280,13 @@ export default function CDNTriageApp() {
       type: "text",
       role: "system",
       text:
-        "Chat ready. Type a message and I’ll run triage using the current filters.\n\nExamples:\n- vod in usw2 at sjc last 60m\n- service=live region=all win=360\n\nCommands: help • filters • reset • explain • run",
-      timestamp: getCurrentTimestamp(),
+        "Welcome — Cachey 🤖 here.\n\n" +
+        "If you share the symptoms (errors or latency) and your scope (service / region / POP / time window), I’ll triage and pull up the charts.\n\n" +
+        "Type `help` to see everything I can do.\n" +
+        "Tip: You can also ask definitions — e.g. `what is tcp_hit`.",
+        timestamp: getCurrentTimestamp(),
     };
+
   }
 
   useEffect(() => {
