@@ -1514,6 +1514,15 @@ export default function CDNTriageApp() {
     return json as any;
   }
 
+  async function handleLogout() {
+    try {
+      await fetch("/api/demo-logout", { method: "POST" });
+    } finally {
+    window.location.href = "/demo";
+    }
+  }
+
+
   // ✅ reset all UI + local storage + server memory
   function resetAllUI() {
     if (isLoading) return;
@@ -2272,26 +2281,40 @@ export default function CDNTriageApp() {
       : `Exec: ClickHouse • partner=${partner || "missing"}`;
 
   return (
-    <main className="min-h-screen w-full bg-gray-50 px-6 py-6">
-      <div className="mx-auto w-full">
-        {/* Top header with logo (removed "CDN Triage UI (REPO)" title) */}
-        <div className="flex items-center gap-3 border-b border-gray-200 pb-4 mb-6">
-          <Image
-            src={LOGO_SRC}
-            alt="Cachey"
-            width={34}
-            height={34}
-            className="rounded-full"
-          />
-          <div className="min-w-0">
-            <div className="font-semibold text-lg text-gray-900">
-              Cachey <span className="text-gray-500">🤖</span>
-            </div>
-            <div className="text-xs text-gray-500">
-              CDN Incident Triage Assistant
-            </div>
+  <main className="min-h-screen w-full bg-gray-50 px-6 py-6">
+    <div className="mx-auto w-full">
+      {/* Top header with logo */}
+      <div className="flex items-center gap-3 border-b border-gray-200 pb-4 mb-6">
+        <Image
+          src={LOGO_SRC}
+          alt="Cachey"
+          width={34}
+          height={34}
+          className="rounded-full"
+        />
+
+        <div className="min-w-0">
+          <div className="font-semibold text-lg text-gray-900">
+            Cachey <span className="text-gray-500">🤖</span>
+          </div>
+          <div className="text-xs text-gray-500">
+            CDN Incident Triage Assistant
           </div>
         </div>
+
+        {/* 👇 This pushes logout to the far right */}
+        <div className="ml-auto">
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="text-xs text-gray-700 border border-gray-200 rounded-full px-3 py-1.5 bg-white hover:bg-gray-50 transition-colors"
+            title="Logout"
+          >
+            Logout
+          </button>
+        </div>
+      </div>
+
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Sidebar */}
