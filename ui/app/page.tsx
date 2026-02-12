@@ -1388,7 +1388,7 @@ export default function CDNTriageApp() {
     if (!t || !Array.isArray(t.points)) return null;
 
     const points: TimeseriesPoint[] = t.points
-      .map((p: any) => ({
+      .map((p: any): TimeseriesPoint => ({
         ts: String(p.ts || ""),
         totalRequests: Number(p.totalRequests) || 0,
         error5xxCount: Number(p.error5xxCount) || 0,
@@ -1405,7 +1405,8 @@ export default function CDNTriageApp() {
           ? (p.crcCountsByCrc as Record<string, number>)
           : undefined,
       }))
-      .filter((p) => Boolean(p.ts));
+      .filter((pt: TimeseriesPoint) => Boolean(pt.ts));
+
 
     return {
       bucketSeconds: t.bucketSeconds == null ? null : Number(t.bucketSeconds),
