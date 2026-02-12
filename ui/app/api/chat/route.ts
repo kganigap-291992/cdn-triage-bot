@@ -43,24 +43,82 @@ function pickOne<T>(arr: T[], seed: string) {
   return arr[idx];
 }
 
+/**
+ * ✅ FIXED:
+ * - Previously, 3-letter greetings like "sup" were incorrectly rejected due to early return.
+ * - Now we treat short greetings correctly and still allow regex checks.
+ */
 function isGreetingOrSmallTalk(text: string) {
   const t = normLower(text);
   if (!t) return true;
-  if (t.length <= 3) return ["hi", "hey", "yo", "ok", "k"].includes(t);
+
+  // short tokens (keep explicit)
+  if (t.length <= 3 && ["hi", "hey", "yo", "ok", "k", "sup", "thx"].includes(t)) {
+    return true;
+  }
+
   return (
     /^hi\b/.test(t) ||
     /^hey\b/.test(t) ||
     /^hello\b/.test(t) ||
     /^yo\b/.test(t) ||
+    /^sup\b/.test(t) ||
     /^thanks\b/.test(t) ||
     /^thank you\b/.test(t) ||
     /^good (morning|afternoon|evening)\b/.test(t) ||
     /^how are you\b/.test(t) ||
-    /^sup\b/.test(t) ||
     /^what'?s up\b/.test(t) ||
     /^how's it going\b/.test(t) ||
     /^how are ya\b/.test(t)
   );
+}
+
+/**
+ * ✅ NEW: Low-signal guard
+ * Avoid calling the LLM/provider for typos/noise like: "canyou", "helo", "pls", "wat", etc.
+ * This keeps demo super stable (no scary provider errors for junk inputs).
+ */
+function looksLikeLowSignal(text: string) {
+  const t = norm(text);
+  if (!t) return true;
+
+  const lower = t.toLowerCase();
+  const singleToken = !/\s/.test(lower);
+  const short = lower.length <= 7;
+  const hasNoNumbers = !/\d/.test(lower);
+  const hasNoKV = !/=/.test(lower);
+  const hasNoPunct = !/[?.!,]/.test(lower);
+
+  // If it's clearly a known keyword, don't treat as low-signal.
+  const knownWords = [
+    "help",
+    "triage",
+    "run",
+    "errors",
+    "error",
+    "latency",
+    "p95",
+    "p99",
+    "ttms",
+    "service",
+    "region",
+    "pop",
+    "vod",
+    "live",
+    "all",
+    "reset",
+    "filters",
+    "explain",
+  ];
+  const containsKnown = knownWords.some((k) => lower.includes(k));
+
+  // A very small whitelist for common human typos that still are "chatty"
+  const smallTypos = ["canyou", "canu", "pls", "plz", "helo", "hellp", "wat", "wut"];
+
+  if (smallTypos.includes(lower)) return true;
+
+  // Core heuristic
+  return singleToken && short && hasNoNumbers && hasNoKV && hasNoPunct && !containsKnown;
 }
 
 // ------------------------------------------------------------
@@ -523,7 +581,8 @@ async function callOpenRouter(messages: WireMsg[]) {
     },
     body: JSON.stringify({
       model,
-      temperature: 1.1,
+      // ✅ lower temp for more consistent JSON-ish outputs
+      temperature: 0.6,
       messages,
     }),
   });
@@ -547,11 +606,11 @@ function safeJsonParse(s: string) {
 
 function smallTalkReply(userText: string, mode: "csv" | "clickhouse") {
   const options = [
-    "Good day — Cachey here 🤖. How may I assist with today’s CDN situation?",
-    "Hello. I’m Cachey 🤖 — your triage concierge. What are we investigating?",
-    "Welcome — Cachey at your service 🤖. Share the symptoms and I’ll narrow the scope.",
-    "Hi there. If you tell me service + region/POP + a time window, I can run triage immediately.",
     "All set on my end. Shall we chase errors or latency first? (Try: `vod in bos last 60m`.)",
+    "Hey — Cachey here 🤖. Give me service + region/POP + time window and I’ll run triage.",
+    "Ready when you are. Want to start with errors (5xx/4xx) or latency (p95/p99 TTMS)?",
+    "Cool. If you share scope + symptoms, I’ll narrow it down quickly.",
+    "Let’s do it. Try: `live in usw2 at sjc last 2h`.",
   ];
   return pickOne(options, `${mode}|${normLower(userText)}`);
 }
@@ -597,43 +656,42 @@ export async function POST(req: Request) {
 
   // ✅ Commands are deterministic (NO LLM)
   const cmd = parseCommand(userText);
-  if (cmd === "help") {
-    return jsonOk({ ok: true, kind: "general", reply: helpText(mode) });
-  }
-  if (cmd === "filters") {
+  if (cmd === "help") return jsonOk({ ok: true, kind: "general", reply: helpText(mode) });
+  if (cmd === "filters")
     return jsonOk({
       ok: true,
       kind: "general",
       reply: filtersText({ mode, partners, regions, pops }),
     });
-  }
-  if (cmd === "explain") {
-    return jsonOk({ ok: true, kind: "general", reply: explainText() });
-  }
-  if (cmd === "reset") {
+  if (cmd === "explain") return jsonOk({ ok: true, kind: "general", reply: explainText() });
+  if (cmd === "reset")
     return jsonOk({
       ok: true,
       kind: "general",
       reply:
         "Done — I’ve cleared my side. If you’d like a full wipe (filters + local history), please use the Reset button in the UI.",
     });
-  }
-  if (cmd === "run") {
+  if (cmd === "run")
     return jsonOk({
       ok: true,
       kind: "triage",
       reply: "Very well — running triage with the current filters…",
     });
-  }
 
   const triageish = looksLikeTriageIntent(userText);
 
   // ✅ Don't burn LLM calls on greetings/small talk
   if (!triageish && isGreetingOrSmallTalk(userText)) {
+    return jsonOk({ ok: true, kind: "general", reply: smallTalkReply(userText, mode) });
+  }
+
+  // ✅ NEW: Don't burn LLM calls on low-signal/typos/noise
+  if (!triageish && looksLikeLowSignal(userText)) {
     return jsonOk({
       ok: true,
       kind: "general",
-      reply: smallTalkReply(userText, mode),
+      reply:
+        "Looks like a quick typo 🙂\n\nTry:\n- `vod in bos last 60m`\n- `service=live region=all win=360`\n\nOr type `help`.",
     });
   }
 
@@ -698,24 +756,27 @@ export async function POST(req: Request) {
     const content = or?.choices?.[0]?.message?.content;
     llmOut = typeof content === "string" ? safeJsonParse(content) : null;
 
+    // If model ignored JSON-only instruction, gracefully accept plain text
     if (!llmOut || typeof llmOut !== "object") {
       const replyText =
         typeof content === "string" && content.trim() ? content.trim() : "Understood.";
       if (!triageish) return jsonOk({ ok: true, kind: "general", reply: replyText });
       llmOut = { kind: "triage", reply: replyText };
     }
-  } catch (e: any) {
-    const msg = e?.message || "LLM failed";
+  } catch {
+    // ✅ Don't surface provider-specific error text in demo UX
     if (!triageish) {
       return jsonOk({
         ok: true,
         kind: "general",
-        reply: `Apologies — my “smart” channel had a moment (${msg}). You can still type \`help\` or ask about cache codes like \`what is tcp_hit\`.`,
+        reply:
+          "My LLM assist is temporarily unavailable 😅\n\nYou can still:\n- type `help`\n- ask `what is tcp_hit`\n- run triage like `vod in bos last 60m`",
       });
     }
     llmOut = {
       kind: "triage",
-      reply: `Apologies — the LLM channel is unavailable (${msg}). I’ll proceed using parsed filters.`,
+      reply:
+        "LLM assist is temporarily unavailable. I’ll proceed using parsed filters.",
     };
   }
 

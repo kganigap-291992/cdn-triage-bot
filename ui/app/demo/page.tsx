@@ -34,11 +34,6 @@ export default function DemoLoginPage() {
     setErr(data?.error || "Invalid passcode");
   }
 
-  async function logout() {
-    await fetch("/api/demo-logout", { method: "POST" }).catch(() => {});
-    window.location.href = "/demo";
-  }
-
   return (
     <main style={styles.bg}>
       <div style={styles.card}>
@@ -52,17 +47,13 @@ export default function DemoLoginPage() {
             style={{ borderRadius: 12 }}
           />
           <div>
-            <div style={styles.title}>Cachey Demo</div>
-            <div style={styles.subtitle}>Enter passcode to continue</div>
+            <div style={styles.title}>Cachey</div>
+            <div style={styles.subtitle}>Sign in to continue</div>
           </div>
-
-          <button onClick={logout} style={styles.ghostBtn} type="button">
-            Logout
-          </button>
         </div>
 
         <form onSubmit={onSubmit} style={styles.form}>
-          <label style={styles.label}>Demo passcode</label>
+          <label style={styles.label}>Passcode</label>
           <input
             value={passcode}
             onChange={(e) => setPasscode(e.target.value)}
@@ -122,16 +113,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   title: { fontSize: 18, fontWeight: 750, letterSpacing: -0.2 },
   subtitle: { marginTop: 2, fontSize: 13, color: "rgba(17,24,39,0.62)" },
-  ghostBtn: {
-    marginLeft: "auto",
-    padding: "8px 10px",
-    borderRadius: 12,
-    border: "1px solid rgba(17,24,39,0.12)",
-    background: "rgba(255,255,255,0.7)",
-    cursor: "pointer",
-    fontWeight: 650,
-    color: "#111827",
-  },
   form: { paddingTop: 14 },
   label: {
     display: "block",
