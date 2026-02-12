@@ -1334,11 +1334,11 @@ export default function CDNTriageApp() {
 
     const cleaned = arr
       .map((x: any) => String(x || "").trim().toLowerCase())
-      .filter((x): x is string => Boolean(x));
+      .filter((x): x is string => Boolean(x)); // ✅ type guard
 
-    const uniq = Array.from(new Set(cleaned));
+    const uniq = Array.from(new Set<string>(cleaned)); // ✅ typed Set
     uniq.sort((a, b) => a.localeCompare(b));
-    return ["all", ...uniq];
+
 
   }, [available.regions]);
 
@@ -1348,11 +1348,11 @@ export default function CDNTriageApp() {
 
     const cleaned = arr
       .map((x: any) => String(x || "").trim().toLowerCase())
-      .filter((x): x is string => Boolean(x));
+      .filter((x): x is string => Boolean(x)); // ✅ type guard
 
-    const uniq = Array.from(new Set(cleaned));
+    const uniq = Array.from(new Set<string>(cleaned)); // ✅ typed Set
     uniq.sort((a, b) => a.localeCompare(b));
-    return ["all", ...uniq];
+
 
 
     const uniq = Array.from(new Set<string>(cleaned));
