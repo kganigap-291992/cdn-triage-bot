@@ -1629,8 +1629,11 @@ export default function CDNTriageApp() {
 
   async function handleChatSend() {
     const text = chatInput.trim();
+    
+
     if (!text) return;
     if (isLoading) return;
+
 
     setChatInput("");
     setErrorMessage("");
