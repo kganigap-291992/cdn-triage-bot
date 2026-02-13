@@ -14,7 +14,7 @@ Production Deployment: https://cdn-triage-bot.vercel.app
 
 ## System Architecture Specification
 
-```yaml
+
 
 Project:
   Name: "Cachey 🤖 – CDN Incident Triage Bot"
