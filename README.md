@@ -33,12 +33,12 @@ The system is designed around one core principle:
 
 Effective CDN triage requires correlating:
 
-- Edge vs Upstream Errors
-- Cache Hit / Miss Behavior
-- P95 / P99 Latency Spikes
-- Regional POP Degradation
-- URL Type (Manifest vs Segment)
-- Client / User-Agent Patterns
+- Edge vs Upstream Errors  
+- Cache Hit / Miss Behavior  
+- P95 / P99 Latency Spikes  
+- Regional POP Degradation  
+- URL Type (Manifest vs Segment)  
+- Client / User-Agent Patterns  
 
 ### Goal
 
@@ -54,39 +54,40 @@ Systematize first-level triage into deterministic, inspectable, and reproducible
 
 ### Stack
 
-- Slack
-- n8n
-- CSV Telemetry
-- Deterministic Metrics Engine
+- Slack  
+- n8n  
+- CSV Telemetry  
+- Deterministic Metrics Engine  
 
 ### Characteristics
 
-- Slack `/triage` command
-- n8n webhook orchestration
-- One-shot triage execution
-- Summary returned directly to Slack
+- Slack `/triage` command  
+- n8n webhook orchestration  
+- One-shot triage execution  
+- Summary returned directly to Slack  
 
 ### Architecture Diagram
 
 ```mermaid
-flowchart TD
-    A["User UI"] --> B["Next.js Frontend"]
-    B --> C["api_tria ge_endpoint"]
-    C --> D["Deterministic Metrics Engine"]
-    D --> E["Structured Summary"]
-    D --> F["Raw Metrics JSON"]
+flowchart LR
+    A["Slack /triage Command"] --> B["n8n Webhook"]
+    B --> C["Parse Filters"]
+    C --> D["Fetch CSV Telemetry"]
+    D --> E["Deterministic Metrics Engine"]
+    E --> F["Slack Summary Response"]
 ```
 
 ### Limitations
 
-- No interactive filtering
-- No persistent state
-- No conversational extensibility
-- Limited transparency into intermediate metrics
+- No interactive filtering  
+- No persistent state  
+- No conversational extensibility  
+- Limited transparency into intermediate metrics  
 
 ### Conclusion
 
-Standalone UI + API required.
+The automation prototype validated deterministic triage logic,  
+but required a standalone UI + API for scalability and state management.
 
 ---
 
@@ -94,45 +95,45 @@ Standalone UI + API required.
 
 ### Stack
 
-- Next.js (App Router)
-- React
-- TypeScript
-- Node.js
-- API Routes
+- Next.js (App Router)  
+- React  
+- TypeScript  
+- Node.js  
+- API Routes  
 
 ### Objectives
 
-- Externalize system state
-- Ensure reproducibility
-- Enable inspectable intermediate state
-- Prepare for ClickHouse backend
+- Externalize system state  
+- Ensure reproducibility  
+- Enable inspectable intermediate state  
+- Prepare for ClickHouse backend  
 
 ### Key Features
 
-- Unified `/api/triage` endpoint
-- Explicit filter controls
-- Run history stored in LocalStorage
-- Transparent Metrics JSON
-- Deterministic execution pipeline
+- Unified `/api/triage` endpoint  
+- Explicit filter controls  
+- Run history stored in LocalStorage  
+- Transparent Metrics JSON  
+- Deterministic execution pipeline  
 
 ### Architecture Diagram
 
 ```mermaid
 flowchart TD
-    A[User UI] --> B[Next.js Frontend]
-    B --> C[/api/triage Endpoint]
-    C --> D[Deterministic Metrics Engine]
-    D --> E[Structured Summary]
-    D --> F[Raw Metrics JSON]
+    A["User UI"] --> B["Next.js Frontend"]
+    B --> C["/api/triage Endpoint"]
+    C --> D["Deterministic Metrics Engine"]
+    D --> E["Structured Summary"]
+    D --> F["Raw Metrics JSON"]
 ```
 
 ### Design Principles
 
-- Deterministic computation
-- Clear request/response boundaries
-- ClickHouse-ready abstraction
-- Separation of computation and explanation
-- Inspectable intermediate state
+- Deterministic computation  
+- Clear request/response boundaries  
+- ClickHouse-ready abstraction  
+- Separation of computation and explanation  
+- Inspectable intermediate state  
 
 ---
 
@@ -140,20 +141,20 @@ flowchart TD
 
 ### Stack
 
-- Deterministic Intent Parser
-- Optional OpenRouter Integration
+- Deterministic Intent Parser  
+- Optional OpenRouter Integration  
 
 ### Objectives
 
-- Introduce conversational triage
-- Preserve deterministic metric computation
-- Allow filter overrides via chat
+- Introduce conversational triage  
+- Preserve deterministic metric computation  
+- Allow filter overrides via chat  
 
 ### Behavior
 
-- Chat input may override filters
-- Triage execution remains deterministic
-- LLM is not trusted for metric computation
+- Chat input may override filters  
+- Triage execution remains deterministic  
+- LLM is not trusted for metric computation  
 
 ### Execution Policy
 
@@ -162,9 +163,9 @@ flowchart TD
 
 ### Example Inputs
 
-- `run triage`
-- `svc=live region=use1 win=60`
-- `show p95 spike in bos for vod`
+- `run triage`  
+- `svc=live region=use1 win=60`  
+- `show p95 spike in bos for vod`  
 
 ---
 
@@ -172,19 +173,19 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A[Browser UI] --> B[Next.js App Router]
-    B --> C[/api/triage]
-    C --> D[Metrics Engine]
-    D --> E[Structured Summary]
-    D --> F[Raw Metrics JSON]
+    A["Browser UI"] --> B["Next.js App Router"]
+    B --> C["/api/triage"]
+    C --> D["Metrics Engine"]
+    D --> E["Structured Summary"]
+    D --> F["Raw Metrics JSON"]
 
-    subgraph Data Layer
-        G[CSV Telemetry]
-        H[ClickHouse - Planned]
+    subgraph "Data Layer"
+        G["CSV Telemetry (Synthetic)"]
+        H["ClickHouse (Planned)"]
     end
 
     C --> G
-    C -. future .-> H
+    C -. "future integration" .-> H
 ```
 
 ---
@@ -193,97 +194,91 @@ flowchart LR
 
 ## Frontend
 
-- Framework: Next.js (App Router)
-- Language: TypeScript
-- UI Library: React
-- State Management: LocalStorage (Run History)
-- Rendering Strategy: Hydration-safe client rendering
+- Framework: Next.js (App Router)  
+- Language: TypeScript  
+- UI Library: React  
+- State Management: LocalStorage (Run History)  
+- Rendering Strategy: Hydration-safe client rendering  
 
 ## Backend
 
-- API Layer: Next.js API Routes
-- Runtime: Node.js
-- Analytics Layer: Custom Deterministic Metrics Engine
+- API Layer: Next.js API Routes  
+- Runtime: Node.js  
+- Analytics Layer: Custom Deterministic Metrics Engine  
 
 ## Data Layer
 
-- Demo Source: Synthetic CSV Telemetry
-- Production Target: ClickHouse (Planned)
+- Demo Source: Synthetic CSV Telemetry  
+- Production Target: ClickHouse (Planned)  
 
 ## Conversational Layer
 
-- Current Mode: Deterministic Parser
-- Optional Provider: OpenRouter
+- Current Mode: Deterministic Parser  
+- Optional Provider: OpenRouter  
 
 ### Example Models
 
-- `google/gemma-3n-e2b-it:free`
-- `mistral-small-instruct`
+- `google/gemma-3n-e2b-it:free`  
+- `mistral-small-instruct`  
 
 ### LLM Scope
 
-- Intent parsing
-- Explanation assistance
-- No non-deterministic metric computation
+- Intent parsing  
+- Explanation assistance  
+- No non-deterministic metric computation  
 
 ---
 
 # Deployment
 
-## Hosting Provider
+## Hosting
 
-- Vercel
-
-## Characteristics
-
-- Automatic builds from GitHub
-- Production + Preview environments
-- Build-time TypeScript validation
-- Hydration-safe client pages
+- Vercel  
+- Automatic builds from GitHub  
+- Production + Preview environments  
+- Build-time TypeScript validation  
 
 ## Previous Demo Method
 
-- Cloudflare Tunnel
+- Cloudflare Tunnel  
 
 ## Migration Reason
 
-- Stable hosting
-- Reliable demo access
-- CI/CD integration
+- Stable hosting  
+- Reliable demo access  
+- CI/CD integration  
 
 ---
 
 # Data Safety
 
-- Telemetry is synthetic
-- No production logs
-- No customer data
-- No proprietary systems
+- Telemetry is synthetic  
+- No production logs  
+- No customer data  
+- No proprietary systems  
 
 ---
 
 # Roadmap
 
-- ClickHouse backend integration
-- Time-series anomaly detection
-- Blast radius estimation
-- Confidence scoring
-- Metrics export and observability
-- LLM-assisted explanation layer
-- Rate limiting
-- Authentication hardening
+- ClickHouse backend integration  
+- Time-series anomaly detection  
+- Blast radius estimation  
+- Confidence scoring  
+- Metrics export and observability  
+- LLM-assisted explanation layer  
+- Rate limiting  
+- Authentication hardening  
 
 ---
 
 # Engineering Philosophy
 
-## Principles
-
-- Deterministic metrics before AI reasoning
-- Reproducibility over opacity
-- Separation of control and computation
-- Explainable summaries
-- Production-first deployment validation
+- Deterministic metrics before AI reasoning  
+- Reproducibility over opacity  
+- Separation of control and computation  
+- Explainable summaries  
+- Production-first deployment validation  
 
 ---
 
@@ -291,11 +286,8 @@ flowchart LR
 
 Planned enhancements include:
 
-- Time-series anomaly detection
-- Rolling baseline deviation scoring
-- Blast radius quantification
-- Severity classification
-- Model lifecycle integration (future MLOps track)
-
----
-
+- Time-series anomaly detection  
+- Rolling baseline deviation scoring  
+- Blast radius quantification  
+- Severity classification  
+- Model lifecycle integration (future MLOps track)  
