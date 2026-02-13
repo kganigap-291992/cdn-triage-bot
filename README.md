@@ -69,12 +69,12 @@ Systematize first-level triage into deterministic, inspectable, and reproducible
 ### Architecture Diagram
 
 ```mermaid
-flowchart LR
-    A[Slack /triage] --> B[n8n Webhook]
-    B --> C[Parse Filters]
-    C --> D[Fetch CSV Telemetry]
-    D --> E[Metrics Engine]
-    E --> F[Slack Summary Response]
+flowchart TD
+    A["User UI"] --> B["Next.js Frontend"]
+    B --> C["api_tria ge_endpoint"]
+    C --> D["Deterministic Metrics Engine"]
+    D --> E["Structured Summary"]
+    D --> F["Raw Metrics JSON"]
 ```
 
 ### Limitations
