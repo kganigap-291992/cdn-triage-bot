@@ -1,133 +1,205 @@
-# CDN Incident Triage Bot  
-**V1 (n8n + Slack) → V2 (Standalone UI + API)**
+# Cachey 🤖 – CDN Incident Triage Bot
 
-An automated CDN incident triage system that analyzes delivery telemetry
-(edge, mid-tier, cache, URL patterns, and client signals) and produces
-**evidence-backed diagnosis and drill-down insights**.
+**Automated Operational Analytics for CDN Incident Response**
 
-This project mirrors real-world CDN/video operations and demonstrates
-how operational analytics, automation, and tooling evolution can be
-applied safely in production-style workflows.
+Author: Krishna Reddy GV  
+Production Deployment: https://cdn-triage-bot.vercel.app  
 
 ---
 
-## Data Safety
-
-All telemetry used in this project is **synthetically generated** to mirror
-real-world CDN traffic patterns.
-
-* No production logs
-* No customer data
-* No proprietary systems
+> This document describes the system architecture, evolution, and deployment
+> model of Cachey 🤖 in structured specification format.
 
 ---
 
-## Why This Project Exists
+## System Architecture Specification
 
-CDN incident triage is often:
+    Automated operational analytics system for CDN incident triage.
+    Analyzes structured delivery telemetry and produces deterministic,
+    evidence-backed summaries suitable for incident response workflows.
 
-- manual and time-consuming  
-- dependent on tribal knowledge  
-- difficult to standardize across teams  
+ProblemStatement:
+  Context:
+    - Manual and time-intensive incident triage
+    - Reliance on tribal knowledge
+    - Inconsistent reasoning across engineers
+    - Lack of reproducibility
+  RequiredCorrelations:
+    - Edge vs Upstream Errors
+    - Cache Hit/Miss Behavior
+    - P95 / P99 Latency Spikes
+    - Regional POP Degradation
+    - URL Type (Manifest vs Segment)
+    - Client / User-Agent Patterns
+  Goal: >
+    Systematize first-level triage into deterministic,
+    inspectable, and reproducible workflows.
 
-Engineers must correlate:
-- edge vs upstream errors  
-- cache behavior  
-- latency spikes  
-- URL types (manifest vs segment)  
-- regional POP failures  
-- client / User-Agent patterns  
+ArchitectureEvolution:
 
-**This project automates first-level triage** using deterministic rules,
-clear metrics, and explainable summaries.
+  V1:
+    Name: "Automation Prototype (n8n + Slack)"
+    Stack:
+      - Slack
+      - n8n
+      - CSV Telemetry
+      - Deterministic Metrics Engine
+    Characteristics:
+      - Slack /triage Command
+      - n8n Webhook Orchestration
+      - One-Shot Triage Execution
+      - Summary Returned to Slack
+    ArchitectureDiagram: |
+      flowchart LR
+          A[Slack /triage] --> B[n8n Webhook]
+          B --> C[Parse Filters]
+          C --> D[Fetch CSV Telemetry]
+          D --> E[Metrics Engine]
+          E --> F[Slack Summary Response]
+    Limitations:
+      - No Interactive Filtering
+      - No Persistent State
+      - No Conversational Extensibility
+    Conclusion: "Standalone UI + API Required"
 
----
+  V2:
+    Name: "Deterministic UI + API (Next.js)"
+    Stack:
+      - Next.js (App Router)
+      - React
+      - TypeScript
+      - Node.js
+      - API Routes
+    Objectives:
+      - Externalize System State
+      - Ensure Reproducibility
+      - Enable Inspectable Intermediate State
+    KeyFeatures:
+      - Unified /api/triage Endpoint
+      - Explicit Filter Controls
+      - Run History Stored in LocalStorage
+      - Transparent Metrics JSON
+    ArchitectureDiagram: |
+      flowchart TD
+          A[User UI] --> B[Next.js Frontend]
+          B --> C[/api/triage Endpoint]
+          C --> D[Deterministic Metrics Engine]
+          D --> E[Summary + Metrics JSON]
+    DesignPrinciples:
+      - Deterministic Computation
+      - Clear Request/Response Boundaries
+      - ClickHouse-Ready Abstraction
+      - Separation of Computation and Explanation
 
-## V1 — n8n + Slack (Prototype Phase)
+  V3:
+    Name: "Conversational Controller"
+    Stack:
+      - Deterministic Parser
+      - OpenRouter Integration (Optional)
+    Objectives:
+      - Introduce Conversational Triage
+      - Preserve Deterministic Computation
+    Behavior:
+      - Chat Input May Override Filters
+      - Deterministic Triage Execution
+      - Summary Rendered Conversationally
+    ExampleInputs:
+      - "run triage"
+      - "svc=live region=use1 win=60"
+    LLMPolicy: >
+      LLM usage is restricted to parsing and explanation assistance.
+      Metric computation remains deterministic.
 
-V1 focused on **speed of iteration and signal validation**.
+CurrentSystemArchitecture:
+  Diagram: |
+    flowchart LR
+        A[Browser UI] --> B[Next.js App Router]
+        B --> C[/api/triage]
+        C --> D[Metrics Engine]
+        D --> E[Structured Summary]
+        D --> F[Raw Metrics JSON]
 
-### Why a UI Was Required (Beyond Automation)
+        subgraph Data Layer
+            G[CSV Telemetry]
+            H[ClickHouse (Planned)]
+        end
 
-While n8n worked well for automated, one-shot triage, it is not designed
-for interactive or conversational workflows.
+        C --> G
+        C -. future .-> H
 
-Chat-based triage requires:
-- deterministic and reproducible metrics
-- explicit request/response boundaries
-- inspectable intermediate state
-- clear separation between computation and explanation
+TechnologyStack:
 
-The move to a UI + API architecture in V2 was a prerequisite for any
-future chat or agent-based interface. The UI externalizes system state
-and makes reasoning observable, allowing conversational layers to sit
-on top without compromising correctness.
+  Frontend:
+    Framework: "Next.js (App Router)"
+    Language: "TypeScript"
+    UILibrary: "React"
+    StateManagement: "LocalStorage (Run History)"
+    RenderingStrategy: "Hydration-Safe Client Rendering"
 
+  Backend:
+    APILayer: "Next.js API Routes"
+    Runtime: "Node.js"
+    AnalyticsLayer: "Custom Deterministic Metrics Engine"
 
-## V1 High-Level Architecture
+  DataLayer:
+    DemoSource: "Synthetic CSV Telemetry"
+    ProductionTarget: "ClickHouse (Planned)"
 
-```mermaid
-flowchart LR
-    A[Slack<br/>/triage command] -->|HTTP POST| B[n8n Webhook]
-    B --> C[Parser<br/>Parse filters & window]
-    C --> D[HTTP Request<br/>Fetch CSV]
-    D --> E[Metrics Engine<br/>Errors & P95 TTMS]
-    E --> F[Slack<br/>Summary Response]
-```
+  ConversationalLayer:
+    CurrentMode: "Deterministic Parser"
+    OptionalProvider: "OpenRouter"
+    ExampleModels:
+      - "google/gemma-3n-e2b-it:free"
+      - "mistral-small-instruct"
+    LLMScope:
+      - Intent Parsing
+      - Explanation Assistance
+      - Non-Deterministic Computation Disabled
 
-### Why a UI Was Required (Beyond Automation)
+  DevOps:
+    Hosting: "Vercel"
+    SourceControl: "GitHub"
+    CICD: "Automatic Build on Commit"
+    BuildValidation: "next build"
+    Environments:
+      - Production
+      - Preview
 
-While n8n worked well for automated, one-shot triage, it is not designed
-for interactive or conversational workflows.
+Deployment:
 
-Chat-based triage requires:
-- deterministic and reproducible metrics
-- explicit request/response boundaries
-- inspectable intermediate state
-- clear separation between computation and explanation
+  HostingProvider: "Vercel"
+  Characteristics:
+    - Automatic Builds from GitHub
+    - Production and Preview Environments
+    - Build-Time Validation
+    - Hydration-Safe Client Pages
+  PreviousDemoMethod:
+    - Cloudflare Tunnel
+  MigrationReason:
+    - Stable Hosting
+    - Reliable Demo Access
+    - CI/CD Integration
 
-The move to a UI + API architecture in V2 was a prerequisite for any
-future chat or agent-based interface. The UI externalizes system state
-and makes reasoning observable, allowing conversational layers to sit
-on top without compromising correctness.
+DataSafety:
+  TelemetryType: "Synthetic"
+  Guarantees:
+    - No Production Logs
+    - No Customer Data
+    - No Proprietary Systems
 
+Roadmap:
+  - ClickHouse Backend Integration
+  - Time-Series Anomaly Detection
+  - Blast Radius Estimation
+  - Confidence Scoring
+  - Metrics Export and Observability
+  - LLM-Assisted Explanation Layer
+  - Rate Limiting and Authentication Hardening
 
-## Demo UI (Deterministic) — Triage + Chat Controller
-
-This demo UI provides:
-- CSV URL or CSV file upload
-- Filter controls: service, region, pop, window (minutes)
-- Run History (last 10) stored in localStorage
-- Metrics summary + raw metricsJson
-- **Chat panel (Phase B1)**: chat-shaped controller that runs the same deterministic triage using the current filters
-
-### Architecture
-
-- The application is a single Next.js web UI.
-- Users can run triage either via filters or via chat.
-- Chat is currently deterministic and acts as a controller.
-- All requests flow through a single `/api/triage` endpoint.
-- CSV logs are used for demos; ClickHouse will replace CSV in future versions without changing the UI.
-
-
-### Chat behavior (Phase B1)
-Chat is not an LLM yet. It is a control surface:
-- User types a message
-- We optionally parse simple overrides from text:
-  - `service=vod` / `svc=vod`
-  - `region=use1`
-  - `pop=sjc`
-  - `win=60` / `window=60`
-- Then the UI runs `/api/triage` deterministically and prints the summary
-
-### Example chat inputs
-- `run triage`
-- `service=vod region=usw2 pop=sjc win=60`
-- `svc=live win=15`
-
-### Why deterministic first?
-We intentionally keep metrics computation deterministic for:
-- reproducibility
-- debugging
-- future ClickHouse swap without changing the UI
-
+EngineeringPhilosophy:
+  Principles:
+    - Deterministic Metrics Before AI Reasoning
+    - Reproducibility Over Opacity
+    - Separation of Control and Computation
+    - Explainable Summaries
+    - Production-First Deployment Validation
