@@ -1,4 +1,3 @@
-// app/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -1284,9 +1283,8 @@ export default function CDNTriageApp() {
         "If you share the symptoms (errors or latency) and your scope (service / region / POP / time window), I’ll triage and pull up the charts.\n\n" +
         "Type `help` to see everything I can do.\n" +
         "Tip: You can also ask definitions — e.g. `what is tcp_hit`.",
-        timestamp: getCurrentTimestamp(),
+      timestamp: getCurrentTimestamp(),
     };
-
   }
 
   useEffect(() => {
@@ -1326,38 +1324,32 @@ export default function CDNTriageApp() {
     return Boolean(uploadedFile) || (csvUrl && csvUrl.trim().length > 0);
   }, [dataSource, partner, uploadedFile, csvUrl]);
 
+  // ------------------------------------------------------------
   // Dynamic Region/POP options from metricsJson.available (if present)
-    const available = metricsJson?.available ?? {};
+  // (tight deps so build is happy + no weird object identity issues)
+  // ------------------------------------------------------------
+  const availableRegions: unknown = metricsJson?.available?.regions;
+  const availablePops: unknown = metricsJson?.available?.pops;
 
-    const REGION_OPTIONS = useMemo(() => {
-      const arr = Array.isArray((available as any).regions)
-        ? (available as any).regions
-        : [];
+  const REGION_OPTIONS = useMemo(() => {
+    const arr = Array.isArray(availableRegions) ? availableRegions : [];
+    const cleaned = (arr as unknown[])
+      .map((x) => String(x ?? "").trim().toLowerCase())
+      .filter((x) => Boolean(x));
+    const uniq = Array.from(new Set<string>(cleaned));
+    uniq.sort((a, b) => a.localeCompare(b));
+    return ["all", ...uniq];
+  }, [availableRegions]);
 
-      const cleaned = arr
-        .map((x: any) => String(x ?? "").trim().toLowerCase())
-        .filter((x: string) => Boolean(x));
-
-      const uniq = Array.from(new Set<string>(cleaned));
-      uniq.sort((a, b) => a.localeCompare(b));
-
-      return ["all", ...uniq];
-    }, [(available as any).regions]);
-
-    const POP_OPTIONS = useMemo(() => {
-      const arr = Array.isArray((available as any).pops)
-        ? (available as any).pops
-        : [];
-
-      const cleaned = arr
-        .map((x: any) => String(x ?? "").trim().toLowerCase())
-        .filter((x: string) => Boolean(x));
-
-      const uniq = Array.from(new Set<string>(cleaned));
-      uniq.sort((a, b) => a.localeCompare(b));
-
-      return ["all", ...uniq];
-    }, [(available as any).pops]);
+  const POP_OPTIONS = useMemo(() => {
+    const arr = Array.isArray(availablePops) ? availablePops : [];
+    const cleaned = (arr as unknown[])
+      .map((x) => String(x ?? "").trim().toLowerCase())
+      .filter((x) => Boolean(x));
+    const uniq = Array.from(new Set<string>(cleaned));
+    uniq.sort((a, b) => a.localeCompare(b));
+    return ["all", ...uniq];
+  }, [availablePops]);
 
   useEffect(() => {
     if (!REGION_OPTIONS.includes(region)) setRegion("all");
@@ -1407,7 +1399,6 @@ export default function CDNTriageApp() {
       }))
       .filter((pt: TimeseriesPoint) => Boolean(pt.ts));
 
-
     return {
       bucketSeconds: t.bucketSeconds == null ? null : Number(t.bucketSeconds),
       startTs: t.startTs ? String(t.startTs) : null,
@@ -1416,9 +1407,7 @@ export default function CDNTriageApp() {
       statusCodeSeries: Array.isArray(t.statusCodeSeries)
         ? t.statusCodeSeries.map(String)
         : undefined,
-      hostSeries: Array.isArray(t.hostSeries)
-        ? t.hostSeries.map(String)
-        : undefined,
+      hostSeries: Array.isArray(t.hostSeries) ? t.hostSeries.map(String) : undefined,
       crcSeries: Array.isArray(t.crcSeries) ? t.crcSeries.map(String) : undefined,
     };
   }, [metricsJson]);
@@ -1529,10 +1518,9 @@ export default function CDNTriageApp() {
     try {
       await fetch("/api/demo-logout", { method: "POST" });
     } finally {
-    window.location.href = "/demo";
+      window.location.href = "/demo";
     }
   }
-
 
   // ✅ reset all UI + local storage + server memory
   function resetAllUI() {
@@ -1618,7 +1606,7 @@ export default function CDNTriageApp() {
         inputs: {
           dataSource,
           partner,
-          csvUrl: uploadedFile || dataSource === "clickhouse" ? "" : csvUrl || "",
+          csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
           fileName: uploadedFile ? uploadedFile.name : "",
           service,
           region,
@@ -1754,8 +1742,7 @@ export default function CDNTriageApp() {
 
         const data = await runTriageRequest({
           dataSource,
-          partner:
-            dataSource === "clickhouse" ? (nextPartner as PartnerOrMissing) : partner,
+          partner: dataSource === "clickhouse" ? nextPartner : partner,
           csvUrl,
           file: uploadedFile,
           service: nextService,
@@ -1774,9 +1761,8 @@ export default function CDNTriageApp() {
           timestamp: getCurrentTimestamp(),
           inputs: {
             dataSource,
-            partner:
-              dataSource === "clickhouse" ? (nextPartner as PartnerOrMissing) : partner,
-            csvUrl: uploadedFile || dataSource === "clickhouse" ? "" : csvUrl || "",
+            partner: dataSource === "clickhouse" ? nextPartner : partner,
+            csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
             fileName: uploadedFile ? uploadedFile.name : "",
             service: nextService,
             region: nextRegion,
@@ -1792,8 +1778,7 @@ export default function CDNTriageApp() {
         addChatTriage({
           inputs: {
             dataSource,
-            partner:
-              dataSource === "clickhouse" ? (nextPartner as PartnerOrMissing) : partner,
+            partner: dataSource === "clickhouse" ? nextPartner : partner,
             service: nextService,
             region: nextRegion,
             pop: nextPop,
@@ -1896,7 +1881,7 @@ export default function CDNTriageApp() {
             inputs: {
               dataSource,
               partner,
-              csvUrl: uploadedFile || dataSource === "clickhouse" ? "" : csvUrl || "",
+              csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
               fileName: uploadedFile ? uploadedFile.name : "",
               service: nextService,
               region: nextRegion,
@@ -1966,7 +1951,7 @@ export default function CDNTriageApp() {
       addChatText(
         "assistant",
         [
-          `Chat mode: ${(chatMode as string) === "llm" ? "LLM Assist" : "Deterministic"}`,
+          `Chat mode: ${chatMode === "llm" ? "LLM Assist" : "Deterministic"}`,
           "",
           "What I can do:",
           "- Run triage with filters (service / region / pop / window)",
@@ -2088,7 +2073,11 @@ export default function CDNTriageApp() {
       );
     }
 
-    if (intent.region && hasRegionOptions && !REGION_OPTIONS.includes(intent.region)) {
+    if (
+      intent.region &&
+      hasRegionOptions &&
+      !REGION_OPTIONS.includes(intent.region)
+    ) {
       invalids.push(`region=${intent.region} (allowed: ${REGION_OPTIONS.join("|")})`);
     }
 
@@ -2197,7 +2186,7 @@ export default function CDNTriageApp() {
         inputs: {
           dataSource,
           partner,
-          csvUrl: uploadedFile || dataSource === "clickhouse" ? "" : csvUrl || "",
+          csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
           fileName: uploadedFile ? uploadedFile.name : "",
           service: nextService,
           region: nextRegion,
@@ -2292,40 +2281,37 @@ export default function CDNTriageApp() {
       : `Exec: ClickHouse • partner=${partner || "missing"}`;
 
   return (
-  <main className="min-h-screen w-full bg-gray-50 px-6 py-6">
-    <div className="mx-auto w-full">
-      {/* Top header with logo */}
-      <div className="flex items-center gap-3 border-b border-gray-200 pb-4 mb-6">
-        <Image
-          src={LOGO_SRC}
-          alt="Cachey"
-          width={34}
-          height={34}
-          className="rounded-full"
-        />
+    <main className="min-h-screen w-full bg-gray-50 px-6 py-6">
+      <div className="mx-auto w-full">
+        {/* Top header with logo */}
+        <div className="flex items-center gap-3 border-b border-gray-200 pb-4 mb-6">
+          <Image
+            src={LOGO_SRC}
+            alt="Cachey"
+            width={34}
+            height={34}
+            className="rounded-full"
+          />
 
-        <div className="min-w-0">
-          <div className="font-semibold text-lg text-gray-900">
-            Cachey <span className="text-gray-500">🤖</span>
+          <div className="min-w-0">
+            <div className="font-semibold text-lg text-gray-900">
+              Cachey <span className="text-gray-500">🤖</span>
+            </div>
+            <div className="text-xs text-gray-500">CDN Incident Triage Assistant</div>
           </div>
-          <div className="text-xs text-gray-500">
-            CDN Incident Triage Assistant
+
+          {/* 👇 pushes logout to the far right */}
+          <div className="ml-auto">
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="text-xs text-gray-700 border border-gray-200 rounded-full px-3 py-1.5 bg-white hover:bg-gray-50 transition-colors"
+              title="Logout"
+            >
+              Logout
+            </button>
           </div>
         </div>
-
-        {/* 👇 This pushes logout to the far right */}
-        <div className="ml-auto">
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="text-xs text-gray-700 border border-gray-200 rounded-full px-3 py-1.5 bg-white hover:bg-gray-50 transition-colors"
-            title="Logout"
-          >
-            Logout
-          </button>
-        </div>
-      </div>
-
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Sidebar */}
@@ -2379,9 +2365,7 @@ export default function CDNTriageApp() {
                           {formatTimestampClientSafe(run.timestamp, mounted)}
                         </div>
                         <div className="text-xs text-gray-600 mt-1">{subtitle}</div>
-                        <div className="text-xs text-gray-500 mt-1 truncate">
-                          {title}
-                        </div>
+                        <div className="text-xs text-gray-500 mt-1 truncate">{title}</div>
                         <div className="flex gap-2 mt-3">
                           <button
                             onClick={() => loadHistoricalRun(run)}
@@ -2439,9 +2423,7 @@ export default function CDNTriageApp() {
                       <select
                         className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         value={dataSource}
-                        onChange={(e) =>
-                          setDataSource(e.target.value as DataSource)
-                        }
+                        onChange={(e) => setDataSource(e.target.value as DataSource)}
                         disabled={isLoading}
                       >
                         <option value="csv">CSV</option>
@@ -2475,7 +2457,8 @@ export default function CDNTriageApp() {
                           ))}
                         </select>
                         <div className="text-xs text-gray-500 mt-2">
-                          Public-safe mock partner routing (real partner → DB mapping later).
+                          Public-safe mock partner routing (real partner → DB mapping
+                          later).
                         </div>
                       </div>
                     )}
@@ -2501,9 +2484,7 @@ export default function CDNTriageApp() {
                       <input
                         type="file"
                         accept=".csv,text/csv"
-                        onChange={(e) =>
-                          setUploadedFile(e.target.files?.[0] ?? null)
-                        }
+                        onChange={(e) => setUploadedFile(e.target.files?.[0] ?? null)}
                         className="text-sm text-gray-700"
                         disabled={csvInputsDisabled}
                       />
@@ -2513,8 +2494,8 @@ export default function CDNTriageApp() {
                         </div>
                       )}
                       <div className="text-xs text-gray-500 mt-2">
-                        Note: history can reload URL-based runs. File uploads can't be
-                        reloaded (browser limitation).
+                        Note: history can reload URL-based runs. File uploads can't
+                        be reloaded (browser limitation).
                       </div>
                     </div>
 
