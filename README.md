@@ -1,193 +1,301 @@
-## System Architecture Specification
+# Cachey 🤖 – CDN Incident Triage Bot
 
-Project:
-  Name: "Cachey 🤖 – CDN Incident Triage Bot"
-  Author: "Krishna Reddy GV"
-  ProductionURL: "https://cdn-triage-bot.vercel.app"
-  Summary: >
-    Automated operational analytics system for CDN incident triage.
-    Analyzes structured delivery telemetry and produces deterministic,
-    evidence-backed summaries suitable for incident response workflows.
+**Author:** Krishna Reddy GV  
+**Production URL:** https://cdn-triage-bot.vercel.app  
 
-ProblemStatement:
-  Context:
-    - Manual and time-intensive incident triage
-    - Reliance on tribal knowledge
-    - Inconsistent reasoning across engineers
-    - Lack of reproducibility
-  RequiredCorrelations:
-    - Edge vs Upstream Errors
-    - Cache Hit/Miss Behavior
-    - P95 / P99 Latency Spikes
-    - Regional POP Degradation
-    - URL Type (Manifest vs Segment)
-    - Client / User-Agent Patterns
-  Goal: >
-    Systematize first-level triage into deterministic,
-    inspectable, and reproducible workflows.
+---
 
-ArchitectureEvolution:
+## Overview
 
-  V1:
-    Name: "Automation Prototype (n8n + Slack)"
-    Stack:
-      - Slack
-      - n8n
-      - CSV Telemetry
-      - Deterministic Metrics Engine
-    Characteristics:
-      - Slack /triage Command
-      - n8n Webhook Orchestration
-      - One-Shot Triage Execution
-      - Summary Returned to Slack
-    ArchitectureDiagram: |
-      flowchart LR
-          A[Slack /triage] --> B[n8n Webhook]
-          B --> C[Parse Filters]
-          C --> D[Fetch CSV Telemetry]
-          D --> E[Metrics Engine]
-          E --> F[Slack Summary Response]
-    Limitations:
-      - No Interactive Filtering
-      - No Persistent State
-      - No Conversational Extensibility
-    Conclusion: "Standalone UI + API Required"
+Cachey is an automated operational analytics system for CDN incident triage.
 
-  V2:
-    Name: "Deterministic UI + API (Next.js)"
-    Stack:
-      - Next.js (App Router)
-      - React
-      - TypeScript
-      - Node.js
-      - API Routes
-    Objectives:
-      - Externalize System State
-      - Ensure Reproducibility
-      - Enable Inspectable Intermediate State
-    KeyFeatures:
-      - Unified /api/triage Endpoint
-      - Explicit Filter Controls
-      - Run History Stored in LocalStorage
-      - Transparent Metrics JSON
-    ArchitectureDiagram: |
-      flowchart TD
-          A[User UI] --> B[Next.js Frontend]
-          B --> C[/api/triage Endpoint]
-          C --> D[Deterministic Metrics Engine]
-          D --> E[Summary + Metrics JSON]
-    DesignPrinciples:
-      - Deterministic Computation
-      - Clear Request/Response Boundaries
-      - ClickHouse-Ready Abstraction
-      - Separation of Computation and Explanation
+It analyzes structured delivery telemetry and produces deterministic,
+evidence-backed summaries suitable for incident response workflows.
 
-  V3:
-    Name: "Conversational Controller"
-    Stack:
-      - Deterministic Parser
-      - OpenRouter Integration (Optional)
-    Objectives:
-      - Introduce Conversational Triage
-      - Preserve Deterministic Computation
-    Behavior:
-      - Chat input may propose/override filters
-      - Execution remains deterministic via /api/triage
-      - LLM is not trusted for metric computation
-    ExecutionPolicy: >
-      LLM may assist in intent parsing and explanations only.
-      All metrics and decisions are computed deterministically.
-      Optional: triage execution is either user-triggered or explicitly requested via intent.
-    ExampleInputs:
-      - "run triage"
-      - "svc=live region=use1 win=60"
+The system is designed around one core principle:
 
-CurrentSystemArchitecture:
-  Diagram: |
-    flowchart LR
-        A[Browser UI] --> B[Next.js App Router]
-        A --> LS[LocalStorage: run history + chat mode]
+> Deterministic metrics computation first.  
+> AI assistance second.
 
-        B --> C[/api/triage]
-        B --> X[/api/chat (optional LLM assist)]
-        B --> Y[/api/demo-login + /api/demo-logout]
+---
 
-        C --> D[Metrics Engine]
-        D --> E[Structured Summary]
-        D --> F[Raw Metrics JSON]
+## Problem Statement
 
-        subgraph Data Layer
-            G[CSV Telemetry (synthetic)]
-            H[ClickHouse (planned)]
-        end
+### Current Operational Challenges
 
-        C --> G
-        C -. future .-> H
+- Manual and time-intensive incident triage
+- Reliance on tribal knowledge
+- Inconsistent reasoning across engineers
+- Lack of reproducibility
+- No inspectable intermediate state
 
-TechnologyStack:
+### Required Correlations
 
-  Frontend:
-    Framework: "Next.js (App Router)"
-    Language: "TypeScript"
-    UILibrary: "React"
-    StateManagement: "LocalStorage (Run History + UI prefs)"
-    RenderingStrategy: "Hydration-Safe Client Rendering"
+Effective CDN triage requires correlating:
 
-  Backend:
-    APILayer: "Next.js API Routes"
-    Runtime: "Node.js (Vercel Serverless)"
-    AnalyticsLayer: "Custom Deterministic Metrics Engine"
+- Edge vs Upstream Errors
+- Cache Hit / Miss Behavior
+- P95 / P99 Latency Spikes
+- Regional POP Degradation
+- URL Type (Manifest vs Segment)
+- Client / User-Agent Patterns
 
-  DataLayer:
-    DemoSource: "Synthetic CSV Telemetry"
-    ProductionTarget: "ClickHouse (Planned)"
+### Goal
 
-  ConversationalLayer:
-    CurrentMode: "Deterministic Parser"
-    OptionalProvider: "OpenRouter"
-    ExampleModels:
-      - "google/gemma-3n-e2b-it:free"
-      - "<add exact openrouter model id>"
-    LLMScope:
-      - Intent Parsing
-      - Explanation Assistance
-      - Non-Deterministic Computation Disabled
+Systematize first-level triage into deterministic, inspectable, and reproducible workflows.
 
-DevOps:
-  Hosting: "Vercel"
-  SourceControl: "GitHub"
-  CICD: "Automatic Build on Commit"
-  BuildValidation: "next build"
-  Environments:
-    - Production
-    - Preview
-  OperationalConstraints:
-    - Serverless cold starts possible
-    - API request timeouts apply
-    - Large CSV uploads should be bounded or moved to object storage in future
+---
 
-DataSafety:
-  TelemetryType: "Synthetic"
-  Guarantees:
-    - No Production Logs
-    - No Customer Data
-    - No Proprietary Systems
-  Notes: >
-    Synthetic generator is designed to mimic operational patterns without leaking identifiers.
+# Architecture Evolution
 
-Roadmap:
-  - ClickHouse Backend Integration (real query layer)
-  - Authentication + Rate Limiting
-  - Observability (metrics export / logging)
-  - Time-Series Anomaly Detection
-  - Blast Radius Estimation
-  - Confidence Scoring
-  - LLM-Assisted Explanation Layer (strictly non-computational)
+---
 
-EngineeringPhilosophy:
-  Principles:
-    - Deterministic Metrics Before AI Reasoning
-    - Reproducibility Over Opacity
-    - Separation of Control and Computation
-    - Explainable Summaries
-    - Production-First Deployment Validation
+## V1 — Automation Prototype (n8n + Slack)
+
+### Stack
+
+- Slack
+- n8n
+- CSV Telemetry
+- Deterministic Metrics Engine
+
+### Characteristics
+
+- Slack `/triage` command
+- n8n webhook orchestration
+- One-shot triage execution
+- Summary returned directly to Slack
+
+### Architecture Diagram
+
+```mermaid
+flowchart LR
+    A[Slack /triage] --> B[n8n Webhook]
+    B --> C[Parse Filters]
+    C --> D[Fetch CSV Telemetry]
+    D --> E[Metrics Engine]
+    E --> F[Slack Summary Response]
+```
+
+### Limitations
+
+- No interactive filtering
+- No persistent state
+- No conversational extensibility
+- Limited transparency into intermediate metrics
+
+### Conclusion
+
+Standalone UI + API required.
+
+---
+
+## V2 — Deterministic UI + API (Next.js)
+
+### Stack
+
+- Next.js (App Router)
+- React
+- TypeScript
+- Node.js
+- API Routes
+
+### Objectives
+
+- Externalize system state
+- Ensure reproducibility
+- Enable inspectable intermediate state
+- Prepare for ClickHouse backend
+
+### Key Features
+
+- Unified `/api/triage` endpoint
+- Explicit filter controls
+- Run history stored in LocalStorage
+- Transparent Metrics JSON
+- Deterministic execution pipeline
+
+### Architecture Diagram
+
+```mermaid
+flowchart TD
+    A[User UI] --> B[Next.js Frontend]
+    B --> C[/api/triage Endpoint]
+    C --> D[Deterministic Metrics Engine]
+    D --> E[Structured Summary]
+    D --> F[Raw Metrics JSON]
+```
+
+### Design Principles
+
+- Deterministic computation
+- Clear request/response boundaries
+- ClickHouse-ready abstraction
+- Separation of computation and explanation
+- Inspectable intermediate state
+
+---
+
+## V3 — Conversational Controller
+
+### Stack
+
+- Deterministic Intent Parser
+- Optional OpenRouter Integration
+
+### Objectives
+
+- Introduce conversational triage
+- Preserve deterministic metric computation
+- Allow filter overrides via chat
+
+### Behavior
+
+- Chat input may override filters
+- Triage execution remains deterministic
+- LLM is not trusted for metric computation
+
+### Execution Policy
+
+> LLM may assist in intent parsing and explanation generation only.  
+> All metrics and decisions are computed deterministically.
+
+### Example Inputs
+
+- `run triage`
+- `svc=live region=use1 win=60`
+- `show p95 spike in bos for vod`
+
+---
+
+# Current System Architecture
+
+```mermaid
+flowchart LR
+    A[Browser UI] --> B[Next.js App Router]
+    B --> C[/api/triage]
+    C --> D[Metrics Engine]
+    D --> E[Structured Summary]
+    D --> F[Raw Metrics JSON]
+
+    subgraph Data Layer
+        G[CSV Telemetry]
+        H[ClickHouse - Planned]
+    end
+
+    C --> G
+    C -. future .-> H
+```
+
+---
+
+# Technology Stack
+
+## Frontend
+
+- Framework: Next.js (App Router)
+- Language: TypeScript
+- UI Library: React
+- State Management: LocalStorage (Run History)
+- Rendering Strategy: Hydration-safe client rendering
+
+## Backend
+
+- API Layer: Next.js API Routes
+- Runtime: Node.js
+- Analytics Layer: Custom Deterministic Metrics Engine
+
+## Data Layer
+
+- Demo Source: Synthetic CSV Telemetry
+- Production Target: ClickHouse (Planned)
+
+## Conversational Layer
+
+- Current Mode: Deterministic Parser
+- Optional Provider: OpenRouter
+
+### Example Models
+
+- `google/gemma-3n-e2b-it:free`
+- `mistral-small-instruct`
+
+### LLM Scope
+
+- Intent parsing
+- Explanation assistance
+- No non-deterministic metric computation
+
+---
+
+# Deployment
+
+## Hosting Provider
+
+- Vercel
+
+## Characteristics
+
+- Automatic builds from GitHub
+- Production + Preview environments
+- Build-time TypeScript validation
+- Hydration-safe client pages
+
+## Previous Demo Method
+
+- Cloudflare Tunnel
+
+## Migration Reason
+
+- Stable hosting
+- Reliable demo access
+- CI/CD integration
+
+---
+
+# Data Safety
+
+- Telemetry is synthetic
+- No production logs
+- No customer data
+- No proprietary systems
+
+---
+
+# Roadmap
+
+- ClickHouse backend integration
+- Time-series anomaly detection
+- Blast radius estimation
+- Confidence scoring
+- Metrics export and observability
+- LLM-assisted explanation layer
+- Rate limiting
+- Authentication hardening
+
+---
+
+# Engineering Philosophy
+
+## Principles
+
+- Deterministic metrics before AI reasoning
+- Reproducibility over opacity
+- Separation of control and computation
+- Explainable summaries
+- Production-first deployment validation
+
+---
+
+# Future Direction (ML Integration)
+
+Planned enhancements include:
+
+- Time-series anomaly detection
+- Rolling baseline deviation scoring
+- Blast radius quantification
+- Severity classification
+- Model lifecycle integration (future MLOps track)
+
+---
+
