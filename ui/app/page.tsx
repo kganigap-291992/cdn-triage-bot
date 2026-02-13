@@ -1236,6 +1236,8 @@ export default function CDNTriageApp() {
 
   // Chat mode toggle
   const [chatMode, setChatMode] = useState<ChatMode>("deterministic");
+  const chatModeLabel = chatMode === "llm" ? "LLM Assist" : "Deterministic";
+
 
   // State
   const [isLoading, setIsLoading] = useState(false);
@@ -1951,7 +1953,7 @@ export default function CDNTriageApp() {
       addChatText(
         "assistant",
         [
-          `Chat mode: ${chatMode === "llm" ? "LLM Assist" : "Deterministic"}`,
+          `Chat mode: ${chatModeLabel}`,
           "",
           "What I can do:",
           "- Run triage with filters (service / region / pop / window)",
