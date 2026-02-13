@@ -1,10 +1,11 @@
+// app/demo/DemoLoginClient.tsx
 "use client";
 
 import Image from "next/image";
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
-export default function DemoLoginPage() {
+export default function DemoLoginClient() {
   const sp = useSearchParams();
   const nextPath = useMemo(() => sp.get("next") || "/", [sp]);
 
@@ -31,7 +32,7 @@ export default function DemoLoginPage() {
     }
 
     const data = await res.json().catch(() => ({}));
-    setErr(data?.error || "Invalid passcode");
+    setErr((data as any)?.error || "Invalid passcode");
   }
 
   return (
@@ -67,7 +68,11 @@ export default function DemoLoginPage() {
 
           <button
             disabled={loading || !passcode}
-            style={styles.primaryBtn}
+            style={{
+              ...styles.primaryBtn,
+              opacity: loading || !passcode ? 0.75 : 1,
+              cursor: loading || !passcode ? "not-allowed" : "pointer",
+            }}
             type="submit"
           >
             {loading ? "Checking…" : "Continue →"}
@@ -148,7 +153,6 @@ const styles: Record<string, React.CSSProperties> = {
     background: "#111827",
     color: "white",
     fontWeight: 750,
-    cursor: "pointer",
     fontSize: 14.5,
   },
   small: { marginTop: 12, fontSize: 12.5, color: "rgba(17,24,39,0.55)" },
