@@ -1,20 +1,4 @@
-# Cachey 🤖 – CDN Incident Triage Bot
-
-**Automated Operational Analytics for CDN Incident Response**
-
-Author: Krishna Reddy GV  
-Production Deployment: https://cdn-triage-bot.vercel.app  
-
----
-
-> This document describes the system architecture, evolution, and deployment
-> model of Cachey 🤖 in structured specification format.
-
----
-
 ## System Architecture Specification
-
-
 
 Project:
   Name: "Cachey 🤖 – CDN Incident Triage Bot"
@@ -107,28 +91,34 @@ ArchitectureEvolution:
       - Introduce Conversational Triage
       - Preserve Deterministic Computation
     Behavior:
-      - Chat Input May Override Filters
-      - Deterministic Triage Execution
-      - Summary Rendered Conversationally
+      - Chat input may propose/override filters
+      - Execution remains deterministic via /api/triage
+      - LLM is not trusted for metric computation
+    ExecutionPolicy: >
+      LLM may assist in intent parsing and explanations only.
+      All metrics and decisions are computed deterministically.
+      Optional: triage execution is either user-triggered or explicitly requested via intent.
     ExampleInputs:
       - "run triage"
       - "svc=live region=use1 win=60"
-    LLMPolicy: >
-      LLM usage is restricted to parsing and explanation assistance.
-      Metric computation remains deterministic.
 
 CurrentSystemArchitecture:
   Diagram: |
     flowchart LR
         A[Browser UI] --> B[Next.js App Router]
+        A --> LS[LocalStorage: run history + chat mode]
+
         B --> C[/api/triage]
+        B --> X[/api/chat (optional LLM assist)]
+        B --> Y[/api/demo-login + /api/demo-logout]
+
         C --> D[Metrics Engine]
         D --> E[Structured Summary]
         D --> F[Raw Metrics JSON]
 
         subgraph Data Layer
-            G[CSV Telemetry]
-            H[ClickHouse (Planned)]
+            G[CSV Telemetry (synthetic)]
+            H[ClickHouse (planned)]
         end
 
         C --> G
@@ -140,12 +130,12 @@ TechnologyStack:
     Framework: "Next.js (App Router)"
     Language: "TypeScript"
     UILibrary: "React"
-    StateManagement: "LocalStorage (Run History)"
+    StateManagement: "LocalStorage (Run History + UI prefs)"
     RenderingStrategy: "Hydration-Safe Client Rendering"
 
   Backend:
     APILayer: "Next.js API Routes"
-    Runtime: "Node.js"
+    Runtime: "Node.js (Vercel Serverless)"
     AnalyticsLayer: "Custom Deterministic Metrics Engine"
 
   DataLayer:
@@ -157,35 +147,24 @@ TechnologyStack:
     OptionalProvider: "OpenRouter"
     ExampleModels:
       - "google/gemma-3n-e2b-it:free"
-      - "mistral-small-instruct"
+      - "<add exact openrouter model id>"
     LLMScope:
       - Intent Parsing
       - Explanation Assistance
       - Non-Deterministic Computation Disabled
 
-  DevOps:
-    Hosting: "Vercel"
-    SourceControl: "GitHub"
-    CICD: "Automatic Build on Commit"
-    BuildValidation: "next build"
-    Environments:
-      - Production
-      - Preview
-
-Deployment:
-
-  HostingProvider: "Vercel"
-  Characteristics:
-    - Automatic Builds from GitHub
-    - Production and Preview Environments
-    - Build-Time Validation
-    - Hydration-Safe Client Pages
-  PreviousDemoMethod:
-    - Cloudflare Tunnel
-  MigrationReason:
-    - Stable Hosting
-    - Reliable Demo Access
-    - CI/CD Integration
+DevOps:
+  Hosting: "Vercel"
+  SourceControl: "GitHub"
+  CICD: "Automatic Build on Commit"
+  BuildValidation: "next build"
+  Environments:
+    - Production
+    - Preview
+  OperationalConstraints:
+    - Serverless cold starts possible
+    - API request timeouts apply
+    - Large CSV uploads should be bounded or moved to object storage in future
 
 DataSafety:
   TelemetryType: "Synthetic"
@@ -193,15 +172,17 @@ DataSafety:
     - No Production Logs
     - No Customer Data
     - No Proprietary Systems
+  Notes: >
+    Synthetic generator is designed to mimic operational patterns without leaking identifiers.
 
 Roadmap:
-  - ClickHouse Backend Integration
+  - ClickHouse Backend Integration (real query layer)
+  - Authentication + Rate Limiting
+  - Observability (metrics export / logging)
   - Time-Series Anomaly Detection
   - Blast Radius Estimation
   - Confidence Scoring
-  - Metrics Export and Observability
-  - LLM-Assisted Explanation Layer
-  - Rate Limiting and Authentication Hardening
+  - LLM-Assisted Explanation Layer (strictly non-computational)
 
 EngineeringPhilosophy:
   Principles:
