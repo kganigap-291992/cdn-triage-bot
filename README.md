@@ -1,3 +1,4 @@
+```md
 # Cachey 🤖 – CDN Incident Triage Bot
 
 **Automated Operational Analytics for CDN Incident Response**
@@ -14,6 +15,12 @@ Production Deployment: https://cdn-triage-bot.vercel.app
 
 ## System Architecture Specification
 
+```yaml
+Project:
+  Name: "Cachey 🤖 – CDN Incident Triage Bot"
+  Author: "Krishna Reddy GV"
+  ProductionURL: "https://cdn-triage-bot.vercel.app"
+  Summary: >
     Automated operational analytics system for CDN incident triage.
     Analyzes structured delivery telemetry and produces deterministic,
     evidence-backed summaries suitable for incident response workflows.
