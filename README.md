@@ -17,6 +17,8 @@ The system is designed around one core principle:
 > Deterministic metrics computation first.  
 > AI assistance second.
 
+All telemetry in this repository is synthetically generated to simulate real-world CDN delivery patterns.
+
 ---
 
 ## Problem Statement
@@ -208,8 +210,12 @@ flowchart LR
 
 ## Data Layer
 
-- Demo Source: Synthetic CSV Telemetry  
+- Demo Source: Synthetic CDN Telemetry (Generated for Safe Demonstration) 
 - Production Target: ClickHouse (Planned)  
+
+> Note: All telemetry used in this project is synthetically generated 
+> to mirror real-world CDN traffic patterns. No production logs or 
+> customer data are used.
 
 ## Conversational Layer
 
@@ -252,10 +258,10 @@ flowchart LR
 
 # Data Safety
 
-- Telemetry is synthetic  
-- No production logs  
-- No customer data  
-- No proprietary systems  
+- All telemetry is synthetic
+- No production logs are included
+- No customer data is used
+- No proprietary systems are exposed
 
 ---
 
