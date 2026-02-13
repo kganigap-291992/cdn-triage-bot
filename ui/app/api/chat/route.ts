@@ -4,11 +4,22 @@ import { NextResponse } from "next/server";
 type Role = "system" | "user" | "assistant";
 type WireMsg = { role: Role; content: string };
 
+type CurrentFilters = {
+  dataSource?: "csv" | "clickhouse";
+  partner?: string;
+  service?: string;
+  region?: string;
+  pop?: string;
+  windowMinutes?: number;
+};
+
 type ChatContext = {
   mode?: "csv" | "clickhouse";
+  chatMode?: "deterministic" | "llm"; // ✅ NEW: honor UI toggle
   availableRegions?: string[];
   availablePops?: string[];
   availablePartners?: string[];
+  currentFilters?: CurrentFilters; // ✅ enables “how about live” follow-ups
 };
 
 type Body = {
@@ -44,9 +55,7 @@ function pickOne<T>(arr: T[], seed: string) {
 }
 
 /**
- * ✅ FIXED:
- * - Previously, 3-letter greetings like "sup" were incorrectly rejected due to early return.
- * - Now we treat short greetings correctly and still allow regex checks.
+ * ✅ FIXED greeting checks (stable)
  */
 function isGreetingOrSmallTalk(text: string) {
   const t = normLower(text);
@@ -56,6 +65,9 @@ function isGreetingOrSmallTalk(text: string) {
   if (t.length <= 3 && ["hi", "hey", "yo", "ok", "k", "sup", "thx"].includes(t)) {
     return true;
   }
+
+  // treat “what can you do” as help (NOT smalltalk)
+  if (t.includes("what can you do") || t.includes("help")) return false;
 
   return (
     /^hi\b/.test(t) ||
@@ -74,9 +86,7 @@ function isGreetingOrSmallTalk(text: string) {
 }
 
 /**
- * ✅ NEW: Low-signal guard
- * Avoid calling the LLM/provider for typos/noise like: "canyou", "helo", "pls", "wat", etc.
- * This keeps demo super stable (no scary provider errors for junk inputs).
+ * ✅ NEW: Low-signal guard (avoid calling provider for junk)
  */
 function looksLikeLowSignal(text: string) {
   const t = norm(text);
@@ -109,16 +119,47 @@ function looksLikeLowSignal(text: string) {
     "reset",
     "filters",
     "explain",
+    "yesterday",
+    "today",
+    "last night",
   ];
   const containsKnown = knownWords.some((k) => lower.includes(k));
 
-  // A very small whitelist for common human typos that still are "chatty"
   const smallTypos = ["canyou", "canu", "pls", "plz", "helo", "hellp", "wat", "wut"];
-
   if (smallTypos.includes(lower)) return true;
 
-  // Core heuristic
   return singleToken && short && hasNoNumbers && hasNoKV && hasNoPunct && !containsKnown;
+}
+
+// ------------------------------------------------------------
+// ✅ Edge Case #1: Natural time phrases → window minutes
+// ------------------------------------------------------------
+function extractNaturalWindowMinutes(text: string): number | null {
+  const t = normLower(text);
+  if (!t) return null;
+
+  // explicit "last 2h", "past 60m", etc.
+  const m = t.match(
+    /\b(last|past)\s+(\d+)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b/
+  );
+  if (m) {
+    const n = Number(m[2]);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const unit = m[3];
+    if (unit.startsWith("d")) return n * 1440;
+    if (unit.startsWith("h")) return n * 60;
+    return n;
+  }
+
+  // common phrases
+  if (/\blast night\b/.test(t)) return 12 * 60; // “last night” → 12h
+  if (/\byesterday\b/.test(t)) return 24 * 60;
+  if (/\btoday\b/.test(t)) return 8 * 60; // “today” default 8h
+  if (/\bthis morning\b/.test(t)) return 6 * 60;
+  if (/\bthis week\b/.test(t)) return 7 * 24 * 60;
+  if (/\blast week\b/.test(t)) return 7 * 24 * 60;
+
+  return null;
 }
 
 // ------------------------------------------------------------
@@ -130,66 +171,65 @@ const ATS_CRC_GLOSSARY: Record<string, GlossaryEntry> = {
   tcp_hit: {
     title: "TCP_HIT",
     meaning:
-      "A valid copy of the requested object was in the cache and Traffic Server sent the object to the client.",
+      "A valid copy of the requested object was in cache and Traffic Server sent it to the client.",
     opsHint: "Healthy cache behavior. Expect lower origin traffic and lower latency.",
   },
   tcp_cf_hit: {
     title: "TCP_CF_HIT",
     meaning:
-      "A valid copy of the requested object is being updated in the cache and Traffic Server sent the object to the client.",
+      "A valid copy is being updated in cache and Traffic Server served the existing valid copy.",
     opsHint: "Often indicates refresh/revalidation while still serving a valid copy.",
   },
   tcp_miss: {
     title: "TCP_MISS",
     meaning:
-      "The requested object was not in cache, so Traffic Server retrieved the object from the origin server (or a parent proxy) and sent it to the client.",
+      "Object not in cache; Traffic Server fetched from origin/parent and served to client.",
     opsHint: "Spikes can mean cold cache, cache-busting URLs, short TTLs, or new content.",
   },
   tcp_refresh_hit: {
     title: "TCP_REFRESH_HIT",
     meaning:
-      "The object was in the cache, but it was stale. Traffic Server made an if-modified-since request to the origin server and the origin server sent a 304 not-modified response. Traffic Server sent the cached object to the client.",
+      "Object was stale; ATS revalidated with origin, got 304 Not Modified, served cached object.",
     opsHint: "Revalidation succeeded (304). Usually fine; watch if it becomes excessive.",
   },
   tcp_ref_fail_hit: {
     title: "TCP_REF_FAIL_HIT",
     meaning:
-      "The object was in the cache but was stale. Traffic Server made an if-modified-since request to the origin server but the server did not respond. Traffic Server sent the cached object to the client.",
+      "Object was stale; ATS attempted revalidation but origin didn’t respond; served cached object.",
     opsHint: "Origin may be unhealthy/timeout. ATS served stale to protect clients.",
   },
   tcp_refresh_miss: {
     title: "TCP_REFRESH_MISS",
     meaning:
-      "The object was in the cache but was stale. Traffic Server made an if-modified-since request to the origin server and the server returned a new object. Traffic Server served the new object to the client.",
-    opsHint: "Revalidation returned new content; can increase origin load if frequent.",
+      "Object was stale; ATS revalidated and origin returned new content; served new content.",
+    opsHint: "Can increase origin load if frequent.",
   },
   tcp_client_refresh: {
     title: "TCP_CLIENT_REFRESH",
     meaning:
-      "The client issued a request with a no-cache header. Traffic Server obtained the requested object from the origin server and sent a copy to the client. Traffic Server deleted the previous copy of the object from cache.",
-    opsHint: "Often indicates client/device forcing refresh (no-cache). Can look like cache thrash.",
+      "Client requested no-cache; ATS fetched from origin and deleted prior cached copy.",
+    opsHint: "Can look like cache thrash when clients/devices force refresh.",
   },
   tcp_ims_hit: {
     title: "TCP_IMS_HIT",
     meaning:
-      "The client issued an if-modified-since request and the object was in cache and fresher than the IMS date, or an if-modified-since request to the origin server revealed the cached object was fresh. Traffic Server served the cached object to the client.",
+      "Client sent If-Modified-Since; ATS served from cache (fresh enough or validated as fresh).",
     opsHint: "Conditional requests satisfied by cache. Usually good.",
   },
   tcp_ims_miss: {
     title: "TCP_IMS_MISS",
     meaning:
-      "The client issued an if-modified-since request and the object was either not in cache or was stale in cache. Traffic Server sent an if-modified-since request to the origin server and received the new object. Traffic Server sent the updated object to the client.",
-    opsHint: "Conditional request couldn’t be satisfied by cache; origin had to return updated content.",
+      "Client IMS could not be satisfied by cache; ATS fetched updated content from origin.",
+    opsHint: "Watch for cacheability/TTL issues or changing URLs.",
   },
   tcp_swapfail: {
     title: "TCP_SWAPFAIL",
-    meaning:
-      "The object was in the cache but could not be accessed. The client did not receive the object.",
-    opsHint: "Possible cache access/disk/corruption issue if non-trivial volume.",
+    meaning: "Object was in cache but could not be accessed; client did not receive object.",
+    opsHint: "Potential cache disk/access issues if volume is non-trivial.",
   },
   err_client_abort: {
     title: "ERR_CLIENT_ABORT",
-    meaning: "The client disconnected before the complete object was sent.",
+    meaning: "Client disconnected before the complete object was sent.",
     opsHint: "Often user/device/network aborts. Watch spikes by region/device type.",
   },
   err_client_read_error: {
@@ -199,26 +239,23 @@ const ATS_CRC_GLOSSARY: Record<string, GlossaryEntry> = {
   },
   err_connect_fail: {
     title: "ERR_CONNECT_FAIL",
-    meaning: "Traffic Server could not reach the origin server.",
+    meaning: "ATS could not reach the origin server.",
     opsHint: "Origin unreachable (routing/firewall/outage). Check origin health/connectivity.",
   },
   err_dns_fail: {
     title: "ERR_DNS_FAIL",
-    meaning:
-      "The Domain Name Server (DNS) could not resolve the origin server name, or no DNS could be reached.",
-    opsHint: "DNS outage/misconfig. Check resolvers, DNS latency, and origin hostname.",
+    meaning: "DNS could not resolve the origin hostname or resolvers were unreachable.",
+    opsHint: "DNS outage/misconfig. Check resolver health and origin hostname.",
   },
   err_invalid_req: {
     title: "ERR_INVALID_REQ",
-    meaning:
-      "The client HTTP request was invalid. (Traffic Server forwards requests with unknown methods to the origin server.)",
+    meaning: "Client HTTP request was invalid (unknown methods may be forwarded).",
     opsHint: "Malformed clients/bots. Check samples + user agents.",
   },
   err_read_timeout: {
     title: "ERR_READ_TIMEOUT",
-    meaning:
-      "The origin server did not respond to Traffic Server’s request within the timeout interval.",
-    opsHint: "Origin slow/unresponsive. Check origin latency, timeouts, upstream saturation.",
+    meaning: "Origin did not respond within the timeout interval.",
+    opsHint: "Origin slow/unresponsive. Check upstream saturation + origin latency.",
   },
   err_proxy_denied: {
     title: "ERR_PROXY_DENIED",
@@ -227,8 +264,7 @@ const ATS_CRC_GLOSSARY: Record<string, GlossaryEntry> = {
   },
   err_unknown: {
     title: "ERR_UNKNOWN",
-    meaning:
-      "The client connected, but subsequently disconnected without sending a request.",
+    meaning: "Client connected but disconnected without sending a request.",
     opsHint: "Often connection churn/scans. Look at connection metrics and edge logs.",
   },
 };
@@ -268,7 +304,6 @@ function parseCommand(text: string): CommandKind {
   const t = normLower(text);
   if (!t) return null;
 
-  // ✅ Treat capability questions as help (avoids “LLM hiccup” loops)
   if (
     t === "help" ||
     t === "?" ||
@@ -304,22 +339,21 @@ function parseCommand(text: string): CommandKind {
   return null;
 }
 
-// ✅ concierge tone
 function helpText(mode: "csv" | "clickhouse") {
   const lines = [
     "Certainly — here’s how I can help.",
     "",
-    "I can run CDN triage using your filters (service / region / pop / time window), then show charts + a concise summary.",
+    "I can parse your message into filters (service / region / pop / time window / partner), run triage, and return a concise summary + charts.",
     "",
     "Examples:",
-    "- `vod in bos last 1 day`",
+    "- `how was vod last night`",
     "- `live in usw2 at sjc last 2h`",
-    "- `service=live region=usw2 pop=all win=360`",
+    "- `service=live region=all pop=all win=360`",
     "",
     "Commands: help • filters • explain • reset • run",
     "",
     mode === "clickhouse"
-      ? "ClickHouse note: I’ll need a partner (ex: `partner=acme_media`)."
+      ? "ClickHouse note: I’ll need a partner (ex: `beta_stream`)."
       : "CSV note: I’ll use your uploaded CSV or CSV URL.",
   ];
   return lines.join("\n");
@@ -330,15 +364,24 @@ function filtersText(args: {
   partners: string[];
   regions: string[];
   pops: string[];
+  current?: CurrentFilters;
 }) {
-  const { mode, partners, regions, pops } = args;
+  const { mode, partners, regions, pops, current } = args;
 
   const p = partners?.length ? partners.slice(0, 25).join(", ") : "(none)";
   const r = regions?.length ? regions.slice(0, 25).join(", ") : "(none)";
   const po = pops?.length ? pops.slice(0, 25).join(", ") : "(none)";
 
+  const cur = current || {};
+  const curLine =
+    `Current: svc=${cur.service || "all"}, region=${cur.region || "all"}, pop=${
+      cur.pop || "all"
+    }, win=${cur.windowMinutes ?? "?"}m` +
+    (mode === "clickhouse" ? `, partner=${cur.partner || "(missing)"}` : "");
+
   return [
     `Mode: ${mode}`,
+    curLine,
     "",
     `Partners: ${p}${partners.length > 25 ? " …" : ""}`,
     `Regions: ${r}${regions.length > 25 ? " …" : ""}`,
@@ -354,26 +397,65 @@ function explainText() {
     "1) Parses your message into filters (service/region/pop/window/partner).",
     "2) Runs triage and shows metrics + charts for that scope.",
     "",
-    "Tip: natural language works (`vod in bos last 1 day`) or key=value works (`service=vod region=bos win=1440`).",
+    "Tip: natural language works (`vod last night`) or key=value works (`service=vod win=720`).",
   ].join("\n");
 }
 
-// -------- Partner follow-up helpers --------
+// ------------------------------------------------------------
+// ✅ Edge Case #2: Partner follow-up collapse
+// ------------------------------------------------------------
+function looksLikePartnerQuestion(text: string) {
+  const t = normLower(text);
+  return (
+    t.includes("which partner") ||
+    t.includes("pick a partner") ||
+    t.includes("partner should i use") ||
+    t.includes("partner are we triaging")
+  );
+}
+
 function isLikelyPartnerReply(text: string, partners: string[]) {
   const t = normLower(text);
   if (!t) return false;
   return partners.map((p) => p.toLowerCase()).includes(t);
 }
 
-function looksLikePartnerQuestion(text: string) {
-  const t = normLower(text);
-  return (
-    t.includes("which partner") ||
-    t.includes("pick a partner") ||
-    t.includes("partner should i use")
-  );
+function collapsePartnerFollowup(messages: WireMsg[], partners: string[]) {
+  const msgs = Array.isArray(messages) ? messages : [];
+  if (msgs.length < 2) return { text: "", partner: null as string | null };
+
+  const lastUser = [...msgs].reverse().find((m) => m.role === "user");
+  if (!lastUser) return { text: "", partner: null };
+
+  const lastUserText = norm(lastUser.content);
+  if (!isLikelyPartnerReply(lastUserText, partners))
+    return { text: lastUserText, partner: null };
+
+  const lastIdx = msgs.lastIndexOf(lastUser);
+  const prevAssistant = [...msgs.slice(0, lastIdx)]
+    .reverse()
+    .find((m) => m.role === "assistant");
+
+  const partner = normLower(lastUserText);
+
+  // if it wasn't asked as a partner question, treat it as “partner=...”
+  if (!prevAssistant || !looksLikePartnerQuestion(prevAssistant.content)) {
+    return { text: lastUserText, partner };
+  }
+
+  // merge with prior user query
+  const prevUser = [...msgs.slice(0, lastIdx)]
+    .reverse()
+    .find((m) => m.role === "user");
+  const originalQuery = norm(prevUser?.content);
+
+  const combined = originalQuery ? `${originalQuery} partner=${partner}` : `partner=${partner}`;
+  return { text: combined, partner };
 }
 
+// ------------------------------------------------------------
+// Deterministic extraction helpers
+// ------------------------------------------------------------
 function looksLikeTriageIntent(text: string) {
   const t = normLower(text);
   if (!t) return false;
@@ -393,6 +475,11 @@ function looksLikeTriageIntent(text: string) {
     "pop",
     "last",
     "past",
+    "yesterday",
+    "today",
+    "last night",
+    "how was",
+    "how about",
   ];
   return kws.some((k) => t.includes(k));
 }
@@ -405,20 +492,8 @@ function extractService(text: string): string | null {
   return m2?.[1] ?? null;
 }
 
-function extractWindowMinutes(text: string): number | null {
+function extractWindowMinutesKeyValue(text: string): number | null {
   const t = normLower(text);
-
-  const m = t.match(
-    /\b(last|past)\s+(\d+)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b/
-  );
-  if (m) {
-    const n = Number(m[2]);
-    if (!Number.isFinite(n) || n <= 0) return null;
-    const unit = m[3];
-    if (unit.startsWith("d")) return n * 1440;
-    if (unit.startsWith("h")) return n * 60;
-    return n;
-  }
 
   const m2 = t.match(
     /\b(win|window)\s*(=|\s)\s*(\d+)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)?\b/
@@ -430,13 +505,6 @@ function extractWindowMinutes(text: string): number | null {
     if (unit.startsWith("d")) return n * 1440;
     if (unit.startsWith("h")) return n * 60;
     return n;
-  }
-
-  const m3 = t.match(/\b(\d+)\s*(d|day|days)\b/);
-  if (m3) {
-    const n = Number(m3[1]);
-    if (!Number.isFinite(n) || n <= 0) return null;
-    return n * 1440;
   }
 
   return null;
@@ -479,6 +547,7 @@ function extractRegion(text: string, availableRegions: string[]): string | null 
   const m = t.match(/\bregion\s*=\s*([a-z0-9_\-]+)\b/);
   if (m?.[1]) return m[1];
 
+  // "in <region>"
   const m2 = t.match(/\bin\s+([a-z0-9_\-]+)\b/);
   const candidate = m2?.[1] ?? "";
 
@@ -511,7 +580,9 @@ function extractPop(text: string, availablePops: string[]): string | null {
   const availSet = new Set((availablePops || []).map((x) => normLower(x)));
   if (availSet.has(candidate)) return candidate;
 
+  // permissive fallback for pop-like tokens
   if (candidate.includes("-") && candidate.length >= 5) return candidate;
+
   return null;
 }
 
@@ -533,38 +604,24 @@ function makePartnerQuestion(partners: string[]) {
   return `Quick one — which partner are we triaging? (${list})`;
 }
 
-function collapsePartnerFollowup(messages: WireMsg[], partners: string[]) {
-  const msgs = Array.isArray(messages) ? messages : [];
-  if (msgs.length < 2) return { text: "", partner: null as string | null };
-
-  const last = [...msgs].reverse().find((m) => m.role === "user");
-  if (!last) return { text: "", partner: null };
-
-  const lastUserText = norm(last.content);
-  if (!isLikelyPartnerReply(lastUserText, partners))
-    return { text: lastUserText, partner: null };
-
-  const lastIdx = msgs.lastIndexOf(last);
-  const prevAssistant = [...msgs.slice(0, lastIdx)]
-    .reverse()
-    .find((m) => m.role === "assistant");
-  if (!prevAssistant || !looksLikePartnerQuestion(prevAssistant.content)) {
-    return { text: lastUserText, partner: normLower(lastUserText) };
-  }
-
-  const prevUser = [...msgs.slice(0, lastIdx)]
-    .reverse()
-    .find((m) => m.role === "user");
-  const originalQuery = norm(prevUser?.content);
-
-  const combined = originalQuery
-    ? `${originalQuery} partner=${normLower(lastUserText)}`
-    : `partner=${normLower(lastUserText)}`;
-
-  return { text: combined, partner: normLower(lastUserText) };
+// ------------------------------------------------------------
+// ✅ Edge Case #3: Follow-up “how about live” uses current filters
+// ------------------------------------------------------------
+function isServiceOnlyFollowup(text: string) {
+  const t = normLower(text);
+  if (!t) return false;
+  return (
+    /\bhow about\b/.test(t) ||
+    /\bwhat about\b/.test(t) ||
+    /\band live\b/.test(t) ||
+    /^\s*live\s*$/.test(t) ||
+    /^\s*vod\s*$/.test(t)
+  );
 }
 
-// -------- OpenRouter --------
+// ------------------------------------------------------------
+// OpenRouter
+// ------------------------------------------------------------
 async function callOpenRouter(messages: WireMsg[]) {
   const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_KEY;
   if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
@@ -581,7 +638,6 @@ async function callOpenRouter(messages: WireMsg[]) {
     },
     body: JSON.stringify({
       model,
-      // ✅ lower temp for more consistent JSON-ish outputs
       temperature: 0.6,
       messages,
     }),
@@ -615,22 +671,39 @@ function smallTalkReply(userText: string, mode: "csv" | "clickhouse") {
   return pickOne(options, `${mode}|${normLower(userText)}`);
 }
 
+// ------------------------------------------------------------
+// ✅ Edge Case #4 + #5 live in route: glossary + low-signal + time phrases + followups
+// ------------------------------------------------------------
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as Body;
 
-  // reset hook (page.tsx calls this best-effort)
   if (body.reset) {
     return jsonOk({ ok: true, kind: "reset" });
   }
 
   const rawMsgs = Array.isArray(body.messages) ? body.messages : [];
   const ctx = body.context || {};
+
   const partners = Array.isArray(ctx.availablePartners) ? ctx.availablePartners : [];
   const regions = Array.isArray(ctx.availableRegions) ? ctx.availableRegions : [];
   const pops = Array.isArray(ctx.availablePops) ? ctx.availablePops : [];
+
   const mode = ctx.mode === "clickhouse" ? "clickhouse" : "csv";
 
-  // Handle the "partner follow-up" case cleanly
+  // ✅ NEW: honor UI chatMode (default deterministic)
+  const chatMode: "deterministic" | "llm" = ctx.chatMode === "llm" ? "llm" : "deterministic";
+
+  const current = ctx.currentFilters || {};
+  const currentService = normLower(current.service || "") || null;
+  const currentRegion = normLower(current.region || "") || null;
+  const currentPop = normLower(current.pop || "") || null;
+  const currentWin =
+    current.windowMinutes != null && Number.isFinite(Number(current.windowMinutes))
+      ? Number(current.windowMinutes)
+      : null;
+  const currentPartner = normLower(current.partner || "") || null;
+
+  // ✅ Partner follow-up collapse (beta_stream after partner question)
   const collapsed = collapsePartnerFollowup(rawMsgs, partners);
   const userText =
     collapsed.text ||
@@ -638,7 +711,7 @@ export async function POST(req: Request) {
 
   const partnerFromFollowup = collapsed.partner;
 
-  // ✅ Deterministic glossary answers for "what is tcp_hit" style questions
+  // ✅ Glossary answers (no provider call)
   if (isDefinitionQuestion(userText)) {
     const term = extractTermFromDefinitionQuestion(userText);
     const entry = lookupAtsCrc(term);
@@ -654,14 +727,14 @@ export async function POST(req: Request) {
     }
   }
 
-  // ✅ Commands are deterministic (NO LLM)
+  // ✅ Commands are deterministic (no provider call)
   const cmd = parseCommand(userText);
   if (cmd === "help") return jsonOk({ ok: true, kind: "general", reply: helpText(mode) });
   if (cmd === "filters")
     return jsonOk({
       ok: true,
       kind: "general",
-      reply: filtersText({ mode, partners, regions, pops }),
+      reply: filtersText({ mode, partners, regions, pops, current }),
     });
   if (cmd === "explain") return jsonOk({ ok: true, kind: "general", reply: explainText() });
   if (cmd === "reset")
@@ -669,7 +742,7 @@ export async function POST(req: Request) {
       ok: true,
       kind: "general",
       reply:
-        "Done — I’ve cleared my side. If you’d like a full wipe (filters + local history), please use the Reset button in the UI.",
+        "Done — I’ve cleared my side. For a full wipe (filters + local history), please use the Reset button in the UI.",
     });
   if (cmd === "run")
     return jsonOk({
@@ -680,68 +753,115 @@ export async function POST(req: Request) {
 
   const triageish = looksLikeTriageIntent(userText);
 
-  // ✅ Don't burn LLM calls on greetings/small talk
+  // ✅ Smalltalk: no provider
   if (!triageish && isGreetingOrSmallTalk(userText)) {
     return jsonOk({ ok: true, kind: "general", reply: smallTalkReply(userText, mode) });
   }
 
-  // ✅ NEW: Don't burn LLM calls on low-signal/typos/noise
+  // ✅ Low-signal: no provider
   if (!triageish && looksLikeLowSignal(userText)) {
     return jsonOk({
       ok: true,
       kind: "general",
       reply:
-        "Looks like a quick typo 🙂\n\nTry:\n- `vod in bos last 60m`\n- `service=live region=all win=360`\n\nOr type `help`.",
+        "Looks like a quick typo 🙂\n\nTry:\n- `how was vod last night`\n- `live in bos last 2h`\n- `service=live region=all win=360`\n\nOr type `help`.",
     });
   }
 
-  // Deterministic hints (authoritative fallback)
+  // Deterministic extraction (authoritative fallback)
   const detService = extractService(userText);
   const detRegion = extractRegion(userText, regions);
   const detPop = extractPop(userText, pops);
-  const detWindow = extractWindowMinutes(userText);
+
+  // ✅ time: prefer key/value window, else natural phrases
+  const detWinKV = extractWindowMinutesKeyValue(userText);
+  const detWinNatural = extractNaturalWindowMinutes(userText);
+  const detWindow = detWinKV ?? detWinNatural ?? null;
+
   const detPartner = partnerFromFollowup || extractPartner(userText, partners);
 
-  // If it's triage-ish and ClickHouse mode but partner missing → ask partner
-  if (mode === "clickhouse" && triageish && !detPartner) {
+  // ✅ follow-up service-only like "how about live"
+  const followupSvcOnly =
+    isServiceOnlyFollowup(userText) &&
+    !!detService &&
+    !detRegion &&
+    !detPop &&
+    detWindow == null;
+
+  // ✅ FIX: service comes from detService; region/pop/window fall back to current on service-only followups
+  const serviceHint = detService ?? null;
+  const regionHint = detRegion ?? (followupSvcOnly ? currentRegion : null);
+  const popHint = detPop ?? (followupSvcOnly ? currentPop : null);
+  const windowHint = detWindow ?? (followupSvcOnly ? currentWin : null);
+
+  // partner: deterministic first, else current (sticky)
+  const partnerHint = detPartner ?? currentPartner ?? null;
+
+  // If ClickHouse triage-ish and partner missing → ask partner (deterministic)
+  if (mode === "clickhouse" && triageish && !partnerHint) {
     return jsonOk({
       ok: true,
       kind: "triage",
       needsPartnerQuestion: true,
       partnerQuestion: makePartnerQuestion(partners),
-      serviceHint: detService,
-      regionHint: detRegion,
-      popHint: detPop,
-      windowHint: detWindow,
+      serviceHint,
+      regionHint,
+      popHint,
+      windowHint,
     });
   }
 
-  // LLM pack (JSON-only output)
+  // ------------------------------------------------------------
+  // ✅ NEW: If UI is NOT in LLM mode, never call OpenRouter.
+  // Return deterministic hints only.
+  // ------------------------------------------------------------
+  if (chatMode !== "llm") {
+    if (!triageish) {
+      return jsonOk({
+        ok: true,
+        kind: "general",
+        reply: smallTalkReply(userText, mode),
+      });
+    }
+    return jsonOk({
+      ok: true,
+      kind: "triage",
+      reply: "Parsed filters. Proceeding with triage.",
+      serviceHint,
+      regionHint,
+      popHint,
+      windowHint,
+      partnerHint,
+    });
+  }
+
+  // ------------------------------------------------------------
+  // LLM Assist (only when enabled)
+  // ------------------------------------------------------------
   const system: WireMsg = {
     role: "system",
     content:
-      "You are Cachey 🤖 — a sophisticated, calm, and helpful CDN triage concierge.\n" +
-      "You can be lightly playful, but keep it polished.\n\n" +
+      "You are Cachey 🤖 — a calm, helpful CDN triage concierge.\n" +
       "Return ONLY valid JSON with keys:\n" +
       "kind ('triage'|'general'), reply (string), serviceHint, regionHint, popHint, windowHint (minutes), partnerHint, needsPartnerQuestion (bool), partnerQuestion (string).\n" +
-      "If user is chatting: kind='general' and reply warmly.\n" +
-      "If triage: kind='triage' and provide concise reply + hints if possible.\n" +
-      "Do not output markdown, code fences, or extra text.",
+      "No markdown, no code fences, no extra text.",
   };
-
-  const compactHistory = rawMsgs.slice(-12).map((m) => ({
-    role: m.role,
-    content: norm(m.content),
-  }));
 
   const contextHint: WireMsg = {
     role: "system",
     content:
       `Context: mode=${mode}. ` +
+      `CurrentFilters: svc=${currentService || "all"}, region=${currentRegion || "all"}, pop=${currentPop || "all"}, win=${currentWin ?? "?"}m, partner=${currentPartner || "(none)"}. ` +
       `AvailableRegions=${(regions || []).slice(0, 50).join(", ")}. ` +
       `AvailablePops=${(pops || []).slice(0, 50).join(", ")}. ` +
       `AvailablePartners=${(partners || []).join(", ")}.`,
   };
+
+  // Keep history short
+  const compactHistory = rawMsgs.slice(-12).map((m) => ({
+    role: m.role,
+    content: norm(m.content),
+  }));
 
   let llmOut: any = null;
 
@@ -756,7 +876,7 @@ export async function POST(req: Request) {
     const content = or?.choices?.[0]?.message?.content;
     llmOut = typeof content === "string" ? safeJsonParse(content) : null;
 
-    // If model ignored JSON-only instruction, gracefully accept plain text
+    // If model ignored JSON-only instruction, accept plain text safely
     if (!llmOut || typeof llmOut !== "object") {
       const replyText =
         typeof content === "string" && content.trim() ? content.trim() : "Understood.";
@@ -764,48 +884,49 @@ export async function POST(req: Request) {
       llmOut = { kind: "triage", reply: replyText };
     }
   } catch {
-    // ✅ Don't surface provider-specific error text in demo UX
+    // Don’t leak provider errors
     if (!triageish) {
       return jsonOk({
         ok: true,
         kind: "general",
         reply:
-          "My LLM assist is temporarily unavailable 😅\n\nYou can still:\n- type `help`\n- ask `what is tcp_hit`\n- run triage like `vod in bos last 60m`",
+          "My LLM assist is temporarily unavailable 😅\n\nYou can still:\n- type `help`\n- ask `what is tcp_hit`\n- run triage like `how was vod last night`",
       });
     }
     llmOut = {
       kind: "triage",
-      reply:
-        "LLM assist is temporarily unavailable. I’ll proceed using parsed filters.",
+      reply: "LLM assist is temporarily unavailable. Proceeding with parsed filters.",
     };
   }
 
   const kind = llmOut.kind === "general" ? "general" : "triage";
 
-  // Merge: deterministic overrides LLM
-  const serviceHint = detService ?? llmOut.serviceHint ?? null;
-  const regionHint = detRegion ?? llmOut.regionHint ?? null;
-  const popHint = detPop ?? llmOut.popHint ?? null;
+  // ------------------------------------------------------------
+  // ✅ Deterministic always wins over LLM + sticky current filters
+  // ------------------------------------------------------------
+  const mergedService = serviceHint ?? llmOut.serviceHint ?? currentService ?? null;
+  const mergedRegion = regionHint ?? llmOut.regionHint ?? currentRegion ?? null;
+  const mergedPop = popHint ?? llmOut.popHint ?? currentPop ?? null;
 
-  let windowHint: number | null = null;
-  if (detWindow != null) windowHint = detWindow;
-  else if (llmOut.windowHint != null && Number.isFinite(Number(llmOut.windowHint)))
-    windowHint = Number(llmOut.windowHint);
-  else windowHint = null;
+  let mergedWindow: number | null = windowHint;
+  if (mergedWindow == null && llmOut.windowHint != null && Number.isFinite(Number(llmOut.windowHint))) {
+    mergedWindow = Number(llmOut.windowHint);
+  }
+  if (mergedWindow == null && currentWin != null) mergedWindow = currentWin;
 
-  const partnerHint = detPartner ?? llmOut.partnerHint ?? null;
+  const mergedPartner = partnerHint ?? llmOut.partnerHint ?? currentPartner ?? null;
 
-  // If triage, clickhouse, partner missing → ask partner (again)
-  if (mode === "clickhouse" && kind === "triage" && !partnerHint) {
+  // ClickHouse triage + still missing partner? ask again.
+  if (mode === "clickhouse" && kind === "triage" && !mergedPartner) {
     return jsonOk({
       ok: true,
       kind: "triage",
       needsPartnerQuestion: true,
       partnerQuestion: makePartnerQuestion(partners),
-      serviceHint,
-      regionHint,
-      popHint,
-      windowHint,
+      serviceHint: mergedService,
+      regionHint: mergedRegion,
+      popHint: mergedPop,
+      windowHint: mergedWindow,
     });
   }
 
@@ -821,10 +942,10 @@ export async function POST(req: Request) {
     ok: true,
     kind: "triage",
     reply: String(llmOut.reply || ""),
-    serviceHint,
-    regionHint,
-    popHint,
-    windowHint,
-    partnerHint,
+    serviceHint: mergedService,
+    regionHint: mergedRegion,
+    popHint: mergedPop,
+    windowHint: mergedWindow,
+    partnerHint: mergedPartner,
   });
 }

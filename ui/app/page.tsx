@@ -11,6 +11,31 @@ const DEFAULT_CSV_URL =
 
 const STORAGE_KEY = "cdn-triage-history-v1";
 const CHAT_MODE_KEY = "cdn-triage-chatmode-v1";
+
+// ------------------------------------------------------------
+// PATCH: Persist selected partner (ClickHouse) in localStorage
+// ------------------------------------------------------------
+const PARTNER_KEY = "cdn-triage-partner-v1";
+
+function safeGetLS(key: string) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function safeSetLS(key: string, val: string) {
+  try {
+    localStorage.setItem(key, val);
+  } catch {}
+}
+function safeRemoveLS(key: string) {
+  try {
+    localStorage.removeItem(key);
+  } catch {}
+}
+
+
 const MAX_HISTORY = 10;
 
 const LOGO_SRC = "/cachey-logo.png"; // ✅ put your logo in /public with this name
@@ -1225,7 +1250,28 @@ export default function CDNTriageApp() {
 
   // Form inputs
   const [dataSource, setDataSource] = useState<DataSource>("csv");
-  const [partner, setPartner] = useState<PartnerOrMissing>("acme_media");
+
+  // ------------------------------------------------------------
+  // PATCH: Partner state is persisted; default empty until user picks
+  // ------------------------------------------------------------
+  const [partner, setPartner] = useState<PartnerOrMissing>("");
+
+  // ------------------------------------------------------------
+  // PATCH: Single partner setter (keeps state + storage consistent)
+  // ------------------------------------------------------------
+  function setPartnerSticky(p: string) {
+    const val = String(p || "").trim();
+    if (!val) {
+      setPartner("");
+      safeRemoveLS(PARTNER_KEY);
+      return;
+    }
+    if ((PARTNER_OPTIONS as readonly string[]).includes(val)) {
+      setPartner(val as Partner);
+      safeSetLS(PARTNER_KEY, val);
+    }
+  }
+
   const [csvUrl, setCsvUrl] = useState(DEFAULT_CSV_URL);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [service, setService] = useState("all");
@@ -1259,9 +1305,22 @@ export default function CDNTriageApp() {
 
   useEffect(() => setMounted(true), []);
 
+  // ------------------------------------------------------------
+  // PATCH: Restore partner from localStorage (sticky across reloads)
+  // ------------------------------------------------------------
+  useEffect(() => {
+    if (!mounted) return;
+    const saved = safeGetLS(PARTNER_KEY);
+    if (saved && (PARTNER_OPTIONS as readonly string[]).includes(saved)) {
+      setPartner(saved as Partner);
+    }
+  }, [mounted]);
+
+  
   useEffect(() => {
     if (dataSource === "clickhouse") setUploadedFile(null);
   }, [dataSource]);
+
 
   useEffect(() => {
     if (!mounted) return;
@@ -1504,9 +1563,19 @@ export default function CDNTriageApp() {
         messages: wireMsgs,
         context: {
           mode: dataSource,
+          chatMode,
           availableRegions: REGION_OPTIONS,
           availablePops: POP_OPTIONS,
           availablePartners: Array.from(PARTNER_OPTIONS),
+          // ✅ NEW: authoritative current UI state
+          currentFilters: {
+            dataSource,
+            partner,
+            service,
+            region,
+            pop,
+            windowMinutes,
+          },
         },
       }),
     });
@@ -1529,21 +1598,36 @@ export default function CDNTriageApp() {
     if (isLoading) return;
 
     try {
-      fetch("/api/chat", {
+        fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           reset: true,
           messages: [],
-          context: { mode: dataSource },
+          context: {
+            mode: "csv",
+            chatMode: "deterministic",
+            availableRegions: [],
+            availablePops: [],
+            availablePartners: [],
+            currentFilters: {
+              dataSource: "csv",
+              partner: "",
+              service: "all",
+              region: "all",
+              pop: "all",
+              windowMinutes: 60,
+            },
+          },
         }),
       }).catch(() => {});
     } catch {}
-
+    
     if (mounted) {
       try {
         localStorage.removeItem(STORAGE_KEY);
         localStorage.removeItem(CHAT_MODE_KEY);
+        localStorage.removeItem(PARTNER_KEY);
       } catch {}
     }
 
@@ -1557,7 +1641,7 @@ export default function CDNTriageApp() {
     setChatMessages([welcomeMessage()]);
 
     setDataSource("csv");
-    setPartner("acme_media");
+    setPartnerSticky(""); // clears state + removes PARTNER_KEY
     setCsvUrl(DEFAULT_CSV_URL);
     setUploadedFile(null);
 
@@ -1677,7 +1761,7 @@ export default function CDNTriageApp() {
           return;
         }
 
-        if (dataSource === "clickhouse" && out?.needsPartnerQuestion) {
+        if (dataSource === "clickhouse" && !partner && out?.needsPartnerQuestion) {
           addChatText(
             "assistant",
             String(
@@ -1708,7 +1792,7 @@ export default function CDNTriageApp() {
         if (dataSource === "clickhouse") {
           const p = String(out?.partnerHint || "").trim();
           if (p && (PARTNER_OPTIONS as readonly string[]).includes(p)) {
-            setPartner(p as Partner);
+            setPartnerSticky(p);
             nextPartner = p as Partner;
           }
         }
@@ -2232,7 +2316,10 @@ export default function CDNTriageApp() {
     setMetricsJson(run.metricsJson || null);
 
     setDataSource((run.inputs?.dataSource || "csv") as DataSource);
-    setPartner((run.inputs?.partner as PartnerOrMissing) || "");
+
+    // ✅ use sticky setter so localStorage + state match
+    setPartnerSticky((run.inputs?.partner as PartnerOrMissing) || "");
+
     setUploadedFile(null);
     setCsvUrl(run.inputs?.csvUrl || DEFAULT_CSV_URL);
     setService(run.inputs?.service || "all");
@@ -2410,7 +2497,7 @@ export default function CDNTriageApp() {
                 execLabel={execLabel}
                 showPartnerMissing={partnerMissing && chatMode !== "llm"}
                 partnerOptions={PARTNER_OPTIONS}
-                onPickPartner={(p) => setPartner(p as Partner)}
+                onPickPartner={(p) => setPartnerSticky(p)}
                 onReset={resetAllUI}
                 resetDisabled={isLoading}
               />
@@ -2449,9 +2536,7 @@ export default function CDNTriageApp() {
                         <select
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           value={partner}
-                          onChange={(e) =>
-                            setPartner(e.target.value as PartnerOrMissing)
-                          }
+                          onChange={(e) => setPartnerSticky(e.target.value)}
                           disabled={isLoading}
                         >
                           <option value="">Select partner…</option>
