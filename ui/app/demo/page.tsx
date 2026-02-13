@@ -1,20 +1,25 @@
-// app/demo/DemoLoginClient.tsx
 "use client";
 
 import Image from "next/image";
-import React, { useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import React, { useEffect, useState } from "react";
 
-export default function DemoLoginClient() {
-  const sp = useSearchParams();
-  const nextPath = useMemo(() => sp.get("next") || "/", [sp]);
-
+export default function DemoLoginPage() {
+  const [nextPath, setNextPath] = useState("/");
   const [passcode, setPasscode] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // ✅ Runs ONLY in browser, never during build
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const sp = new URLSearchParams(window.location.search);
+      setNextPath(sp.get("next") || "/");
+    }
+  }, []);
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+
     setErr(null);
     setLoading(true);
 
@@ -47,6 +52,7 @@ export default function DemoLoginClient() {
             priority
             style={{ borderRadius: 12 }}
           />
+
           <div>
             <div style={styles.title}>Cachey</div>
             <div style={styles.subtitle}>Sign in to continue</div>
@@ -55,25 +61,26 @@ export default function DemoLoginClient() {
 
         <form onSubmit={onSubmit} style={styles.form}>
           <label style={styles.label}>Passcode</label>
+
           <input
             value={passcode}
             onChange={(e) => setPasscode(e.target.value)}
             placeholder="Enter passcode"
             autoFocus
-            style={styles.input}
             type="password"
+            style={styles.input}
           />
 
           {err && <div style={styles.error}>{err}</div>}
 
           <button
+            type="submit"
             disabled={loading || !passcode}
             style={{
               ...styles.primaryBtn,
-              opacity: loading || !passcode ? 0.75 : 1,
+              opacity: loading || !passcode ? 0.7 : 1,
               cursor: loading || !passcode ? "not-allowed" : "pointer",
             }}
-            type="submit"
           >
             {loading ? "Checking…" : "Continue →"}
           </button>
@@ -98,17 +105,18 @@ const styles: Record<string, React.CSSProperties> = {
       '-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
     color: "#111827",
   },
+
   card: {
     width: "100%",
     maxWidth: 520,
     background: "rgba(255,255,255,0.86)",
     backdropFilter: "blur(12px)",
-    WebkitBackdropFilter: "blur(12px)",
     border: "1px solid rgba(0,0,0,0.08)",
     borderRadius: 22,
     boxShadow: "0 18px 60px rgba(0,0,0,0.10)",
     padding: 18,
   },
+
   header: {
     display: "flex",
     alignItems: "center",
@@ -116,44 +124,50 @@ const styles: Record<string, React.CSSProperties> = {
     paddingBottom: 14,
     borderBottom: "1px solid rgba(0,0,0,0.06)",
   },
-  title: { fontSize: 18, fontWeight: 750, letterSpacing: -0.2 },
-  subtitle: { marginTop: 2, fontSize: 13, color: "rgba(17,24,39,0.62)" },
+
+  title: { fontSize: 18, fontWeight: 750 },
+  subtitle: { fontSize: 13, opacity: 0.6 },
+
   form: { paddingTop: 14 },
+
   label: {
-    display: "block",
     fontSize: 13,
-    fontWeight: 650,
-    color: "rgba(17,24,39,0.70)",
+    fontWeight: 600,
+    opacity: 0.7,
   },
+
   input: {
     width: "100%",
     marginTop: 8,
-    padding: "12px 12px",
+    padding: "12px",
     borderRadius: 14,
-    border: "1px solid rgba(17,24,39,0.12)",
-    outline: "none",
+    border: "1px solid rgba(0,0,0,0.12)",
     fontSize: 15,
-    background: "white",
   },
+
   error: {
     marginTop: 10,
-    padding: "10px 12px",
-    borderRadius: 14,
-    border: "1px solid rgba(239,68,68,0.25)",
-    background: "rgba(239,68,68,0.07)",
+    padding: 10,
+    borderRadius: 12,
+    background: "rgba(239,68,68,0.08)",
     color: "#991b1b",
     fontSize: 13,
   },
+
   primaryBtn: {
     marginTop: 12,
     width: "100%",
-    padding: "12px 14px",
+    padding: "12px",
     borderRadius: 14,
-    border: "1px solid rgba(0,0,0,0.10)",
     background: "#111827",
     color: "white",
-    fontWeight: 750,
-    fontSize: 14.5,
+    fontWeight: 700,
+    border: "none",
   },
-  small: { marginTop: 12, fontSize: 12.5, color: "rgba(17,24,39,0.55)" },
+
+  small: {
+    marginTop: 12,
+    fontSize: 12,
+    opacity: 0.55,
+  },
 };
