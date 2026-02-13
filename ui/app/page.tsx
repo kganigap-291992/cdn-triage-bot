@@ -1966,7 +1966,7 @@ export default function CDNTriageApp() {
       addChatText(
         "assistant",
         [
-          `Chat mode: ${chatMode === "llm" ? "LLM Assist" : "Deterministic"}`,
+          `Chat mode: ${(chatMode as string) === "llm" ? "LLM Assist" : "Deterministic"}`,
           "",
           "What I can do:",
           "- Run triage with filters (service / region / pop / window)",
