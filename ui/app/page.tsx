@@ -4,19 +4,14 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 
 // ------------------------------------------------------------
-// Home Page Day: Chat-first UI with inline triage cards
-// - Sticky partner selector
-// - Schema helper button (placeholder drawer)
-// - Inline triage result cards: Summary + chips + graphs + Evidence/SQL expanders
+// Home page (/) — Chat-first, dark theme, ClickHouse-first
+// Keeps /debug as legacy page (unchanged).
+// Keeps /demo unchanged.
+// Keeps /api/triage unchanged.
 // ------------------------------------------------------------
 
 const LOGO_SRC = "/cachey-logo.png";
 const PARTNER_KEY = "cdn-triage-partner-v1";
-const CHAT_MODE_KEY = "cdn-triage-chatmode-v1";
-
-// Home is ClickHouse-first today.
-type DataSource = "clickhouse";
-type ChatMode = "deterministic" | "llm";
 
 const PARTNER_OPTIONS = [
   "acme_media",
@@ -29,37 +24,39 @@ const PARTNER_OPTIONS = [
 type Partner = (typeof PARTNER_OPTIONS)[number];
 type PartnerOrMissing = Partner | "";
 
-// ------------------------------------------------------------
-// Types (minimal set for Home)
-// ------------------------------------------------------------
-type ChatTextMessage = {
+type DataSource = "clickhouse";
+type ChatMode = "deterministic" | "llm";
+
+type TriageInputs = {
+  dataSource: DataSource;
+  partner: PartnerOrMissing;
+  service: string;
+  region: string;
+  pop: string;
+  windowMinutes: number;
+};
+
+type ChatText = {
   id: string;
   type: "text";
   role: "system" | "user" | "assistant";
+  ts: string;
   text: string;
-  timestamp: string;
 };
 
-type ChatTriageMessage = {
+type ChatTriage = {
   id: string;
-  type: "triage_result";
+  type: "triage";
   role: "assistant";
-  timestamp: string;
+  ts: string;
   run: {
-    inputs: {
-      dataSource: DataSource;
-      partner: PartnerOrMissing;
-      service: string;
-      region: string;
-      pop: string;
-      windowMinutes: number;
-    };
+    inputs: TriageInputs;
     summaryText: string;
     metricsJson: any;
   };
 };
 
-type ChatMessage = ChatTextMessage | ChatTriageMessage;
+type ChatMsg = ChatText | ChatTriage;
 
 type TimeseriesPoint = {
   ts: string;
@@ -84,9 +81,10 @@ type TimeseriesData = {
   crcSeries?: string[];
 };
 
-// ------------------------------------------------------------
-// LocalStorage helpers
-// ------------------------------------------------------------
+function nowIso() {
+  return new Date().toISOString();
+}
+
 function safeGetLS(key: string) {
   try {
     return localStorage.getItem(key);
@@ -99,47 +97,33 @@ function safeSetLS(key: string, val: string) {
     localStorage.setItem(key, val);
   } catch {}
 }
-function safeRemoveLS(key: string) {
-  try {
-    localStorage.removeItem(key);
-  } catch {}
-}
 
-// ------------------------------------------------------------
-// Utility
-// ------------------------------------------------------------
-function getCurrentTimestamp() {
-  return new Date().toISOString();
-}
-function normalizeText(text: string): string {
-  return (text || "").trim().toLowerCase();
-}
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
 function formatMsOrNA(x: number | null | undefined): string {
   if (x == null || !Number.isFinite(Number(x))) return "n/a";
   return `${Math.round(Number(x))} ms`;
-}
-function formatIntOrNA(x: number | null | undefined): string {
-  if (x == null || !Number.isFinite(Number(x))) return "0";
-  return `${Math.round(Number(x)).toLocaleString()}`;
 }
 function formatPctOrNA(x: number | null | undefined): string {
   if (x == null || !Number.isFinite(Number(x))) return "n/a";
   return `${Number(x).toFixed(2)}%`;
 }
-function formatTimestampClientSafe(iso: string, mounted: boolean): string {
-  if (!iso) return "";
-  if (!mounted) return iso.replace("T", " ").replace(".000Z", "Z");
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+function formatIntOrNA(x: number | null | undefined): string {
+  if (x == null || !Number.isFinite(Number(x))) return "0";
+  return `${Math.round(Number(x)).toLocaleString()}`;
 }
 
-// ---- UTC format helpers reused by charts ----
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function bucketLabel(bucketSeconds: number | null | undefined) {
+  const s = Number(bucketSeconds || 0);
+  if (!Number.isFinite(s) || s <= 0) return "bucket";
+  if (s % 3600 === 0) return `${s / 3600}h`;
+  if (s % 60 === 0) return `${s / 60}m`;
+  return `${s}s`;
+}
+
+// ---- UTC label helpers (charts) ----
 function formatUtcHM(iso: string): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -158,15 +142,6 @@ function formatUtcYmdHm(iso: string): string {
   const hh = String(d.getUTCHours()).padStart(2, "0");
   const mm = String(d.getUTCMinutes()).padStart(2, "0");
   return `${y}-${mo}-${da} ${hh}:${mm}`;
-}
-function formatCountTick(v: number): string {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "";
-  const abs = Math.abs(n);
-  if (abs >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
-  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return Math.round(n).toString();
 }
 function timeLabelShort(tsIso: string, spanMinutes: number) {
   if (spanMinutes <= 180) return formatUtcHM(tsIso);
@@ -188,15 +163,18 @@ function timeLabelShort(tsIso: string, spanMinutes: number) {
   const da = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${mo}-${da}`;
 }
-function bucketLabel(bucketSeconds: number | null | undefined) {
-  const s = Number(bucketSeconds || 0);
-  if (!Number.isFinite(s) || s <= 0) return "bucket";
-  if (s % 3600 === 0) return `${s / 3600}h`;
-  if (s % 60 === 0) return `${s / 60}m`;
-  return `${s}s`;
+
+function formatCountTick(v: number): string {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "";
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return Math.round(n).toString();
 }
 
-// stable palette for stacked charts
+// Stable palette used in old page
 function stableColorForKey(key: string) {
   const palette = [
     "#2563eb",
@@ -222,233 +200,20 @@ function stableColorForKey(key: string) {
 }
 
 // ------------------------------------------------------------
-// Schema helper (placeholder drawer)
+// Typing dots (subtle)
 // ------------------------------------------------------------
-function SchemaHelper({
-  open,
-  onClose,
-}: {
-  open: boolean;
-  onClose: () => void;
-}) {
-  if (!open) return null;
+function TypingDots() {
   return (
-    <div className="fixed inset-0 z-[80]">
-      <div
-        className="absolute inset-0 bg-black/30"
-        onClick={onClose}
-        aria-hidden
-      />
-      <div className="absolute right-0 top-0 h-full w-full max-w-[420px] bg-white shadow-2xl border-l border-gray-200 p-5">
-        <div className="flex items-center justify-between">
-          <div className="text-sm font-semibold text-gray-900">Schema Helper</div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-xs border border-gray-200 rounded-full px-3 py-1.5 hover:bg-gray-50"
-          >
-            Close
-          </button>
-        </div>
-
-        <div className="mt-4 text-xs text-gray-600 space-y-3">
-          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-            <div className="font-semibold text-gray-900 text-xs">Telemetry Contract (placeholder)</div>
-            <div className="mt-2 space-y-1">
-              <div>• raw_minute (events)</div>
-              <div>• buckets_5m (graph frame)</div>
-              <div>• features_5m (model frame)</div>
-              <div>• scores_zscore (later)</div>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-            <div className="font-semibold text-amber-900 text-xs">Note</div>
-            <div className="mt-2 text-amber-800">
-              Today is UI pivot day — this helper becomes “real” once ClickHouse
-              is wired to the canonical contract.
-            </div>
-          </div>
-        </div>
-      </div>
+    <div className="inline-flex items-center gap-1">
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-300/70 animate-bounce [animation-delay:-0.2s]" />
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-300/70 animate-bounce [animation-delay:-0.1s]" />
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-300/70 animate-bounce" />
     </div>
   );
 }
 
 // ------------------------------------------------------------
-// Expandable section (Evidence / SQL placeholders)
-// ------------------------------------------------------------
-function Expander({
-  title,
-  children,
-  defaultOpen = false,
-}: {
-  title: string;
-  children: React.ReactNode;
-  defaultOpen?: boolean;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <div className="rounded-lg border border-gray-200 bg-white">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-gray-800 hover:bg-gray-50"
-      >
-        <span>{title}</span>
-        <span className="text-gray-500">{open ? "▲" : "▼"}</span>
-      </button>
-      {open ? <div className="px-3 pb-3 text-xs text-gray-700">{children}</div> : null}
-    </div>
-  );
-}
-
-// ------------------------------------------------------------
-// Metric chips row (from metricsJson)
-// ------------------------------------------------------------
-function MetricChips({ metricsJson }: { metricsJson: any }) {
-  const total = Number(metricsJson?.totalRequests) || 0;
-  const p95 = metricsJson?.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs);
-  const p99 = metricsJson?.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs);
-  const e5 = metricsJson?.error5xxCount == null ? null : Number(metricsJson.error5xxCount);
-  const er = metricsJson?.errorRatePct == null ? null : Number(metricsJson.errorRatePct);
-
-  const chips: { k: string; v: string }[] = [
-    { k: "requests", v: formatIntOrNA(total) },
-    { k: "p95", v: formatMsOrNA(p95) },
-    { k: "p99", v: formatMsOrNA(p99) },
-    { k: "5xx", v: formatIntOrNA(e5) },
-    { k: "5xx%", v: formatPctOrNA(er) },
-  ];
-
-  return (
-    <div className="flex flex-wrap gap-2">
-      {chips.map((c) => (
-        <div
-          key={c.k}
-          className="text-[11px] px-2.5 py-1 rounded-full border border-gray-200 bg-gray-50 text-gray-700"
-        >
-          <span className="font-semibold text-gray-900">{c.k}</span>{" "}
-          <span className="text-gray-600">{c.v}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ------------------------------------------------------------
-// Triage Card (inline in chat)
-// ------------------------------------------------------------
-function TriageCard({ run }: { run: ChatTriageMessage["run"] }) {
-  const metricsJson = run.metricsJson;
-
-  const ts: TimeseriesData | null = useMemo(() => {
-    const t = metricsJson?.timeseries;
-    if (!t || !Array.isArray(t.points)) return null;
-
-    const points: TimeseriesPoint[] = t.points
-      .map((p: any): TimeseriesPoint => ({
-        ts: String(p.ts || ""),
-        totalRequests: Number(p.totalRequests) || 0,
-        error5xxCount: Number(p.error5xxCount) || 0,
-        errorRatePct: Number(p.errorRatePct) || 0,
-        p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
-        p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
-        statusCountsByCode: p.statusCountsByCode ? (p.statusCountsByCode as Record<string, number>) : undefined,
-        hostCountsByHost: p.hostCountsByHost ? (p.hostCountsByHost as Record<string, number>) : undefined,
-        crcCountsByCrc: p.crcCountsByCrc ? (p.crcCountsByCrc as Record<string, number>) : undefined,
-      }))
-      .filter((pt) => Boolean(pt.ts));
-
-    return {
-      bucketSeconds: t.bucketSeconds == null ? null : Number(t.bucketSeconds),
-      startTs: t.startTs ? String(t.startTs) : null,
-      endTs: t.endTs ? String(t.endTs) : null,
-      points,
-      statusCodeSeries: Array.isArray(t.statusCodeSeries) ? t.statusCodeSeries.map(String) : undefined,
-      hostSeries: Array.isArray(t.hostSeries) ? t.hostSeries.map(String) : undefined,
-      crcSeries: Array.isArray(t.crcSeries) ? t.crcSeries.map(String) : undefined,
-    };
-  }, [metricsJson]);
-
-  const bucketSeconds = ts?.bucketSeconds ?? metricsJson?.timeseries?.bucketSeconds ?? null;
-
-  return (
-    <div className="rounded-2xl border border-gray-200 bg-white shadow-sm p-4 space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-xs text-gray-600">
-          <span className="font-semibold text-gray-900">Triage</span>{" "}
-          <span className="text-gray-500">
-            partner={run.inputs.partner || "(missing)"} • svc={run.inputs.service} • region={run.inputs.region} • pop={run.inputs.pop} • win={run.inputs.windowMinutes}m
-          </span>
-        </div>
-      </div>
-
-      <div className="text-sm font-semibold text-gray-900">Summary</div>
-      <pre className="whitespace-pre-wrap text-sm text-gray-800">{run.summaryText || "(no summary)"}</pre>
-
-      <MetricChips metricsJson={metricsJson} />
-
-      {/* Graphs */}
-      {ts && ts.points.length > 0 ? (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <StackedBarTimeseries
-            title="Status codes (stacked)"
-            subtitle="Traffic"
-            ts={ts}
-            bucketSeconds={bucketSeconds}
-            seriesKeys={ts.statusCodeSeries || []}
-            getMap={(p) => p.statusCountsByCode}
-            height={190}
-            windowMinutes={run.inputs.windowMinutes}
-          />
-          <LatencyTimeseriesLines
-            points={ts.points}
-            bucketSeconds={bucketSeconds}
-            height={190}
-            windowMinutes={run.inputs.windowMinutes}
-          />
-          <StackedBarTimeseries
-            title="Hosts (stacked)"
-            subtitle="Traffic"
-            ts={ts}
-            bucketSeconds={bucketSeconds}
-            seriesKeys={ts.hostSeries || []}
-            getMap={(p) => p.hostCountsByHost}
-            height={190}
-            windowMinutes={run.inputs.windowMinutes}
-          />
-          <StackedBarTimeseries
-            title="CRC codes (stacked)"
-            subtitle="Cache / response classification"
-            ts={ts}
-            bucketSeconds={bucketSeconds}
-            seriesKeys={ts.crcSeries || []}
-            getMap={(p) => p.crcCountsByCrc}
-            height={190}
-            windowMinutes={run.inputs.windowMinutes}
-          />
-        </div>
-      ) : (
-        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">
-          No timeseries to chart.
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <Expander title="Evidence (placeholder)">
-          Coming soon — deterministic trace + evidence pointers.
-        </Expander>
-        <Expander title="SQL Query (placeholder)">
-          Coming soon — copyable ClickHouse SQL used to compute these aggregates.
-        </Expander>
-      </div>
-    </div>
-  );
-}
-
-// ------------------------------------------------------------
-// Charts (copied from your current page; unchanged behavior)
+// Generic stacked bar chart (ported from old page)
 // ------------------------------------------------------------
 function StackedBarTimeseries({
   title,
@@ -457,7 +222,7 @@ function StackedBarTimeseries({
   bucketSeconds,
   seriesKeys,
   getMap,
-  height = 180,
+  height = 190,
   windowMinutes,
 }: {
   title: string;
@@ -469,26 +234,39 @@ function StackedBarTimeseries({
   height?: number;
   windowMinutes: number;
 }) {
-  const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
+  const maxBars =
+    windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
   const basePoints = (ts.points || []).slice(-maxBars);
   const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
 
-  const points = zoom && zoom.end > zoom.start ? basePoints.slice(zoom.start, zoom.end + 1) : basePoints;
+  const points =
+    zoom && zoom.end > zoom.start
+      ? basePoints.slice(zoom.start, zoom.end + 1)
+      : basePoints;
+
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({ active: false, x0: 0, x1: 0 });
+  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>(
+    { active: false, x0: 0, x1: 0 }
+  );
 
   if (!points.length) return null;
 
   const present = new Map<string, number>();
   for (const p of points) {
     const m = getMap(p) || {};
-    for (const k of Object.keys(m)) present.set(k, (present.get(k) ?? 0) + Number(m[k] ?? 0));
+    for (const k of Object.keys(m)) {
+      present.set(k, (present.get(k) ?? 0) + Number(m[k] ?? 0));
+    }
   }
   const presentKeys = Array.from(present.entries())
     .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
     .map(([k]) => k);
 
-  const ordered = [...seriesKeys.filter((k) => present.has(k)), ...presentKeys.filter((k) => !seriesKeys.includes(k))];
+  const ordered = [
+    ...seriesKeys.filter((k) => present.has(k)),
+    ...presentKeys.filter((k) => !seriesKeys.includes(k)),
+  ];
+
   const keys = ordered.slice(0, 10);
   if (!keys.length) return null;
 
@@ -511,10 +289,15 @@ function StackedBarTimeseries({
 
   const barCount = points.length;
   const gap = clamp(Math.round(plotW / (barCount * 10)), 2, 6);
-  const barW = Math.max(4, Math.floor((plotW - gap * (barCount - 1)) / barCount));
+  const barW = Math.max(
+    4,
+    Math.floor((plotW - gap * (barCount - 1)) / barCount)
+  );
 
   const yTicks = 4;
-  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) => Math.round((maxTotal * (yTicks - i)) / yTicks));
+  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
+    Math.round((maxTotal * (yTicks - i)) / yTicks)
+  );
 
   const xLabelEvery = Math.max(1, Math.floor(points.length / 6));
   const latest = points[points.length - 1];
@@ -527,10 +310,12 @@ function StackedBarTimeseries({
     const rel = (clientX - r.left) / Math.max(1, r.width);
     return rel * w;
   }
+
   function idxFromSvgX(sx: number) {
     const raw = Math.floor((sx - padLeft) / Math.max(1, barW + gap));
     return clamp(raw, 0, Math.max(0, basePoints.length - 1));
   }
+
   function commitZoom(x0: number, x1: number) {
     const a = Math.min(x0, x1);
     const b = Math.max(x0, x1);
@@ -543,20 +328,26 @@ function StackedBarTimeseries({
   const selectionW = Math.abs(drag.x1 - drag.x0);
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
+    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] min-w-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-xs text-gray-500">{subtitle}</div>
-          <div className="text-sm font-semibold text-gray-900">{title}</div>
-          <div className="text-[11px] text-gray-500 mt-1">
+          <div className="text-xs text-gray-400">{subtitle}</div>
+          <div className="text-sm font-semibold text-gray-100">{title}</div>
+          <div className="text-[11px] text-gray-400 mt-1">
             {ts.startTs && ts.endTs
-              ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(ts.endTs)} UTC (bucket: ${bucketLabel(bucketSeconds)})`
+              ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(
+                  ts.endTs
+                )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
               : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
           </div>
-          <div className="text-[11px] text-gray-400 mt-1">
+          <div className="text-[11px] text-gray-500 mt-1">
             Drag to zoom • double-click to reset
             {zoom ? (
-              <button type="button" className="ml-2 underline hover:text-gray-600" onClick={() => setZoom(null)}>
+              <button
+                type="button"
+                className="ml-2 underline hover:text-gray-300"
+                onClick={() => setZoom(null)}
+              >
                 reset zoom
               </button>
             ) : null}
@@ -564,14 +355,16 @@ function StackedBarTimeseries({
         </div>
 
         <div className="text-right">
-          <div className="text-xs text-gray-500">Latest</div>
-          <div className="text-[11px] text-gray-700">
-            {latest ? `${formatUtcHM(latest.ts)} UTC • ${latestTotal.toLocaleString()} events` : "n/a"}
+          <div className="text-xs text-gray-400">Latest</div>
+          <div className="text-[11px] text-gray-200">
+            {latest
+              ? `${formatUtcHM(latest.ts)} UTC • ${latestTotal.toLocaleString()} events`
+              : "n/a"}
           </div>
         </div>
       </div>
 
-      <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
+      <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
         <svg
           ref={svgRef}
           viewBox={`0 0 ${w} ${h}`}
@@ -600,37 +393,58 @@ function StackedBarTimeseries({
             setDrag({ active: false, x0: 0, x1: 0 });
           }}
         >
+          {/* Axis labels */}
           <text
             x={padLeft - 38}
             y={padTop + plotH / 2}
             fontSize="10"
-            fill="#6b7280"
+            fill="#9ca3af"
             transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
           >
             Events
           </text>
-          <text x={padLeft + plotW / 2} y={h - 10} fontSize="10" fill="#6b7280" textAnchor="middle">
+          <text
+            x={padLeft + plotW / 2}
+            y={h - 10}
+            fontSize="10"
+            fill="#9ca3af"
+            textAnchor="middle"
+          >
             Time (UTC, {bucketLabel(bucketSeconds)} buckets)
           </text>
 
+          {/* Grid + y ticks */}
           {tickVals.map((v, idx) => {
             const t = v / maxTotal;
             const y = padTop + (1 - t) * plotH;
             return (
               <g key={idx} opacity={0.35}>
-                <line x1={padLeft} y1={y} x2={padLeft + plotW} y2={y} stroke="currentColor" />
-                <text x={padLeft - 10} y={y + 3} fontSize="10" fill="#6b7280" textAnchor="end" opacity={0.95}>
+                <line
+                  x1={padLeft}
+                  y1={y}
+                  x2={padLeft + plotW}
+                  y2={y}
+                  stroke="currentColor"
+                />
+                <text
+                  x={padLeft - 10}
+                  y={y + 3}
+                  fontSize="10"
+                  fill="#9ca3af"
+                  textAnchor="end"
+                  opacity={0.95}
+                >
                   {formatCountTick(v)}
                 </text>
               </g>
             );
           })}
 
+          {/* Bars */}
           {points.map((p, i) => {
             const x = padLeft + i * (barW + gap);
             const m = getMap(p) || {};
             let yTop = padTop + plotH;
-
             return (
               <g key={p.ts}>
                 {keys.map((k) => {
@@ -656,18 +470,27 @@ function StackedBarTimeseries({
             );
           })}
 
+          {/* X labels */}
           {points.map((p, i) => {
             const show = i % xLabelEvery === 0 || i === points.length - 1;
             if (!show) return null;
             const x = padLeft + i * (barW + gap) + barW / 2;
             const label = timeLabelShort(p.ts, windowMinutes);
             return (
-              <text key={`xl-${p.ts}`} x={x} y={padTop + plotH + 18} fontSize="10" fill="#6b7280" textAnchor="middle">
+              <text
+                key={`xl-${p.ts}`}
+                x={x}
+                y={padTop + plotH + 18}
+                fontSize="10"
+                fill="#9ca3af"
+                textAnchor="middle"
+              >
                 {label}
               </text>
             );
           })}
 
+          {/* Drag selection */}
           {drag.active && selectionW > 2 ? (
             <rect
               x={selectionX}
@@ -682,10 +505,13 @@ function StackedBarTimeseries({
           ) : null}
         </svg>
 
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-600">
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-300">
           {keys.map((k) => (
             <div key={k} className="flex items-center gap-1.5">
-              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: stableColorForKey(k) }} />
+              <span
+                className="inline-block h-2.5 w-2.5 rounded-full"
+                style={{ background: stableColorForKey(k) }}
+              />
               <span className="truncate max-w-[220px]">{k}</span>
             </div>
           ))}
@@ -695,10 +521,13 @@ function StackedBarTimeseries({
   );
 }
 
+// ------------------------------------------------------------
+// Latency line chart (ported from old page)
+// ------------------------------------------------------------
 function LatencyTimeseriesLines({
   points,
   bucketSeconds,
-  height = 180,
+  height = 190,
   windowMinutes,
 }: {
   points: TimeseriesPoint[];
@@ -706,21 +535,27 @@ function LatencyTimeseriesLines({
   height?: number;
   windowMinutes: number;
 }) {
-  const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
+  const maxBars =
+    windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
   const base = points.slice(-maxBars);
 
   const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
-  const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
+  const slice =
+    zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
 
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({ active: false, x0: 0, x1: 0 });
+  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>(
+    { active: false, x0: 0, x1: 0 }
+  );
 
   if (!slice.length) return null;
 
   const vals: number[] = [];
   for (const p of slice) {
-    if (p.p95TtmsMs != null && Number.isFinite(p.p95TtmsMs)) vals.push(Number(p.p95TtmsMs));
-    if (p.p99TtmsMs != null && Number.isFinite(p.p99TtmsMs)) vals.push(Number(p.p99TtmsMs));
+    if (p.p95TtmsMs != null && Number.isFinite(p.p95TtmsMs))
+      vals.push(Number(p.p95TtmsMs));
+    if (p.p99TtmsMs != null && Number.isFinite(p.p99TtmsMs))
+      vals.push(Number(p.p99TtmsMs));
   }
 
   const minV = vals.length ? Math.min(...vals) : 0;
@@ -759,7 +594,9 @@ function LatencyTimeseriesLines({
   });
 
   const yTicks = 4;
-  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) => Math.round(minV + (span * (yTicks - i)) / yTicks));
+  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
+    Math.round(minV + (span * (yTicks - i)) / yTicks)
+  );
 
   const xLabelEvery = Math.max(1, Math.floor(n / 6));
   const latest = slice[slice.length - 1];
@@ -788,36 +625,46 @@ function LatencyTimeseriesLines({
   const selectionW = Math.abs(drag.x1 - drag.x0);
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
+    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] min-w-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-xs text-gray-500">Latency timeseries</div>
-          <div className="text-sm font-semibold text-gray-900">p95 / p99 TTMS</div>
-          <div className="text-[11px] text-gray-500 mt-1">
-            {slice.length
-              ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(slice[slice.length - 1].ts)} UTC (bucket: ${bucketLabel(bucketSeconds)})`
-              : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
+          <div className="text-xs text-gray-400">Latency timeseries</div>
+          <div className="text-sm font-semibold text-gray-100">
+            p95 / p99 TTMS
           </div>
           <div className="text-[11px] text-gray-400 mt-1">
+            {slice.length
+              ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
+                  slice[slice.length - 1].ts
+                )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
+              : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
+          </div>
+          <div className="text-[11px] text-gray-500 mt-1">
             Drag to zoom • double-click to reset
             {zoom ? (
-              <button type="button" className="ml-2 underline hover:text-gray-600" onClick={() => setZoom(null)}>
+              <button
+                type="button"
+                className="ml-2 underline hover:text-gray-300"
+                onClick={() => setZoom(null)}
+              >
                 reset zoom
               </button>
             ) : null}
           </div>
         </div>
         <div className="text-right">
-          <div className="text-xs text-gray-500">Latest</div>
-          <div className="text-[11px] text-gray-700">
+          <div className="text-xs text-gray-400">Latest</div>
+          <div className="text-[11px] text-gray-200">
             {latest
-              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(latest.p95TtmsMs)} • p99=${formatMsOrNA(latest.p99TtmsMs)}`
+              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(
+                  latest.p95TtmsMs
+                )} • p99=${formatMsOrNA(latest.p99TtmsMs)}`
               : "n/a"}
           </div>
         </div>
       </div>
 
-      <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
+      <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
         <svg
           ref={svgRef}
           viewBox={`0 0 ${w} ${h}`}
@@ -850,12 +697,18 @@ function LatencyTimeseriesLines({
             x={padLeft - 38}
             y={padTop + plotH / 2}
             fontSize="10"
-            fill="#6b7280"
+            fill="#9ca3af"
             transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
           >
             Latency (ms)
           </text>
-          <text x={padLeft + plotW / 2} y={h - 10} fontSize="10" fill="#6b7280" textAnchor="middle">
+          <text
+            x={padLeft + plotW / 2}
+            y={h - 10}
+            fontSize="10"
+            fill="#9ca3af"
+            textAnchor="middle"
+          >
             Time (UTC, {bucketLabel(bucketSeconds)} buckets)
           </text>
 
@@ -864,8 +717,21 @@ function LatencyTimeseriesLines({
             const yy = padTop + (1 - t) * plotH;
             return (
               <g key={idx} opacity={0.35}>
-                <line x1={padLeft} y1={yy} x2={padLeft + plotW} y2={yy} stroke="currentColor" />
-                <text x={padLeft - 10} y={yy + 3} fontSize="10" fill="#6b7280" textAnchor="end" opacity={0.95}>
+                <line
+                  x1={padLeft}
+                  y1={yy}
+                  x2={padLeft + plotW}
+                  y2={yy}
+                  stroke="currentColor"
+                />
+                <text
+                  x={padLeft - 10}
+                  y={yy + 3}
+                  fontSize="10"
+                  fill="#9ca3af"
+                  textAnchor="end"
+                  opacity={0.95}
+                >
                   {v}
                 </text>
               </g>
@@ -882,7 +748,7 @@ function LatencyTimeseriesLines({
           />
           <polyline
             fill="none"
-            stroke="rgba(17,24,39,0.45)"
+            stroke="rgba(17,24,39,0.55)"
             strokeWidth="2.75"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -895,7 +761,14 @@ function LatencyTimeseriesLines({
             const xx = x(i);
             const label = timeLabelShort(p.ts, windowMinutes);
             return (
-              <text key={`xl-${p.ts}`} x={xx} y={padTop + plotH + 18} fontSize="10" fill="#6b7280" textAnchor="middle">
+              <text
+                key={`xl-${p.ts}`}
+                x={xx}
+                y={padTop + plotH + 18}
+                fontSize="10"
+                fill="#9ca3af"
+                textAnchor="middle"
+              >
                 {label}
               </text>
             );
@@ -915,111 +788,29 @@ function LatencyTimeseriesLines({
           ) : null}
         </svg>
 
-        <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-600">
+        <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
           <div className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(37,99,235,0.92)" }} />
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-full"
+              style={{ background: "rgba(37,99,235,0.92)" }}
+            />
             <span>p95</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(17,24,39,0.45)" }} />
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-full"
+              style={{ background: "rgba(17,24,39,0.55)" }}
+            />
             <span>p99</span>
           </div>
-          <div className="text-gray-400">
-            min <span className="text-gray-700">{Math.round(minV)}ms</span> • max{" "}
-            <span className="text-gray-700">{Math.round(maxV)}ms</span>
+          <div className="text-gray-500">
+            min <span className="text-gray-200">{Math.round(minV)}ms</span> • max{" "}
+            <span className="text-gray-200">{Math.round(maxV)}ms</span>
           </div>
         </div>
       </div>
     </div>
   );
-}
-
-// ------------------------------------------------------------
-// API calls (triage + chat) — unchanged endpoints
-// ------------------------------------------------------------
-async function runTriageRequest(inputs: {
-  partner: PartnerOrMissing;
-  service: string;
-  region: string;
-  pop: string;
-  windowMinutes: number;
-  debug: boolean;
-}) {
-  const formData = new FormData();
-  formData.append("dataSource", "clickhouse");
-  formData.append("partner", inputs.partner || "");
-  formData.append("csvUrl", "");
-  formData.append("service", inputs.service);
-  formData.append("region", inputs.region);
-  formData.append("pop", inputs.pop);
-  formData.append("windowMinutes", String(inputs.windowMinutes));
-  if (inputs.debug) formData.append("debug", "true");
-
-  const response = await fetch("/api/triage", { method: "POST", body: formData });
-
-  let data: any = null;
-  try {
-    data = await response.json();
-  } catch {
-    throw new Error(`Non-JSON response (HTTP ${response.status})`);
-  }
-
-  if (!response.ok || !data?.ok) {
-    throw new Error(data?.error || `Request failed (HTTP ${response.status})`);
-  }
-  return data;
-}
-
-async function callChatApi(args: {
-  userText: string;
-  history: ChatMessage[];
-  partner: PartnerOrMissing;
-  service: string;
-  region: string;
-  pop: string;
-  windowMinutes: number;
-  chatMode: ChatMode;
-}) {
-  const { userText, history, partner, service, region, pop, windowMinutes, chatMode } = args;
-
-  const wireMsgs = history
-    .filter((m): m is ChatTextMessage => m.type === "text")
-    .slice(-12)
-    .map((m) => ({ role: m.role, content: m.text }));
-
-  if (wireMsgs.length === 0) wireMsgs.push({ role: "user", content: userText });
-  else {
-    const last = wireMsgs[wireMsgs.length - 1];
-    if (last.role !== "user") wireMsgs.push({ role: "user", content: userText });
-    else last.content = userText;
-  }
-
-  const res = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      messages: wireMsgs,
-      context: {
-        mode: "clickhouse",
-        chatMode,
-        availableRegions: [], // home does not show filters; chat route can still respond
-        availablePops: [],
-        availablePartners: Array.from(PARTNER_OPTIONS),
-        currentFilters: {
-          dataSource: "clickhouse",
-          partner,
-          service,
-          region,
-          pop,
-          windowMinutes,
-        },
-      },
-    }),
-  });
-
-  const json = await res.json().catch(() => null);
-  if (!json) throw new Error("api/chat returned non-JSON");
-  return json as any;
 }
 
 // ------------------------------------------------------------
@@ -1029,30 +820,49 @@ export default function Home() {
   const [mounted, setMounted] = useState(false);
 
   // sticky partner
-  const [partner, setPartner] = useState<PartnerOrMissing>("");
+  const [partner, setPartner] = useState<PartnerOrMissing>("beta_stream");
+  function setPartnerSticky(p: string) {
+    const v = String(p || "").trim();
+    if (!v) return;
+    if ((PARTNER_OPTIONS as readonly string[]).includes(v)) {
+      setPartner(v as Partner);
+      safeSetLS(PARTNER_KEY, v);
+    }
+  }
 
-  // lightweight filter state (no UI for these today; chat drives them)
+  // chat mode
+  const [chatMode, setChatMode] = useState<ChatMode>("deterministic");
+
+  // UI state
+  const [isLoading, setIsLoading] = useState(false);
+  const [schemaOpen, setSchemaOpen] = useState(false);
+
+  // Chat
+  const [chatInput, setChatInput] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const lastMsgIdRef = useRef<string | null>(null);
+
+  // typing indicator (assistant bubble)
+  const [typing, setTyping] = useState(false);
+
+  // rate limit banner state
+  const [rateLimit, setRateLimit] = useState<null | {
+    msgId: string;
+    untilMs: number;
+    retryAfterMs: number;
+    lastUserText: string;
+  }>(null);
+  const [rateLimitRemainingMs, setRateLimitRemainingMs] = useState<number>(0);
+
+  // current filters (kept minimal on home)
   const [service, setService] = useState("all");
   const [region, setRegion] = useState("all");
   const [pop, setPop] = useState("all");
-  const [windowMinutes, setWindowMinutes] = useState(60);
-  const [debugMode] = useState(false);
-
-  // chat + state
-  const [chatMode, setChatMode] = useState<ChatMode>("deterministic");
-  const [isLoading, setIsLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
-  const [chatInput, setChatInput] = useState("");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const chatScrollRef = useRef<HTMLDivElement | null>(null);
-  const lastMessageIdRef = useRef<string | null>(null);
-
-  // schema helper
-  const [schemaOpen, setSchemaOpen] = useState(false);
+  const [windowMinutes, setWindowMinutes] = useState(120);
 
   useEffect(() => setMounted(true), []);
 
-  // restore partner
   useEffect(() => {
     if (!mounted) return;
     const saved = safeGetLS(PARTNER_KEY);
@@ -1061,254 +871,536 @@ export default function Home() {
     }
   }, [mounted]);
 
-  // restore chatMode
-  useEffect(() => {
-    if (!mounted) return;
-    const stored = safeGetLS(CHAT_MODE_KEY);
-    if (!stored) return;
-    setChatMode(stored === "llm" ? "llm" : "deterministic");
-  }, [mounted]);
-  useEffect(() => {
-    if (!mounted) return;
-    safeSetLS(CHAT_MODE_KEY, chatMode);
-  }, [chatMode, mounted]);
-
-  function setPartnerSticky(p: string) {
-    const val = String(p || "").trim();
-    if (!val) {
-      setPartner("");
-      safeRemoveLS(PARTNER_KEY);
-      return;
-    }
-    if ((PARTNER_OPTIONS as readonly string[]).includes(val)) {
-      setPartner(val as Partner);
-      safeSetLS(PARTNER_KEY, val);
-    }
+  function clearRateLimit() {
+    setRateLimit(null);
+    setRateLimitRemainingMs(0);
   }
 
-  function welcome(): ChatTextMessage {
-    return {
-      id: "welcome",
-      type: "text",
-      role: "system",
-      text:
-        "Cachey 🤖 — chat-first triage.\n\n" +
-        "Pick a partner (sticky), then ask:\n" +
-        "- `how was live last 2h`\n" +
-        "- `vod in bos last night`\n\n" +
-        "Triage results will render inline as cards.",
-      timestamp: getCurrentTimestamp(),
+  function fmtCountdown(ms: number) {
+    const s = Math.max(0, Math.ceil(ms / 1000));
+    return `${s}s`;
+  }
+
+  useEffect(() => {
+    if (!rateLimit) return;
+    const tick = () => {
+      const left = Math.max(0, rateLimit.untilMs - Date.now());
+      setRateLimitRemainingMs(left);
     };
-  }
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [rateLimit]);
 
+  // welcome message once (NO personal greeting)
   useEffect(() => {
     if (!mounted) return;
-    if (messages.length > 0) return;
-    setMessages([welcome()]);
+    if (chatMessages.length) return;
+
+    setChatMessages([
+      {
+        id: "welcome",
+        type: "text",
+        role: "system",
+        ts: nowIso(),
+        text:
+          "Cachey 🤖 — chat-first triage.\n\n" +
+          "Pick a partner (sticky), then ask:\n" +
+          "- `how was live last 2h`\n" +
+          "- `vod in bos last night`\n\n" +
+          "Triage results render inline as cards.",
+      },
+    ]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mounted, messages.length]);
+  }, [mounted]);
 
+  // autoscroll
   useEffect(() => {
-    const last = messages[messages.length - 1];
+    const last = chatMessages[chatMessages.length - 1];
     if (!last) return;
-    if (lastMessageIdRef.current !== last.id) {
-      lastMessageIdRef.current = last.id;
+    if (lastMsgIdRef.current !== last.id) {
+      lastMsgIdRef.current = last.id;
       const el = chatScrollRef.current;
-      if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      el?.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     }
-  }, [messages]);
+  }, [chatMessages]);
 
-  function addText(role: ChatTextMessage["role"], text: string) {
-    setMessages((prev) => [
-      ...prev,
-      { id: `${Date.now()}-${Math.random()}`, type: "text", role, text, timestamp: getCurrentTimestamp() },
-    ]);
-  }
-  function addTriage(run: ChatTriageMessage["run"]) {
-    setMessages((prev) => [
-      ...prev,
-      { id: `${Date.now()}-${Math.random()}`, type: "triage_result", role: "assistant", timestamp: getCurrentTimestamp(), run },
-    ]);
-  }
+  // Derive available regions/pops from last triage card (if any)
+  const lastMetricsJson = useMemo(() => {
+    const lastTriage = [...chatMessages].reverse().find((m) => m.type === "triage") as
+      | ChatTriage
+      | undefined;
+    return lastTriage?.run?.metricsJson || null;
+  }, [chatMessages]);
 
-  const partnerMissing = !partner;
+  const availableRegions: string[] = useMemo(() => {
+    const arr = lastMetricsJson?.available?.regions;
+    const list = Array.isArray(arr) ? arr : [];
+    const cleaned = list
+      .map((x: any) => String(x ?? "").trim().toLowerCase())
+      .filter(Boolean);
+    const uniq = Array.from(new Set(cleaned)).sort((a, b) => a.localeCompare(b));
+    return ["all", ...uniq];
+  }, [lastMetricsJson]);
 
-  async function onSend() {
-    const text = chatInput.trim();
-    if (!text || isLoading) return;
+  const availablePops: string[] = useMemo(() => {
+    const arr = lastMetricsJson?.available?.pops;
+    const list = Array.isArray(arr) ? arr : [];
+    const cleaned = list
+      .map((x: any) => String(x ?? "").trim().toLowerCase())
+      .filter(Boolean);
+    const uniq = Array.from(new Set(cleaned)).sort((a, b) => a.localeCompare(b));
+    return ["all", ...uniq];
+  }, [lastMetricsJson]);
 
-    setChatInput("");
-    setErrorMessage("");
+  // Parse metricsJson.timeseries into TimeseriesData
+  function parseTimeseries(metricsJson: any): TimeseriesData | null {
+    const t = metricsJson?.timeseries;
+    if (!t || !Array.isArray(t.points)) return null;
 
-    const userMsg: ChatTextMessage = {
-      id: `${Date.now()}-${Math.random()}`,
-      type: "text",
-      role: "user",
-      text,
-      timestamp: getCurrentTimestamp(),
+    const points: TimeseriesPoint[] = t.points
+      .map((p: any): TimeseriesPoint => ({
+        ts: String(p.ts || ""),
+        totalRequests: Number(p.totalRequests) || 0,
+        error5xxCount: Number(p.error5xxCount) || 0,
+        errorRatePct: Number(p.errorRatePct) || 0,
+        p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
+        p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
+        statusCountsByCode: p.statusCountsByCode || undefined,
+        hostCountsByHost: p.hostCountsByHost || undefined,
+        crcCountsByCrc: p.crcCountsByCrc || undefined,
+      }))
+      .filter((pt) => Boolean(pt.ts));
+
+    return {
+      bucketSeconds: t.bucketSeconds == null ? null : Number(t.bucketSeconds),
+      startTs: t.startTs ? String(t.startTs) : null,
+      endTs: t.endTs ? String(t.endTs) : null,
+      points,
+      statusCodeSeries: Array.isArray(t.statusCodeSeries)
+        ? t.statusCodeSeries.map(String)
+        : undefined,
+      hostSeries: Array.isArray(t.hostSeries) ? t.hostSeries.map(String) : undefined,
+      crcSeries: Array.isArray(t.crcSeries) ? t.crcSeries.map(String) : undefined,
     };
+  }
 
-    const nextHistory = [...messages, userMsg];
-    setMessages(nextHistory);
+  // /api/triage call (unchanged backend)
+  async function runTriage(inputs: TriageInputs) {
+    const formData = new FormData();
+    formData.append("dataSource", inputs.dataSource);
+    formData.append("partner", inputs.partner || "");
+    formData.append("csvUrl", "");
+    formData.append("service", inputs.service);
+    formData.append("region", inputs.region);
+    formData.append("pop", inputs.pop);
+    formData.append("windowMinutes", String(inputs.windowMinutes));
 
-    // If deterministic and partner missing, hard-stop nicely
-    if (partnerMissing && chatMode !== "llm") {
-      addText(
-        "assistant",
-        `ClickHouse mode needs a partner first.\nPick one: ${PARTNER_OPTIONS.join(", ")}`
-      );
-      return;
+    const response = await fetch("/api/triage", { method: "POST", body: formData });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data?.ok) {
+      throw new Error(data?.error || `Triage failed (HTTP ${response.status})`);
     }
+    return data as { summaryText: string; metricsJson: any };
+  }
+
+  // /api/chat call
+  async function callChatApi(userText: string) {
+    const wireMsgs = chatMessages
+      .filter((m): m is ChatText => m.type === "text")
+      .slice(-12)
+      .map((m) => ({ role: m.role, content: m.text }));
+
+    wireMsgs.push({ role: "user", content: userText });
+
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: wireMsgs,
+        context: {
+          mode: "clickhouse",
+          chatMode,
+          availableRegions,
+          availablePops,
+          availablePartners: Array.from(PARTNER_OPTIONS),
+          currentFilters: {
+            dataSource: "clickhouse",
+            partner,
+            service,
+            region,
+            pop,
+            windowMinutes,
+          },
+        },
+      }),
+    });
+
+    const json = await res.json().catch(() => null);
+    if (!json) throw new Error("api/chat returned non-JSON");
+    return json as any;
+  }
+
+  // add message helpers
+  function addText(role: ChatText["role"], text: string) {
+    const id = `${Date.now()}-${Math.random()}`;
+    const msg: ChatText = { id, type: "text", role, ts: nowIso(), text };
+    setChatMessages((prev) => [...prev, msg]);
+    return id;
+  }
+
+  function addTriageCard(run: ChatTriage["run"]) {
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random()}`,
+        type: "triage",
+        role: "assistant",
+        ts: nowIso(),
+        run,
+      },
+    ]);
+  }
+
+  async function sendUserText(userText: string, opts?: { appendUser?: boolean }) {
+    const appendUser = opts?.appendUser !== false;
+    if (!userText.trim() || isLoading) return;
 
     setIsLoading(true);
+    setTyping(true);
+
+    if (appendUser) {
+      const userMsg: ChatText = {
+        id: `${Date.now()}-${Math.random()}`,
+        type: "text",
+        role: "user",
+        ts: nowIso(),
+        text: userText,
+      };
+      setChatMessages((prev) => [...prev, userMsg]);
+    }
+
+    if (!partner) {
+      addText("assistant", `Pick a partner first. (${PARTNER_OPTIONS.join(", ")})`);
+      setTyping(false);
+      setIsLoading(false);
+      return;
+    }
+
     try {
-      // Ask chat route for hints (LLM or deterministic depending on ctx.chatMode)
-      const out = await callChatApi({
-        userText: text,
-        history: nextHistory,
-        partner,
-        service,
-        region,
-        pop,
-        windowMinutes,
-        chatMode,
-      });
+      const out = await callChatApi(userText);
 
+      // Rate limit banner path (from your route.ts)
+      if (out?.rateLimited) {
+        const assistantId = addText(
+          "assistant",
+          String(out?.reply || "LLM is rate-limited. Try again shortly or switch to Deterministic.")
+        );
+        const retryAfter = Number(out?.retryAfterMs ?? 45000);
+        const untilMs = Date.now() + (Number.isFinite(retryAfter) ? retryAfter : 45000);
+        setRateLimit({
+          msgId: assistantId,
+          untilMs,
+          retryAfterMs: retryAfter,
+          lastUserText: userText,
+        });
+        setTyping(false);
+        setIsLoading(false);
+        return;
+      }
+
+      // general
       if (out?.kind === "general") {
-        addText("assistant", String(out.reply || "Ok."));
+        addText("assistant", String(out.reply || "Got it."));
+        clearRateLimit();
+        setTyping(false);
+        setIsLoading(false);
         return;
       }
 
-      // Partner question handling
-      if (!partner && out?.needsPartnerQuestion) {
-        addText("assistant", String(out.partnerQuestion || "Which partner?"));
-        return;
-      }
-
-      // Apply hints (sticky)
+      // triage: update hints if present
       const nextService = String(out?.serviceHint ?? service);
       const nextRegion = String(out?.regionHint ?? region);
       const nextPop = String(out?.popHint ?? pop);
       const nextWindow = Number(out?.windowHint ?? windowMinutes);
 
-      setService(nextService);
-      setRegion(nextRegion);
-      setPop(nextPop);
+      if (out?.serviceHint) setService(nextService);
+      if (out?.regionHint) setRegion(nextRegion);
+      if (out?.popHint) setPop(nextPop);
       if (Number.isFinite(nextWindow) && nextWindow > 0) setWindowMinutes(nextWindow);
 
-      let nextPartner: PartnerOrMissing = partner;
       const pHint = String(out?.partnerHint || "").trim();
       if (pHint && (PARTNER_OPTIONS as readonly string[]).includes(pHint)) {
         setPartnerSticky(pHint);
-        nextPartner = pHint as Partner;
       }
 
-      // still missing partner -> stop
-      if (!nextPartner) {
-        addText("assistant", `Pick a partner to run triage: ${PARTNER_OPTIONS.join(", ")}`);
+      if (out?.needsPartnerQuestion) {
+        addText("assistant", String(out.partnerQuestion || "Which partner?"));
+        clearRateLimit();
+        setTyping(false);
+        setIsLoading(false);
         return;
       }
 
       addText(
         "system",
-        `Running triage • partner=${nextPartner} • svc=${nextService} • region=${nextRegion} • pop=${nextPop} • win=${nextWindow}m`
+        `Running triage: partner=${partner} svc=${nextService} region=${nextRegion} pop=${nextPop} win=${nextWindow}m`
       );
 
-      const data = await runTriageRequest({
-        partner: nextPartner,
+      const data = await runTriage({
+        dataSource: "clickhouse",
+        partner,
         service: nextService,
         region: nextRegion,
         pop: nextPop,
-        windowMinutes: nextWindow,
-        debug: debugMode,
+        windowMinutes:
+          Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
       });
 
-      addTriage({
+      addTriageCard({
         inputs: {
           dataSource: "clickhouse",
-          partner: nextPartner,
+          partner,
           service: nextService,
           region: nextRegion,
           pop: nextPop,
-          windowMinutes: nextWindow,
+          windowMinutes:
+            Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
         },
         summaryText: data.summaryText || "",
         metricsJson: data.metricsJson || null,
       });
+
+      clearRateLimit();
     } catch (e: any) {
-      const msg = e?.message || "Something went wrong";
-      setErrorMessage(msg);
-      addText("assistant", `Error: ${msg}`);
+      const msg = e?.message || "Chat/Triage failed";
+      addText(
+        "assistant",
+        `Chat failed: ${msg}\n\nIf LLM is down, switch to Deterministic and run:\n- \`live in usw2 at sjc last 2h\`\n- \`service=vod win=720\``
+      );
     } finally {
+      setTyping(false);
       setIsLoading(false);
     }
   }
 
-  return (
-    <main className="min-h-screen w-full bg-gray-50">
-      <SchemaHelper open={schemaOpen} onClose={() => setSchemaOpen(false)} />
+  async function handleSend() {
+    const text = chatInput.trim();
+    if (!text) return;
+    setChatInput("");
+    await sendUserText(text, { appendUser: true });
+  }
 
-      {/* Sticky header */}
-      <div className="sticky top-0 z-[60] border-b border-gray-200 bg-white/95 backdrop-blur">
-        <div className="mx-auto w-full px-6 py-4 flex items-center gap-3">
-          <Image src={LOGO_SRC} alt="Cachey" width={34} height={34} className="rounded-full" />
+  function MetricChips({ metricsJson }: { metricsJson: any }) {
+    if (!metricsJson) return null;
+    const totalRequests = Number(metricsJson.totalRequests) || 0;
+    const p95 = metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs);
+    const p99 = metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs);
+    const err5xx = metricsJson.error5xxCount == null ? null : Number(metricsJson.error5xxCount);
+    const errPct = metricsJson.errorRatePct == null ? null : Number(metricsJson.errorRatePct);
 
+    const chips = [
+      { k: "requests", v: formatIntOrNA(totalRequests) },
+      { k: "p95", v: formatMsOrNA(p95) },
+      { k: "p99", v: formatMsOrNA(p99) },
+      { k: "5xx", v: err5xx == null ? "n/a" : formatIntOrNA(err5xx) },
+      { k: "5xx%", v: formatPctOrNA(errPct) },
+    ];
+
+    return (
+      <div className="flex flex-wrap gap-2">
+        {chips.map((c) => (
+          <span
+            key={c.k}
+            className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200"
+          >
+            <span className="text-gray-400 mr-1">{c.k}</span>
+            <span className="font-semibold">{c.v}</span>
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  function TriageCard({ run }: { run: ChatTriage["run"] }) {
+    const ts = parseTimeseries(run.metricsJson);
+    const bucketSeconds = ts?.bucketSeconds ?? run.metricsJson?.timeseries?.bucketSeconds ?? null;
+
+    return (
+      <div className="triage-enter rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] space-y-3">
+        <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="font-semibold text-lg text-gray-900">
-              Cachey <span className="text-gray-500">🤖</span>
+            <div className="text-xs text-gray-400">Triage result</div>
+            <div className="text-sm font-semibold text-gray-100 truncate">
+              partner={run.inputs.partner} • svc={run.inputs.service} • region={run.inputs.region} • pop={run.inputs.pop} • win={run.inputs.windowMinutes}m
             </div>
-            <div className="text-xs text-gray-500">Chat-first triage (home)</div>
+          </div>
+          <div className="text-xs text-gray-500">/api/triage</div>
+        </div>
+
+        <MetricChips metricsJson={run.metricsJson} />
+
+        <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+          <div className="text-xs text-gray-400 mb-2">Summary</div>
+          <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">
+            {run.summaryText || "(no summary)"}
+          </pre>
+        </div>
+
+        {ts && ts.points.length > 0 ? (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <StackedBarTimeseries
+              title="Status code (stacked)"
+              subtitle="Traffic timeseries"
+              ts={ts}
+              bucketSeconds={bucketSeconds}
+              seriesKeys={ts.statusCodeSeries || []}
+              getMap={(p) => p.statusCountsByCode}
+              height={190}
+              windowMinutes={run.inputs.windowMinutes}
+            />
+            <LatencyTimeseriesLines
+              points={ts.points}
+              bucketSeconds={bucketSeconds}
+              height={190}
+              windowMinutes={run.inputs.windowMinutes}
+            />
+            <StackedBarTimeseries
+              title="Host (stacked)"
+              subtitle="Traffic timeseries"
+              ts={ts}
+              bucketSeconds={bucketSeconds}
+              seriesKeys={ts.hostSeries || []}
+              getMap={(p) => p.hostCountsByHost}
+              height={190}
+              windowMinutes={run.inputs.windowMinutes}
+            />
+            <StackedBarTimeseries
+              title="CRC (stacked)"
+              subtitle="Cache / response classification"
+              ts={ts}
+              bucketSeconds={bucketSeconds}
+              seriesKeys={ts.crcSeries || []}
+              getMap={(p) => p.crcCountsByCrc}
+              height={190}
+              windowMinutes={run.inputs.windowMinutes}
+            />
+          </div>
+        ) : (
+          <div className="text-sm text-gray-400">No timeseries returned.</div>
+        )}
+
+        <details className="rounded-xl border border-white/10 bg-black/20 p-3">
+          <summary className="cursor-pointer text-sm text-gray-200">
+            Evidence (placeholder)
+          </summary>
+          <div className="text-xs text-gray-400 mt-2">
+            Placeholder for deterministic trace / evidence list.
+          </div>
+        </details>
+
+        <details className="rounded-xl border border-white/10 bg-black/20 p-3">
+          <summary className="cursor-pointer text-sm text-gray-200">
+            SQL Query (placeholder)
+          </summary>
+          <div className="text-xs text-gray-400 mt-2">
+            Placeholder for SQL text + copy button.
+          </div>
+        </details>
+
+        {/* local CSS for triage card entrance */}
+        <style jsx>{`
+          .triage-enter {
+            animation: triageIn 220ms ease-out;
+          }
+          @keyframes triageIn {
+            from {
+              opacity: 0;
+              transform: translateY(6px);
+            }
+            to {
+              opacity: 1;
+              transform: translateY(0);
+            }
+          }
+        `}</style>
+      </div>
+    );
+  }
+
+  const partnerMissing = !partner;
+
+  return (
+    <main className="min-h-screen bg-black text-gray-100">
+      {/* Sticky header */}
+      <div className="sticky top-0 z-50 border-b border-white/10 bg-black/70 backdrop-blur">
+        <div className="mx-auto max-w-6xl px-6 py-4 flex items-center gap-3">
+          <Image
+            src={LOGO_SRC}
+            alt="Cachey"
+            width={34}
+            height={34}
+            className="rounded-full"
+          />
+          <div className="min-w-0">
+            <div className="font-semibold text-lg text-white">
+              Cachey <span className="text-gray-400">🤖</span>
+            </div>
+            <div className="text-xs text-gray-400">Chat-first triage</div>
           </div>
 
-          <div className="ml-auto flex items-center gap-2">
-            {/* Sticky partner selector */}
+          <div className="ml-auto flex items-center gap-3">
+            {/* Partner selector */}
             <div className="flex items-center gap-2">
-              <div className="text-[11px] text-gray-500">Partner</div>
+              <div className="text-xs text-gray-400">Partner</div>
               <select
-                className="rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
                 value={partner}
                 onChange={(e) => setPartnerSticky(e.target.value)}
-                disabled={isLoading}
+                disabled={!mounted}
               >
-                <option value="">Select…</option>
                 {PARTNER_OPTIONS.map((p) => (
-                  <option key={p} value={p}>
+                  <option key={p} value={p} className="bg-black">
                     {p}
                   </option>
                 ))}
               </select>
             </div>
 
-            {/* Schema helper button */}
+            {/* Schema helper */}
             <button
               type="button"
               onClick={() => setSchemaOpen(true)}
-              className="text-sm font-semibold rounded-lg border border-gray-200 bg-white px-3 py-2 hover:bg-gray-50"
+              className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
+              title="Schema helper"
             >
               Schema
             </button>
 
-            {/* Chat mode toggle (small, keeps behavior consistent) */}
-            <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+            {/* Chat mode toggle */}
+            <div className="inline-flex rounded-full border border-white/10 bg-white/5 p-1">
               <button
                 type="button"
-                onClick={() => setChatMode("deterministic")}
-                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                  chatMode === "deterministic" ? "bg-white text-gray-900 shadow-sm" : "text-gray-600 hover:text-gray-900"
+                onClick={() => {
+                  setChatMode("deterministic");
+                  clearRateLimit();
+                }}
+                className={`px-3 py-1 text-xs rounded-full ${
+                  chatMode === "deterministic"
+                    ? "bg-white/15 text-white"
+                    : "text-gray-300 hover:text-white"
                 }`}
-                disabled={isLoading}
-                title="Deterministic only"
               >
                 Deterministic
               </button>
               <button
                 type="button"
                 onClick={() => setChatMode("llm")}
-                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                  chatMode === "llm" ? "bg-white text-gray-900 shadow-sm" : "text-gray-600 hover:text-gray-900"
+                className={`px-3 py-1 text-xs rounded-full ${
+                  chatMode === "llm"
+                    ? "bg-white/15 text-white"
+                    : "text-gray-300 hover:text-white"
                 }`}
-                disabled={isLoading}
-                title="LLM Assist"
               >
                 LLM
               </button>
@@ -1316,8 +1408,8 @@ export default function Home() {
 
             <a
               href="/debug"
-              className="text-xs text-gray-600 border border-gray-200 rounded-full px-3 py-2 bg-white hover:bg-gray-50"
-              title="Legacy debug UI"
+              className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
+              title="Legacy /debug page"
             >
               Debug
             </a>
@@ -1325,76 +1417,193 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Chat-first body */}
-      <div className="mx-auto w-full px-6 py-6">
+      {/* Body */}
+      <div className="mx-auto max-w-6xl px-6 py-6">
+        {/* Partner missing banner */}
         {partnerMissing ? (
-          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
-            <div className="text-sm font-semibold text-amber-900">Pick a partner to begin</div>
-            <div className="text-xs text-amber-800 mt-1">
-              Home is ClickHouse-first. Select one partner (sticky) and start chatting.
+          <div className="mb-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4">
+            <div className="text-sm font-semibold text-amber-200">
+              Partner required
+            </div>
+            <div className="text-xs text-amber-100/80 mt-1">
+              Pick a partner in the top bar to run ClickHouse triage.
             </div>
           </div>
         ) : null}
 
-        {errorMessage ? (
-          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4">
-            <div className="text-sm font-semibold text-red-900">Error</div>
-            <div className="text-xs text-red-800 mt-1">{errorMessage}</div>
-          </div>
-        ) : null}
-
-        <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-          <div ref={chatScrollRef} className="h-[70vh] overflow-y-auto p-5 bg-white">
+        {/* Chat surface */}
+        <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+          <div
+            ref={chatScrollRef}
+            className="h-[66vh] min-h-[520px] overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-4"
+          >
             <div className="space-y-4">
-              {messages.map((m) => (
-                <div key={m.id} className="space-y-1">
-                  <div className="text-[11px] text-gray-500">
-                    <span className="font-semibold text-gray-700 capitalize">{m.role}</span> •{" "}
-                    {formatTimestampClientSafe(m.timestamp, mounted)}
-                  </div>
+              {chatMessages.map((m) => {
+                const isUser = m.role === "user";
+                const isSystem = m.role === "system";
 
-                  {m.type === "text" ? (
-                    <pre className="whitespace-pre-wrap text-sm text-gray-900">{m.text}</pre>
-                  ) : (
-                    <TriageCard run={m.run} />
-                  )}
+                // bubble widths: assistant wider than user
+                const bubbleMax =
+                  isUser ? "max-w-[70%]" : "max-w-[82%]";
+
+                // alignment: assistant left, user right. system centered
+                const rowAlign = isSystem
+                  ? "justify-center"
+                  : isUser
+                  ? "justify-end"
+                  : "justify-start";
+
+                const bubbleStyle = isSystem
+                  ? "border-white/10 bg-white/5 text-gray-300"
+                  : isUser
+                  ? "border-white/10 bg-white/10 text-gray-100"
+                  : "border-white/10 bg-white/5 text-gray-100";
+
+                return (
+                  <div key={m.id} className={`flex ${rowAlign}`}>
+                    <div className={`${bubbleMax} w-full`}>
+                      {/* tiny timestamp only (no User:/Assistant:) */}
+                      <div
+                        className={`text-[10px] text-gray-500 mb-1 ${
+                          isSystem ? "text-center" : isUser ? "text-right" : "text-left"
+                        }`}
+                      >
+                        {mounted ? new Date(m.ts).toLocaleString() : m.ts}
+                      </div>
+
+                      {m.type === "text" ? (
+                        <div
+                          className={`rounded-2xl border ${bubbleStyle} px-4 py-3`}
+                        >
+                          <pre className="whitespace-pre-wrap text-sm leading-relaxed">
+                            {m.text}
+                          </pre>
+
+                          {/* inline rate-limit banner under assistant bubble */}
+                          {rateLimit && m.id === rateLimit.msgId ? (
+                            <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                              <div className="text-xs text-gray-200">
+                                LLM is rate-limited. Retrying in{" "}
+                                <span className="font-semibold">
+                                  {fmtCountdown(rateLimitRemainingMs)}
+                                </span>{" "}
+                                or switch to Deterministic.
+                              </div>
+                              <div className="mt-2 flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await sendUserText(rateLimit.lastUserText, {
+                                      appendUser: false,
+                                    });
+                                  }}
+                                  className="rounded-lg border border-white/10 bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15 disabled:opacity-50"
+                                  disabled={isLoading}
+                                >
+                                  Retry now
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setChatMode("deterministic");
+                                    clearRateLimit();
+                                    addText(
+                                      "assistant",
+                                      "Switched to Deterministic. Try the same query again."
+                                    );
+                                  }}
+                                  className="rounded-lg border border-white/10 bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15"
+                                >
+                                  Switch to Deterministic
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <TriageCard run={m.run} />
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* typing indicator bubble (assistant, left) */}
+              {typing ? (
+                <div className="flex justify-start">
+                  <div className="max-w-[82%] w-full">
+                    <div className="text-[10px] text-gray-500 mb-1 text-left">
+                      {mounted ? new Date().toLocaleString() : nowIso()}
+                    </div>
+                    <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                      <TypingDots />
+                    </div>
+                  </div>
                 </div>
-              ))}
+              ) : null}
             </div>
           </div>
 
           {/* Composer */}
-          <div className="border-t border-gray-200 bg-gray-50 p-4">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                className="flex-1 rounded-xl border border-gray-300 bg-white text-gray-900 px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 placeholder-gray-400"
-                placeholder={chatMode === "llm" ? "Try: boston live last 1hr" : "Try: live in bos last 60m"}
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    onSend();
-                  }
-                }}
-                disabled={isLoading}
-              />
-              <button
-                type="button"
-                onClick={onSend}
-                disabled={isLoading || !chatInput.trim()}
-                className="px-5 py-3 rounded-xl bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isLoading ? "Running..." : "Send"}
-              </button>
-            </div>
-            <div className="mt-2 text-[11px] text-gray-500">
-              Enter sends • Results appear inline as cards • Evidence/SQL are placeholders today
-            </div>
+          <div className="mt-4 flex gap-3">
+            <input
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+              placeholder="Try: live in bos last 2h"
+              className="flex-1 rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-blue-500/40"
+              disabled={isLoading}
+            />
+            <button
+              onClick={handleSend}
+              disabled={isLoading || !chatInput.trim()}
+              className="rounded-2xl px-5 py-3 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isLoading ? "Running..." : "Send"}
+            </button>
+          </div>
+
+          <div className="mt-2 text-xs text-gray-500">
+            Enter sends • Results appear inline as cards • Evidence/SQL are placeholders
           </div>
         </div>
       </div>
+
+      {/* Schema modal (placeholder) */}
+      {schemaOpen ? (
+        <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-6">
+          <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#0b0b0b] p-6">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-lg font-semibold text-white">Schema helper</div>
+                <div className="text-sm text-gray-400 mt-1">
+                  Contract / fields / examples (placeholder).
+                </div>
+              </div>
+              <button
+                onClick={() => setSchemaOpen(false)}
+                className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-gray-200">
+              <div className="text-xs text-gray-400 mb-2">Coming soon</div>
+              <ul className="list-disc ml-5 space-y-1 text-gray-200/90">
+                <li>Partner + service/region/pop definitions</li>
+                <li>CRC glossary shortcuts</li>
+                <li>Example prompts + filter syntax</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

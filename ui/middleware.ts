@@ -4,12 +4,13 @@ import type { NextRequest } from "next/server";
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // Allow the demo login page + login/logout API routes
-  if (
-    pathname === "/demo" ||
-    pathname.startsWith("/api/demo-login") ||
-    pathname.startsWith("/api/demo-logout")
-  ) {
+  // ✅ Always allow ALL API routes (otherwise curl + UI fetches redirect to /demo)
+  if (pathname.startsWith("/api/")) {
+    return NextResponse.next();
+  }
+
+  // Allow the demo login page
+  if (pathname === "/demo") {
     return NextResponse.next();
   }
 
@@ -24,7 +25,7 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // Check demo cookie
+  // Check demo cookie (UI pages only)
   const authed = req.cookies.get("cachey_demo")?.value === "1";
   if (authed) return NextResponse.next();
 
