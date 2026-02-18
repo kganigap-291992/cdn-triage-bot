@@ -7,17 +7,23 @@
 
 ## Overview
 
-Cachey is an automated operational analytics system for CDN incident triage.
+Cachey is a deterministic, warehouse-backed operational analytics system
+designed for CDN incident triage.
 
-It analyzes structured delivery telemetry and produces deterministic,
-evidence-backed summaries suitable for incident response workflows.
+It transforms structured telemetry into:
 
-The system is designed around one core principle:
+-   Deterministic metrics
+-   Inspectable SQL
+-   Evidence-backed summaries
+-   Reproducible triage workflows
 
-> Deterministic metrics computation first.  
+Core principle:
+
+> Deterministic metrics first.
 > AI assistance second.
 
-All telemetry in this repository is synthetically generated to simulate real-world CDN delivery patterns.
+All telemetry used in this repository is synthetically generated to
+simulate real-world CDN delivery patterns. No production logs are used.
 
 ---
 
@@ -192,6 +198,138 @@ flowchart LR
 
 ---
 
+## V4 --- Warehouse-Backed Analytics (Current)
+
+### Objective
+
+Replace demo-scale CSV computation with a production-style warehouse
+architecture using ClickHouse.
+
+### Data Flow
+
+``` mermaid
+flowchart LR
+    Generator --> RawEvents
+    RawEvents --> ClickHouse
+    ClickHouse --> Rollup5m
+    Rollup5m --> CacheyAPI
+    CacheyAPI --> UI
+```
+
+
+------------------------------------------------------------------------
+
+# Data Architecture
+
+## 1. Raw Events Table
+
+One row per synthetic request.
+
+Example fields:
+
+-   timestamp
+-   service (live/vod)
+-   region
+-   pop
+-   partner
+-   response_code
+-   cache_result
+-   ttms
+-   ua_family
+-   url_type
+
+Used for:
+
+-   Evidence drill-down
+-   Modeling
+-   Feature engineering
+-   Future anomaly detection
+
+------------------------------------------------------------------------
+
+## 2. Rollup Table (5m cadence)
+
+Aggregated by:
+
+-   time bucket
+-   service
+-   region
+-   pop
+-   partner
+
+Pre-computed metrics:
+
+-   request_count
+-   error_rate
+-   p95_ttms
+-   p99_ttms
+-   cache_hit_ratio
+
+Used for:
+
+-   Fast triage
+-   Graph rendering
+-   Chat-based queries
+
+------------------------------------------------------------------------
+
+# Current System Architecture
+
+``` mermaid
+flowchart TD
+    subgraph Frontend
+        ChatUI
+        FilterPanel
+        TriageCards
+    end
+
+    subgraph API Layer
+        ChatAPI
+        TriageAPI
+    end
+
+    subgraph Data Layer
+        ClickHouse
+        RawEvents
+        Rollup5m
+    end
+
+    ChatUI --> ChatAPI
+    FilterPanel --> TriageAPI
+    ChatAPI --> TriageAPI
+    TriageAPI --> ClickHouse
+    ClickHouse --> Rollup5m
+    ClickHouse --> RawEvents
+    TriageAPI --> TriageCards
+```
+
+------------------------------------------------------------------------
+
+# Conversational Execution Model
+
+When user types:
+
+    live in bos last 2h
+
+System:
+
+1.  Deterministically parses filters
+2.  Constructs SQL
+3.  Queries rollup table
+4.  Returns:
+    -   Summary
+    -   Metrics JSON
+    -   Graph data
+    -   Expandable SQL
+    -   Expandable Evidence
+
+LLM (optional):
+
+-   May refine intent
+-   May assist explanation
+-   Never computes metrics
+
+
 # Technology Stack
 
 ## Frontend
@@ -210,17 +348,24 @@ flowchart LR
 
 ## Data Layer
 
-- Demo Source: Synthetic CDN Telemetry (Generated for Safe Demonstration) 
-- Production Target: ClickHouse (Planned)  
-
-> Note: All telemetry used in this project is synthetically generated 
-> to mirror real-world CDN traffic patterns. No production logs or 
-> customer data are used.
+-   Synthetic event generator
+-   ClickHouse
+-   Raw + Rollup tables
+-   SQL as source of truth
 
 ## Conversational Layer
 
-- Current Mode: Deterministic Parser  
-- Optional Provider: OpenRouter  
+-   Deterministic parser
+-   Optional OpenRouter integration
+-   Free-tier model fallback handling
+-   Rate-limit resilience
+
+## Deployment
+
+-   Hosted on Vercel
+-   Automatic builds from GitHub
+-   Production + Preview environments
+-   TypeScript validation on build
 
 ### Example Models
 
@@ -244,9 +389,6 @@ flowchart LR
 - Production + Preview environments  
 - Build-time TypeScript validation  
 
-## Previous Demo Method
-
-- Cloudflare Tunnel  
 
 ## Migration Reason
 
@@ -288,12 +430,25 @@ flowchart LR
 
 ---
 
-# Future Direction (ML Integration)
+# Roadmap
 
-Planned enhancements include:
+## Short-Term
 
-- Time-series anomaly detection  
-- Rolling baseline deviation scoring  
-- Blast radius quantification  
-- Severity classification  
-- Model lifecycle integration (future MLOps track)  
+-   SQL editor panel
+-   Evidence sampling from raw table
+-   Materialized views
+-   Query transparency improvements
+
+## Mid-Term
+
+-   Time-series anomaly detection
+-   Rolling baseline deviation scoring
+-   Blast radius estimation
+-   Confidence scoring
+
+## Long-Term (MLOps Track)
+
+-   Feature store integration
+-   Model lifecycle orchestration
+-   Automated retraining hooks
+-   Severity classification models
