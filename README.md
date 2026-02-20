@@ -405,18 +405,6 @@ LLM (optional):
 - No customer data is used
 - No proprietary systems are exposed
 
----
-
-# Roadmap
-
-- ClickHouse backend integration  
-- Time-series anomaly detection  
-- Blast radius estimation  
-- Confidence scoring  
-- Metrics export and observability  
-- LLM-assisted explanation layer  
-- Rate limiting  
-- Authentication hardening  
 
 ---
 

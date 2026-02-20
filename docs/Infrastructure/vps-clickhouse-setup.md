@@ -1,4 +1,5 @@
 # 🧱 Cachey Infrastructure Setup (VPS + ClickHouse)
+Author: Krishna Reddy GV
 
 ## Infrastructure
 
@@ -243,3 +244,231 @@ SQL
 -   5-minute aggregation automation
 -   Reverse proxy (Caddy) + HTTPS
 -   Vercel → API → ClickHouse (RO user only)
+
+# 🧱 Cachey Infrastructure Setup (VPS + ClickHouse)
+
+### (Telemetry Pipeline + Automation)
+
+------------------------------------------------------------------------
+
+## 📍 Environment 
+
+-   Deterministic telemetry generator (`cdn-telemetry-kit`)
+-   JSONEachRow ingestion via HTTP
+-   Raw minute analytics table (`raw_minute`)
+-   30-day TTL retention policy
+-   Daily automated ingestion (cron)
+-   Weekly Docker cleanup
+-   Daily disk usage monitoring
+
+Sensitive information redacted. Never commit real passwords to GitHub.
+
+------------------------------------------------------------------------
+
+# 9️⃣ Create `raw_minute` Analytics Table
+
+``` bash
+docker exec -it clickhouse clickhouse-client --query "
+CREATE TABLE IF NOT EXISTS cachey.raw_minute
+(
+  seed UInt16,
+
+  ts DateTime,
+  partner LowCardinality(String),
+  service LowCardinality(String),
+  region LowCardinality(String),
+  pop LowCardinality(String),
+  host LowCardinality(String),
+  content_type LowCardinality(String),
+  ua_family LowCardinality(String),
+
+  requests UInt32,
+  bytes_sent UInt64,
+  p50_ms Float32,
+  p95_ms Float32,
+  p99_ms Float32,
+  cache_hit_rate Float32,
+
+  http_2xx_count UInt32,
+  http_3xx_count UInt32,
+  http_4xx_count UInt32,
+  http_5xx_count UInt32,
+
+  status_200 UInt32,
+  status_206 UInt32,
+  status_304 UInt32,
+  status_403 UInt32,
+  status_404 UInt32,
+  status_429 UInt32,
+  status_500 UInt32,
+  status_502 UInt32,
+  status_503 UInt32,
+  status_504 UInt32,
+
+  crc_errors UInt32
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMMDD(ts)
+ORDER BY (partner, service, region, pop, ts, content_type, ua_family, host)
+"
+```
+
+------------------------------------------------------------------------
+
+# 🔄 10️⃣ Apply 30-Day TTL Retention
+
+``` bash
+docker exec -it clickhouse clickhouse-client   --query "ALTER TABLE cachey.raw_minute MODIFY TTL ts + INTERVAL 30 DAY DELETE;"
+```
+
+Verify:
+
+``` bash
+docker exec -it clickhouse clickhouse-client   --query "SHOW CREATE TABLE cachey.raw_minute"
+```
+
+Look for:
+
+    TTL ts + toIntervalDay(30)
+
+------------------------------------------------------------------------
+
+# 🔧 11️⃣ Telemetry Generator Setup (VPS)
+
+Clone repository:
+
+``` bash
+git clone https://github.com/<REDACTED>/cdn-telemetry-kit.git
+cd cdn-telemetry-kit
+```
+
+Install Python environment:
+
+``` bash
+sudo apt install python3-venv python3-pip -y
+python3 -m venv .venv
+source .venv/bin/activate
+pip install numpy pandas
+```
+
+Test JSON emission:
+
+``` bash
+python3 scripts/emit_json_eachrow.py   --minutes 10   --seed 7   --start 2026-02-20T00:00:00Z | head -n 2
+```
+
+------------------------------------------------------------------------
+
+# 🚀 12️⃣ Manual JSONEachRow Ingestion
+
+``` bash
+python3 scripts/emit_json_eachrow.py   --minutes 10   --seed 7   --start 2026-02-20T00:00:00Z | curl -K ~/.ch_curl   "http://127.0.0.1:8123/?query=INSERT%20INTO%20cachey.raw_minute%20FORMAT%20JSONEachRow"   --data-binary @-
+```
+
+Verify:
+
+``` bash
+docker exec -it clickhouse clickhouse-client   --query "SELECT count() FROM cachey.raw_minute"
+```
+
+------------------------------------------------------------------------
+
+# 🔐 13️⃣ Secure Curl Authentication
+
+Create protected auth file:
+
+``` bash
+cat > ~/.ch_curl <<'EOF'
+user = "cachey_admin:<REDACTED_PASSWORD>"
+EOF
+chmod 600 ~/.ch_curl
+```
+
+Test:
+
+``` bash
+curl -K ~/.ch_curl --get   --data-urlencode "query=SELECT user()"   http://127.0.0.1:8123/
+```
+
+------------------------------------------------------------------------
+
+# 🔁 14️⃣ Daily Seed Automation
+
+Script location:
+
+    ~/scripts/seed_yesterday.sh
+
+Responsibilities:
+
+-   Compute yesterday UTC boundaries
+-   DELETE yesterday range (POST)
+-   Insert 1440 minutes
+-   Validate row count
+-   Log execution
+
+Logs:
+
+    ~/logs/seed_yesterday_YYYY-MM-DD.log
+
+------------------------------------------------------------------------
+
+# ⏰ 15️⃣ Cron Jobs
+
+``` cron
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+5 0 * * * /home/krishna/scripts/disk_check.sh
+10 0 * * * /home/krishna/scripts/seed_yesterday.sh
+30 3 * * 0 docker system prune -af --volumes >> /home/krishna/logs/docker_prune.log 2>&1
+```
+
+------------------------------------------------------------------------
+
+# 💾 16️⃣ Disk Monitoring
+
+Create:
+
+``` bash
+~/scripts/disk_check.sh
+```
+
+Function:
+
+-   Log disk usage daily
+-   Alert if ≥ 80%
+-   Prevent silent disk exhaustion
+
+------------------------------------------------------------------------
+
+# 🔒 Security Model (Final State)
+
+-   ClickHouse bound to `127.0.0.1`
+-   Admin user: `cachey_admin` (write access)
+-   Read-only user: `cachey_ro` (future API use)
+-   Credentials stored locally only (never committed)
+-   Principle of least privilege enforced
+-   30-day TTL prevents runaway disk growth
+
+------------------------------------------------------------------------
+
+# 🧠 Operational Notes
+
+-   GET = read-only in ClickHouse HTTP
+-   All DELETE/ALTER/CREATE must use POST
+-   ClickHouse DateTime requires: `YYYY-MM-DD HH:MM:SS`
+-   Cron runs minimal environment → define SHELL and PATH explicitly
+-   First large ingestion triggers heavy merge I/O (expected)
+
+------------------------------------------------------------------------
+
+# 📈 Future Extensions
+
+-   Materialized 5-minute aggregation table(For now 1-min works well)
+-   Anomaly detection (z-score in ClickHouse)
+-   API layer using read-only user
+-   Reverse proxy (Caddy) + HTTPS
+-   Observability stack (Grafana/ELK)
+
+------------------------------------------------------------------------
+
