@@ -4,3 +4,9 @@ ui/node_modules
 ui/.next
 
 ui/lib/triage/metricsEngine.js.broken
+
+
+# Generated telemetry (debug mode)
+data/*.csv
+data/*.parquet
+

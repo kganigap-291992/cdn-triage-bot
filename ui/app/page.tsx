@@ -4,18 +4,86 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 
 // ------------------------------------------------------------
-// Configuration
+// Home page (/) — Chat-first, dark theme, ClickHouse-first
+// Keeps /debug as legacy page (unchanged).
+// Keeps /demo unchanged.
+// Keeps /api/triage unchanged.
 // ------------------------------------------------------------
-const DEFAULT_CSV_URL =
-  "https://raw.githubusercontent.com/kganigap-291992/cdn-triage-bot/refs/heads/main/data/cdn_logs_6h_80k_stresstest.csv";
 
-const STORAGE_KEY = "cdn-triage-history-v1";
-const CHAT_MODE_KEY = "cdn-triage-chatmode-v1";
-
-// ------------------------------------------------------------
-// PATCH: Persist selected partner (ClickHouse) in localStorage
-// ------------------------------------------------------------
+const LOGO_SRC = "/cachey-logo.png";
 const PARTNER_KEY = "cdn-triage-partner-v1";
+
+const PARTNER_OPTIONS = [
+  "acme_media",
+  "beta_stream",
+  "charlie_video",
+  "delta_tv",
+  "echo_entertainment",
+] as const;
+
+type Partner = (typeof PARTNER_OPTIONS)[number];
+type PartnerOrMissing = Partner | "";
+
+type DataSource = "clickhouse";
+type ChatMode = "deterministic" | "llm";
+
+type TriageInputs = {
+  dataSource: DataSource;
+  partner: PartnerOrMissing;
+  service: string;
+  region: string;
+  pop: string;
+  windowMinutes: number;
+};
+
+type ChatText = {
+  id: string;
+  type: "text";
+  role: "system" | "user" | "assistant";
+  ts: string;
+  text: string;
+};
+
+type ChatTriage = {
+  id: string;
+  type: "triage";
+  role: "assistant";
+  ts: string;
+  run: {
+    inputs: TriageInputs;
+    summaryText: string;
+    metricsJson: any;
+  };
+};
+
+type ChatMsg = ChatText | ChatTriage;
+
+type TimeseriesPoint = {
+  ts: string;
+  totalRequests: number;
+  error5xxCount: number;
+  errorRatePct: number;
+  p95TtmsMs: number | null;
+  p99TtmsMs: number | null;
+
+  statusCountsByCode?: Record<string, number>;
+  hostCountsByHost?: Record<string, number>;
+  crcCountsByCrc?: Record<string, number>;
+};
+
+type TimeseriesData = {
+  bucketSeconds: number | null;
+  startTs: string | null;
+  endTs: string | null;
+  points: TimeseriesPoint[];
+  statusCodeSeries?: string[];
+  hostSeries?: string[];
+  crcSeries?: string[];
+};
+
+function nowIso() {
+  return new Date().toISOString();
+}
 
 function safeGetLS(key: string) {
   try {
@@ -29,223 +97,18 @@ function safeSetLS(key: string, val: string) {
     localStorage.setItem(key, val);
   } catch {}
 }
-function safeRemoveLS(key: string) {
-  try {
-    localStorage.removeItem(key);
-  } catch {}
-}
-
-
-const MAX_HISTORY = 10;
-
-const LOGO_SRC = "/cachey-logo.png"; // ✅ put your logo in /public with this name
-
-// Allowed values for deterministic chat parsing
-const ALLOWED = {
-  service: new Set(["all", "live", "vod"]),
-} as const;
-
-function optionsFromSet(set: Set<string>) {
-  const arr = Array.from(set);
-  return arr.sort((a, b) =>
-    a === "all" ? -1 : b === "all" ? 1 : a.localeCompare(b)
-  );
-}
-
-const SERVICE_OPTIONS = optionsFromSet(ALLOWED.service);
-
-const PARTNER_OPTIONS = [
-  "acme_media",
-  "beta_stream",
-  "charlie_video",
-  "delta_tv",
-  "echo_entertainment",
-] as const;
-
-// ------------------------------------------------------------
-// Types
-// ------------------------------------------------------------
-type DataSource = "csv" | "clickhouse";
-type Partner = (typeof PARTNER_OPTIONS)[number];
-type PartnerOrMissing = Partner | "";
-type ChatMode = "deterministic" | "llm";
-
-type ChatTextMessage = {
-  id: string;
-  type: "text";
-  role: "system" | "user" | "assistant";
-  text: string;
-  timestamp: string; // ISO
-};
-
-type ChatTriageMessage = {
-  id: string;
-  type: "triage_result";
-  role: "assistant";
-  timestamp: string; // ISO
-  run: {
-    inputs: {
-      dataSource: DataSource;
-      partner: PartnerOrMissing;
-      service: string;
-      region: string;
-      pop: string;
-      windowMinutes: number;
-    };
-    summaryText: string;
-    metricsJson: any;
-  };
-};
-
-type ChatMessage = ChatTextMessage | ChatTriageMessage;
-
-type TriageInputs = {
-  dataSource: DataSource;
-  partner: PartnerOrMissing;
-  csvUrl: string;
-  fileName: string;
-  service: string;
-  region: string;
-  pop: string;
-  windowMinutes: number;
-  debug: boolean;
-};
-
-type TriageRun = {
-  id: string;
-  timestamp: string;
-  inputs: TriageInputs;
-  summaryText: string;
-  metricsJson: any;
-};
-
-type MetricsData = {
-  totalRequests: number;
-  p95TtmsMs: number | null;
-  p99TtmsMs: number | null;
-  error5xxCount: number | null;
-  errorRatePct: number | null;
-};
-
-type TimeseriesPoint = {
-  ts: string;
-  totalRequests: number;
-  error5xxCount: number;
-  errorRatePct: number;
-  p95TtmsMs: number | null;
-  p99TtmsMs: number | null;
-
-  // stacked
-  statusCountsByCode?: Record<string, number>;
-  hostCountsByHost?: Record<string, number>;
-  crcCountsByCrc?: Record<string, number>;
-};
-
-type TimeseriesData = {
-  bucketSeconds: number | null;
-  startTs: string | null;
-  endTs: string | null;
-  points: TimeseriesPoint[];
-
-  // stable legend order (optional but recommended)
-  statusCodeSeries?: string[];
-  hostSeries?: string[];
-  crcSeries?: string[];
-};
-
-// ------------------------------------------------------------
-// Utility
-// ------------------------------------------------------------
-function getCurrentTimestamp(): string {
-  return new Date().toISOString();
-}
-
-function safeParse<T>(json: string, fallback: T): T {
-  try {
-    return JSON.parse(json);
-  } catch {
-    return fallback;
-  }
-}
-
-function normalizeText(text: string): string {
-  return (text || "").trim().toLowerCase();
-}
-
-// ✅ improved smalltalk detector (so "what can you do" doesn't get a canned reply)
-function isGreetingOrSmallTalk(text: string): boolean {
-  const t = normalizeText(text);
-  if (!t) return true;
-
-  if (t.length <= 3) return ["hi", "hey", "yo", "ok", "k"].includes(t);
-
-  // treat these as help-ish (not smalltalk)
-  if (t.includes("what can you do") || t.includes("help")) return false;
-
-  const greetingPatterns = [
-    /^hi\b/,
-    /^hey\b/,
-    /^hello\b/,
-    /^yo\b/,
-    /^sup\b/,
-    /^what'?s up\b/,
-    /^good (morning|afternoon|evening)\b/,
-    /^how are you\b/,
-    /^how's it going\b/,
-    /^how r u\b/,
-    /^thanks\b/,
-    /^thank you\b/,
-  ];
-  return greetingPatterns.some((pattern) => pattern.test(t));
-}
-
-function looksLikeTriageQuery(text: string): boolean {
-  const normalized = normalizeText(text);
-  if (!normalized) return false;
-  if (normalized.includes("=")) return true;
-  const keywords = [
-    "service",
-    "region",
-    "pop",
-    "win",
-    "window",
-    "errors",
-    "p95",
-    "p99",
-    "ttms",
-    "triage",
-    "run",
-    "vod",
-    "live",
-    "last",
-    "past",
-  ];
-  return keywords.some((keyword) => normalized.includes(keyword));
-}
 
 function formatMsOrNA(x: number | null | undefined): string {
   if (x == null || !Number.isFinite(Number(x))) return "n/a";
   return `${Math.round(Number(x))} ms`;
 }
-
 function formatPctOrNA(x: number | null | undefined): string {
   if (x == null || !Number.isFinite(Number(x))) return "n/a";
   return `${Number(x).toFixed(2)}%`;
 }
-
 function formatIntOrNA(x: number | null | undefined): string {
   if (x == null || !Number.isFinite(Number(x))) return "0";
   return `${Math.round(Number(x)).toLocaleString()}`;
-}
-
-function formatTimestampClientSafe(iso: string, mounted: boolean): string {
-  if (!iso) return "";
-  if (!mounted) return iso.replace("T", " ").replace(".000Z", "Z");
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
 }
 
 function clamp(n: number, min: number, max: number) {
@@ -260,6 +123,58 @@ function bucketLabel(bucketSeconds: number | null | undefined) {
   return `${s}s`;
 }
 
+// ---- UTC label helpers (charts) ----
+function formatUtcHM(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+function formatUtcYmdHm(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const y = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const da = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${y}-${mo}-${da} ${hh}:${mm}`;
+}
+function timeLabelShort(tsIso: string, spanMinutes: number) {
+  if (spanMinutes <= 180) return formatUtcHM(tsIso);
+
+  if (spanMinutes <= 1440) {
+    const d = new Date(tsIso);
+    if (Number.isNaN(d.getTime())) return tsIso;
+    const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const da = String(d.getUTCDate()).padStart(2, "0");
+    const hh = String(d.getUTCHours()).padStart(2, "0");
+    const mm = String(d.getUTCMinutes()).padStart(2, "0");
+    return `${mo}-${da} ${hh}:${mm}`;
+  }
+
+  const d = new Date(tsIso);
+  if (Number.isNaN(d.getTime())) return tsIso;
+  const y = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const da = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${mo}-${da}`;
+}
+
+function formatCountTick(v: number): string {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "";
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return Math.round(n).toString();
+}
+
+// Stable palette used in old page
 function stableColorForKey(key: string) {
   const palette = [
     "#2563eb",
@@ -284,178 +199,21 @@ function stableColorForKey(key: string) {
   return palette[h % palette.length];
 }
 
-// ---- UTC + axis formatting (charts) ----
-function formatUtcHM(iso: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
-}
-
-function formatUtcYmdHm(iso: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const y = d.getUTCFullYear();
-  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const da = String(d.getUTCDate()).padStart(2, "0");
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  return `${y}-${mo}-${da} ${hh}:${mm}`;
-}
-
-function formatCountTick(v: number): string {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "";
-  const abs = Math.abs(n);
-  if (abs >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
-  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return Math.round(n).toString();
-}
-
-function timeLabelShort(tsIso: string, spanMinutes: number) {
-  if (spanMinutes <= 180) return formatUtcHM(tsIso);
-
-  if (spanMinutes <= 1440) {
-    const d = new Date(tsIso);
-    if (Number.isNaN(d.getTime())) return tsIso;
-    const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const da = String(d.getUTCDate()).padStart(2, "0");
-    const hh = String(d.getUTCHours()).padStart(2, "0");
-    const mm = String(d.getUTCMinutes()).padStart(2, "0");
-    return `${mo}-${da} ${hh}:${mm}`;
-  }
-
-  const d = new Date(tsIso);
-  if (Number.isNaN(d.getTime())) return tsIso;
-  const y = d.getUTCFullYear();
-  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const da = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${mo}-${da}`;
-}
-
 // ------------------------------------------------------------
-// Chat "AI-smart" helpers (Deterministic)
+// Typing dots (subtle)
 // ------------------------------------------------------------
-type ChatIntent = {
-  command: "help" | "reset" | "show_filters" | "explain" | "run" | null;
-  service?: string | null;
-  region?: string | null;
-  pop?: string | null;
-  windowMinutes?: number | null;
-  mentionedRegion?: boolean;
-  mentionedPop?: boolean;
-};
-
-function normalizeToken(v: string) {
-  return String(v || "")
-    .trim()
-    .toLowerCase()
-    .replace(/^["']|["']$/g, "");
-}
-
-function parseWindowToMinutes(raw: string): number | null {
-  const s = normalizeToken(raw);
-  if (!s) return null;
-  const m = s.match(
-    /^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$/
+function TypingDots() {
+  return (
+    <div className="inline-flex items-center gap-1">
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-300/70 animate-bounce [animation-delay:-0.2s]" />
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-300/70 animate-bounce [animation-delay:-0.1s]" />
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-300/70 animate-bounce" />
+    </div>
   );
-  if (!m) return null;
-  const n = Number(m[1]);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  const unit = m[2] || "m";
-  if (unit.startsWith("h")) return n * 60;
-  return n;
-}
-
-function parseChatIntent(text: string): ChatIntent {
-  const t = normalizeText(text);
-
-  if (
-    t === "help" ||
-    t === "?" ||
-    t.startsWith("help ") ||
-    t.includes("what can you do")
-  )
-    return { command: "help" };
-
-  if (t === "reset" || t === "clear" || t === "start over" || t === "wipe")
-    return { command: "reset" };
-
-  if (
-    t === "filters" ||
-    t === "show filters" ||
-    t === "show filter" ||
-    t === "current filters"
-  )
-    return { command: "show_filters" };
-
-  if (t === "explain" || t.startsWith("explain ") || t.includes("what is this"))
-    return { command: "explain" };
-
-  if (t === "run" || t === "triage" || t === "go" || t === "execute")
-    return { command: "run" };
-
-  const serviceKV = t.match(/\b(service|svc)\s*=\s*([a-z0-9_]+)\b/);
-  const serviceWord = t.match(/\b(service|svc)\s+([a-z0-9_]+)\b/);
-  let service = serviceKV?.[2] || serviceWord?.[2] || null;
-
-  if (!service) {
-    const svcLoose = t.match(/\b(vod|live|all)\b/);
-    service = svcLoose?.[1] || null;
-  }
-
-  const regionKV = t.match(/\bregion\s*=\s*([a-z0-9_]+)\b/);
-  const regionWord = t.match(/\bregion\s+([a-z0-9_]+)\b/);
-  const regionIn = t.match(/\bin\s+([a-z0-9_]+)\b/);
-  const region = regionKV?.[1] || regionWord?.[1] || regionIn?.[1] || null;
-
-  const popKV = t.match(/\bpop\s*=\s*([a-z0-9_\-]+)\b/);
-  const popWord = t.match(/\bpop\s+([a-z0-9_\-]+)\b/);
-  const popAt = t.match(/\bat\s+([a-z0-9_\-]+)\b/);
-  const pop = popKV?.[1] || popWord?.[1] || popAt?.[1] || null;
-
-  const winKV = t.match(/\b(win|window)\s*=\s*([0-9a-z]+)\b/);
-  const winWord = t.match(/\b(win|window)\s+([0-9a-z]+)\b/);
-  const lastWord = t.match(/\blast\s+([0-9a-z]+)\b/);
-  const windowMinutes =
-    parseWindowToMinutes(winKV?.[2] || winWord?.[2] || lastWord?.[1] || "") ??
-    null;
-
-  const mentionedRegion = /\bregion\b|\bin\b/.test(t);
-  const mentionedPop = /\bpop\b|\bat\b/.test(t);
-
-  return {
-    command: null,
-    service: service ? normalizeToken(service) : null,
-    region: region ? normalizeToken(region) : null,
-    pop: pop ? normalizeToken(pop) : null,
-    windowMinutes,
-    mentionedRegion,
-    mentionedPop,
-  };
-}
-
-function buildFiltersSummary(args: {
-  dataSource: DataSource;
-  partner: PartnerOrMissing;
-  service: string;
-  region: string;
-  pop: string;
-  windowMinutes: number;
-}) {
-  const { dataSource, partner, service, region, pop, windowMinutes } = args;
-  const base = `svc=${service}, region=${region}, pop=${pop}, win=${windowMinutes}m`;
-  return dataSource === "clickhouse"
-    ? `source=clickhouse, partner=${partner || "(missing)"}, ${base}`
-    : `source=csv, ${base}`;
 }
 
 // ------------------------------------------------------------
-// Generic stacked bar chart (status / host / crc) with drag-to-zoom
+// Generic stacked bar chart (ported from old page)
 // ------------------------------------------------------------
 function StackedBarTimeseries({
   title,
@@ -464,7 +222,7 @@ function StackedBarTimeseries({
   bucketSeconds,
   seriesKeys,
   getMap,
-  height = 180,
+  height = 190,
   windowMinutes,
 }: {
   title: string;
@@ -570,24 +328,24 @@ function StackedBarTimeseries({
   const selectionW = Math.abs(drag.x1 - drag.x0);
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
+    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] min-w-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-xs text-gray-500">{subtitle}</div>
-          <div className="text-sm font-semibold text-gray-900">{title}</div>
-          <div className="text-[11px] text-gray-500 mt-1">
+          <div className="text-xs text-gray-400">{subtitle}</div>
+          <div className="text-sm font-semibold text-gray-100">{title}</div>
+          <div className="text-[11px] text-gray-400 mt-1">
             {ts.startTs && ts.endTs
               ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(
                   ts.endTs
                 )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
               : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
           </div>
-          <div className="text-[11px] text-gray-400 mt-1">
+          <div className="text-[11px] text-gray-500 mt-1">
             Drag to zoom • double-click to reset
             {zoom ? (
               <button
                 type="button"
-                className="ml-2 underline hover:text-gray-600"
+                className="ml-2 underline hover:text-gray-300"
                 onClick={() => setZoom(null)}
               >
                 reset zoom
@@ -597,8 +355,8 @@ function StackedBarTimeseries({
         </div>
 
         <div className="text-right">
-          <div className="text-xs text-gray-500">Latest</div>
-          <div className="text-[11px] text-gray-700">
+          <div className="text-xs text-gray-400">Latest</div>
+          <div className="text-[11px] text-gray-200">
             {latest
               ? `${formatUtcHM(latest.ts)} UTC • ${latestTotal.toLocaleString()} events`
               : "n/a"}
@@ -606,7 +364,7 @@ function StackedBarTimeseries({
         </div>
       </div>
 
-      <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
+      <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
         <svg
           ref={svgRef}
           viewBox={`0 0 ${w} ${h}`}
@@ -635,11 +393,12 @@ function StackedBarTimeseries({
             setDrag({ active: false, x0: 0, x1: 0 });
           }}
         >
+          {/* Axis labels */}
           <text
             x={padLeft - 38}
             y={padTop + plotH / 2}
             fontSize="10"
-            fill="#6b7280"
+            fill="#9ca3af"
             transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
           >
             Events
@@ -648,12 +407,13 @@ function StackedBarTimeseries({
             x={padLeft + plotW / 2}
             y={h - 10}
             fontSize="10"
-            fill="#6b7280"
+            fill="#9ca3af"
             textAnchor="middle"
           >
             Time (UTC, {bucketLabel(bucketSeconds)} buckets)
           </text>
 
+          {/* Grid + y ticks */}
           {tickVals.map((v, idx) => {
             const t = v / maxTotal;
             const y = padTop + (1 - t) * plotH;
@@ -670,7 +430,7 @@ function StackedBarTimeseries({
                   x={padLeft - 10}
                   y={y + 3}
                   fontSize="10"
-                  fill="#6b7280"
+                  fill="#9ca3af"
                   textAnchor="end"
                   opacity={0.95}
                 >
@@ -680,11 +440,11 @@ function StackedBarTimeseries({
             );
           })}
 
+          {/* Bars */}
           {points.map((p, i) => {
             const x = padLeft + i * (barW + gap);
             const m = getMap(p) || {};
             let yTop = padTop + plotH;
-
             return (
               <g key={p.ts}>
                 {keys.map((k) => {
@@ -710,6 +470,7 @@ function StackedBarTimeseries({
             );
           })}
 
+          {/* X labels */}
           {points.map((p, i) => {
             const show = i % xLabelEvery === 0 || i === points.length - 1;
             if (!show) return null;
@@ -721,7 +482,7 @@ function StackedBarTimeseries({
                 x={x}
                 y={padTop + plotH + 18}
                 fontSize="10"
-                fill="#6b7280"
+                fill="#9ca3af"
                 textAnchor="middle"
               >
                 {label}
@@ -729,6 +490,7 @@ function StackedBarTimeseries({
             );
           })}
 
+          {/* Drag selection */}
           {drag.active && selectionW > 2 ? (
             <rect
               x={selectionX}
@@ -743,7 +505,7 @@ function StackedBarTimeseries({
           ) : null}
         </svg>
 
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-600">
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-300">
           {keys.map((k) => (
             <div key={k} className="flex items-center gap-1.5">
               <span
@@ -760,12 +522,12 @@ function StackedBarTimeseries({
 }
 
 // ------------------------------------------------------------
-// Latency line chart with drag-to-zoom + real ticks
+// Latency line chart (ported from old page)
 // ------------------------------------------------------------
 function LatencyTimeseriesLines({
   points,
   bucketSeconds,
-  height = 180,
+  height = 190,
   windowMinutes,
 }: {
   points: TimeseriesPoint[];
@@ -863,26 +625,26 @@ function LatencyTimeseriesLines({
   const selectionW = Math.abs(drag.x1 - drag.x0);
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
+    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] min-w-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-xs text-gray-500">Latency timeseries</div>
-          <div className="text-sm font-semibold text-gray-900">
+          <div className="text-xs text-gray-400">Latency timeseries</div>
+          <div className="text-sm font-semibold text-gray-100">
             p95 / p99 TTMS
           </div>
-          <div className="text-[11px] text-gray-500 mt-1">
+          <div className="text-[11px] text-gray-400 mt-1">
             {slice.length
               ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
                   slice[slice.length - 1].ts
                 )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
               : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
           </div>
-          <div className="text-[11px] text-gray-400 mt-1">
+          <div className="text-[11px] text-gray-500 mt-1">
             Drag to zoom • double-click to reset
             {zoom ? (
               <button
                 type="button"
-                className="ml-2 underline hover:text-gray-600"
+                className="ml-2 underline hover:text-gray-300"
                 onClick={() => setZoom(null)}
               >
                 reset zoom
@@ -891,8 +653,8 @@ function LatencyTimeseriesLines({
           </div>
         </div>
         <div className="text-right">
-          <div className="text-xs text-gray-500">Latest</div>
-          <div className="text-[11px] text-gray-700">
+          <div className="text-xs text-gray-400">Latest</div>
+          <div className="text-[11px] text-gray-200">
             {latest
               ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(
                   latest.p95TtmsMs
@@ -902,7 +664,7 @@ function LatencyTimeseriesLines({
         </div>
       </div>
 
-      <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
+      <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
         <svg
           ref={svgRef}
           viewBox={`0 0 ${w} ${h}`}
@@ -935,7 +697,7 @@ function LatencyTimeseriesLines({
             x={padLeft - 38}
             y={padTop + plotH / 2}
             fontSize="10"
-            fill="#6b7280"
+            fill="#9ca3af"
             transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
           >
             Latency (ms)
@@ -944,7 +706,7 @@ function LatencyTimeseriesLines({
             x={padLeft + plotW / 2}
             y={h - 10}
             fontSize="10"
-            fill="#6b7280"
+            fill="#9ca3af"
             textAnchor="middle"
           >
             Time (UTC, {bucketLabel(bucketSeconds)} buckets)
@@ -966,7 +728,7 @@ function LatencyTimeseriesLines({
                   x={padLeft - 10}
                   y={yy + 3}
                   fontSize="10"
-                  fill="#6b7280"
+                  fill="#9ca3af"
                   textAnchor="end"
                   opacity={0.95}
                 >
@@ -986,7 +748,7 @@ function LatencyTimeseriesLines({
           />
           <polyline
             fill="none"
-            stroke="rgba(17,24,39,0.45)"
+            stroke="rgba(17,24,39,0.55)"
             strokeWidth="2.75"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -1004,7 +766,7 @@ function LatencyTimeseriesLines({
                 x={xx}
                 y={padTop + plotH + 18}
                 fontSize="10"
-                fill="#6b7280"
+                fill="#9ca3af"
                 textAnchor="middle"
               >
                 {label}
@@ -1026,7 +788,7 @@ function LatencyTimeseriesLines({
           ) : null}
         </svg>
 
-        <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-600">
+        <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
           <div className="flex items-center gap-1.5">
             <span
               className="inline-block h-2.5 w-2.5 rounded-full"
@@ -1037,13 +799,13 @@ function LatencyTimeseriesLines({
           <div className="flex items-center gap-1.5">
             <span
               className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ background: "rgba(17,24,39,0.45)" }}
+              style={{ background: "rgba(17,24,39,0.55)" }}
             />
             <span>p99</span>
           </div>
-          <div className="text-gray-400">
-            min <span className="text-gray-700">{Math.round(minV)}ms</span> • max{" "}
-            <span className="text-gray-700">{Math.round(maxV)}ms</span>
+          <div className="text-gray-500">
+            min <span className="text-gray-200">{Math.round(minV)}ms</span> • max{" "}
+            <span className="text-gray-200">{Math.round(maxV)}ms</span>
           </div>
         </div>
       </div>
@@ -1052,262 +814,55 @@ function LatencyTimeseriesLines({
 }
 
 // ------------------------------------------------------------
-// Chat Panel
+// Main Home component
 // ------------------------------------------------------------
-function ChatPanel({
-  title,
-  mounted,
-  isLoading,
-  chatMessages,
-  chatInput,
-  setChatInput,
-  onSend,
-  chatScrollRef,
-  chatMode,
-  setChatMode,
-  execLabel,
-  showPartnerMissing,
-  partnerOptions,
-  onPickPartner,
-  onReset,
-  resetDisabled,
-}: {
-  title: string;
-  mounted: boolean;
-  isLoading: boolean;
-  chatMessages: ChatMessage[];
-  chatInput: string;
-  setChatInput: (v: string) => void;
-  onSend: () => void;
-  chatScrollRef: React.RefObject<HTMLDivElement | null>;
-
-  chatMode: ChatMode;
-  setChatMode: (m: ChatMode) => void;
-  execLabel: string;
-  showPartnerMissing: boolean;
-  partnerOptions: readonly string[];
-  onPickPartner: (p: string) => void;
-
-  onReset: () => void;
-  resetDisabled?: boolean;
-}) {
-  const placeholder =
-    chatMode === "llm"
-      ? "Try: boston live last 1hr"
-      : "Try: vod in usw2 at sjc last 60m";
-
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm flex flex-col h-[420px] min-w-0">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <div className="font-medium text-gray-900">{title}</div>
-
-        <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
-            <button
-              type="button"
-              onClick={() => setChatMode("deterministic")}
-              className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                chatMode === "deterministic"
-                  ? "bg-white text-gray-900 shadow-sm"
-                  : "text-gray-600 hover:text-gray-900"
-              }`}
-              disabled={isLoading}
-              title="Use deterministic parser only"
-            >
-              Deterministic
-            </button>
-            <button
-              type="button"
-              onClick={() => setChatMode("llm")}
-              className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                chatMode === "llm"
-                  ? "bg-white text-gray-900 shadow-sm"
-                  : "text-gray-600 hover:text-gray-900"
-              }`}
-              disabled={isLoading}
-              title="LLM Assist (general chat + hint parsing)"
-            >
-              LLM Assist
-            </button>
-          </div>
-
-          <div className="text-[11px] text-gray-600 border border-gray-200 rounded-full px-2.5 py-1 bg-white">
-            {execLabel}
-          </div>
-
-          <button
-            type="button"
-            onClick={onReset}
-            disabled={Boolean(resetDisabled) || isLoading}
-            className="text-[11px] text-gray-600 border border-gray-200 rounded-full px-2.5 py-1 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Reset chat + filters + local + server memory"
-          >
-            Reset
-          </button>
-        </div>
-      </div>
-
-      {showPartnerMissing && (
-        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
-          <div className="text-sm font-medium text-amber-900">
-            ClickHouse selected — partner required
-          </div>
-          <div className="text-xs text-amber-800 mt-1">
-            Pick a partner below or select one in the filters panel.
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {partnerOptions.map((p) => (
-              <button
-                key={p}
-                type="button"
-                onClick={() => onPickPartner(p)}
-                className="px-2.5 py-1 text-xs font-semibold rounded-md border border-amber-200 bg-white hover:bg-amber-100 text-amber-900"
-                disabled={isLoading}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div
-        ref={chatScrollRef}
-        className="flex-1 overflow-y-auto rounded-lg border border-gray-200 p-4 bg-white mb-2"
-      >
-        <div className="space-y-4">
-          {chatMessages.map((msg) => (
-            <div key={msg.id}>
-              <div className="text-xs text-gray-500 mb-1">
-                <span className="font-medium capitalize text-gray-700">
-                  {msg.role}
-                </span>{" "}
-                • {formatTimestampClientSafe(msg.timestamp, mounted)}
-              </div>
-
-              {msg.type === "text" ? (
-                <pre className="whitespace-pre-wrap text-sm text-gray-900">
-                  {msg.text}
-                </pre>
-              ) : (
-                <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
-                  <div className="text-xs text-gray-600 font-medium mb-2">
-                    Triage run
-                  </div>
-                  <pre className="whitespace-pre-wrap text-xs text-gray-700">
-                    {msg.run.summaryText || "(no summary)"}
-                  </pre>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="text-xs text-gray-400 mb-3">
-        {isLoading ? "⏳ Running..." : "\u00A0"}
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex gap-2">
-          <input
-            type="text"
-            disabled={isLoading}
-            className="flex-1 rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 placeholder-gray-400 disabled:opacity-60 disabled:cursor-not-allowed"
-            placeholder={placeholder}
-            value={chatInput ?? ""}
-            onChange={(e) => setChatInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                onSend();
-              }
-            }}
-          />
-          <button
-            onClick={onSend}
-            disabled={isLoading || !chatInput.trim()}
-            className="px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {isLoading ? "Running..." : "Send"}
-          </button>
-        </div>
-        <div className="text-xs text-gray-500">
-          {chatInput.trim()
-            ? "Enter sends"
-            : "Try: help • filters • reset • explain • run"}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ------------------------------------------------------------
-// Main component
-// ------------------------------------------------------------
-export default function CDNTriageApp() {
+export default function Home() {
   const [mounted, setMounted] = useState(false);
 
-  // Form inputs
-  const [dataSource, setDataSource] = useState<DataSource>("csv");
-
-  // ------------------------------------------------------------
-  // PATCH: Partner state is persisted; default empty until user picks
-  // ------------------------------------------------------------
-  const [partner, setPartner] = useState<PartnerOrMissing>("");
-
-  // ------------------------------------------------------------
-  // PATCH: Single partner setter (keeps state + storage consistent)
-  // ------------------------------------------------------------
+  // sticky partner
+  const [partner, setPartner] = useState<PartnerOrMissing>("beta_stream");
   function setPartnerSticky(p: string) {
-    const val = String(p || "").trim();
-    if (!val) {
-      setPartner("");
-      safeRemoveLS(PARTNER_KEY);
-      return;
-    }
-    if ((PARTNER_OPTIONS as readonly string[]).includes(val)) {
-      setPartner(val as Partner);
-      safeSetLS(PARTNER_KEY, val);
+    const v = String(p || "").trim();
+    if (!v) return;
+    if ((PARTNER_OPTIONS as readonly string[]).includes(v)) {
+      setPartner(v as Partner);
+      safeSetLS(PARTNER_KEY, v);
     }
   }
 
-  const [csvUrl, setCsvUrl] = useState(DEFAULT_CSV_URL);
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [service, setService] = useState("all");
-  const [region, setRegion] = useState("all");
-  const [pop, setPop] = useState("all");
-  const [windowMinutes, setWindowMinutes] = useState(60);
-  const [debugMode, setDebugMode] = useState(false);
-
-  // Chat mode toggle
+  // chat mode
   const [chatMode, setChatMode] = useState<ChatMode>("deterministic");
-  const chatModeLabel = chatMode === "llm" ? "LLM Assist" : "Deterministic";
 
-
-  // State
+  // UI state
   const [isLoading, setIsLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
-  const [summaryText, setSummaryText] = useState("");
-  const [metricsJson, setMetricsJson] = useState<any>(null);
-
-  // History
-  const [runHistory, setRunHistory] = useState<TriageRun[]>([]);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [schemaOpen, setSchemaOpen] = useState(false);
 
   // Chat
   const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-
-  // Refs
+  const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
-  const lastMessageIdRef = useRef<string | null>(null);
+  const lastMsgIdRef = useRef<string | null>(null);
+
+  // typing indicator (assistant bubble)
+  const [typing, setTyping] = useState(false);
+
+  // rate limit banner state
+  const [rateLimit, setRateLimit] = useState<null | {
+    msgId: string;
+    untilMs: number;
+    retryAfterMs: number;
+    lastUserText: string;
+  }>(null);
+  const [rateLimitRemainingMs, setRateLimitRemainingMs] = useState<number>(0);
+
+  // current filters (kept minimal on home)
+  const [service, setService] = useState("all");
+  const [region, setRegion] = useState("all");
+  const [pop, setPop] = useState("all");
+  const [windowMinutes, setWindowMinutes] = useState(120);
 
   useEffect(() => setMounted(true), []);
 
-  // ------------------------------------------------------------
-  // PATCH: Restore partner from localStorage (sticky across reloads)
-  // ------------------------------------------------------------
   useEffect(() => {
     if (!mounted) return;
     const saved = safeGetLS(PARTNER_KEY);
@@ -1316,127 +871,90 @@ export default function CDNTriageApp() {
     }
   }, [mounted]);
 
-  
-  useEffect(() => {
-    if (dataSource === "clickhouse") setUploadedFile(null);
-  }, [dataSource]);
+  function clearRateLimit() {
+    setRateLimit(null);
+    setRateLimitRemainingMs(0);
+  }
 
-
-  useEffect(() => {
-    if (!mounted) return;
-    const stored = localStorage.getItem(CHAT_MODE_KEY);
-    if (!stored) return;
-    setChatMode(stored === "llm" ? "llm" : "deterministic");
-  }, [mounted]);
-
-  useEffect(() => {
-    if (!mounted) return;
-    localStorage.setItem(CHAT_MODE_KEY, chatMode);
-  }, [chatMode, mounted]);
-
-  function welcomeMessage(): ChatTextMessage {
-    return {
-      id: "welcome",
-      type: "text",
-      role: "system",
-      text:
-        "Welcome — Cachey 🤖 here.\n\n" +
-        "If you share the symptoms (errors or latency) and your scope (service / region / POP / time window), I’ll triage and pull up the charts.\n\n" +
-        "Type `help` to see everything I can do.\n" +
-        "Tip: You can also ask definitions — e.g. `what is tcp_hit`.",
-      timestamp: getCurrentTimestamp(),
-    };
+  function fmtCountdown(ms: number) {
+    const s = Math.max(0, Math.ceil(ms / 1000));
+    return `${s}s`;
   }
 
   useEffect(() => {
-    if (!mounted) return;
-    if (chatMessages.length > 0) return;
-    setChatMessages([welcomeMessage()]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mounted, chatMessages.length]);
+    if (!rateLimit) return;
+    const tick = () => {
+      const left = Math.max(0, rateLimit.untilMs - Date.now());
+      setRateLimitRemainingMs(left);
+    };
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [rateLimit]);
 
+  // welcome message once (NO personal greeting)
   useEffect(() => {
     if (!mounted) return;
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) return;
-    const parsed = safeParse<TriageRun[]>(stored, []);
-    if (Array.isArray(parsed)) setRunHistory(parsed);
+    if (chatMessages.length) return;
+
+    setChatMessages([
+      {
+        id: "welcome",
+        type: "text",
+        role: "system",
+        ts: nowIso(),
+        text:
+          "Cachey 🤖 — chat-first triage.\n\n" +
+          "Pick a partner (sticky), then ask:\n" +
+          "- `how was live last 2h`\n" +
+          "- `vod in bos last night`\n\n" +
+          "Triage results render inline as cards.",
+      },
+    ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted]);
 
+  // autoscroll
   useEffect(() => {
-    if (!mounted) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(runHistory));
-  }, [runHistory, mounted]);
-
-  useEffect(() => {
-    const lastMessage = chatMessages[chatMessages.length - 1];
-    if (!lastMessage) return;
-    if (lastMessageIdRef.current !== lastMessage.id) {
-      lastMessageIdRef.current = lastMessage.id;
+    const last = chatMessages[chatMessages.length - 1];
+    if (!last) return;
+    if (lastMsgIdRef.current !== last.id) {
+      lastMsgIdRef.current = last.id;
       const el = chatScrollRef.current;
-      if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      el?.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     }
   }, [chatMessages]);
 
-  const partnerMissing = dataSource === "clickhouse" && !partner;
+  // Derive available regions/pops from last triage card (if any)
+  const lastMetricsJson = useMemo(() => {
+    const lastTriage = [...chatMessages].reverse().find((m) => m.type === "triage") as
+      | ChatTriage
+      | undefined;
+    return lastTriage?.run?.metricsJson || null;
+  }, [chatMessages]);
 
-  const canRunTriage = useMemo(() => {
-    if (dataSource === "clickhouse") return Boolean(partner);
-    return Boolean(uploadedFile) || (csvUrl && csvUrl.trim().length > 0);
-  }, [dataSource, partner, uploadedFile, csvUrl]);
-
-  // ------------------------------------------------------------
-  // Dynamic Region/POP options from metricsJson.available (if present)
-  // (tight deps so build is happy + no weird object identity issues)
-  // ------------------------------------------------------------
-  const availableRegions: unknown = metricsJson?.available?.regions;
-  const availablePops: unknown = metricsJson?.available?.pops;
-
-  const REGION_OPTIONS = useMemo(() => {
-    const arr = Array.isArray(availableRegions) ? availableRegions : [];
-    const cleaned = (arr as unknown[])
-      .map((x) => String(x ?? "").trim().toLowerCase())
-      .filter((x) => Boolean(x));
-    const uniq = Array.from(new Set<string>(cleaned));
-    uniq.sort((a, b) => a.localeCompare(b));
+  const availableRegions: string[] = useMemo(() => {
+    const arr = lastMetricsJson?.available?.regions;
+    const list = Array.isArray(arr) ? arr : [];
+    const cleaned = list
+      .map((x: any) => String(x ?? "").trim().toLowerCase())
+      .filter(Boolean);
+    const uniq = Array.from(new Set(cleaned)).sort((a, b) => a.localeCompare(b));
     return ["all", ...uniq];
-  }, [availableRegions]);
+  }, [lastMetricsJson]);
 
-  const POP_OPTIONS = useMemo(() => {
-    const arr = Array.isArray(availablePops) ? availablePops : [];
-    const cleaned = (arr as unknown[])
-      .map((x) => String(x ?? "").trim().toLowerCase())
-      .filter((x) => Boolean(x));
-    const uniq = Array.from(new Set<string>(cleaned));
-    uniq.sort((a, b) => a.localeCompare(b));
+  const availablePops: string[] = useMemo(() => {
+    const arr = lastMetricsJson?.available?.pops;
+    const list = Array.isArray(arr) ? arr : [];
+    const cleaned = list
+      .map((x: any) => String(x ?? "").trim().toLowerCase())
+      .filter(Boolean);
+    const uniq = Array.from(new Set(cleaned)).sort((a, b) => a.localeCompare(b));
     return ["all", ...uniq];
-  }, [availablePops]);
+  }, [lastMetricsJson]);
 
-  useEffect(() => {
-    if (!REGION_OPTIONS.includes(region)) setRegion("all");
-    if (!POP_OPTIONS.includes(pop)) setPop("all");
-  }, [REGION_OPTIONS, POP_OPTIONS, region, pop]);
-
-  const parsedMetrics = useMemo((): MetricsData | null => {
-    if (!metricsJson) return null;
-    return {
-      totalRequests: Number(metricsJson.totalRequests) || 0,
-      p95TtmsMs:
-        metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs),
-      p99TtmsMs:
-        metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs),
-      error5xxCount:
-        metricsJson.error5xxCount == null
-          ? null
-          : Number(metricsJson.error5xxCount),
-      errorRatePct:
-        metricsJson.errorRatePct == null
-          ? null
-          : Number(metricsJson.errorRatePct),
-    };
-  }, [metricsJson]);
-
-  const ts: TimeseriesData | null = useMemo(() => {
+  // Parse metricsJson.timeseries into TimeseriesData
+  function parseTimeseries(metricsJson: any): TimeseriesData | null {
     const t = metricsJson?.timeseries;
     if (!t || !Array.isArray(t.points)) return null;
 
@@ -1448,17 +966,11 @@ export default function CDNTriageApp() {
         errorRatePct: Number(p.errorRatePct) || 0,
         p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
         p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
-        statusCountsByCode: p.statusCountsByCode
-          ? (p.statusCountsByCode as Record<string, number>)
-          : undefined,
-        hostCountsByHost: p.hostCountsByHost
-          ? (p.hostCountsByHost as Record<string, number>)
-          : undefined,
-        crcCountsByCrc: p.crcCountsByCrc
-          ? (p.crcCountsByCrc as Record<string, number>)
-          : undefined,
+        statusCountsByCode: p.statusCountsByCode || undefined,
+        hostCountsByHost: p.hostCountsByHost || undefined,
+        crcCountsByCrc: p.crcCountsByCrc || undefined,
       }))
-      .filter((pt: TimeseriesPoint) => Boolean(pt.ts));
+      .filter((pt) => Boolean(pt.ts));
 
     return {
       bucketSeconds: t.bucketSeconds == null ? null : Number(t.bucketSeconds),
@@ -1471,90 +983,35 @@ export default function CDNTriageApp() {
       hostSeries: Array.isArray(t.hostSeries) ? t.hostSeries.map(String) : undefined,
       crcSeries: Array.isArray(t.crcSeries) ? t.crcSeries.map(String) : undefined,
     };
-  }, [metricsJson]);
-
-  const csvInputsDisabled = isLoading || dataSource === "clickhouse";
-
-  function addChatText(role: ChatTextMessage["role"], text: string) {
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: `${Date.now()}-${Math.random()}`,
-        type: "text",
-        role,
-        text,
-        timestamp: getCurrentTimestamp(),
-      },
-    ]);
   }
 
-  function addChatTriage(run: ChatTriageMessage["run"]) {
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: `${Date.now()}-${Math.random()}`,
-        type: "triage_result",
-        role: "assistant",
-        timestamp: getCurrentTimestamp(),
-        run,
-      },
-    ]);
-  }
-
-  async function runTriageRequest(inputs: {
-    dataSource: DataSource;
-    partner: PartnerOrMissing;
-    csvUrl: string;
-    file: File | null;
-    service: string;
-    region: string;
-    pop: string;
-    windowMinutes: number;
-    debug: boolean;
-  }) {
+  // /api/triage call (unchanged backend)
+  async function runTriage(inputs: TriageInputs) {
     const formData = new FormData();
     formData.append("dataSource", inputs.dataSource);
     formData.append("partner", inputs.partner || "");
-    formData.append("csvUrl", inputs.csvUrl || "");
+    formData.append("csvUrl", "");
     formData.append("service", inputs.service);
     formData.append("region", inputs.region);
     formData.append("pop", inputs.pop);
     formData.append("windowMinutes", String(inputs.windowMinutes));
-    if (inputs.file) formData.append("file", inputs.file);
-    if (inputs.debug) formData.append("debug", "true");
 
-    const response = await fetch("/api/triage", {
-      method: "POST",
-      body: formData,
-    });
-
-    let data: any = null;
-    try {
-      data = await response.json();
-    } catch {
-      throw new Error(`Non-JSON response (HTTP ${response.status})`);
-    }
-
+    const response = await fetch("/api/triage", { method: "POST", body: formData });
+    const data = await response.json().catch(() => null);
     if (!response.ok || !data?.ok) {
-      throw new Error(data?.error || `Request failed (HTTP ${response.status})`);
+      throw new Error(data?.error || `Triage failed (HTTP ${response.status})`);
     }
-    return data;
+    return data as { summaryText: string; metricsJson: any };
   }
 
-  async function callChatApi(userText: string, history?: ChatMessage[]) {
-    const safeHistory = Array.isArray(history) ? history : [];
-    const wireMsgs = safeHistory
-      .filter((m): m is ChatTextMessage => m.type === "text")
+  // /api/chat call
+  async function callChatApi(userText: string) {
+    const wireMsgs = chatMessages
+      .filter((m): m is ChatText => m.type === "text")
       .slice(-12)
       .map((m) => ({ role: m.role, content: m.text }));
 
-    if (wireMsgs.length === 0) {
-      wireMsgs.push({ role: "user", content: userText });
-    } else {
-      const last = wireMsgs[wireMsgs.length - 1];
-      if (last.role !== "user") wireMsgs.push({ role: "user", content: userText });
-      else last.content = userText;
-    }
+    wireMsgs.push({ role: "user", content: userText });
 
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -1562,14 +1019,13 @@ export default function CDNTriageApp() {
       body: JSON.stringify({
         messages: wireMsgs,
         context: {
-          mode: dataSource,
+          mode: "clickhouse",
           chatMode,
-          availableRegions: REGION_OPTIONS,
-          availablePops: POP_OPTIONS,
+          availableRegions,
+          availablePops,
           availablePartners: Array.from(PARTNER_OPTIONS),
-          // ✅ NEW: authoritative current UI state
           currentFilters: {
-            dataSource,
+            dataSource: "clickhouse",
             partner,
             service,
             region,
@@ -1585,798 +1041,300 @@ export default function CDNTriageApp() {
     return json as any;
   }
 
-  async function handleLogout() {
-    try {
-      await fetch("/api/demo-logout", { method: "POST" });
-    } finally {
-      window.location.href = "/demo";
-    }
+  // add message helpers
+  function addText(role: ChatText["role"], text: string) {
+    const id = `${Date.now()}-${Math.random()}`;
+    const msg: ChatText = { id, type: "text", role, ts: nowIso(), text };
+    setChatMessages((prev) => [...prev, msg]);
+    return id;
   }
 
-  // ✅ reset all UI + local storage + server memory
-  function resetAllUI() {
-    if (isLoading) return;
-
-    try {
-        fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          reset: true,
-          messages: [],
-          context: {
-            mode: "csv",
-            chatMode: "deterministic",
-            availableRegions: [],
-            availablePops: [],
-            availablePartners: [],
-            currentFilters: {
-              dataSource: "csv",
-              partner: "",
-              service: "all",
-              region: "all",
-              pop: "all",
-              windowMinutes: 60,
-            },
-          },
-        }),
-      }).catch(() => {});
-    } catch {}
-    
-    if (mounted) {
-      try {
-        localStorage.removeItem(STORAGE_KEY);
-        localStorage.removeItem(CHAT_MODE_KEY);
-        localStorage.removeItem(PARTNER_KEY);
-      } catch {}
-    }
-
-    setErrorMessage("");
-    setSummaryText("");
-    setMetricsJson(null);
-    setSelectedRunId(null);
-
-    setRunHistory([]);
-    setChatInput("");
-    setChatMessages([welcomeMessage()]);
-
-    setDataSource("csv");
-    setPartnerSticky(""); // clears state + removes PARTNER_KEY
-    setCsvUrl(DEFAULT_CSV_URL);
-    setUploadedFile(null);
-
-    setService("all");
-    setRegion("all");
-    setPop("all");
-    setWindowMinutes(60);
-    setDebugMode(false);
-
-    setChatMode("deterministic");
+  function addTriageCard(run: ChatTriage["run"]) {
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random()}`,
+        type: "triage",
+        role: "assistant",
+        ts: nowIso(),
+        run,
+      },
+    ]);
   }
 
-  async function handleRunTriage() {
-    setErrorMessage("");
-    setSummaryText("");
-    setMetricsJson(null);
-    setSelectedRunId(null);
-
-    if (!canRunTriage) {
-      setErrorMessage(
-        dataSource === "clickhouse"
-          ? "Please select a Partner to run ClickHouse triage."
-          : "Please provide a CSV URL or upload a CSV file."
-      );
-      return;
-    }
+  async function sendUserText(userText: string, opts?: { appendUser?: boolean }) {
+    const appendUser = opts?.appendUser !== false;
+    if (!userText.trim() || isLoading) return;
 
     setIsLoading(true);
-    try {
-      const data = await runTriageRequest({
-        dataSource,
-        partner,
-        csvUrl,
-        file: uploadedFile,
-        service,
-        region,
-        pop,
-        windowMinutes,
-        debug: debugMode,
-      });
+    setTyping(true);
 
-      setSummaryText(data.summaryText || "");
-      setMetricsJson(data.metricsJson || null);
-
-      const newRun: TriageRun = {
-        id: `${Date.now()}`,
-        timestamp: getCurrentTimestamp(),
-        inputs: {
-          dataSource,
-          partner,
-          csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
-          fileName: uploadedFile ? uploadedFile.name : "",
-          service,
-          region,
-          pop,
-          windowMinutes,
-          debug: debugMode,
-        },
-        summaryText: data.summaryText || "",
-        metricsJson: data.metricsJson || null,
+    if (appendUser) {
+      const userMsg: ChatText = {
+        id: `${Date.now()}-${Math.random()}`,
+        type: "text",
+        role: "user",
+        ts: nowIso(),
+        text: userText,
       };
-      setRunHistory((prev) => [newRun, ...prev].slice(0, MAX_HISTORY));
-    } catch (error: any) {
-      setErrorMessage(error?.message || "Something went wrong");
-    } finally {
-      setIsLoading(false);
+      setChatMessages((prev) => [...prev, userMsg]);
     }
-  }
 
-  async function handleChatSend() {
-    const text = chatInput.trim();
-    
-
-    if (!text) return;
-    if (isLoading) return;
-
-
-    setChatInput("");
-    setErrorMessage("");
-
-    const userMsg: ChatTextMessage = {
-      id: `${Date.now()}-${Math.random()}`,
-      type: "text",
-      role: "user",
-      text,
-      timestamp: getCurrentTimestamp(),
-    };
-
-    const nextHistory = [...chatMessages, userMsg];
-    setChatMessages(nextHistory);
-
-    // Deterministic blocks clickhouse without partner
-    if (partnerMissing && chatMode !== "llm") {
-      addChatText(
-        "assistant",
-        [
-          "ClickHouse mode is selected but partner is missing.",
-          "",
-          "Pick a partner in the dropdown (left panel) or click one of the quick buttons above.",
-          "",
-          `Available partners: ${PARTNER_OPTIONS.join(", ")}`,
-        ].join("\n")
-      );
+    if (!partner) {
+      addText("assistant", `Pick a partner first. (${PARTNER_OPTIONS.join(", ")})`);
+      setTyping(false);
+      setIsLoading(false);
       return;
     }
 
-    // ------------------------------------------------------------
-    // LLM Assist mode (with fallback on failure)
-    // ------------------------------------------------------------
-    if (chatMode === "llm") {
-      setIsLoading(true);
-      try {
-        const out = await callChatApi(text, nextHistory);
+    try {
+      const out = await callChatApi(userText);
 
-        if (out?.kind === "general") {
-          addChatText("assistant", String(out.reply || "Hey 👋"));
-          return;
-        }
-
-        if (dataSource === "clickhouse" && !partner && out?.needsPartnerQuestion) {
-          addChatText(
-            "assistant",
-            String(
-              out.partnerQuestion ||
-                `Which partner should I use? (${PARTNER_OPTIONS.join(", ")})`
-            )
-          );
-          return;
-        }
-
-        const nextService: string = out?.serviceHint ?? service;
-        const nextRegion: string = out?.regionHint ?? region;
-        const nextPop: string = out?.popHint ?? pop;
-        const nextWindow: number = Number(out?.windowHint ?? windowMinutes);
-
-        if (out?.serviceHint) setService(String(out.serviceHint));
-        if (out?.regionHint) setRegion(String(out.regionHint));
-        if (out?.popHint) setPop(String(out.popHint));
-        if (
-          out?.windowHint != null &&
-          Number.isFinite(nextWindow) &&
-          nextWindow > 0
-        ) {
-          setWindowMinutes(nextWindow);
-        }
-
-        let nextPartner: PartnerOrMissing = partner;
-        if (dataSource === "clickhouse") {
-          const p = String(out?.partnerHint || "").trim();
-          if (p && (PARTNER_OPTIONS as readonly string[]).includes(p)) {
-            setPartnerSticky(p);
-            nextPartner = p as Partner;
-          }
-        }
-
-        addChatText(
+      // Rate limit banner path (from your route.ts)
+      if (out?.rateLimited) {
+        const assistantId = addText(
           "assistant",
-          `Parsed ✅ service=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
+          String(out?.reply || "LLM is rate-limited. Try again shortly or switch to Deterministic.")
         );
-
-        const canRunNow =
-          dataSource === "clickhouse"
-            ? Boolean(nextPartner)
-            : Boolean(uploadedFile) || Boolean(csvUrl && csvUrl.trim().length > 0);
-
-        if (!canRunNow) {
-          addChatText(
-            "assistant",
-            dataSource === "clickhouse"
-              ? "Please select a partner first (ClickHouse mode)."
-              : "Please upload a CSV or provide a CSV URL first."
-          );
-          return;
-        }
-
-        addChatText(
-          "system",
-          `mode=llm • Running triage with ${buildFiltersSummary({
-            dataSource,
-            partner: nextPartner,
-            service: nextService,
-            region: nextRegion,
-            pop: nextPop,
-            windowMinutes: nextWindow,
-          })}`
-        );
-
-        const data = await runTriageRequest({
-          dataSource,
-          partner: dataSource === "clickhouse" ? nextPartner : partner,
-          csvUrl,
-          file: uploadedFile,
-          service: nextService,
-          region: nextRegion,
-          pop: nextPop,
-          windowMinutes: nextWindow,
-          debug: debugMode,
+        const retryAfter = Number(out?.retryAfterMs ?? 45000);
+        const untilMs = Date.now() + (Number.isFinite(retryAfter) ? retryAfter : 45000);
+        setRateLimit({
+          msgId: assistantId,
+          untilMs,
+          retryAfterMs: retryAfter,
+          lastUserText: userText,
         });
-
-        setSummaryText(data.summaryText || "");
-        setMetricsJson(data.metricsJson || null);
-        setSelectedRunId(null);
-
-        const newRun: TriageRun = {
-          id: `${Date.now()}`,
-          timestamp: getCurrentTimestamp(),
-          inputs: {
-            dataSource,
-            partner: dataSource === "clickhouse" ? nextPartner : partner,
-            csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
-            fileName: uploadedFile ? uploadedFile.name : "",
-            service: nextService,
-            region: nextRegion,
-            pop: nextPop,
-            windowMinutes: nextWindow,
-            debug: debugMode,
-          },
-          summaryText: data.summaryText || "",
-          metricsJson: data.metricsJson || null,
-        };
-        setRunHistory((prev) => [newRun, ...prev].slice(0, MAX_HISTORY));
-
-        addChatTriage({
-          inputs: {
-            dataSource,
-            partner: dataSource === "clickhouse" ? nextPartner : partner,
-            service: nextService,
-            region: nextRegion,
-            pop: nextPop,
-            windowMinutes: nextWindow,
-          },
-          summaryText: data.summaryText || "",
-          metricsJson: data.metricsJson || null,
-        });
-
-        return;
-      } catch (error: any) {
-        const msg = error?.message || "LLM Assist failed";
-        setErrorMessage(msg);
-
-        // ✅ fallback: deterministic parse + (optional) run
-        const intent = parseChatIntent(text);
-
-        const isJustChat =
-          !looksLikeTriageQuery(text) &&
-          !intent.command &&
-          !intent.service &&
-          !intent.region &&
-          !intent.pop &&
-          intent.windowMinutes == null;
-
-        if (isJustChat) {
-          addChatText(
-            "assistant",
-            "My LLM brain glitched 😅 but I can still run deterministic triage.\n\nTry:\n- `vod in bos last 60m`\n- `help`"
-          );
-          return;
-        }
-
-        const nextService = intent.service ?? service;
-        const nextRegion = intent.region ?? region;
-        const nextPop = intent.pop ?? pop;
-        const nextWindow = intent.windowMinutes ?? windowMinutes;
-
-        if (intent.service) setService(nextService);
-        if (intent.region) setRegion(nextRegion);
-        if (intent.pop) setPop(nextPop);
-        if (intent.windowMinutes != null) setWindowMinutes(nextWindow);
-
-        addChatText(
-          "assistant",
-          `LLM hiccup — falling back ✅ service=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
-        );
-
-        const shouldRun = intent.command === "run" || looksLikeTriageQuery(text);
-        if (!shouldRun) return;
-
-        const canRunNow =
-          dataSource === "clickhouse"
-            ? Boolean(partner)
-            : Boolean(uploadedFile) || Boolean(csvUrl && csvUrl.trim().length > 0);
-
-        if (!canRunNow) {
-          addChatText(
-            "assistant",
-            dataSource === "clickhouse"
-              ? "Please select a partner first (ClickHouse mode)."
-              : "Please upload a CSV or provide a CSV URL first."
-          );
-          return;
-        }
-
-        addChatText(
-          "system",
-          `mode=fallback • Running triage with ${buildFiltersSummary({
-            dataSource,
-            partner,
-            service: nextService,
-            region: nextRegion,
-            pop: nextPop,
-            windowMinutes: nextWindow,
-          })}`
-        );
-
-        setIsLoading(true);
-        try {
-          const data = await runTriageRequest({
-            dataSource,
-            partner,
-            csvUrl,
-            file: uploadedFile,
-            service: nextService,
-            region: nextRegion,
-            pop: nextPop,
-            windowMinutes: nextWindow,
-            debug: debugMode,
-          });
-
-          setSummaryText(data.summaryText || "");
-          setMetricsJson(data.metricsJson || null);
-          setSelectedRunId(null);
-
-          const newRun: TriageRun = {
-            id: `${Date.now()}`,
-            timestamp: getCurrentTimestamp(),
-            inputs: {
-              dataSource,
-              partner,
-              csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
-              fileName: uploadedFile ? uploadedFile.name : "",
-              service: nextService,
-              region: nextRegion,
-              pop: nextPop,
-              windowMinutes: nextWindow,
-              debug: debugMode,
-            },
-            summaryText: data.summaryText || "",
-            metricsJson: data.metricsJson || null,
-          };
-          setRunHistory((prev) => [newRun, ...prev].slice(0, MAX_HISTORY));
-
-          addChatTriage({
-            inputs: {
-              dataSource,
-              partner,
-              service: nextService,
-              region: nextRegion,
-              pop: nextPop,
-              windowMinutes: nextWindow,
-            },
-            summaryText: data.summaryText || "",
-            metricsJson: data.metricsJson || null,
-          });
-        } catch (e: any) {
-          const m = e?.message || "Fallback triage failed";
-          setErrorMessage(m);
-          addChatText("assistant", `Error: ${m}`);
-        } finally {
-          setIsLoading(false);
-        }
-
-        return;
-      } finally {
+        setTyping(false);
         setIsLoading(false);
-      }
-    }
-
-    // ------------------------------------------------------------
-    // Deterministic mode
-    // ------------------------------------------------------------
-    if (isGreetingOrSmallTalk(text)) {
-      const t = normalizeText(text);
-      if (
-        t.startsWith("how are you") ||
-        t.startsWith("how's it going") ||
-        t === "how r u"
-      ) {
-        addChatText(
-          "assistant",
-          "Doing good 😄 Ready to triage whenever you are.\n\nTry:\n- `vod in bos last 60m`\n- `service=live region=all win=360`\n\nOr type `help`."
-        );
         return;
       }
 
-      addChatText(
-        "assistant",
-        "Hey — I’m Cachey 🤖\n\nTry:\n- `vod in bos last 60m`\n- `service=live region=all pop=all win=360`\n\nType `help` to see everything I can do."
-      );
-      return;
-    }
-
-    const intent = parseChatIntent(text);
-
-    // ✅ explicit capability response (no looping canned message)
-    if (intent.command === "help") {
-      addChatText(
-        "assistant",
-        [
-          `Chat mode: ${chatModeLabel}`,
-          "",
-          "What I can do:",
-          "- Run triage with filters (service / region / pop / window)",
-          "- Show stacked charts (status, host, crc) + latency (p95/p99)",
-          "- Commands: `filters`, `reset`, `explain`, `run`",
-          "",
-          "Examples:",
-          "- `vod in usw2 at sjc last 60m`",
-          "- `service=live region=all pop=all win=360`",
-        ].join("\n")
-      );
-      return;
-    }
-
-    if (intent.command === "show_filters") {
-      addChatText(
-        "assistant",
-        `Current filters:\n${buildFiltersSummary({
-          dataSource,
-          partner,
-          service,
-          region,
-          pop,
-          windowMinutes,
-        })}`
-      );
-      return;
-    }
-
-    if (intent.command === "reset") {
-      resetAllUI();
-      addChatText(
-        "assistant",
-        "Reset ✅ Cleared chat + filters + memory. Type `run` when ready."
-      );
-      return;
-    }
-
-    if (intent.command === "explain") {
-      addChatText(
-        "assistant",
-        [
-          "What this computes:",
-          "- totalRequests",
-          "- error5xxCount + errorRatePct",
-          "- p95 / p99 TTMS (latency)",
-          "",
-          "Charts:",
-          "- Status stacked: events by HTTP status over time",
-          "- Host stacked: events by host over time",
-          "- CRC stacked: cache/response classification over time",
-          "- Latency line: p95/p99 TTMS over time",
-          "",
-          "Tip: Run once with `region=all pop=all` to discover available region/pop options, then narrow down.",
-        ].join("\n")
-      );
-      return;
-    }
-
-    const hasRegionOptions = REGION_OPTIONS.length > 1;
-    const hasPopOptions = POP_OPTIONS.length > 1;
-
-    if ((intent.region || intent.pop) && (!hasRegionOptions || !hasPopOptions)) {
-      const pending: string[] = [];
-      if (intent.region && !hasRegionOptions)
-        pending.push("region (options not discovered yet)");
-      if (intent.pop && !hasPopOptions)
-        pending.push("pop (options not discovered yet)");
-
-      const svcOk =
-        intent.service == null || ALLOWED.service.has(intent.service);
-      const winOk =
-        intent.windowMinutes == null ||
-        (Number.isFinite(intent.windowMinutes) && intent.windowMinutes > 0);
-
-      if (!svcOk || !winOk) {
-        addChatText(
-          "assistant",
-          "I can’t apply that yet—some values look invalid. Try `help` for examples."
-        );
+      // general
+      if (out?.kind === "general") {
+        addText("assistant", String(out.reply || "Got it."));
+        clearRateLimit();
+        setTyping(false);
+        setIsLoading(false);
         return;
       }
 
-      const changed: string[] = [];
-      if (intent.service != null && intent.service !== service) {
-        setService(intent.service);
-        changed.push(`service=${intent.service}`);
+      // triage: update hints if present
+      const nextService = String(out?.serviceHint ?? service);
+      const nextRegion = String(out?.regionHint ?? region);
+      const nextPop = String(out?.popHint ?? pop);
+      const nextWindow = Number(out?.windowHint ?? windowMinutes);
+
+      if (out?.serviceHint) setService(nextService);
+      if (out?.regionHint) setRegion(nextRegion);
+      if (out?.popHint) setPop(nextPop);
+      if (Number.isFinite(nextWindow) && nextWindow > 0) setWindowMinutes(nextWindow);
+
+      const pHint = String(out?.partnerHint || "").trim();
+      if (pHint && (PARTNER_OPTIONS as readonly string[]).includes(pHint)) {
+        setPartnerSticky(pHint);
       }
-      if (
-        intent.windowMinutes != null &&
-        intent.windowMinutes !== windowMinutes
-      ) {
-        setWindowMinutes(intent.windowMinutes);
-        changed.push(`win=${intent.windowMinutes}m`);
+
+      if (out?.needsPartnerQuestion) {
+        addText("assistant", String(out.partnerQuestion || "Which partner?"));
+        clearRateLimit();
+        setTyping(false);
+        setIsLoading(false);
+        return;
       }
 
-      addChatText(
-        "assistant",
-        [
-          changed.length ? `Updated ✅ (${changed.join(", ")})` : "Got it ✅",
-          "",
-          `I can’t validate ${pending.join(" + ")} until we discover them from data.`,
-          "Run once with broad filters:",
-          "- `region=all pop=all` (or just click “Run Triage”)",
-          "Then try your region/pop again.",
-        ].join("\n")
+      addText(
+        "system",
+        `Running triage: partner=${partner} svc=${nextService} region=${nextRegion} pop=${nextPop} win=${nextWindow}m`
       );
 
-      if (intent.command !== "run") return;
-    }
-
-    const invalids: string[] = [];
-
-    if (intent.service && !ALLOWED.service.has(intent.service)) {
-      invalids.push(
-        `service=${intent.service} (allowed: ${Array.from(ALLOWED.service).join(
-          "|"
-        )})`
-      );
-    }
-
-    if (
-      intent.region &&
-      hasRegionOptions &&
-      !REGION_OPTIONS.includes(intent.region)
-    ) {
-      invalids.push(`region=${intent.region} (allowed: ${REGION_OPTIONS.join("|")})`);
-    }
-
-    if (intent.pop && hasPopOptions && !POP_OPTIONS.includes(intent.pop)) {
-      invalids.push(`pop=${intent.pop} (allowed: ${POP_OPTIONS.join("|")})`);
-    }
-
-    if (
-      intent.windowMinutes != null &&
-      (!Number.isFinite(intent.windowMinutes) || intent.windowMinutes <= 0)
-    ) {
-      invalids.push(`win=${String(intent.windowMinutes)} (must be positive)`);
-    }
-
-    if (invalids.length) {
-      addChatText(
-        "assistant",
-        `I couldn't run that because some values are invalid:\n- ${invalids.join(
-          "\n- "
-        )}\n\nTry:\n- vod in usw2 at sjc last 60m\n- service=live region=all win=360`
-      );
-      return;
-    }
-
-    const nextService = intent.service ?? service;
-    const nextRegion = intent.region ?? region;
-    const nextPop = intent.pop ?? pop;
-    const nextWindow = intent.windowMinutes ?? windowMinutes;
-
-    const changed: string[] = [];
-    if (intent.service && intent.service !== service) {
-      setService(intent.service);
-      changed.push(`service=${intent.service}`);
-    }
-    if (intent.region && intent.region !== region) {
-      setRegion(intent.region);
-      changed.push(`region=${intent.region}`);
-    }
-    if (intent.pop && intent.pop !== pop) {
-      setPop(intent.pop);
-      changed.push(`pop=${intent.pop}`);
-    }
-    if (intent.windowMinutes != null && intent.windowMinutes !== windowMinutes) {
-      setWindowMinutes(intent.windowMinutes);
-      changed.push(`win=${intent.windowMinutes}m`);
-    }
-
-    const shouldRun =
-      intent.command === "run" || looksLikeTriageQuery(text) || changed.length > 0;
-
-    if (!shouldRun) {
-      addChatText(
-        "assistant",
-        "I didn’t catch a triage command or filters.\nType `help` for examples."
-      );
-      return;
-    }
-
-    if (!canRunTriage) {
-      addChatText(
-        "assistant",
-        dataSource === "clickhouse"
-          ? "Please select a partner first (ClickHouse mode)."
-          : "Please upload a CSV or provide a CSV URL first."
-      );
-      return;
-    }
-
-    if (changed.length) {
-      addChatText("assistant", `Updated ✅ ${changed.join(", ")}`);
-    }
-
-    addChatText(
-      "system",
-      `mode=${chatMode} • Running triage with ${buildFiltersSummary({
-        dataSource,
+      const data = await runTriage({
+        dataSource: "clickhouse",
         partner,
         service: nextService,
         region: nextRegion,
         pop: nextPop,
-        windowMinutes: nextWindow,
-      })}`
-    );
-
-    setIsLoading(true);
-    try {
-      const data = await runTriageRequest({
-        dataSource,
-        partner,
-        csvUrl,
-        file: uploadedFile,
-        service: nextService,
-        region: nextRegion,
-        pop: nextPop,
-        windowMinutes: nextWindow,
-        debug: debugMode,
+        windowMinutes:
+          Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
       });
 
-      setSummaryText(data.summaryText || "");
-      setMetricsJson(data.metricsJson || null);
-      setSelectedRunId(null);
-
-      const newRun: TriageRun = {
-        id: `${Date.now()}`,
-        timestamp: getCurrentTimestamp(),
+      addTriageCard({
         inputs: {
-          dataSource,
-          partner,
-          csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
-          fileName: uploadedFile ? uploadedFile.name : "",
-          service: nextService,
-          region: nextRegion,
-          pop: nextPop,
-          windowMinutes: nextWindow,
-          debug: debugMode,
-        },
-        summaryText: data.summaryText || "",
-        metricsJson: data.metricsJson || null,
-      };
-      setRunHistory((prev) => [newRun, ...prev].slice(0, MAX_HISTORY));
-
-      addChatTriage({
-        inputs: {
-          dataSource,
+          dataSource: "clickhouse",
           partner,
           service: nextService,
           region: nextRegion,
           pop: nextPop,
-          windowMinutes: nextWindow,
+          windowMinutes:
+            Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
         },
         summaryText: data.summaryText || "",
         metricsJson: data.metricsJson || null,
       });
-    } catch (error: any) {
-      const msg = error?.message || "Something went wrong";
-      setErrorMessage(msg);
-      addChatText("assistant", `Error: ${msg}`);
+
+      clearRateLimit();
+    } catch (e: any) {
+      const msg = e?.message || "Chat/Triage failed";
+      addText(
+        "assistant",
+        `Chat failed: ${msg}\n\nIf LLM is down, switch to Deterministic and run:\n- \`live in usw2 at sjc last 2h\`\n- \`service=vod win=720\``
+      );
     } finally {
+      setTyping(false);
       setIsLoading(false);
     }
   }
 
-  function loadHistoricalRun(run: TriageRun) {
-    setSelectedRunId(run.id);
-    setErrorMessage("");
-    setSummaryText(run.summaryText || "");
-    setMetricsJson(run.metricsJson || null);
-
-    setDataSource((run.inputs?.dataSource || "csv") as DataSource);
-
-    // ✅ use sticky setter so localStorage + state match
-    setPartnerSticky((run.inputs?.partner as PartnerOrMissing) || "");
-
-    setUploadedFile(null);
-    setCsvUrl(run.inputs?.csvUrl || DEFAULT_CSV_URL);
-    setService(run.inputs?.service || "all");
-    setRegion(run.inputs?.region || "all");
-    setPop(run.inputs?.pop || "all");
-    const wm = Number(run.inputs?.windowMinutes);
-    setWindowMinutes(Number.isFinite(wm) && wm > 0 ? wm : 60);
-    setDebugMode(!!run.inputs?.debug);
+  async function handleSend() {
+    const text = chatInput.trim();
+    if (!text) return;
+    setChatInput("");
+    await sendUserText(text, { appendUser: true });
   }
 
-  function deleteHistoricalRun(id: string) {
-    setRunHistory((prev) => prev.filter((r) => r.id !== id));
-    if (selectedRunId === id) {
-      setSelectedRunId(null);
-      setSummaryText("");
-      setMetricsJson(null);
-    }
-  }
+  function MetricChips({ metricsJson }: { metricsJson: any }) {
+    if (!metricsJson) return null;
+    const totalRequests = Number(metricsJson.totalRequests) || 0;
+    const p95 = metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs);
+    const p99 = metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs);
+    const err5xx = metricsJson.error5xxCount == null ? null : Number(metricsJson.error5xxCount);
+    const errPct = metricsJson.errorRatePct == null ? null : Number(metricsJson.errorRatePct);
 
-  function clearAllHistory() {
-    setRunHistory([]);
-    setSelectedRunId(null);
-    setSummaryText("");
-    setMetricsJson(null);
-  }
+    const chips = [
+      { k: "requests", v: formatIntOrNA(totalRequests) },
+      { k: "p95", v: formatMsOrNA(p95) },
+      { k: "p99", v: formatMsOrNA(p99) },
+      { k: "5xx", v: err5xx == null ? "n/a" : formatIntOrNA(err5xx) },
+      { k: "5xx%", v: formatPctOrNA(errPct) },
+    ];
 
-  function MetricCard({
-    label,
-    value,
-    subtitle,
-  }: {
-    label: string;
-    value: string;
-    subtitle?: string | null;
-  }) {
     return (
-      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
-        <div className="text-xs text-gray-600 font-medium">{label}</div>
-        <div className="text-3xl font-bold mt-2 text-gray-900">{value}</div>
-        {subtitle && <div className="text-xs text-gray-500 mt-2">{subtitle}</div>}
+      <div className="flex flex-wrap gap-2">
+        {chips.map((c) => (
+          <span
+            key={c.k}
+            className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200"
+          >
+            <span className="text-gray-400 mr-1">{c.k}</span>
+            <span className="font-semibold">{c.v}</span>
+          </span>
+        ))}
       </div>
     );
   }
 
-  const bucketSeconds =
-    ts?.bucketSeconds ?? metricsJson?.timeseries?.bucketSeconds ?? null;
+  function TriageCard({ run }: { run: ChatTriage["run"] }) {
+    const ts = parseTimeseries(run.metricsJson);
+    const bucketSeconds = ts?.bucketSeconds ?? run.metricsJson?.timeseries?.bucketSeconds ?? null;
 
-  const execLabel =
-    dataSource === "csv"
-      ? "Exec: CSV"
-      : `Exec: ClickHouse • partner=${partner || "missing"}`;
+    return (
+      <div className="triage-enter rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs text-gray-400">Triage result</div>
+            <div className="text-sm font-semibold text-gray-100 truncate">
+              partner={run.inputs.partner} • svc={run.inputs.service} • region={run.inputs.region} • pop={run.inputs.pop} • win={run.inputs.windowMinutes}m
+            </div>
+          </div>
+          <div className="text-xs text-gray-500">/api/triage</div>
+        </div>
+
+        <MetricChips metricsJson={run.metricsJson} />
+
+        <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+          <div className="text-xs text-gray-400 mb-2">Summary</div>
+          <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">
+            {run.summaryText || "(no summary)"}
+          </pre>
+        </div>
+
+        {ts && ts.points.length > 0 ? (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <StackedBarTimeseries
+              title="Status code (stacked)"
+              subtitle="Traffic timeseries"
+              ts={ts}
+              bucketSeconds={bucketSeconds}
+              seriesKeys={ts.statusCodeSeries || []}
+              getMap={(p) => p.statusCountsByCode}
+              height={190}
+              windowMinutes={run.inputs.windowMinutes}
+            />
+            <LatencyTimeseriesLines
+              points={ts.points}
+              bucketSeconds={bucketSeconds}
+              height={190}
+              windowMinutes={run.inputs.windowMinutes}
+            />
+            <StackedBarTimeseries
+              title="Host (stacked)"
+              subtitle="Traffic timeseries"
+              ts={ts}
+              bucketSeconds={bucketSeconds}
+              seriesKeys={ts.hostSeries || []}
+              getMap={(p) => p.hostCountsByHost}
+              height={190}
+              windowMinutes={run.inputs.windowMinutes}
+            />
+            <StackedBarTimeseries
+              title="CRC (stacked)"
+              subtitle="Cache / response classification"
+              ts={ts}
+              bucketSeconds={bucketSeconds}
+              seriesKeys={ts.crcSeries || []}
+              getMap={(p) => p.crcCountsByCrc}
+              height={190}
+              windowMinutes={run.inputs.windowMinutes}
+            />
+          </div>
+        ) : (
+          <div className="text-sm text-gray-400">No timeseries returned.</div>
+        )}
+
+        <details className="rounded-xl border border-white/10 bg-black/20 p-3">
+          <summary className="cursor-pointer text-sm text-gray-200">
+            Evidence (placeholder)
+          </summary>
+          <div className="text-xs text-gray-400 mt-2">
+            Placeholder for deterministic trace / evidence list.
+          </div>
+        </details>
+
+        <details className="rounded-xl border border-white/10 bg-black/20 p-3">
+          <summary className="cursor-pointer text-sm text-gray-200">
+            SQL Query (placeholder)
+          </summary>
+          <div className="text-xs text-gray-400 mt-2">
+            Placeholder for SQL text + copy button.
+          </div>
+        </details>
+
+        {/* local CSS for triage card entrance */}
+        <style jsx>{`
+          .triage-enter {
+            animation: triageIn 220ms ease-out;
+          }
+          @keyframes triageIn {
+            from {
+              opacity: 0;
+              transform: translateY(6px);
+            }
+            to {
+              opacity: 1;
+              transform: translateY(0);
+            }
+          }
+        `}</style>
+      </div>
+    );
+  }
+
+  const partnerMissing = !partner;
 
   return (
-    <main className="min-h-screen w-full bg-gray-50 px-6 py-6">
-      <div className="mx-auto w-full">
-        {/* Top header with logo */}
-        <div className="flex items-center gap-3 border-b border-gray-200 pb-4 mb-6">
+    <main className="min-h-screen bg-black text-gray-100">
+      {/* Sticky header */}
+      <div className="sticky top-0 z-50 border-b border-white/10 bg-black/70 backdrop-blur">
+        <div className="mx-auto max-w-6xl px-6 py-4 flex items-center gap-3">
           <Image
             src={LOGO_SRC}
             alt="Cachey"
@@ -2384,434 +1342,268 @@ export default function CDNTriageApp() {
             height={34}
             className="rounded-full"
           />
-
           <div className="min-w-0">
-            <div className="font-semibold text-lg text-gray-900">
-              Cachey <span className="text-gray-500">🤖</span>
+            <div className="font-semibold text-lg text-white">
+              Cachey <span className="text-gray-400">🤖</span>
             </div>
-            <div className="text-xs text-gray-500">CDN Incident Triage Assistant</div>
+            <div className="text-xs text-gray-400">Chat-first triage</div>
           </div>
 
-          {/* 👇 pushes logout to the far right */}
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-3">
+            {/* Partner selector */}
+            <div className="flex items-center gap-2">
+              <div className="text-xs text-gray-400">Partner</div>
+              <select
+                className="rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                value={partner}
+                onChange={(e) => setPartnerSticky(e.target.value)}
+                disabled={!mounted}
+              >
+                {PARTNER_OPTIONS.map((p) => (
+                  <option key={p} value={p} className="bg-black">
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Schema helper */}
             <button
               type="button"
-              onClick={handleLogout}
-              className="text-xs text-gray-700 border border-gray-200 rounded-full px-3 py-1.5 bg-white hover:bg-gray-50 transition-colors"
-              title="Logout"
+              onClick={() => setSchemaOpen(true)}
+              className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
+              title="Schema helper"
             >
-              Logout
+              Schema
             </button>
+
+            {/* Chat mode toggle */}
+            <div className="inline-flex rounded-full border border-white/10 bg-white/5 p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setChatMode("deterministic");
+                  clearRateLimit();
+                }}
+                className={`px-3 py-1 text-xs rounded-full ${
+                  chatMode === "deterministic"
+                    ? "bg-white/15 text-white"
+                    : "text-gray-300 hover:text-white"
+                }`}
+              >
+                Deterministic
+              </button>
+              <button
+                type="button"
+                onClick={() => setChatMode("llm")}
+                className={`px-3 py-1 text-xs rounded-full ${
+                  chatMode === "llm"
+                    ? "bg-white/15 text-white"
+                    : "text-gray-300 hover:text-white"
+                }`}
+              >
+                LLM
+              </button>
+            </div>
+
+            <a
+              href="/debug"
+              className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
+              title="Legacy /debug page"
+            >
+              Debug
+            </a>
           </div>
         </div>
+      </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Sidebar */}
-          <aside className="lg:col-span-3 space-y-6">
-            <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="font-semibold text-gray-900 text-sm">
-                  Run History (last {MAX_HISTORY})
-                </h2>
-                <button
-                  onClick={clearAllHistory}
-                  disabled={runHistory.length === 0}
-                  className="text-xs text-gray-600 hover:text-gray-900 px-2 py-1 rounded border border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
-                >
-                  Clear
-                </button>
-              </div>
+      {/* Body */}
+      <div className="mx-auto max-w-6xl px-6 py-6">
+        {/* Partner missing banner */}
+        {partnerMissing ? (
+          <div className="mb-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4">
+            <div className="text-sm font-semibold text-amber-200">
+              Partner required
+            </div>
+            <div className="text-xs text-amber-100/80 mt-1">
+              Pick a partner in the top bar to run ClickHouse triage.
+            </div>
+          </div>
+        ) : null}
 
-              {runHistory.length === 0 ? (
-                <div className="text-sm text-gray-500">
-                  No history yet. Run triage once and it will appear here.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {runHistory.map((run) => {
-                    const isActive = run.id === selectedRunId;
-                    const inp = run.inputs || ({} as any);
-                    const title = inp.fileName
-                      ? `file: ${inp.fileName}`
-                      : inp.dataSource === "clickhouse"
-                      ? "source: clickhouse"
-                      : "url: csv";
-                    const partnerText =
-                      inp.dataSource === "clickhouse"
-                        ? ` • partner=${inp.partner || "(missing)"}`
-                        : "";
-                    const subtitle = `${inp.dataSource || "csv"}${partnerText} • svc=${
-                      inp.service
-                    } region=${inp.region} pop=${inp.pop} win=${inp.windowMinutes}m`;
+        {/* Chat surface */}
+        <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+          <div
+            ref={chatScrollRef}
+            className="h-[66vh] min-h-[520px] overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-4"
+          >
+            <div className="space-y-4">
+              {chatMessages.map((m) => {
+                const isUser = m.role === "user";
+                const isSystem = m.role === "system";
 
-                    return (
+                // bubble widths: assistant wider than user
+                const bubbleMax =
+                  isUser ? "max-w-[70%]" : "max-w-[82%]";
+
+                // alignment: assistant left, user right. system centered
+                const rowAlign = isSystem
+                  ? "justify-center"
+                  : isUser
+                  ? "justify-end"
+                  : "justify-start";
+
+                const bubbleStyle = isSystem
+                  ? "border-white/10 bg-white/5 text-gray-300"
+                  : isUser
+                  ? "border-white/10 bg-white/10 text-gray-100"
+                  : "border-white/10 bg-white/5 text-gray-100";
+
+                return (
+                  <div key={m.id} className={`flex ${rowAlign}`}>
+                    <div className={`${bubbleMax} w-full`}>
+                      {/* tiny timestamp only (no User:/Assistant:) */}
                       <div
-                        key={run.id}
-                        className={`rounded-lg border p-3 transition-colors ${
-                          isActive
-                            ? "bg-blue-50 border-blue-300"
-                            : "bg-white border-gray-200 hover:bg-gray-50"
+                        className={`text-[10px] text-gray-500 mb-1 ${
+                          isSystem ? "text-center" : isUser ? "text-right" : "text-left"
                         }`}
                       >
-                        <div className="text-xs font-semibold text-gray-900">
-                          {formatTimestampClientSafe(run.timestamp, mounted)}
-                        </div>
-                        <div className="text-xs text-gray-600 mt-1">{subtitle}</div>
-                        <div className="text-xs text-gray-500 mt-1 truncate">{title}</div>
-                        <div className="flex gap-2 mt-3">
-                          <button
-                            onClick={() => loadHistoricalRun(run)}
-                            className="flex-1 text-xs font-medium px-3 py-1.5 rounded-md border border-gray-300 hover:bg-gray-50"
-                          >
-                            Load
-                          </button>
-                          <button
-                            onClick={() => deleteHistoricalRun(run.id)}
-                            className="text-xs font-medium px-3 py-1.5 rounded-md border border-red-300 text-red-600 hover:bg-red-50"
-                          >
-                            Delete
-                          </button>
-                        </div>
+                        {mounted ? new Date(m.ts).toLocaleString() : m.ts}
                       </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </aside>
 
-          {/* Main */}
-          <section className="lg:col-span-9 min-w-0">
-            <div className="mb-6">
-              <ChatPanel
-                title="Chat"
-                mounted={mounted}
-                isLoading={isLoading}
-                chatMessages={chatMessages}
-                chatInput={chatInput}
-                setChatInput={setChatInput}
-                onSend={handleChatSend}
-                chatScrollRef={chatScrollRef}
-                chatMode={chatMode}
-                setChatMode={setChatMode}
-                execLabel={execLabel}
-                showPartnerMissing={partnerMissing && chatMode !== "llm"}
-                partnerOptions={PARTNER_OPTIONS}
-                onPickPartner={(p) => setPartnerSticky(p)}
-                onReset={resetAllUI}
-                resetDisabled={isLoading}
-              />
-            </div>
-
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-              {/* Left */}
-              <div className="space-y-4 min-w-0">
-                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Data Source
-                      </label>
-                      <select
-                        className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        value={dataSource}
-                        onChange={(e) => setDataSource(e.target.value as DataSource)}
-                        disabled={isLoading}
-                      >
-                        <option value="csv">CSV</option>
-                        <option value="clickhouse">ClickHouse</option>
-                      </select>
-                      <div className="text-xs text-gray-500 mt-2">
-                        {dataSource === "csv"
-                          ? "Uses CSV URL or uploaded file."
-                          : "Uses ClickHouse (mock for now; next step = real queries). CSV fields below are ignored."}
-                      </div>
-                    </div>
-
-                    {dataSource === "clickhouse" && (
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Partner
-                        </label>
-                        <select
-                          className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          value={partner}
-                          onChange={(e) => setPartnerSticky(e.target.value)}
-                          disabled={isLoading}
+                      {m.type === "text" ? (
+                        <div
+                          className={`rounded-2xl border ${bubbleStyle} px-4 py-3`}
                         >
-                          <option value="">Select partner…</option>
-                          {PARTNER_OPTIONS.map((p) => (
-                            <option key={p} value={p}>
-                              {p}
-                            </option>
-                          ))}
-                        </select>
-                        <div className="text-xs text-gray-500 mt-2">
-                          Public-safe mock partner routing (real partner → DB mapping
-                          later).
-                        </div>
-                      </div>
-                    )}
+                          <pre className="whitespace-pre-wrap text-sm leading-relaxed">
+                            {m.text}
+                          </pre>
 
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        CSV URL
-                      </label>
-                      <input
-                        type="text"
-                        className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        value={csvUrl ?? ""}
-                        onChange={(e) => setCsvUrl(e.target.value)}
-                        placeholder="https://..."
-                        disabled={csvInputsDisabled}
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Or upload CSV
-                      </label>
-                      <input
-                        type="file"
-                        accept=".csv,text/csv"
-                        onChange={(e) => setUploadedFile(e.target.files?.[0] ?? null)}
-                        className="text-sm text-gray-700"
-                        disabled={csvInputsDisabled}
-                      />
-                      {uploadedFile && (
-                        <div className="text-xs text-gray-600 mt-2">
-                          Selected: {uploadedFile.name}
+                          {/* inline rate-limit banner under assistant bubble */}
+                          {rateLimit && m.id === rateLimit.msgId ? (
+                            <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                              <div className="text-xs text-gray-200">
+                                LLM is rate-limited. Retrying in{" "}
+                                <span className="font-semibold">
+                                  {fmtCountdown(rateLimitRemainingMs)}
+                                </span>{" "}
+                                or switch to Deterministic.
+                              </div>
+                              <div className="mt-2 flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await sendUserText(rateLimit.lastUserText, {
+                                      appendUser: false,
+                                    });
+                                  }}
+                                  className="rounded-lg border border-white/10 bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15 disabled:opacity-50"
+                                  disabled={isLoading}
+                                >
+                                  Retry now
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setChatMode("deterministic");
+                                    clearRateLimit();
+                                    addText(
+                                      "assistant",
+                                      "Switched to Deterministic. Try the same query again."
+                                    );
+                                  }}
+                                  className="rounded-lg border border-white/10 bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15"
+                                >
+                                  Switch to Deterministic
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
+                      ) : (
+                        <TriageCard run={m.run} />
                       )}
-                      <div className="text-xs text-gray-500 mt-2">
-                        Note: history can reload URL-based runs. File uploads can't
-                        be reloaded (browser limitation).
-                      </div>
                     </div>
+                  </div>
+                );
+              })}
 
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Service
-                        </label>
-                        <select
-                          className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          value={service}
-                          onChange={(e) => setService(e.target.value)}
-                          disabled={isLoading}
-                        >
-                          {SERVICE_OPTIONS.map((v) => (
-                            <option key={v} value={v}>
-                              {v}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Region
-                        </label>
-                        <select
-                          className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          value={region}
-                          onChange={(e) => setRegion(e.target.value)}
-                          disabled={isLoading}
-                        >
-                          {REGION_OPTIONS.map((v) => (
-                            <option key={v} value={v}>
-                              {v}
-                            </option>
-                          ))}
-                        </select>
-                        {REGION_OPTIONS.length <= 1 && (
-                          <div className="text-[11px] text-gray-400 mt-2">
-                            Run once to populate region options.
-                          </div>
-                        )}
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          POP
-                        </label>
-                        <select
-                          className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          value={pop}
-                          onChange={(e) => setPop(e.target.value)}
-                          disabled={isLoading}
-                        >
-                          {POP_OPTIONS.map((v) => (
-                            <option key={v} value={v}>
-                              {v}
-                            </option>
-                          ))}
-                        </select>
-                        {POP_OPTIONS.length <= 1 && (
-                          <div className="text-[11px] text-gray-400 mt-2">
-                            Run once to populate POP options.
-                          </div>
-                        )}
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Window (minutes)
-                        </label>
-                        <input
-                          type="number"
-                          className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          value={Number.isFinite(windowMinutes) ? windowMinutes : 60}
-                          onChange={(e) => {
-                            const raw = e.target.value;
-                            if (raw === "") {
-                              setWindowMinutes(60);
-                              return;
-                            }
-                            const n = Number(raw);
-                            setWindowMinutes(Number.isFinite(n) && n > 0 ? n : 60);
-                          }}
-                          min={1}
-                          disabled={isLoading}
-                        />
-                      </div>
+              {/* typing indicator bubble (assistant, left) */}
+              {typing ? (
+                <div className="flex justify-start">
+                  <div className="max-w-[82%] w-full">
+                    <div className="text-[10px] text-gray-500 mb-1 text-left">
+                      {mounted ? new Date().toLocaleString() : nowIso()}
                     </div>
-
-                    <div className="flex items-center justify-between gap-3 pt-2">
-                      <label className="flex items-center gap-2 text-sm text-gray-700">
-                        <input
-                          type="checkbox"
-                          checked={debugMode}
-                          onChange={(e) => setDebugMode(e.target.checked)}
-                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                          disabled={isLoading}
-                        />
-                        Enable debug output
-                      </label>
-
-                      <button
-                        onClick={handleRunTriage}
-                        disabled={isLoading || !canRunTriage}
-                        className="px-6 py-2 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                        title={
-                          !canRunTriage && dataSource === "clickhouse"
-                            ? "Select a partner to run ClickHouse triage"
-                            : undefined
-                        }
-                      >
-                        {isLoading ? "Running..." : "Run Triage"}
-                      </button>
+                    <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                      <TypingDots />
                     </div>
-
-                    {errorMessage && (
-                      <div className="rounded-lg border border-red-300 bg-red-50 p-3">
-                        <p className="text-sm text-red-800">
-                          <strong>Error:</strong> {errorMessage}
-                        </p>
-                      </div>
-                    )}
                   </div>
                 </div>
-
-                {parsedMetrics && (
-                  <div className="grid grid-cols-2 gap-3">
-                    <MetricCard
-                      label="totalRequests"
-                      value={formatIntOrNA(parsedMetrics.totalRequests)}
-                    />
-                    <MetricCard
-                      label="p95TtmsMs"
-                      value={formatMsOrNA(parsedMetrics.p95TtmsMs)}
-                    />
-                    <MetricCard
-                      label="p99TtmsMs"
-                      value={formatMsOrNA(parsedMetrics.p99TtmsMs)}
-                    />
-                    <MetricCard
-                      label="errorRate (5xx)"
-                      value={formatPctOrNA(parsedMetrics.errorRatePct)}
-                      subtitle={
-                        parsedMetrics.error5xxCount == null
-                          ? null
-                          : `${parsedMetrics.error5xxCount.toLocaleString()} / ${parsedMetrics.totalRequests.toLocaleString()}`
-                      }
-                    />
-                  </div>
-                )}
-
-                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                  <div className="font-medium text-gray-900 mb-2">Summary</div>
-                  <pre className="whitespace-pre-wrap text-sm text-gray-700 font-mono">
-                    {summaryText || "Run triage to see results..."}
-                  </pre>
-                </div>
-
-                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                  <div className="font-medium text-gray-900 mb-2">
-                    Raw metricsJson (debug)
-                  </div>
-                  <pre className="whitespace-pre-wrap text-xs text-gray-600 font-mono overflow-auto max-h-64">
-                    {metricsJson ? JSON.stringify(metricsJson, null, 2) : "No metricsJson yet."}
-                  </pre>
-                </div>
-              </div>
-
-              {/* Right: Charts */}
-              <div className="space-y-4 min-w-0">
-                {ts && ts.points.length > 0 ? (
-                  <>
-                    <StackedBarTimeseries
-                      title="Total events by status code (stacked)"
-                      subtitle="Traffic timeseries"
-                      ts={ts}
-                      bucketSeconds={bucketSeconds}
-                      seriesKeys={ts.statusCodeSeries || []}
-                      getMap={(p) => p.statusCountsByCode}
-                      height={190}
-                      windowMinutes={windowMinutes}
-                    />
-
-                    <StackedBarTimeseries
-                      title="Total events by host (stacked)"
-                      subtitle="Traffic timeseries"
-                      ts={ts}
-                      bucketSeconds={bucketSeconds}
-                      seriesKeys={ts.hostSeries || []}
-                      getMap={(p) => p.hostCountsByHost}
-                      height={190}
-                      windowMinutes={windowMinutes}
-                    />
-
-                    <StackedBarTimeseries
-                      title="Total events by CRC code (stacked)"
-                      subtitle="Cache / response classification"
-                      ts={ts}
-                      bucketSeconds={bucketSeconds}
-                      seriesKeys={ts.crcSeries || []}
-                      getMap={(p) => p.crcCountsByCrc}
-                      height={190}
-                      windowMinutes={windowMinutes}
-                    />
-
-                    <LatencyTimeseriesLines
-                      points={ts.points}
-                      bucketSeconds={bucketSeconds}
-                      height={190}
-                      windowMinutes={windowMinutes}
-                    />
-                  </>
-                ) : (
-                  <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">
-                    Run triage to see charts.
-                  </div>
-                )}
-              </div>
-              {/* /Right */}
+              ) : null}
             </div>
-          </section>
+          </div>
+
+          {/* Composer */}
+          <div className="mt-4 flex gap-3">
+            <input
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+              placeholder="Try: live in bos last 2h"
+              className="flex-1 rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-blue-500/40"
+              disabled={isLoading}
+            />
+            <button
+              onClick={handleSend}
+              disabled={isLoading || !chatInput.trim()}
+              className="rounded-2xl px-5 py-3 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isLoading ? "Running..." : "Send"}
+            </button>
+          </div>
+
+          <div className="mt-2 text-xs text-gray-500">
+            Enter sends • Results appear inline as cards • Evidence/SQL are placeholders
+          </div>
         </div>
       </div>
+
+      {/* Schema modal (placeholder) */}
+      {schemaOpen ? (
+        <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-6">
+          <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#0b0b0b] p-6">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-lg font-semibold text-white">Schema helper</div>
+                <div className="text-sm text-gray-400 mt-1">
+                  Contract / fields / examples (placeholder).
+                </div>
+              </div>
+              <button
+                onClick={() => setSchemaOpen(false)}
+                className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-gray-200">
+              <div className="text-xs text-gray-400 mb-2">Coming soon</div>
+              <ul className="list-disc ml-5 space-y-1 text-gray-200/90">
+                <li>Partner + service/region/pop definitions</li>
+                <li>CRC glossary shortcuts</li>
+                <li>Example prompts + filter syntax</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
-

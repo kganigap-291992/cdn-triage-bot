@@ -1,0 +1,3 @@
+[submodule "vendor/cdn-telemetry-kit"]
+	path = vendor/cdn-telemetry-kit
+	url = https://github.com/kganigap-291992/cdn-telemetry-kit.git

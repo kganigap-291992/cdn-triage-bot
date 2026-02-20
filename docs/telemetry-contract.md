@@ -67,3 +67,11 @@ Required columns (minimum):
 - pop
 - score_z
 - is_anomaly
+
+## Production Usage
+
+This generator is consumed by Cachey.
+
+For full infrastructure deployment and ingestion pipeline,
+see the Cachey repository:
+https://github.com/kganigap-291992/cdn-triage-bot
