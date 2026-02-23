@@ -1,22 +1,22 @@
+// app/debug/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 
 // ------------------------------------------------------------
-// Configuration
+// Debug UI = ClickHouse-first (no CSV)
 // ------------------------------------------------------------
-const DEFAULT_CSV_URL =
-  "https://raw.githubusercontent.com/kganigap-291992/cdn-triage-bot/refs/heads/main/data/cdn_logs_6h_80k_stresstest.csv";
-
 const STORAGE_KEY = "cdn-triage-history-v1";
 const CHAT_MODE_KEY = "cdn-triage-chatmode-v1";
-
-// ------------------------------------------------------------
-// PATCH: Persist selected partner (ClickHouse) in localStorage
-// ------------------------------------------------------------
 const PARTNER_KEY = "cdn-triage-partner-v1";
 
+const MAX_HISTORY = 10;
+const LOGO_SRC = "/cachey-logo.png";
+
+// ------------------------------------------------------------
+// localStorage helpers
+// ------------------------------------------------------------
 function safeGetLS(key: string) {
   try {
     return localStorage.getItem(key);
@@ -35,25 +35,25 @@ function safeRemoveLS(key: string) {
   } catch {}
 }
 
-
-const MAX_HISTORY = 10;
-
-const LOGO_SRC = "/cachey-logo.png"; // ✅ put your logo in /public with this name
-
-// Allowed values for deterministic chat parsing
+// ------------------------------------------------------------
+// Canonical allowed values (from generator contract)
+// ------------------------------------------------------------
 const ALLOWED = {
-  service: new Set(["all", "live", "vod"]),
+  service: new Set(["all", "live", "vod", "dvr", "eas", "live_ott", "app_backend"]),
+  contentType: new Set(["all", "manifest", "segment", "api"]),
+  uaFamily: new Set(["all", "stb", "mobile", "web", "smart_tv", "console"]),
 } as const;
 
 function optionsFromSet(set: Set<string>) {
   const arr = Array.from(set);
-  return arr.sort((a, b) =>
-    a === "all" ? -1 : b === "all" ? 1 : a.localeCompare(b)
-  );
+  return arr.sort((a, b) => (a === "all" ? -1 : b === "all" ? 1 : a.localeCompare(b)));
 }
 
 const SERVICE_OPTIONS = optionsFromSet(ALLOWED.service);
+const CONTENT_TYPE_OPTIONS = optionsFromSet(ALLOWED.contentType);
+const UA_FAMILY_OPTIONS = optionsFromSet(ALLOWED.uaFamily);
 
+// Public-safe mock partners (real mapping later)
 const PARTNER_OPTIONS = [
   "acme_media",
   "beta_stream",
@@ -65,7 +65,7 @@ const PARTNER_OPTIONS = [
 // ------------------------------------------------------------
 // Types
 // ------------------------------------------------------------
-type DataSource = "csv" | "clickhouse";
+type DataSource = "clickhouse";
 type Partner = (typeof PARTNER_OPTIONS)[number];
 type PartnerOrMissing = Partner | "";
 type ChatMode = "deterministic" | "llm";
@@ -90,10 +90,14 @@ type ChatTriageMessage = {
       service: string;
       region: string;
       pop: string;
+      contentType: string;
+      uaFamily: string;
       windowMinutes: number;
+      debug: boolean;
     };
     summaryText: string;
     metricsJson: any;
+    sql?: any;
   };
 };
 
@@ -102,11 +106,11 @@ type ChatMessage = ChatTextMessage | ChatTriageMessage;
 type TriageInputs = {
   dataSource: DataSource;
   partner: PartnerOrMissing;
-  csvUrl: string;
-  fileName: string;
   service: string;
   region: string;
   pop: string;
+  contentType: string;
+  uaFamily: string;
   windowMinutes: number;
   debug: boolean;
 };
@@ -117,6 +121,7 @@ type TriageRun = {
   inputs: TriageInputs;
   summaryText: string;
   metricsJson: any;
+  sql?: any;
 };
 
 type MetricsData = {
@@ -147,7 +152,6 @@ type TimeseriesData = {
   endTs: string | null;
   points: TimeseriesPoint[];
 
-  // stable legend order (optional but recommended)
   statusCodeSeries?: string[];
   hostSeries?: string[];
   crcSeries?: string[];
@@ -172,14 +176,10 @@ function normalizeText(text: string): string {
   return (text || "").trim().toLowerCase();
 }
 
-// ✅ improved smalltalk detector (so "what can you do" doesn't get a canned reply)
 function isGreetingOrSmallTalk(text: string): boolean {
   const t = normalizeText(text);
   if (!t) return true;
-
   if (t.length <= 3) return ["hi", "hey", "yo", "ok", "k"].includes(t);
-
-  // treat these as help-ish (not smalltalk)
   if (t.includes("what can you do") || t.includes("help")) return false;
 
   const greetingPatterns = [
@@ -203,10 +203,15 @@ function looksLikeTriageQuery(text: string): boolean {
   const normalized = normalizeText(text);
   if (!normalized) return false;
   if (normalized.includes("=")) return true;
+
   const keywords = [
     "service",
     "region",
     "pop",
+    "content",
+    "content_type",
+    "ua",
+    "ua_family",
     "win",
     "window",
     "errors",
@@ -219,6 +224,14 @@ function looksLikeTriageQuery(text: string): boolean {
     "live",
     "last",
     "past",
+    "manifest",
+    "segment",
+    "api",
+    "stb",
+    "smart_tv",
+    "mobile",
+    "web",
+    "console",
   ];
   return keywords.some((keyword) => normalized.includes(keyword));
 }
@@ -342,9 +355,12 @@ function timeLabelShort(tsIso: string, spanMinutes: number) {
 // ------------------------------------------------------------
 type ChatIntent = {
   command: "help" | "reset" | "show_filters" | "explain" | "run" | null;
+  partner?: string | null;
   service?: string | null;
   region?: string | null;
   pop?: string | null;
+  contentType?: string | null;
+  uaFamily?: string | null;
   windowMinutes?: number | null;
   mentionedRegion?: boolean;
   mentionedPop?: boolean;
@@ -360,9 +376,7 @@ function normalizeToken(v: string) {
 function parseWindowToMinutes(raw: string): number | null {
   const s = normalizeToken(raw);
   if (!s) return null;
-  const m = s.match(
-    /^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$/
-  );
+  const m = s.match(/^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$/);
   if (!m) return null;
   const n = Number(m[1]);
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -374,23 +388,13 @@ function parseWindowToMinutes(raw: string): number | null {
 function parseChatIntent(text: string): ChatIntent {
   const t = normalizeText(text);
 
-  if (
-    t === "help" ||
-    t === "?" ||
-    t.startsWith("help ") ||
-    t.includes("what can you do")
-  )
+  if (t === "help" || t === "?" || t.startsWith("help ") || t.includes("what can you do"))
     return { command: "help" };
 
   if (t === "reset" || t === "clear" || t === "start over" || t === "wipe")
     return { command: "reset" };
 
-  if (
-    t === "filters" ||
-    t === "show filters" ||
-    t === "show filter" ||
-    t === "current filters"
-  )
+  if (t === "filters" || t === "show filters" || t === "show filter" || t === "current filters")
     return { command: "show_filters" };
 
   if (t === "explain" || t.startsWith("explain ") || t.includes("what is this"))
@@ -399,18 +403,24 @@ function parseChatIntent(text: string): ChatIntent {
   if (t === "run" || t === "triage" || t === "go" || t === "execute")
     return { command: "run" };
 
+  // partner
+  const partnerKV = t.match(/\bpartner\s*=\s*([a-z0-9_\-]+)\b/);
+  const partnerWord = t.match(/\bpartner\s+([a-z0-9_\-]+)\b/);
+  const partner = partnerKV?.[1] || partnerWord?.[1] || null;
+
+  // service
   const serviceKV = t.match(/\b(service|svc)\s*=\s*([a-z0-9_]+)\b/);
   const serviceWord = t.match(/\b(service|svc)\s+([a-z0-9_]+)\b/);
   let service = serviceKV?.[2] || serviceWord?.[2] || null;
-
   if (!service) {
-    const svcLoose = t.match(/\b(vod|live|all)\b/);
+    const svcLoose = t.match(/\b(vod|live|all|dvr|eas|live_ott|app_backend)\b/);
     service = svcLoose?.[1] || null;
   }
 
-  const regionKV = t.match(/\bregion\s*=\s*([a-z0-9_]+)\b/);
-  const regionWord = t.match(/\bregion\s+([a-z0-9_]+)\b/);
-  const regionIn = t.match(/\bin\s+([a-z0-9_]+)\b/);
+  // region/pop
+  const regionKV = t.match(/\bregion\s*=\s*([a-z0-9_\-]+)\b/);
+  const regionWord = t.match(/\bregion\s+([a-z0-9_\-]+)\b/);
+  const regionIn = t.match(/\bin\s+([a-z0-9_\-]+)\b/);
   const region = regionKV?.[1] || regionWord?.[1] || regionIn?.[1] || null;
 
   const popKV = t.match(/\bpop\s*=\s*([a-z0-9_\-]+)\b/);
@@ -418,21 +428,42 @@ function parseChatIntent(text: string): ChatIntent {
   const popAt = t.match(/\bat\s+([a-z0-9_\-]+)\b/);
   const pop = popKV?.[1] || popWord?.[1] || popAt?.[1] || null;
 
+  // contentType
+  const ctKV = t.match(/\b(content_type|contenttype|content)\s*=\s*([a-z0-9_]+)\b/);
+  const ctWord = t.match(/\b(content_type|contenttype|content)\s+([a-z0-9_]+)\b/);
+  let contentType = ctKV?.[2] || ctWord?.[2] || null;
+  if (!contentType) {
+    const loose = t.match(/\b(manifest|segment|api)\b/);
+    contentType = loose?.[1] || null;
+  }
+
+  // uaFamily
+  const uaKV = t.match(/\b(ua_family|uafamily|ua)\s*=\s*([a-z0-9_]+)\b/);
+  const uaWord = t.match(/\b(ua_family|uafamily|ua)\s+([a-z0-9_]+)\b/);
+  let uaFamily = uaKV?.[2] || uaWord?.[2] || null;
+  if (!uaFamily) {
+    const loose = t.match(/\b(stb|mobile|web|smart_tv|console)\b/);
+    uaFamily = loose?.[1] || null;
+  }
+
+  // window
   const winKV = t.match(/\b(win|window)\s*=\s*([0-9a-z]+)\b/);
   const winWord = t.match(/\b(win|window)\s+([0-9a-z]+)\b/);
   const lastWord = t.match(/\blast\s+([0-9a-z]+)\b/);
   const windowMinutes =
-    parseWindowToMinutes(winKV?.[2] || winWord?.[2] || lastWord?.[1] || "") ??
-    null;
+    parseWindowToMinutes(winKV?.[2] || winWord?.[2] || lastWord?.[1] || "") ?? null;
 
   const mentionedRegion = /\bregion\b|\bin\b/.test(t);
   const mentionedPop = /\bpop\b|\bat\b/.test(t);
 
   return {
     command: null,
+    partner: partner ? normalizeToken(partner) : null,
     service: service ? normalizeToken(service) : null,
     region: region ? normalizeToken(region) : null,
     pop: pop ? normalizeToken(pop) : null,
+    contentType: contentType ? normalizeToken(contentType) : null,
+    uaFamily: uaFamily ? normalizeToken(uaFamily) : null,
     windowMinutes,
     mentionedRegion,
     mentionedPop,
@@ -445,13 +476,12 @@ function buildFiltersSummary(args: {
   service: string;
   region: string;
   pop: string;
+  contentType: string;
+  uaFamily: string;
   windowMinutes: number;
 }) {
-  const { dataSource, partner, service, region, pop, windowMinutes } = args;
-  const base = `svc=${service}, region=${region}, pop=${pop}, win=${windowMinutes}m`;
-  return dataSource === "clickhouse"
-    ? `source=clickhouse, partner=${partner || "(missing)"}, ${base}`
-    : `source=csv, ${base}`;
+  const { partner, service, region, pop, contentType, uaFamily, windowMinutes } = args;
+  return `source=clickhouse, partner=${partner || "(missing)"}, svc=${service}, region=${region}, pop=${pop}, content=${contentType}, ua=${uaFamily}, win=${windowMinutes}m`;
 }
 
 // ------------------------------------------------------------
@@ -476,20 +506,14 @@ function StackedBarTimeseries({
   height?: number;
   windowMinutes: number;
 }) {
-  const maxBars =
-    windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
+  const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
   const basePoints = (ts.points || []).slice(-maxBars);
   const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
 
-  const points =
-    zoom && zoom.end > zoom.start
-      ? basePoints.slice(zoom.start, zoom.end + 1)
-      : basePoints;
+  const points = zoom && zoom.end > zoom.start ? basePoints.slice(zoom.start, zoom.end + 1) : basePoints;
 
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>(
-    { active: false, x0: 0, x1: 0 }
-  );
+  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({ active: false, x0: 0, x1: 0 });
 
   if (!points.length) return null;
 
@@ -497,25 +521,21 @@ function StackedBarTimeseries({
   for (const p of points) {
     const m = getMap(p) || {};
     for (const k of Object.keys(m)) {
-      present.set(k, (present.get(k) ?? 0) + Number(m[k] ?? 0));
+      present.set(k, (present.get(k) ?? 0) + Number((m as any)[k] ?? 0));
     }
   }
   const presentKeys = Array.from(present.entries())
     .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
     .map(([k]) => k);
 
-  const ordered = [
-    ...seriesKeys.filter((k) => present.has(k)),
-    ...presentKeys.filter((k) => !seriesKeys.includes(k)),
-  ];
-
+  const ordered = [...seriesKeys.filter((k) => present.has(k)), ...presentKeys.filter((k) => !seriesKeys.includes(k))];
   const keys = ordered.slice(0, 10);
   if (!keys.length) return null;
 
   const totals = points.map((p) => {
     const m = getMap(p) || {};
     let sum = 0;
-    for (const k of keys) sum += Number(m[k] ?? 0);
+    for (const k of keys) sum += Number((m as any)[k] ?? 0);
     return sum;
   });
   const maxTotal = Math.max(1, ...totals);
@@ -531,15 +551,10 @@ function StackedBarTimeseries({
 
   const barCount = points.length;
   const gap = clamp(Math.round(plotW / (barCount * 10)), 2, 6);
-  const barW = Math.max(
-    4,
-    Math.floor((plotW - gap * (barCount - 1)) / barCount)
-  );
+  const barW = Math.max(4, Math.floor((plotW - gap * (barCount - 1)) / barCount));
 
   const yTicks = 4;
-  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
-    Math.round((maxTotal * (yTicks - i)) / yTicks)
-  );
+  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) => Math.round((maxTotal * (yTicks - i)) / yTicks));
 
   const xLabelEvery = Math.max(1, Math.floor(points.length / 6));
   const latest = points[points.length - 1];
@@ -577,19 +592,13 @@ function StackedBarTimeseries({
           <div className="text-sm font-semibold text-gray-900">{title}</div>
           <div className="text-[11px] text-gray-500 mt-1">
             {ts.startTs && ts.endTs
-              ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(
-                  ts.endTs
-                )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
+              ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(ts.endTs)} UTC (bucket: ${bucketLabel(bucketSeconds)})`
               : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
           </div>
           <div className="text-[11px] text-gray-400 mt-1">
             Drag to zoom • double-click to reset
             {zoom ? (
-              <button
-                type="button"
-                className="ml-2 underline hover:text-gray-600"
-                onClick={() => setZoom(null)}
-              >
+              <button type="button" className="ml-2 underline hover:text-gray-600" onClick={() => setZoom(null)}>
                 reset zoom
               </button>
             ) : null}
@@ -599,9 +608,7 @@ function StackedBarTimeseries({
         <div className="text-right">
           <div className="text-xs text-gray-500">Latest</div>
           <div className="text-[11px] text-gray-700">
-            {latest
-              ? `${formatUtcHM(latest.ts)} UTC • ${latestTotal.toLocaleString()} events`
-              : "n/a"}
+            {latest ? `${formatUtcHM(latest.ts)} UTC • ${latestTotal.toLocaleString()} events` : "n/a"}
           </div>
         </div>
       </div>
@@ -644,13 +651,7 @@ function StackedBarTimeseries({
           >
             Events
           </text>
-          <text
-            x={padLeft + plotW / 2}
-            y={h - 10}
-            fontSize="10"
-            fill="#6b7280"
-            textAnchor="middle"
-          >
+          <text x={padLeft + plotW / 2} y={h - 10} fontSize="10" fill="#6b7280" textAnchor="middle">
             Time (UTC, {bucketLabel(bucketSeconds)} buckets)
           </text>
 
@@ -659,21 +660,8 @@ function StackedBarTimeseries({
             const y = padTop + (1 - t) * plotH;
             return (
               <g key={idx} opacity={0.35}>
-                <line
-                  x1={padLeft}
-                  y1={y}
-                  x2={padLeft + plotW}
-                  y2={y}
-                  stroke="currentColor"
-                />
-                <text
-                  x={padLeft - 10}
-                  y={y + 3}
-                  fontSize="10"
-                  fill="#6b7280"
-                  textAnchor="end"
-                  opacity={0.95}
-                >
+                <line x1={padLeft} y1={y} x2={padLeft + plotW} y2={y} stroke="currentColor" />
+                <text x={padLeft - 10} y={y + 3} fontSize="10" fill="#6b7280" textAnchor="end" opacity={0.95}>
                   {formatCountTick(v)}
                 </text>
               </g>
@@ -688,7 +676,7 @@ function StackedBarTimeseries({
             return (
               <g key={p.ts}>
                 {keys.map((k) => {
-                  const val = Number(m[k] ?? 0);
+                  const val = Number((m as any)[k] ?? 0);
                   if (!val) return null;
                   const segH = (val / maxTotal) * plotH;
                   const y = yTop - segH;
@@ -716,14 +704,7 @@ function StackedBarTimeseries({
             const x = padLeft + i * (barW + gap) + barW / 2;
             const label = timeLabelShort(p.ts, windowMinutes);
             return (
-              <text
-                key={`xl-${p.ts}`}
-                x={x}
-                y={padTop + plotH + 18}
-                fontSize="10"
-                fill="#6b7280"
-                textAnchor="middle"
-              >
+              <text key={`xl-${p.ts}`} x={x} y={padTop + plotH + 18} fontSize="10" fill="#6b7280" textAnchor="middle">
                 {label}
               </text>
             );
@@ -746,10 +727,7 @@ function StackedBarTimeseries({
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-600">
           {keys.map((k) => (
             <div key={k} className="flex items-center gap-1.5">
-              <span
-                className="inline-block h-2.5 w-2.5 rounded-full"
-                style={{ background: stableColorForKey(k) }}
-              />
+              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: stableColorForKey(k) }} />
               <span className="truncate max-w-[220px]">{k}</span>
             </div>
           ))}
@@ -773,27 +751,21 @@ function LatencyTimeseriesLines({
   height?: number;
   windowMinutes: number;
 }) {
-  const maxBars =
-    windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
+  const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
   const base = points.slice(-maxBars);
 
   const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
-  const slice =
-    zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
+  const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
 
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>(
-    { active: false, x0: 0, x1: 0 }
-  );
+  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({ active: false, x0: 0, x1: 0 });
 
   if (!slice.length) return null;
 
   const vals: number[] = [];
   for (const p of slice) {
-    if (p.p95TtmsMs != null && Number.isFinite(p.p95TtmsMs))
-      vals.push(Number(p.p95TtmsMs));
-    if (p.p99TtmsMs != null && Number.isFinite(p.p99TtmsMs))
-      vals.push(Number(p.p99TtmsMs));
+    if (p.p95TtmsMs != null && Number.isFinite(p.p95TtmsMs)) vals.push(Number(p.p95TtmsMs));
+    if (p.p99TtmsMs != null && Number.isFinite(p.p99TtmsMs)) vals.push(Number(p.p99TtmsMs));
   }
 
   const minV = vals.length ? Math.min(...vals) : 0;
@@ -832,9 +804,7 @@ function LatencyTimeseriesLines({
   });
 
   const yTicks = 4;
-  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
-    Math.round(minV + (span * (yTicks - i)) / yTicks)
-  );
+  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) => Math.round(minV + (span * (yTicks - i)) / yTicks));
 
   const xLabelEvery = Math.max(1, Math.floor(n / 6));
   const latest = slice[slice.length - 1];
@@ -867,24 +837,18 @@ function LatencyTimeseriesLines({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs text-gray-500">Latency timeseries</div>
-          <div className="text-sm font-semibold text-gray-900">
-            p95 / p99 TTMS
-          </div>
+          <div className="text-sm font-semibold text-gray-900">p95 / p99 TTMS</div>
           <div className="text-[11px] text-gray-500 mt-1">
             {slice.length
-              ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
-                  slice[slice.length - 1].ts
-                )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
+              ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(slice[slice.length - 1].ts)} UTC (bucket: ${bucketLabel(
+                  bucketSeconds
+                )})`
               : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
           </div>
           <div className="text-[11px] text-gray-400 mt-1">
             Drag to zoom • double-click to reset
             {zoom ? (
-              <button
-                type="button"
-                className="ml-2 underline hover:text-gray-600"
-                onClick={() => setZoom(null)}
-              >
+              <button type="button" className="ml-2 underline hover:text-gray-600" onClick={() => setZoom(null)}>
                 reset zoom
               </button>
             ) : null}
@@ -894,9 +858,7 @@ function LatencyTimeseriesLines({
           <div className="text-xs text-gray-500">Latest</div>
           <div className="text-[11px] text-gray-700">
             {latest
-              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(
-                  latest.p95TtmsMs
-                )} • p99=${formatMsOrNA(latest.p99TtmsMs)}`
+              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(latest.p95TtmsMs)} • p99=${formatMsOrNA(latest.p99TtmsMs)}`
               : "n/a"}
           </div>
         </div>
@@ -940,13 +902,7 @@ function LatencyTimeseriesLines({
           >
             Latency (ms)
           </text>
-          <text
-            x={padLeft + plotW / 2}
-            y={h - 10}
-            fontSize="10"
-            fill="#6b7280"
-            textAnchor="middle"
-          >
+          <text x={padLeft + plotW / 2} y={h - 10} fontSize="10" fill="#6b7280" textAnchor="middle">
             Time (UTC, {bucketLabel(bucketSeconds)} buckets)
           </text>
 
@@ -955,21 +911,8 @@ function LatencyTimeseriesLines({
             const yy = padTop + (1 - t) * plotH;
             return (
               <g key={idx} opacity={0.35}>
-                <line
-                  x1={padLeft}
-                  y1={yy}
-                  x2={padLeft + plotW}
-                  y2={yy}
-                  stroke="currentColor"
-                />
-                <text
-                  x={padLeft - 10}
-                  y={yy + 3}
-                  fontSize="10"
-                  fill="#6b7280"
-                  textAnchor="end"
-                  opacity={0.95}
-                >
+                <line x1={padLeft} y1={yy} x2={padLeft + plotW} y2={yy} stroke="currentColor" />
+                <text x={padLeft - 10} y={yy + 3} fontSize="10" fill="#6b7280" textAnchor="end" opacity={0.95}>
                   {v}
                 </text>
               </g>
@@ -999,14 +942,7 @@ function LatencyTimeseriesLines({
             const xx = x(i);
             const label = timeLabelShort(p.ts, windowMinutes);
             return (
-              <text
-                key={`xl-${p.ts}`}
-                x={xx}
-                y={padTop + plotH + 18}
-                fontSize="10"
-                fill="#6b7280"
-                textAnchor="middle"
-              >
+              <text key={`xl-${p.ts}`} x={xx} y={padTop + plotH + 18} fontSize="10" fill="#6b7280" textAnchor="middle">
                 {label}
               </text>
             );
@@ -1028,17 +964,11 @@ function LatencyTimeseriesLines({
 
         <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-600">
           <div className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ background: "rgba(37,99,235,0.92)" }}
-            />
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(37,99,235,0.92)" }} />
             <span>p95</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ background: "rgba(17,24,39,0.45)" }}
-            />
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(17,24,39,0.45)" }} />
             <span>p99</span>
           </div>
           <div className="text-gray-400">
@@ -1083,6 +1013,7 @@ function ChatPanel({
 
   chatMode: ChatMode;
   setChatMode: (m: ChatMode) => void;
+
   execLabel: string;
   showPartnerMissing: boolean;
   partnerOptions: readonly string[];
@@ -1091,10 +1022,7 @@ function ChatPanel({
   onReset: () => void;
   resetDisabled?: boolean;
 }) {
-  const placeholder =
-    chatMode === "llm"
-      ? "Try: boston live last 1hr"
-      : "Try: vod in usw2 at sjc last 60m";
+  const placeholder = chatMode === "llm" ? "Try: partner beta_stream boston live last 1hr" : "Try: vod in usw2 at sjc manifest stb last 60m";
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm flex flex-col h-[420px] min-w-0">
@@ -1107,9 +1035,7 @@ function ChatPanel({
               type="button"
               onClick={() => setChatMode("deterministic")}
               className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                chatMode === "deterministic"
-                  ? "bg-white text-gray-900 shadow-sm"
-                  : "text-gray-600 hover:text-gray-900"
+                chatMode === "deterministic" ? "bg-white text-gray-900 shadow-sm" : "text-gray-600 hover:text-gray-900"
               }`}
               disabled={isLoading}
               title="Use deterministic parser only"
@@ -1120,9 +1046,7 @@ function ChatPanel({
               type="button"
               onClick={() => setChatMode("llm")}
               className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                chatMode === "llm"
-                  ? "bg-white text-gray-900 shadow-sm"
-                  : "text-gray-600 hover:text-gray-900"
+                chatMode === "llm" ? "bg-white text-gray-900 shadow-sm" : "text-gray-600 hover:text-gray-900"
               }`}
               disabled={isLoading}
               title="LLM Assist (general chat + hint parsing)"
@@ -1149,12 +1073,8 @@ function ChatPanel({
 
       {showPartnerMissing && (
         <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
-          <div className="text-sm font-medium text-amber-900">
-            ClickHouse selected — partner required
-          </div>
-          <div className="text-xs text-amber-800 mt-1">
-            Pick a partner below or select one in the filters panel.
-          </div>
+          <div className="text-sm font-medium text-amber-900">Partner required</div>
+          <div className="text-xs text-amber-800 mt-1">Pick a partner below or select one in the filters panel.</div>
           <div className="mt-2 flex flex-wrap gap-2">
             {partnerOptions.map((p) => (
               <button
@@ -1171,32 +1091,21 @@ function ChatPanel({
         </div>
       )}
 
-      <div
-        ref={chatScrollRef}
-        className="flex-1 overflow-y-auto rounded-lg border border-gray-200 p-4 bg-white mb-2"
-      >
+      <div ref={chatScrollRef} className="flex-1 overflow-y-auto rounded-lg border border-gray-200 p-4 bg-white mb-2">
         <div className="space-y-4">
           {chatMessages.map((msg) => (
             <div key={msg.id}>
               <div className="text-xs text-gray-500 mb-1">
-                <span className="font-medium capitalize text-gray-700">
-                  {msg.role}
-                </span>{" "}
-                • {formatTimestampClientSafe(msg.timestamp, mounted)}
+                <span className="font-medium capitalize text-gray-700">{msg.role}</span> •{" "}
+                {formatTimestampClientSafe(msg.timestamp, mounted)}
               </div>
 
               {msg.type === "text" ? (
-                <pre className="whitespace-pre-wrap text-sm text-gray-900">
-                  {msg.text}
-                </pre>
+                <pre className="whitespace-pre-wrap text-sm text-gray-900">{msg.text}</pre>
               ) : (
                 <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
-                  <div className="text-xs text-gray-600 font-medium mb-2">
-                    Triage run
-                  </div>
-                  <pre className="whitespace-pre-wrap text-xs text-gray-700">
-                    {msg.run.summaryText || "(no summary)"}
-                  </pre>
+                  <div className="text-xs text-gray-600 font-medium mb-2">Triage run</div>
+                  <pre className="whitespace-pre-wrap text-xs text-gray-700">{msg.run.summaryText || "(no summary)"}</pre>
                 </div>
               )}
             </div>
@@ -1204,9 +1113,7 @@ function ChatPanel({
         </div>
       </div>
 
-      <div className="text-xs text-gray-400 mb-3">
-        {isLoading ? "⏳ Running..." : "\u00A0"}
-      </div>
+      <div className="text-xs text-gray-400 mb-3">{isLoading ? "⏳ Running..." : "\u00A0"}</div>
 
       <div className="space-y-2">
         <div className="flex gap-2">
@@ -1232,11 +1139,7 @@ function ChatPanel({
             {isLoading ? "Running..." : "Send"}
           </button>
         </div>
-        <div className="text-xs text-gray-500">
-          {chatInput.trim()
-            ? "Enter sends"
-            : "Try: help • filters • reset • explain • run"}
-        </div>
+        <div className="text-xs text-gray-500">{chatInput.trim() ? "Enter sends" : "Try: help • filters • reset • explain • run"}</div>
       </div>
     </div>
   );
@@ -1245,20 +1148,15 @@ function ChatPanel({
 // ------------------------------------------------------------
 // Main component
 // ------------------------------------------------------------
-export default function CDNTriageApp() {
+export default function CDNTriageDebug() {
   const [mounted, setMounted] = useState(false);
 
-  // Form inputs
-  const [dataSource, setDataSource] = useState<DataSource>("csv");
+  // Debug UI is ClickHouse-only
+  const dataSource: DataSource = "clickhouse";
 
-  // ------------------------------------------------------------
-  // PATCH: Partner state is persisted; default empty until user picks
-  // ------------------------------------------------------------
+  // Partner (sticky)
   const [partner, setPartner] = useState<PartnerOrMissing>("");
 
-  // ------------------------------------------------------------
-  // PATCH: Single partner setter (keeps state + storage consistent)
-  // ------------------------------------------------------------
   function setPartnerSticky(p: string) {
     const val = String(p || "").trim();
     if (!val) {
@@ -1272,24 +1170,25 @@ export default function CDNTriageApp() {
     }
   }
 
-  const [csvUrl, setCsvUrl] = useState(DEFAULT_CSV_URL);
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  // Filters
   const [service, setService] = useState("all");
   const [region, setRegion] = useState("all");
   const [pop, setPop] = useState("all");
+  const [contentType, setContentType] = useState("all");
+  const [uaFamily, setUaFamily] = useState("all");
   const [windowMinutes, setWindowMinutes] = useState(60);
   const [debugMode, setDebugMode] = useState(false);
 
-  // Chat mode toggle
+  // Chat mode
   const [chatMode, setChatMode] = useState<ChatMode>("deterministic");
   const chatModeLabel = chatMode === "llm" ? "LLM Assist" : "Deterministic";
-
 
   // State
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [summaryText, setSummaryText] = useState("");
   const [metricsJson, setMetricsJson] = useState<any>(null);
+  const [sqlBlock, setSqlBlock] = useState<any>(null);
 
   // History
   const [runHistory, setRunHistory] = useState<TriageRun[]>([]);
@@ -1305,9 +1204,7 @@ export default function CDNTriageApp() {
 
   useEffect(() => setMounted(true), []);
 
-  // ------------------------------------------------------------
-  // PATCH: Restore partner from localStorage (sticky across reloads)
-  // ------------------------------------------------------------
+  // Restore partner from localStorage
   useEffect(() => {
     if (!mounted) return;
     const saved = safeGetLS(PARTNER_KEY);
@@ -1316,22 +1213,17 @@ export default function CDNTriageApp() {
     }
   }, [mounted]);
 
-  
-  useEffect(() => {
-    if (dataSource === "clickhouse") setUploadedFile(null);
-  }, [dataSource]);
-
-
+  // Restore chat mode
   useEffect(() => {
     if (!mounted) return;
-    const stored = localStorage.getItem(CHAT_MODE_KEY);
+    const stored = safeGetLS(CHAT_MODE_KEY);
     if (!stored) return;
     setChatMode(stored === "llm" ? "llm" : "deterministic");
   }, [mounted]);
 
   useEffect(() => {
     if (!mounted) return;
-    localStorage.setItem(CHAT_MODE_KEY, chatMode);
+    safeSetLS(CHAT_MODE_KEY, chatMode);
   }, [chatMode, mounted]);
 
   function welcomeMessage(): ChatTextMessage {
@@ -1340,10 +1232,13 @@ export default function CDNTriageApp() {
       type: "text",
       role: "system",
       text:
-        "Welcome — Cachey 🤖 here.\n\n" +
-        "If you share the symptoms (errors or latency) and your scope (service / region / POP / time window), I’ll triage and pull up the charts.\n\n" +
-        "Type `help` to see everything I can do.\n" +
-        "Tip: You can also ask definitions — e.g. `what is tcp_hit`.",
+        "Welcome — Cachey 🤖 (Debug).\n\n" +
+        "This page is ClickHouse-first (no CSV).\n" +
+        "Pick a partner, then share symptoms + scope and I’ll triage.\n\n" +
+        "Type `help` for examples.\n" +
+        "Examples:\n" +
+        "- `partner=beta_stream vod manifest stb last 60m`\n" +
+        "- `service=live region=all pop=all content=segment ua=smart_tv win=120`\n",
       timestamp: getCurrentTimestamp(),
     };
   }
@@ -1355,9 +1250,10 @@ export default function CDNTriageApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted, chatMessages.length]);
 
+  // Restore history
   useEffect(() => {
     if (!mounted) return;
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = safeGetLS(STORAGE_KEY);
     if (!stored) return;
     const parsed = safeParse<TriageRun[]>(stored, []);
     if (Array.isArray(parsed)) setRunHistory(parsed);
@@ -1365,9 +1261,10 @@ export default function CDNTriageApp() {
 
   useEffect(() => {
     if (!mounted) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(runHistory));
+    safeSetLS(STORAGE_KEY, JSON.stringify(runHistory));
   }, [runHistory, mounted]);
 
+  // Chat auto-scroll
   useEffect(() => {
     const lastMessage = chatMessages[chatMessages.length - 1];
     if (!lastMessage) return;
@@ -1378,17 +1275,10 @@ export default function CDNTriageApp() {
     }
   }, [chatMessages]);
 
-  const partnerMissing = dataSource === "clickhouse" && !partner;
+  const partnerMissing = !partner;
+  const canRunTriage = Boolean(partner);
 
-  const canRunTriage = useMemo(() => {
-    if (dataSource === "clickhouse") return Boolean(partner);
-    return Boolean(uploadedFile) || (csvUrl && csvUrl.trim().length > 0);
-  }, [dataSource, partner, uploadedFile, csvUrl]);
-
-  // ------------------------------------------------------------
   // Dynamic Region/POP options from metricsJson.available (if present)
-  // (tight deps so build is happy + no weird object identity issues)
-  // ------------------------------------------------------------
   const availableRegions: unknown = metricsJson?.available?.regions;
   const availablePops: unknown = metricsJson?.available?.pops;
 
@@ -1421,18 +1311,10 @@ export default function CDNTriageApp() {
     if (!metricsJson) return null;
     return {
       totalRequests: Number(metricsJson.totalRequests) || 0,
-      p95TtmsMs:
-        metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs),
-      p99TtmsMs:
-        metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs),
-      error5xxCount:
-        metricsJson.error5xxCount == null
-          ? null
-          : Number(metricsJson.error5xxCount),
-      errorRatePct:
-        metricsJson.errorRatePct == null
-          ? null
-          : Number(metricsJson.errorRatePct),
+      p95TtmsMs: metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs),
+      p99TtmsMs: metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs),
+      error5xxCount: metricsJson.error5xxCount == null ? null : Number(metricsJson.error5xxCount),
+      errorRatePct: metricsJson.errorRatePct == null ? null : Number(metricsJson.errorRatePct),
     };
   }, [metricsJson]);
 
@@ -1448,15 +1330,9 @@ export default function CDNTriageApp() {
         errorRatePct: Number(p.errorRatePct) || 0,
         p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
         p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
-        statusCountsByCode: p.statusCountsByCode
-          ? (p.statusCountsByCode as Record<string, number>)
-          : undefined,
-        hostCountsByHost: p.hostCountsByHost
-          ? (p.hostCountsByHost as Record<string, number>)
-          : undefined,
-        crcCountsByCrc: p.crcCountsByCrc
-          ? (p.crcCountsByCrc as Record<string, number>)
-          : undefined,
+        statusCountsByCode: p.statusCountsByCode ? (p.statusCountsByCode as Record<string, number>) : undefined,
+        hostCountsByHost: p.hostCountsByHost ? (p.hostCountsByHost as Record<string, number>) : undefined,
+        crcCountsByCrc: p.crcCountsByCrc ? (p.crcCountsByCrc as Record<string, number>) : undefined,
       }))
       .filter((pt: TimeseriesPoint) => Boolean(pt.ts));
 
@@ -1465,15 +1341,11 @@ export default function CDNTriageApp() {
       startTs: t.startTs ? String(t.startTs) : null,
       endTs: t.endTs ? String(t.endTs) : null,
       points,
-      statusCodeSeries: Array.isArray(t.statusCodeSeries)
-        ? t.statusCodeSeries.map(String)
-        : undefined,
+      statusCodeSeries: Array.isArray(t.statusCodeSeries) ? t.statusCodeSeries.map(String) : undefined,
       hostSeries: Array.isArray(t.hostSeries) ? t.hostSeries.map(String) : undefined,
       crcSeries: Array.isArray(t.crcSeries) ? t.crcSeries.map(String) : undefined,
     };
   }, [metricsJson]);
-
-  const csvInputsDisabled = isLoading || dataSource === "clickhouse";
 
   function addChatText(role: ChatTextMessage["role"], text: string) {
     setChatMessages((prev) => [
@@ -1501,31 +1373,12 @@ export default function CDNTriageApp() {
     ]);
   }
 
-  async function runTriageRequest(inputs: {
-    dataSource: DataSource;
-    partner: PartnerOrMissing;
-    csvUrl: string;
-    file: File | null;
-    service: string;
-    region: string;
-    pop: string;
-    windowMinutes: number;
-    debug: boolean;
-  }) {
-    const formData = new FormData();
-    formData.append("dataSource", inputs.dataSource);
-    formData.append("partner", inputs.partner || "");
-    formData.append("csvUrl", inputs.csvUrl || "");
-    formData.append("service", inputs.service);
-    formData.append("region", inputs.region);
-    formData.append("pop", inputs.pop);
-    formData.append("windowMinutes", String(inputs.windowMinutes));
-    if (inputs.file) formData.append("file", inputs.file);
-    if (inputs.debug) formData.append("debug", "true");
-
+  async function runTriageRequest(inputs: TriageInputs) {
+    // JSON wire (matches your curl)
     const response = await fetch("/api/triage", {
       method: "POST",
-      body: formData,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(inputs),
     });
 
     let data: any = null;
@@ -1562,18 +1415,21 @@ export default function CDNTriageApp() {
       body: JSON.stringify({
         messages: wireMsgs,
         context: {
-          mode: dataSource,
+          mode: "clickhouse",
           chatMode,
           availableRegions: REGION_OPTIONS,
           availablePops: POP_OPTIONS,
           availablePartners: Array.from(PARTNER_OPTIONS),
-          // ✅ NEW: authoritative current UI state
+          availableContentTypes: CONTENT_TYPE_OPTIONS,
+          availableUaFamilies: UA_FAMILY_OPTIONS,
           currentFilters: {
-            dataSource,
+            dataSource: "clickhouse",
             partner,
             service,
             region,
             pop,
+            contentType,
+            uaFamily,
             windowMinutes,
           },
         },
@@ -1593,36 +1449,39 @@ export default function CDNTriageApp() {
     }
   }
 
-  // ✅ reset all UI + local storage + server memory
   function resetAllUI() {
     if (isLoading) return;
 
     try {
-        fetch("/api/chat", {
+      fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           reset: true,
           messages: [],
           context: {
-            mode: "csv",
+            mode: "clickhouse",
             chatMode: "deterministic",
             availableRegions: [],
             availablePops: [],
             availablePartners: [],
+            availableContentTypes: [],
+            availableUaFamilies: [],
             currentFilters: {
-              dataSource: "csv",
+              dataSource: "clickhouse",
               partner: "",
               service: "all",
               region: "all",
               pop: "all",
+              contentType: "all",
+              uaFamily: "all",
               windowMinutes: 60,
             },
           },
         }),
       }).catch(() => {});
     } catch {}
-    
+
     if (mounted) {
       try {
         localStorage.removeItem(STORAGE_KEY);
@@ -1634,20 +1493,19 @@ export default function CDNTriageApp() {
     setErrorMessage("");
     setSummaryText("");
     setMetricsJson(null);
+    setSqlBlock(null);
     setSelectedRunId(null);
 
     setRunHistory([]);
     setChatInput("");
     setChatMessages([welcomeMessage()]);
 
-    setDataSource("csv");
-    setPartnerSticky(""); // clears state + removes PARTNER_KEY
-    setCsvUrl(DEFAULT_CSV_URL);
-    setUploadedFile(null);
-
+    setPartnerSticky("");
     setService("all");
     setRegion("all");
     setPop("all");
+    setContentType("all");
+    setUaFamily("all");
     setWindowMinutes(60);
     setDebugMode(false);
 
@@ -1658,14 +1516,11 @@ export default function CDNTriageApp() {
     setErrorMessage("");
     setSummaryText("");
     setMetricsJson(null);
+    setSqlBlock(null);
     setSelectedRunId(null);
 
     if (!canRunTriage) {
-      setErrorMessage(
-        dataSource === "clickhouse"
-          ? "Please select a Partner to run ClickHouse triage."
-          : "Please provide a CSV URL or upload a CSV file."
-      );
+      setErrorMessage("Please select a Partner to run ClickHouse triage.");
       return;
     }
 
@@ -1674,17 +1529,18 @@ export default function CDNTriageApp() {
       const data = await runTriageRequest({
         dataSource,
         partner,
-        csvUrl,
-        file: uploadedFile,
         service,
         region,
         pop,
+        contentType,
+        uaFamily,
         windowMinutes,
         debug: debugMode,
       });
 
       setSummaryText(data.summaryText || "");
       setMetricsJson(data.metricsJson || null);
+      setSqlBlock(data.sql || null);
 
       const newRun: TriageRun = {
         id: `${Date.now()}`,
@@ -1692,16 +1548,17 @@ export default function CDNTriageApp() {
         inputs: {
           dataSource,
           partner,
-          csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
-          fileName: uploadedFile ? uploadedFile.name : "",
           service,
           region,
           pop,
+          contentType,
+          uaFamily,
           windowMinutes,
           debug: debugMode,
         },
         summaryText: data.summaryText || "",
         metricsJson: data.metricsJson || null,
+        sql: data.sql || null,
       };
       setRunHistory((prev) => [newRun, ...prev].slice(0, MAX_HISTORY));
     } catch (error: any) {
@@ -1713,11 +1570,8 @@ export default function CDNTriageApp() {
 
   async function handleChatSend() {
     const text = chatInput.trim();
-    
-
     if (!text) return;
     if (isLoading) return;
-
 
     setChatInput("");
     setErrorMessage("");
@@ -1738,7 +1592,7 @@ export default function CDNTriageApp() {
       addChatText(
         "assistant",
         [
-          "ClickHouse mode is selected but partner is missing.",
+          "ClickHouse triage requires a partner.",
           "",
           "Pick a partner in the dropdown (left panel) or click one of the quick buttons above.",
           "",
@@ -1748,9 +1602,9 @@ export default function CDNTriageApp() {
       return;
     }
 
-    // ------------------------------------------------------------
-    // LLM Assist mode (with fallback on failure)
-    // ------------------------------------------------------------
+    // -----------------------------
+    // LLM Assist mode
+    // -----------------------------
     if (chatMode === "llm") {
       setIsLoading(true);
       try {
@@ -1761,13 +1615,10 @@ export default function CDNTriageApp() {
           return;
         }
 
-        if (dataSource === "clickhouse" && !partner && out?.needsPartnerQuestion) {
+        if (!partner && out?.needsPartnerQuestion) {
           addChatText(
             "assistant",
-            String(
-              out.partnerQuestion ||
-                `Which partner should I use? (${PARTNER_OPTIONS.join(", ")})`
-            )
+            String(out.partnerQuestion || `Which partner should I use? (${PARTNER_OPTIONS.join(", ")})`)
           );
           return;
         }
@@ -1775,45 +1626,32 @@ export default function CDNTriageApp() {
         const nextService: string = out?.serviceHint ?? service;
         const nextRegion: string = out?.regionHint ?? region;
         const nextPop: string = out?.popHint ?? pop;
+        const nextContentType: string = out?.contentTypeHint ?? contentType;
+        const nextUaFamily: string = out?.uaFamilyHint ?? uaFamily;
         const nextWindow: number = Number(out?.windowHint ?? windowMinutes);
 
         if (out?.serviceHint) setService(String(out.serviceHint));
         if (out?.regionHint) setRegion(String(out.regionHint));
         if (out?.popHint) setPop(String(out.popHint));
-        if (
-          out?.windowHint != null &&
-          Number.isFinite(nextWindow) &&
-          nextWindow > 0
-        ) {
-          setWindowMinutes(nextWindow);
-        }
+        if (out?.contentTypeHint) setContentType(String(out.contentTypeHint));
+        if (out?.uaFamilyHint) setUaFamily(String(out.uaFamilyHint));
+        if (out?.windowHint != null && Number.isFinite(nextWindow) && nextWindow > 0) setWindowMinutes(nextWindow);
 
+        // partner hint
         let nextPartner: PartnerOrMissing = partner;
-        if (dataSource === "clickhouse") {
-          const p = String(out?.partnerHint || "").trim();
-          if (p && (PARTNER_OPTIONS as readonly string[]).includes(p)) {
-            setPartnerSticky(p);
-            nextPartner = p as Partner;
-          }
+        const p = String(out?.partnerHint || "").trim();
+        if (p && (PARTNER_OPTIONS as readonly string[]).includes(p)) {
+          setPartnerSticky(p);
+          nextPartner = p as Partner;
         }
 
         addChatText(
           "assistant",
-          `Parsed ✅ service=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
+          `Parsed ✅ partner=${nextPartner || "(missing)"}, service=${nextService}, region=${nextRegion}, pop=${nextPop}, content=${nextContentType}, ua=${nextUaFamily}, win=${nextWindow}m`
         );
 
-        const canRunNow =
-          dataSource === "clickhouse"
-            ? Boolean(nextPartner)
-            : Boolean(uploadedFile) || Boolean(csvUrl && csvUrl.trim().length > 0);
-
-        if (!canRunNow) {
-          addChatText(
-            "assistant",
-            dataSource === "clickhouse"
-              ? "Please select a partner first (ClickHouse mode)."
-              : "Please upload a CSV or provide a CSV URL first."
-          );
+        if (!nextPartner) {
+          addChatText("assistant", "Please select a partner first.");
           return;
         }
 
@@ -1825,24 +1663,27 @@ export default function CDNTriageApp() {
             service: nextService,
             region: nextRegion,
             pop: nextPop,
+            contentType: nextContentType,
+            uaFamily: nextUaFamily,
             windowMinutes: nextWindow,
           })}`
         );
 
         const data = await runTriageRequest({
           dataSource,
-          partner: dataSource === "clickhouse" ? nextPartner : partner,
-          csvUrl,
-          file: uploadedFile,
+          partner: nextPartner,
           service: nextService,
           region: nextRegion,
           pop: nextPop,
+          contentType: nextContentType,
+          uaFamily: nextUaFamily,
           windowMinutes: nextWindow,
           debug: debugMode,
         });
 
         setSummaryText(data.summaryText || "");
         setMetricsJson(data.metricsJson || null);
+        setSqlBlock(data.sql || null);
         setSelectedRunId(null);
 
         const newRun: TriageRun = {
@@ -1850,31 +1691,26 @@ export default function CDNTriageApp() {
           timestamp: getCurrentTimestamp(),
           inputs: {
             dataSource,
-            partner: dataSource === "clickhouse" ? nextPartner : partner,
-            csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
-            fileName: uploadedFile ? uploadedFile.name : "",
+            partner: nextPartner,
             service: nextService,
             region: nextRegion,
             pop: nextPop,
+            contentType: nextContentType,
+            uaFamily: nextUaFamily,
             windowMinutes: nextWindow,
             debug: debugMode,
           },
           summaryText: data.summaryText || "",
           metricsJson: data.metricsJson || null,
+          sql: data.sql || null,
         };
         setRunHistory((prev) => [newRun, ...prev].slice(0, MAX_HISTORY));
 
         addChatTriage({
-          inputs: {
-            dataSource,
-            partner: dataSource === "clickhouse" ? nextPartner : partner,
-            service: nextService,
-            region: nextRegion,
-            pop: nextPop,
-            windowMinutes: nextWindow,
-          },
-          summaryText: data.summaryText || "",
-          metricsJson: data.metricsJson || null,
+          inputs: newRun.inputs,
+          summaryText: newRun.summaryText,
+          metricsJson: newRun.metricsJson,
+          sql: newRun.sql,
         });
 
         return;
@@ -1882,55 +1718,57 @@ export default function CDNTriageApp() {
         const msg = error?.message || "LLM Assist failed";
         setErrorMessage(msg);
 
-        // ✅ fallback: deterministic parse + (optional) run
+        // fallback deterministic
         const intent = parseChatIntent(text);
 
         const isJustChat =
           !looksLikeTriageQuery(text) &&
           !intent.command &&
+          !intent.partner &&
           !intent.service &&
           !intent.region &&
           !intent.pop &&
+          !intent.contentType &&
+          !intent.uaFamily &&
           intent.windowMinutes == null;
 
         if (isJustChat) {
           addChatText(
             "assistant",
-            "My LLM brain glitched 😅 but I can still run deterministic triage.\n\nTry:\n- `vod in bos last 60m`\n- `help`"
+            "My LLM brain glitched 😅 but I can still run deterministic triage.\n\nTry:\n- `partner=beta_stream vod manifest stb last 60m`\n- `help`"
           );
           return;
         }
 
+        // apply hints
+        if (intent.partner) {
+          const p = String(intent.partner).trim();
+          if ((PARTNER_OPTIONS as readonly string[]).includes(p)) setPartnerSticky(p);
+        }
         const nextService = intent.service ?? service;
         const nextRegion = intent.region ?? region;
         const nextPop = intent.pop ?? pop;
+        const nextContentType = intent.contentType ?? contentType;
+        const nextUaFamily = intent.uaFamily ?? uaFamily;
         const nextWindow = intent.windowMinutes ?? windowMinutes;
 
         if (intent.service) setService(nextService);
         if (intent.region) setRegion(nextRegion);
         if (intent.pop) setPop(nextPop);
+        if (intent.contentType) setContentType(nextContentType);
+        if (intent.uaFamily) setUaFamily(nextUaFamily);
         if (intent.windowMinutes != null) setWindowMinutes(nextWindow);
 
         addChatText(
           "assistant",
-          `LLM hiccup — falling back ✅ service=${nextService}, region=${nextRegion}, pop=${nextPop}, win=${nextWindow}m`
+          `LLM hiccup — fallback ✅ partner=${partner || "(missing)"}, service=${nextService}, region=${nextRegion}, pop=${nextPop}, content=${nextContentType}, ua=${nextUaFamily}, win=${nextWindow}m`
         );
 
         const shouldRun = intent.command === "run" || looksLikeTriageQuery(text);
         if (!shouldRun) return;
 
-        const canRunNow =
-          dataSource === "clickhouse"
-            ? Boolean(partner)
-            : Boolean(uploadedFile) || Boolean(csvUrl && csvUrl.trim().length > 0);
-
-        if (!canRunNow) {
-          addChatText(
-            "assistant",
-            dataSource === "clickhouse"
-              ? "Please select a partner first (ClickHouse mode)."
-              : "Please upload a CSV or provide a CSV URL first."
-          );
+        if (!partner) {
+          addChatText("assistant", `Pick a partner first: ${PARTNER_OPTIONS.join(", ")}`);
           return;
         }
 
@@ -1942,6 +1780,8 @@ export default function CDNTriageApp() {
             service: nextService,
             region: nextRegion,
             pop: nextPop,
+            contentType: nextContentType,
+            uaFamily: nextUaFamily,
             windowMinutes: nextWindow,
           })}`
         );
@@ -1951,17 +1791,18 @@ export default function CDNTriageApp() {
           const data = await runTriageRequest({
             dataSource,
             partner,
-            csvUrl,
-            file: uploadedFile,
             service: nextService,
             region: nextRegion,
             pop: nextPop,
+            contentType: nextContentType,
+            uaFamily: nextUaFamily,
             windowMinutes: nextWindow,
             debug: debugMode,
           });
 
           setSummaryText(data.summaryText || "");
           setMetricsJson(data.metricsJson || null);
+          setSqlBlock(data.sql || null);
           setSelectedRunId(null);
 
           const newRun: TriageRun = {
@@ -1970,30 +1811,25 @@ export default function CDNTriageApp() {
             inputs: {
               dataSource,
               partner,
-              csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
-              fileName: uploadedFile ? uploadedFile.name : "",
               service: nextService,
               region: nextRegion,
               pop: nextPop,
+              contentType: nextContentType,
+              uaFamily: nextUaFamily,
               windowMinutes: nextWindow,
               debug: debugMode,
             },
             summaryText: data.summaryText || "",
             metricsJson: data.metricsJson || null,
+            sql: data.sql || null,
           };
           setRunHistory((prev) => [newRun, ...prev].slice(0, MAX_HISTORY));
 
           addChatTriage({
-            inputs: {
-              dataSource,
-              partner,
-              service: nextService,
-              region: nextRegion,
-              pop: nextPop,
-              windowMinutes: nextWindow,
-            },
-            summaryText: data.summaryText || "",
-            metricsJson: data.metricsJson || null,
+            inputs: newRun.inputs,
+            summaryText: newRun.summaryText,
+            metricsJson: newRun.metricsJson,
+            sql: newRun.sql,
           });
         } catch (e: any) {
           const m = e?.message || "Fallback triage failed";
@@ -2009,33 +1845,19 @@ export default function CDNTriageApp() {
       }
     }
 
-    // ------------------------------------------------------------
+    // -----------------------------
     // Deterministic mode
-    // ------------------------------------------------------------
+    // -----------------------------
     if (isGreetingOrSmallTalk(text)) {
-      const t = normalizeText(text);
-      if (
-        t.startsWith("how are you") ||
-        t.startsWith("how's it going") ||
-        t === "how r u"
-      ) {
-        addChatText(
-          "assistant",
-          "Doing good 😄 Ready to triage whenever you are.\n\nTry:\n- `vod in bos last 60m`\n- `service=live region=all win=360`\n\nOr type `help`."
-        );
-        return;
-      }
-
       addChatText(
         "assistant",
-        "Hey — I’m Cachey 🤖\n\nTry:\n- `vod in bos last 60m`\n- `service=live region=all pop=all win=360`\n\nType `help` to see everything I can do."
+        "Hey — Cachey 🤖 (Debug)\n\nPick a partner, then try:\n- `vod manifest stb last 60m`\n- `service=live content=segment ua=smart_tv win=120`\n\nType `help` to see everything I can do."
       );
       return;
     }
 
     const intent = parseChatIntent(text);
 
-    // ✅ explicit capability response (no looping canned message)
     if (intent.command === "help") {
       addChatText(
         "assistant",
@@ -2043,13 +1865,14 @@ export default function CDNTriageApp() {
           `Chat mode: ${chatModeLabel}`,
           "",
           "What I can do:",
-          "- Run triage with filters (service / region / pop / window)",
-          "- Show stacked charts (status, host, crc) + latency (p95/p99)",
+          "- Run ClickHouse triage with filters (partner / service / region / pop / content_type / ua_family / window)",
+          "- Show stacked charts + latency (p95/p99)",
           "- Commands: `filters`, `reset`, `explain`, `run`",
           "",
           "Examples:",
-          "- `vod in usw2 at sjc last 60m`",
-          "- `service=live region=all pop=all win=360`",
+          "- `partner=beta_stream vod manifest stb last 60m`",
+          "- `service=live content=segment ua=smart_tv win=120`",
+          "- `region=all pop=all` (run once to discover region/pop options)",
         ].join("\n")
       );
       return;
@@ -2064,6 +1887,8 @@ export default function CDNTriageApp() {
           service,
           region,
           pop,
+          contentType,
+          uaFamily,
           windowMinutes,
         })}`
       );
@@ -2072,10 +1897,7 @@ export default function CDNTriageApp() {
 
     if (intent.command === "reset") {
       resetAllUI();
-      addChatText(
-        "assistant",
-        "Reset ✅ Cleared chat + filters + memory. Type `run` when ready."
-      );
+      addChatText("assistant", "Reset ✅ Cleared chat + filters + memory. Pick a partner and type `run` when ready.");
       return;
     }
 
@@ -2100,27 +1922,36 @@ export default function CDNTriageApp() {
       return;
     }
 
+    // partner parsing
+    if (intent.partner) {
+      const p = String(intent.partner).trim();
+      if ((PARTNER_OPTIONS as readonly string[]).includes(p)) {
+        setPartnerSticky(p);
+      } else {
+        addChatText("assistant", `Unknown partner '${p}'. Allowed: ${PARTNER_OPTIONS.join(", ")}`);
+        return;
+      }
+    }
+
+    if (!partner) {
+      addChatText("assistant", `Pick a partner first: ${PARTNER_OPTIONS.join(", ")}`);
+      return;
+    }
+
     const hasRegionOptions = REGION_OPTIONS.length > 1;
     const hasPopOptions = POP_OPTIONS.length > 1;
 
     if ((intent.region || intent.pop) && (!hasRegionOptions || !hasPopOptions)) {
       const pending: string[] = [];
-      if (intent.region && !hasRegionOptions)
-        pending.push("region (options not discovered yet)");
-      if (intent.pop && !hasPopOptions)
-        pending.push("pop (options not discovered yet)");
+      if (intent.region && !hasRegionOptions) pending.push("region (options not discovered yet)");
+      if (intent.pop && !hasPopOptions) pending.push("pop (options not discovered yet)");
 
-      const svcOk =
-        intent.service == null || ALLOWED.service.has(intent.service);
+      const svcOk = intent.service == null || ALLOWED.service.has(intent.service);
       const winOk =
-        intent.windowMinutes == null ||
-        (Number.isFinite(intent.windowMinutes) && intent.windowMinutes > 0);
+        intent.windowMinutes == null || (Number.isFinite(intent.windowMinutes) && intent.windowMinutes > 0);
 
       if (!svcOk || !winOk) {
-        addChatText(
-          "assistant",
-          "I can’t apply that yet—some values look invalid. Try `help` for examples."
-        );
+        addChatText("assistant", "I can’t apply that yet—some values look invalid. Try `help` for examples.");
         return;
       }
 
@@ -2129,10 +1960,15 @@ export default function CDNTriageApp() {
         setService(intent.service);
         changed.push(`service=${intent.service}`);
       }
-      if (
-        intent.windowMinutes != null &&
-        intent.windowMinutes !== windowMinutes
-      ) {
+      if (intent.contentType != null && intent.contentType !== contentType) {
+        setContentType(intent.contentType);
+        changed.push(`content=${intent.contentType}`);
+      }
+      if (intent.uaFamily != null && intent.uaFamily !== uaFamily) {
+        setUaFamily(intent.uaFamily);
+        changed.push(`ua=${intent.uaFamily}`);
+      }
+      if (intent.windowMinutes != null && intent.windowMinutes !== windowMinutes) {
         setWindowMinutes(intent.windowMinutes);
         changed.push(`win=${intent.windowMinutes}m`);
       }
@@ -2144,7 +1980,7 @@ export default function CDNTriageApp() {
           "",
           `I can’t validate ${pending.join(" + ")} until we discover them from data.`,
           "Run once with broad filters:",
-          "- `region=all pop=all` (or just click “Run Triage”)",
+          "- `region=all pop=all` (or click “Run Triage”)",
           "Then try your region/pop again.",
         ].join("\n")
       );
@@ -2155,38 +1991,28 @@ export default function CDNTriageApp() {
     const invalids: string[] = [];
 
     if (intent.service && !ALLOWED.service.has(intent.service)) {
-      invalids.push(
-        `service=${intent.service} (allowed: ${Array.from(ALLOWED.service).join(
-          "|"
-        )})`
-      );
+      invalids.push(`service=${intent.service} (allowed: ${Array.from(ALLOWED.service).join("|")})`);
     }
-
-    if (
-      intent.region &&
-      hasRegionOptions &&
-      !REGION_OPTIONS.includes(intent.region)
-    ) {
+    if (intent.contentType && !ALLOWED.contentType.has(intent.contentType)) {
+      invalids.push(`content=${intent.contentType} (allowed: ${Array.from(ALLOWED.contentType).join("|")})`);
+    }
+    if (intent.uaFamily && !ALLOWED.uaFamily.has(intent.uaFamily)) {
+      invalids.push(`ua=${intent.uaFamily} (allowed: ${Array.from(ALLOWED.uaFamily).join("|")})`);
+    }
+    if (intent.region && hasRegionOptions && !REGION_OPTIONS.includes(intent.region)) {
       invalids.push(`region=${intent.region} (allowed: ${REGION_OPTIONS.join("|")})`);
     }
-
     if (intent.pop && hasPopOptions && !POP_OPTIONS.includes(intent.pop)) {
       invalids.push(`pop=${intent.pop} (allowed: ${POP_OPTIONS.join("|")})`);
     }
-
-    if (
-      intent.windowMinutes != null &&
-      (!Number.isFinite(intent.windowMinutes) || intent.windowMinutes <= 0)
-    ) {
+    if (intent.windowMinutes != null && (!Number.isFinite(intent.windowMinutes) || intent.windowMinutes <= 0)) {
       invalids.push(`win=${String(intent.windowMinutes)} (must be positive)`);
     }
 
     if (invalids.length) {
       addChatText(
         "assistant",
-        `I couldn't run that because some values are invalid:\n- ${invalids.join(
-          "\n- "
-        )}\n\nTry:\n- vod in usw2 at sjc last 60m\n- service=live region=all win=360`
+        `I couldn't run that because some values are invalid:\n- ${invalids.join("\n- ")}\n\nTry:\n- partner=beta_stream vod manifest stb last 60m\n- service=live content=segment ua=smart_tv win=120`
       );
       return;
     }
@@ -2194,6 +2020,8 @@ export default function CDNTriageApp() {
     const nextService = intent.service ?? service;
     const nextRegion = intent.region ?? region;
     const nextPop = intent.pop ?? pop;
+    const nextContentType = intent.contentType ?? contentType;
+    const nextUaFamily = intent.uaFamily ?? uaFamily;
     const nextWindow = intent.windowMinutes ?? windowMinutes;
 
     const changed: string[] = [];
@@ -2209,35 +2037,26 @@ export default function CDNTriageApp() {
       setPop(intent.pop);
       changed.push(`pop=${intent.pop}`);
     }
+    if (intent.contentType && intent.contentType !== contentType) {
+      setContentType(intent.contentType);
+      changed.push(`content=${intent.contentType}`);
+    }
+    if (intent.uaFamily && intent.uaFamily !== uaFamily) {
+      setUaFamily(intent.uaFamily);
+      changed.push(`ua=${intent.uaFamily}`);
+    }
     if (intent.windowMinutes != null && intent.windowMinutes !== windowMinutes) {
       setWindowMinutes(intent.windowMinutes);
       changed.push(`win=${intent.windowMinutes}m`);
     }
 
-    const shouldRun =
-      intent.command === "run" || looksLikeTriageQuery(text) || changed.length > 0;
-
+    const shouldRun = intent.command === "run" || looksLikeTriageQuery(text) || changed.length > 0;
     if (!shouldRun) {
-      addChatText(
-        "assistant",
-        "I didn’t catch a triage command or filters.\nType `help` for examples."
-      );
+      addChatText("assistant", "I didn’t catch a triage command or filters.\nType `help` for examples.");
       return;
     }
 
-    if (!canRunTriage) {
-      addChatText(
-        "assistant",
-        dataSource === "clickhouse"
-          ? "Please select a partner first (ClickHouse mode)."
-          : "Please upload a CSV or provide a CSV URL first."
-      );
-      return;
-    }
-
-    if (changed.length) {
-      addChatText("assistant", `Updated ✅ ${changed.join(", ")}`);
-    }
+    if (changed.length) addChatText("assistant", `Updated ✅ ${changed.join(", ")}`);
 
     addChatText(
       "system",
@@ -2247,6 +2066,8 @@ export default function CDNTriageApp() {
         service: nextService,
         region: nextRegion,
         pop: nextPop,
+        contentType: nextContentType,
+        uaFamily: nextUaFamily,
         windowMinutes: nextWindow,
       })}`
     );
@@ -2256,17 +2077,18 @@ export default function CDNTriageApp() {
       const data = await runTriageRequest({
         dataSource,
         partner,
-        csvUrl,
-        file: uploadedFile,
         service: nextService,
         region: nextRegion,
         pop: nextPop,
+        contentType: nextContentType,
+        uaFamily: nextUaFamily,
         windowMinutes: nextWindow,
         debug: debugMode,
       });
 
       setSummaryText(data.summaryText || "");
       setMetricsJson(data.metricsJson || null);
+      setSqlBlock(data.sql || null);
       setSelectedRunId(null);
 
       const newRun: TriageRun = {
@@ -2275,30 +2097,26 @@ export default function CDNTriageApp() {
         inputs: {
           dataSource,
           partner,
-          csvUrl: (uploadedFile || dataSource === "clickhouse") ? "" : (csvUrl || ""),
-          fileName: uploadedFile ? uploadedFile.name : "",
           service: nextService,
           region: nextRegion,
           pop: nextPop,
+          contentType: nextContentType,
+          uaFamily: nextUaFamily,
           windowMinutes: nextWindow,
           debug: debugMode,
         },
         summaryText: data.summaryText || "",
         metricsJson: data.metricsJson || null,
+        sql: data.sql || null,
       };
+
       setRunHistory((prev) => [newRun, ...prev].slice(0, MAX_HISTORY));
 
       addChatTriage({
-        inputs: {
-          dataSource,
-          partner,
-          service: nextService,
-          region: nextRegion,
-          pop: nextPop,
-          windowMinutes: nextWindow,
-        },
-        summaryText: data.summaryText || "",
-        metricsJson: data.metricsJson || null,
+        inputs: newRun.inputs,
+        summaryText: newRun.summaryText,
+        metricsJson: newRun.metricsJson,
+        sql: newRun.sql,
       });
     } catch (error: any) {
       const msg = error?.message || "Something went wrong";
@@ -2314,17 +2132,16 @@ export default function CDNTriageApp() {
     setErrorMessage("");
     setSummaryText(run.summaryText || "");
     setMetricsJson(run.metricsJson || null);
+    setSqlBlock(run.sql || null);
 
-    setDataSource((run.inputs?.dataSource || "csv") as DataSource);
-
-    // ✅ use sticky setter so localStorage + state match
     setPartnerSticky((run.inputs?.partner as PartnerOrMissing) || "");
 
-    setUploadedFile(null);
-    setCsvUrl(run.inputs?.csvUrl || DEFAULT_CSV_URL);
     setService(run.inputs?.service || "all");
     setRegion(run.inputs?.region || "all");
     setPop(run.inputs?.pop || "all");
+    setContentType(run.inputs?.contentType || "all");
+    setUaFamily(run.inputs?.uaFamily || "all");
+
     const wm = Number(run.inputs?.windowMinutes);
     setWindowMinutes(Number.isFinite(wm) && wm > 0 ? wm : 60);
     setDebugMode(!!run.inputs?.debug);
@@ -2336,6 +2153,7 @@ export default function CDNTriageApp() {
       setSelectedRunId(null);
       setSummaryText("");
       setMetricsJson(null);
+      setSqlBlock(null);
     }
   }
 
@@ -2344,17 +2162,10 @@ export default function CDNTriageApp() {
     setSelectedRunId(null);
     setSummaryText("");
     setMetricsJson(null);
+    setSqlBlock(null);
   }
 
-  function MetricCard({
-    label,
-    value,
-    subtitle,
-  }: {
-    label: string;
-    value: string;
-    subtitle?: string | null;
-  }) {
+  function MetricCard({ label, value, subtitle }: { label: string; value: string; subtitle?: string | null }) {
     return (
       <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm min-w-0">
         <div className="text-xs text-gray-600 font-medium">{label}</div>
@@ -2364,35 +2175,21 @@ export default function CDNTriageApp() {
     );
   }
 
-  const bucketSeconds =
-    ts?.bucketSeconds ?? metricsJson?.timeseries?.bucketSeconds ?? null;
-
-  const execLabel =
-    dataSource === "csv"
-      ? "Exec: CSV"
-      : `Exec: ClickHouse • partner=${partner || "missing"}`;
+  const bucketSeconds = ts?.bucketSeconds ?? metricsJson?.timeseries?.bucketSeconds ?? null;
+  const execLabel = `Exec: ClickHouse • partner=${partner || "missing"}`;
 
   return (
     <main className="min-h-screen w-full bg-gray-50 px-6 py-6">
       <div className="mx-auto w-full">
-        {/* Top header with logo */}
         <div className="flex items-center gap-3 border-b border-gray-200 pb-4 mb-6">
-          <Image
-            src={LOGO_SRC}
-            alt="Cachey"
-            width={34}
-            height={34}
-            className="rounded-full"
-          />
-
+          <Image src={LOGO_SRC} alt="Cachey" width={34} height={34} className="rounded-full" />
           <div className="min-w-0">
             <div className="font-semibold text-lg text-gray-900">
-              Cachey <span className="text-gray-500">🤖</span>
+              Cachey <span className="text-gray-500">🤖</span> <span className="text-gray-400">(Debug)</span>
             </div>
-            <div className="text-xs text-gray-500">CDN Incident Triage Assistant</div>
+            <div className="text-xs text-gray-500">ClickHouse-first triage console (no CSV)</div>
           </div>
 
-          {/* 👇 pushes logout to the far right */}
           <div className="ml-auto">
             <button
               type="button"
@@ -2406,13 +2203,10 @@ export default function CDNTriageApp() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Sidebar */}
           <aside className="lg:col-span-3 space-y-6">
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="font-semibold text-gray-900 text-sm">
-                  Run History (last {MAX_HISTORY})
-                </h2>
+                <h2 className="font-semibold text-gray-900 text-sm">Run History (last {MAX_HISTORY})</h2>
                 <button
                   onClick={clearAllHistory}
                   disabled={runHistory.length === 0}
@@ -2423,41 +2217,23 @@ export default function CDNTriageApp() {
               </div>
 
               {runHistory.length === 0 ? (
-                <div className="text-sm text-gray-500">
-                  No history yet. Run triage once and it will appear here.
-                </div>
+                <div className="text-sm text-gray-500">No history yet. Run triage once and it will appear here.</div>
               ) : (
                 <div className="space-y-3">
                   {runHistory.map((run) => {
                     const isActive = run.id === selectedRunId;
                     const inp = run.inputs || ({} as any);
-                    const title = inp.fileName
-                      ? `file: ${inp.fileName}`
-                      : inp.dataSource === "clickhouse"
-                      ? "source: clickhouse"
-                      : "url: csv";
-                    const partnerText =
-                      inp.dataSource === "clickhouse"
-                        ? ` • partner=${inp.partner || "(missing)"}`
-                        : "";
-                    const subtitle = `${inp.dataSource || "csv"}${partnerText} • svc=${
-                      inp.service
-                    } region=${inp.region} pop=${inp.pop} win=${inp.windowMinutes}m`;
+                    const subtitle = `clickhouse • partner=${inp.partner || "(missing)"} • svc=${inp.service} region=${inp.region} pop=${inp.pop} content=${inp.contentType} ua=${inp.uaFamily} win=${inp.windowMinutes}m`;
 
                     return (
                       <div
                         key={run.id}
                         className={`rounded-lg border p-3 transition-colors ${
-                          isActive
-                            ? "bg-blue-50 border-blue-300"
-                            : "bg-white border-gray-200 hover:bg-gray-50"
+                          isActive ? "bg-blue-50 border-blue-300" : "bg-white border-gray-200 hover:bg-gray-50"
                         }`}
                       >
-                        <div className="text-xs font-semibold text-gray-900">
-                          {formatTimestampClientSafe(run.timestamp, mounted)}
-                        </div>
+                        <div className="text-xs font-semibold text-gray-900">{formatTimestampClientSafe(run.timestamp, mounted)}</div>
                         <div className="text-xs text-gray-600 mt-1">{subtitle}</div>
-                        <div className="text-xs text-gray-500 mt-1 truncate">{title}</div>
                         <div className="flex gap-2 mt-3">
                           <button
                             onClick={() => loadHistoricalRun(run)}
@@ -2480,7 +2256,6 @@ export default function CDNTriageApp() {
             </div>
           </aside>
 
-          {/* Main */}
           <section className="lg:col-span-9 min-w-0">
             <div className="mb-6">
               <ChatPanel
@@ -2509,91 +2284,26 @@ export default function CDNTriageApp() {
                 <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                   <div className="space-y-4">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Data Source
-                      </label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Partner</label>
                       <select
                         className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        value={dataSource}
-                        onChange={(e) => setDataSource(e.target.value as DataSource)}
+                        value={partner}
+                        onChange={(e) => setPartnerSticky(e.target.value)}
                         disabled={isLoading}
                       >
-                        <option value="csv">CSV</option>
-                        <option value="clickhouse">ClickHouse</option>
+                        <option value="">Select partner…</option>
+                        {PARTNER_OPTIONS.map((p) => (
+                          <option key={p} value={p}>
+                            {p}
+                          </option>
+                        ))}
                       </select>
-                      <div className="text-xs text-gray-500 mt-2">
-                        {dataSource === "csv"
-                          ? "Uses CSV URL or uploaded file."
-                          : "Uses ClickHouse (mock for now; next step = real queries). CSV fields below are ignored."}
-                      </div>
-                    </div>
-
-                    {dataSource === "clickhouse" && (
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Partner
-                        </label>
-                        <select
-                          className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          value={partner}
-                          onChange={(e) => setPartnerSticky(e.target.value)}
-                          disabled={isLoading}
-                        >
-                          <option value="">Select partner…</option>
-                          {PARTNER_OPTIONS.map((p) => (
-                            <option key={p} value={p}>
-                              {p}
-                            </option>
-                          ))}
-                        </select>
-                        <div className="text-xs text-gray-500 mt-2">
-                          Public-safe mock partner routing (real partner → DB mapping
-                          later).
-                        </div>
-                      </div>
-                    )}
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        CSV URL
-                      </label>
-                      <input
-                        type="text"
-                        className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        value={csvUrl ?? ""}
-                        onChange={(e) => setCsvUrl(e.target.value)}
-                        placeholder="https://..."
-                        disabled={csvInputsDisabled}
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Or upload CSV
-                      </label>
-                      <input
-                        type="file"
-                        accept=".csv,text/csv"
-                        onChange={(e) => setUploadedFile(e.target.files?.[0] ?? null)}
-                        className="text-sm text-gray-700"
-                        disabled={csvInputsDisabled}
-                      />
-                      {uploadedFile && (
-                        <div className="text-xs text-gray-600 mt-2">
-                          Selected: {uploadedFile.name}
-                        </div>
-                      )}
-                      <div className="text-xs text-gray-500 mt-2">
-                        Note: history can reload URL-based runs. File uploads can't
-                        be reloaded (browser limitation).
-                      </div>
+                      <div className="text-xs text-gray-500 mt-2">Public-safe mock partner routing (real partner → DB mapping later).</div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Service
-                        </label>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Service</label>
                         <select
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           value={service}
@@ -2609,9 +2319,39 @@ export default function CDNTriageApp() {
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Region
-                        </label>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Content Type</label>
+                        <select
+                          className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          value={contentType}
+                          onChange={(e) => setContentType(e.target.value)}
+                          disabled={isLoading}
+                        >
+                          {CONTENT_TYPE_OPTIONS.map((v) => (
+                            <option key={v} value={v}>
+                              {v}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">UA Family</label>
+                        <select
+                          className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          value={uaFamily}
+                          onChange={(e) => setUaFamily(e.target.value)}
+                          disabled={isLoading}
+                        >
+                          {UA_FAMILY_OPTIONS.map((v) => (
+                            <option key={v} value={v}>
+                              {v}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Region</label>
                         <select
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           value={region}
@@ -2625,16 +2365,12 @@ export default function CDNTriageApp() {
                           ))}
                         </select>
                         {REGION_OPTIONS.length <= 1 && (
-                          <div className="text-[11px] text-gray-400 mt-2">
-                            Run once to populate region options.
-                          </div>
+                          <div className="text-[11px] text-gray-400 mt-2">Run once to populate region options.</div>
                         )}
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          POP
-                        </label>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">POP</label>
                         <select
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           value={pop}
@@ -2648,16 +2384,12 @@ export default function CDNTriageApp() {
                           ))}
                         </select>
                         {POP_OPTIONS.length <= 1 && (
-                          <div className="text-[11px] text-gray-400 mt-2">
-                            Run once to populate POP options.
-                          </div>
+                          <div className="text-[11px] text-gray-400 mt-2">Run once to populate POP options.</div>
                         )}
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Window (minutes)
-                        </label>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Window (minutes)</label>
                         <input
                           type="number"
                           className="w-full rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
@@ -2686,18 +2418,14 @@ export default function CDNTriageApp() {
                           className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                           disabled={isLoading}
                         />
-                        Enable debug output
+                        Enable debug output (SQL + extra)
                       </label>
 
                       <button
                         onClick={handleRunTriage}
                         disabled={isLoading || !canRunTriage}
                         className="px-6 py-2 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                        title={
-                          !canRunTriage && dataSource === "clickhouse"
-                            ? "Select a partner to run ClickHouse triage"
-                            : undefined
-                        }
+                        title={!canRunTriage ? "Select a partner to run ClickHouse triage" : undefined}
                       >
                         {isLoading ? "Running..." : "Run Triage"}
                       </button>
@@ -2715,18 +2443,9 @@ export default function CDNTriageApp() {
 
                 {parsedMetrics && (
                   <div className="grid grid-cols-2 gap-3">
-                    <MetricCard
-                      label="totalRequests"
-                      value={formatIntOrNA(parsedMetrics.totalRequests)}
-                    />
-                    <MetricCard
-                      label="p95TtmsMs"
-                      value={formatMsOrNA(parsedMetrics.p95TtmsMs)}
-                    />
-                    <MetricCard
-                      label="p99TtmsMs"
-                      value={formatMsOrNA(parsedMetrics.p99TtmsMs)}
-                    />
+                    <MetricCard label="totalRequests" value={formatIntOrNA(parsedMetrics.totalRequests)} />
+                    <MetricCard label="p95TtmsMs" value={formatMsOrNA(parsedMetrics.p95TtmsMs)} />
+                    <MetricCard label="p99TtmsMs" value={formatMsOrNA(parsedMetrics.p99TtmsMs)} />
                     <MetricCard
                       label="errorRate (5xx)"
                       value={formatPctOrNA(parsedMetrics.errorRatePct)}
@@ -2741,22 +2460,29 @@ export default function CDNTriageApp() {
 
                 <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                   <div className="font-medium text-gray-900 mb-2">Summary</div>
-                  <pre className="whitespace-pre-wrap text-sm text-gray-700 font-mono">
-                    {summaryText || "Run triage to see results..."}
-                  </pre>
+                  <pre className="whitespace-pre-wrap text-sm text-gray-700 font-mono">{summaryText || "Run triage to see results..."}</pre>
                 </div>
 
-                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                  <div className="font-medium text-gray-900 mb-2">
-                    Raw metricsJson (debug)
+                {debugMode && (
+                  <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                    <div className="font-medium text-gray-900 mb-2">SQL (debug)</div>
+                    <pre className="whitespace-pre-wrap text-xs text-gray-600 font-mono overflow-auto max-h-64">
+                      {sqlBlock ? JSON.stringify(sqlBlock, null, 2) : "No sql block yet."}
+                    </pre>
                   </div>
-                  <pre className="whitespace-pre-wrap text-xs text-gray-600 font-mono overflow-auto max-h-64">
-                    {metricsJson ? JSON.stringify(metricsJson, null, 2) : "No metricsJson yet."}
-                  </pre>
-                </div>
+                )}
+
+                {debugMode && (
+                  <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                    <div className="font-medium text-gray-900 mb-2">Raw metricsJson (debug)</div>
+                    <pre className="whitespace-pre-wrap text-xs text-gray-600 font-mono overflow-auto max-h-64">
+                      {metricsJson ? JSON.stringify(metricsJson, null, 2) : "No metricsJson yet."}
+                    </pre>
+                  </div>
+                )}
               </div>
 
-              {/* Right: Charts */}
+              {/* Right */}
               <div className="space-y-4 min-w-0">
                 {ts && ts.points.length > 0 ? (
                   <>
@@ -2793,20 +2519,14 @@ export default function CDNTriageApp() {
                       windowMinutes={windowMinutes}
                     />
 
-                    <LatencyTimeseriesLines
-                      points={ts.points}
-                      bucketSeconds={bucketSeconds}
-                      height={190}
-                      windowMinutes={windowMinutes}
-                    />
+                    <LatencyTimeseriesLines points={ts.points} bucketSeconds={bucketSeconds} height={190} windowMinutes={windowMinutes} />
                   </>
                 ) : (
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">
-                    Run triage to see charts.
+                    Select a partner and run triage to see charts.
                   </div>
                 )}
               </div>
-              {/* /Right */}
             </div>
           </section>
         </div>
@@ -2814,4 +2534,3 @@ export default function CDNTriageApp() {
     </main>
   );
 }
-
