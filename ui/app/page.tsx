@@ -970,7 +970,7 @@ export default function Home() {
         hostCountsByHost: p.hostCountsByHost || undefined,
         crcCountsByCrc: p.crcCountsByCrc || undefined,
       }))
-      .filter((pt) => Boolean(pt.ts));
+      .filter((pt: any) => Boolean(pt.ts));
 
     return {
       bucketSeconds: t.bucketSeconds == null ? null : Number(t.bucketSeconds),
