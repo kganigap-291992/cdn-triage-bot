@@ -198,112 +198,98 @@ flowchart LR
 
 ---
 
-## V4 --- Warehouse-Backed Analytics (Current)
+# V4 — Warehouse-Backed Analytics (Current Phase)
 
-### Objective
+## Objective
 
-Replace demo-scale CSV computation with a production-style warehouse
-architecture using ClickHouse.
+Replace CSV computation with a production-style ClickHouse warehouse
+while preserving deterministic guarantees.
 
-### Data Flow
+---
 
-``` mermaid
-flowchart LR
-    Generator --> RawEvents
-    RawEvents --> ClickHouse
-    ClickHouse --> Rollup5m
-    Rollup5m --> CacheyAPI
-    CacheyAPI --> UI
-```
+## Locked Time Semantics
 
+For ClickHouse-backed triage:
 
-------------------------------------------------------------------------
+    now := max(ts)
 
-# Data Architecture
+We DO NOT use ClickHouse `now()`.
 
-## 1. Raw Events Table
+Window calculation:
 
-One row per synthetic request.
+    asOf_ts = SELECT max(ts) FROM cachey.raw_minute (scoped)
+    window_start = asOf_ts - INTERVAL <windowMinutes> MINUTE
+    window_end   = asOf_ts
 
-Example fields:
+This guarantees deterministic demo-safe behavior even if ingestion lags.
 
--   timestamp
--   service (live/vod)
--   region
--   pop
--   partner
--   response_code
--   cache_result
--   ttms
--   ua_family
--   url_type
+---
 
-Used for:
+## Phase 1 Infrastructure Architecture
 
--   Evidence drill-down
--   Modeling
--   Feature engineering
--   Future anomaly detection
-
-------------------------------------------------------------------------
-
-## 2. Rollup Table (5m cadence)
-
-Aggregated by:
-
--   time bucket
--   service
--   region
--   pop
--   partner
-
-Pre-computed metrics:
-
--   request_count
--   error_rate
--   p95_ttms
--   p99_ttms
--   cache_hit_ratio
-
-Used for:
-
--   Fast triage
--   Graph rendering
--   Chat-based queries
-
-------------------------------------------------------------------------
-
-# Current System Architecture
-
-``` mermaid
+```mermaid
 flowchart TD
-    subgraph Frontend
-        ChatUI
-        FilterPanel
-        TriageCards
+
+    subgraph Frontend (Vercel)
+        UI["Chat UI + Filters"]
+        API["/api/triage"]
     end
 
-    subgraph API Layer
-        ChatAPI
-        TriageAPI
+    subgraph VPS
+        Caddy["Caddy (TLS Termination)"]
+        Proxy["Cachey Proxy API"]
+        CH["ClickHouse (127.0.0.1)"]
+        Raw["cachey.raw_minute (MergeTree)"]
     end
 
-    subgraph Data Layer
-        ClickHouse
-        RawEvents
-        Rollup5m
-    end
-
-    ChatUI --> ChatAPI
-    FilterPanel --> TriageAPI
-    ChatAPI --> TriageAPI
-    TriageAPI --> ClickHouse
-    ClickHouse --> Rollup5m
-    ClickHouse --> RawEvents
-    TriageAPI --> TriageCards
+    UI --> API
+    API -->|HTTPS| Caddy
+    Caddy --> Proxy
+    Proxy -->|localhost| CH
+    CH --> Raw
+    Proxy --> API
 ```
 
-------------------------------------------------------------------------
+### Security Boundary
+
+Public:
+- `api.yourdomain.com` (HTTPS only)
+
+Private:
+- ClickHouse bound to `127.0.0.1`
+- No direct port exposure (8123 / 9000)
+- All browser traffic passes through proxy
+
+ClickHouse is never internet-facing.
+
+---
+
+## Data Model (Current)
+
+Table: `cachey.raw_minute`
+
+One row per minute × slice.
+
+Includes:
+
+- ts  
+- partner  
+- service  
+- region  
+- pop  
+- host  
+- content_type  
+- ua_family  
+- requests  
+- bytes_sent  
+- p50_ms / p95_ms / p99_ms  
+- cache_hit_rate  
+- http status buckets (2xx/3xx/4xx/5xx + detailed codes)  
+- crc_errors  
+
+Raw table is source of truth.
+
+---
 
 # Conversational Execution Model
 
@@ -313,98 +299,59 @@ When user types:
 
 System:
 
-1.  Deterministically parses filters
-2.  Constructs SQL
-3.  Queries rollup table
-4.  Returns:
-    -   Summary
-    -   Metrics JSON
-    -   Graph data
-    -   Expandable SQL
-    -   Expandable Evidence
+1. Deterministically parses filters  
+2. Computes `asOf_ts = max(ts)`  
+3. Constructs SQL  
+4. Queries ClickHouse  
+5. Returns:
+   - Summary  
+   - Metrics JSON  
+   - Graph data  
+   - Expandable SQL  
+   - Expandable evidence  
 
-LLM (optional):
+LLM:
+- May refine intent  
+- May assist explanation  
+- Never computes metrics  
 
--   May refine intent
--   May assist explanation
--   Never computes metrics
-
+---
 
 # Technology Stack
 
 ## Frontend
 
-- Framework: Next.js (App Router)  
-- Language: TypeScript  
-- UI Library: React  
-- State Management: LocalStorage (Run History)  
-- Rendering Strategy: Hydration-safe client rendering  
+- Next.js (App Router)  
+- React  
+- TypeScript  
 
-## Backend
+## API Layer
 
-- API Layer: Next.js API Routes  
-- Runtime: Node.js  
-- Analytics Layer: Custom Deterministic Metrics Engine  
+- Next.js API Routes  
+- Node.js runtime  
+- Proxy API on VPS  
 
 ## Data Layer
 
--   Synthetic event generator
--   ClickHouse
--   Raw + Rollup tables
--   SQL as source of truth
+- Synthetic telemetry generator  
+- ClickHouse (MergeTree)  
+- SQL as source of truth  
 
-## Conversational Layer
+## Infrastructure
 
--   Deterministic parser
--   Optional OpenRouter integration
--   Free-tier model fallback handling
--   Rate-limit resilience
-
-## Deployment
-
--   Hosted on Vercel
--   Automatic builds from GitHub
--   Production + Preview environments
--   TypeScript validation on build
-
-### Example Models
-
-- `google/gemma-3n-e2b-it:free`  
-- `mistral-small-instruct`  
-
-### LLM Scope
-
-- Intent parsing  
-- Explanation assistance  
-- No non-deterministic metric computation  
-
----
-
-# Deployment
-
-## Hosting
-
-- Vercel  
-- Automatic builds from GitHub  
-- Production + Preview environments  
-- Build-time TypeScript validation  
-
-
-## Migration Reason
-
-- Stable hosting  
-- Reliable demo access  
-- CI/CD integration  
+- VPS-hosted ClickHouse  
+- Caddy reverse proxy  
+- HTTPS domain routing  
+- Vercel deployment for UI  
 
 ---
 
 # Data Safety
 
-- All telemetry is synthetic
-- No production logs are included
-- No customer data is used
-- No proprietary systems are exposed
-
+- All telemetry is synthetic  
+- No production logs  
+- No customer data  
+- No proprietary systems exposed  
 
 ---
 
@@ -412,9 +359,9 @@ LLM (optional):
 
 - Deterministic metrics before AI reasoning  
 - Reproducibility over opacity  
-- Separation of control and computation  
-- Explainable summaries  
-- Production-first deployment validation  
+- Clear system boundaries  
+- SQL transparency  
+- Production-first architecture discipline  
 
 ---
 
@@ -422,21 +369,23 @@ LLM (optional):
 
 ## Short-Term
 
--   SQL editor panel
--   Evidence sampling from raw table
--   Materialized views
--   Query transparency improvements
+- SQL inspector panel  
+- Evidence sampling from raw table  
+- Query transparency improvements  
 
 ## Mid-Term
 
--   Time-series anomaly detection
--   Rolling baseline deviation scoring
--   Blast radius estimation
--   Confidence scoring
+- Materialized views (5m rollups)  
+- Time-series anomaly detection  
+- Rolling baseline scoring  
+- Blast radius estimation  
 
 ## Long-Term (MLOps Track)
 
--   Feature store integration
--   Model lifecycle orchestration
--   Automated retraining hooks
--   Severity classification models
+- Feature store integration  
+- Airflow orchestration  
+- Automated retraining hooks  
+- Severity classification models  
+
+---
+
