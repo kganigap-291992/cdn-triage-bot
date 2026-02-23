@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
+import type { TriageResponse } from "@/lib/triage/contracts";
 
 // ------------------------------------------------------------
 // Home page (/) — Chat-first, dark theme, ClickHouse-first
@@ -997,11 +998,17 @@ export default function Home() {
     formData.append("windowMinutes", String(inputs.windowMinutes));
 
     const response = await fetch("/api/triage", { method: "POST", body: formData });
-    const data = await response.json().catch(() => null);
+
+    const data = (await response.json().catch(() => null)) as TriageResponse | null;
+
     if (!response.ok || !data?.ok) {
       throw new Error(data?.error || `Triage failed (HTTP ${response.status})`);
     }
-    return data as { summaryText: string; metricsJson: any };
+
+    return {
+      summaryText: data.summaryText ?? data.summary ?? "",
+      metricsJson: data.metricsJson ?? null,
+    };
   }
 
   // /api/chat call
