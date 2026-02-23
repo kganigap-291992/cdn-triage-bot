@@ -225,21 +225,21 @@ This guarantees deterministic demo-safe behavior even if ingestion lags.
 
 ---
 
-## Phase 1 Infrastructure Architecture
+## Infrastructure Architecture - V 4.1
 
 ```mermaid
 flowchart TD
 
-    subgraph Frontend (Vercel)
+    subgraph "Frontend (Vercel)"
         UI["Chat UI + Filters"]
         API["/api/triage"]
     end
 
-    subgraph VPS
-        Caddy["Caddy (TLS Termination)"]
+    subgraph "VPS"
+        Caddy["Caddy - TLS Termination"]
         Proxy["Cachey Proxy API"]
-        CH["ClickHouse (127.0.0.1)"]
-        Raw["cachey.raw_minute (MergeTree)"]
+        CH["ClickHouse 127.0.0.1"]
+        Raw["cachey.raw_minute - MergeTree"]
     end
 
     UI --> API
