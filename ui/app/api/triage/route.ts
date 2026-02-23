@@ -1,31 +1,47 @@
+// ui/app/api/triage/route.ts
 import { NextResponse } from "next/server";
 import { runTriage } from "@/lib/triage/metricsEngine";
 import { runClickhouseTriage } from "@/lib/clickhouse/runClickhouseTriage";
 
 export const runtime = "nodejs";
 
+function toBool(v: unknown) {
+  const s = String(v ?? "").trim().toLowerCase();
+  return ["1", "true", "yes", "on"].includes(s);
+}
+
+function toStr(v: unknown, fallback = "") {
+  const s = String(v ?? "").trim();
+  return s ? s : fallback;
+}
+
+function toNum(v: unknown, fallback: number) {
+  const n = Number(String(v ?? "").trim());
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export async function POST(req: Request) {
-  console.log("🔥 USING ROUTE: app/api/triage/route.ts 🔥");
+  console.log("🔥 USING ROUTE: ui/app/api/triage/route.ts 🔥");
+
   try {
     const form = await req.formData();
 
-    // ✅ Data source + partner (public-safe default)
-    const dataSource = (form.get("dataSource") || "csv").toString().trim().toLowerCase();
-    const partner = (form.get("partner") || "acme_media").toString().trim();
+    // -----------------------------
+    // Common inputs
+    // -----------------------------
+    const dataSource = toStr(form.get("dataSource"), "csv").toLowerCase();
+    const partner = toStr(form.get("partner"), "acme_media");
 
-    // Common filters (used by CSV + ClickHouse)
-    const service = (form.get("service") || "all").toString();
-    const region = (form.get("region") || "all").toString();
-    const pop = (form.get("pop") || "all").toString();
+    const service = toStr(form.get("service"), "all");
+    const region = toStr(form.get("region"), "all");
+    const pop = toStr(form.get("pop"), "all");
 
-    const windowMinutesRaw = (form.get("windowMinutes") || "60").toString();
-    const windowMinutes = Number(windowMinutesRaw);
+    const windowMinutes = toNum(form.get("windowMinutes"), 60);
     if (!Number.isFinite(windowMinutes) || windowMinutes <= 0) {
       throw new Error("windowMinutes must be a positive number.");
     }
 
-    const debugRaw = (form.get("debug") || "").toString().toLowerCase();
-    const debug = ["1", "true", "yes", "on"].includes(debugRaw);
+    const debug = toBool(form.get("debug"));
 
     // -----------------------------
     // ✅ ClickHouse branch
@@ -40,21 +56,35 @@ export async function POST(req: Request) {
         debug,
       });
 
-      // result can be { summaryText, metricsJson, debugSql? }
       return NextResponse.json({
         ok: true,
-        summaryText: result.summaryText,
+
+        // ✅ canonical
+        summary: result.summaryText,
         metricsJson: result.metricsJson,
-        ...(debug && result.debugSql ? { _debug: { sql: result.debugSql } } : {}),
+
+        // ✅ legacy compat (keep until all callers migrate)
+        summaryText: result.summaryText,
+
+        // ✅ canonical SQL location (only in debug)
+        ...(debug && (result as any).debugSql
+          ? {
+              sql: {
+                queries: Array.isArray((result as any).debugSql)
+                  ? (result as any).debugSql
+                  : [String((result as any).debugSql)],
+              },
+            }
+          : {}),
       });
     }
 
     // -----------------------------
-    // CSV branch
+    // ✅ CSV branch
     // -----------------------------
-    const csvUrl = (form.get("csvUrl") || "").toString().trim();
-
+    const csvUrl = toStr(form.get("csvUrl"), "");
     const file = form.get("file");
+
     let csvText = "";
 
     if (file && typeof file === "object" && typeof (file as any).text === "function") {
@@ -62,7 +92,9 @@ export async function POST(req: Request) {
     } else {
       if (!csvUrl) throw new Error("Provide either a CSV file upload or csvUrl.");
       const resp = await fetch(csvUrl);
-      if (!resp.ok) throw new Error(`Failed to fetch csvUrl (${resp.status} ${resp.statusText})`);
+      if (!resp.ok) {
+        throw new Error(`Failed to fetch csvUrl (${resp.status} ${resp.statusText})`);
+      }
       csvText = await resp.text();
     }
 
@@ -75,7 +107,16 @@ export async function POST(req: Request) {
       debug,
     });
 
-    return NextResponse.json({ ok: true, summaryText, metricsJson });
+    return NextResponse.json({
+      ok: true,
+
+      // ✅ canonical
+      summary: summaryText,
+      metricsJson,
+
+      // ✅ legacy compat
+      summaryText,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ ok: false, error: message }, { status: 400 });
