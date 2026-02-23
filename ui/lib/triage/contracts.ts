@@ -3,33 +3,39 @@
 export type DataSource = "csv" | "clickhouse";
 
 export type TriageRequest = {
-  // query can be empty for now (your UI doesn’t send it yet)
   query?: string;
 
   dataSource?: DataSource;
 
   partner?: string;
-  service?: string; // keep string to avoid breaking current code
+  service?: string;
   region?: string;
   pop?: string;
   windowMinutes?: number;
 
-  // legacy/debug support (keep additive)
+  // legacy/debug support
   csvUrl?: string;
+
+  // optional (route supports it)
+  debug?: boolean;
 };
 
-export type TriageResponse = {
-  ok: boolean;
+export type TriageOkResponse = {
+  ok: true;
 
-  // Canonical (new)
-  summary?: string;
-  metricsJson?: any;
+  summary: string;
+  metricsJson: any;
+
   evidence?: any;
   sql?: { queries: string[] };
 
-  // Legacy compatibility (old)
+  // legacy compat during migration
   summaryText?: string;
-
-  // Errors
-  error?: string;
 };
+
+export type TriageErrResponse = {
+  ok: false;
+  error: string;
+};
+
+export type TriageResponse = TriageOkResponse | TriageErrResponse;
