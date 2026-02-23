@@ -229,7 +229,16 @@ This guarantees deterministic demo-safe behavior even if ingestion lags.
 
 ```mermaid
 flowchart TD
+  %% ----------------------------
+  %% Frontend (Vercel)
+  %% ----------------------------
+  subgraph VERCEL["Frontend (Vercel)"]
+    UI["Home (/) Chat UI + Partner selector + Schema helper + Result Cards + Graphs"]
+    DBG["/debug (legacy) CSV deterministic triage UI"]
+    API["Vercel Serverless: /api/triage"]
+  end
 
+<<<<<<< HEAD
     subgraph "Frontend (Vercel)"
         UI["Chat UI + Filters"]
         API["/api/triage"]
@@ -241,13 +250,40 @@ flowchart TD
         CH["ClickHouse 127.0.0.1"]
         Raw["cachey.raw_minute - MergeTree"]
     end
+=======
+  %% ----------------------------
+  %% VPS side
+  %% ----------------------------
+  subgraph VPS["VPS"]
+    CADDY["Caddy (TLS termination)"]
+    PROXY["cachey-proxy API (reverse proxy + auth + query layer)"]
+    CH["ClickHouse (localhost)"]
+    RAW["cachey.raw_minute (MergeTree)"]
+  end
 
-    UI --> API
-    API -->|HTTPS| Caddy
-    Caddy --> Proxy
-    Proxy -->|localhost| CH
-    CH --> Raw
-    Proxy --> API
+  %% ----------------------------
+  %% Optional legacy CSV source
+  %% ----------------------------
+  subgraph LEGACY["Legacy (Debug only)"]
+    CSV["Debug CSV (local file / GitHub raw / generated)"]
+  end
+>>>>>>> b906783 (Update readme)
+
+  %% Main ClickHouse path (Home)
+  UI -->|POST /api/triage| API
+  API -->|HTTPS| CADDY
+  CADDY -->|reverse_proxy| PROXY
+  PROXY -->|HTTP localhost| CH
+  CH --> RAW
+
+  %% Response back
+  PROXY -->|JSON metricsJson + evidence| API
+  API -->|JSON response| UI
+
+  %% Debug CSV path (/debug)
+  DBG -->|POST /api/triage?dataSource=csv| API
+  API -->|read/parse| CSV
+  CSV -.-> DBG
 ```
 
 ### Security Boundary
