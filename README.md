@@ -238,19 +238,6 @@ flowchart TD
     API["Vercel Serverless: /api/triage"]
   end
 
-<<<<<<< HEAD
-    subgraph "Frontend (Vercel)"
-        UI["Chat UI + Filters"]
-        API["/api/triage"]
-    end
-
-    subgraph "VPS"
-        Caddy["Caddy - TLS Termination"]
-        Proxy["Cachey Proxy API"]
-        CH["ClickHouse 127.0.0.1"]
-        Raw["cachey.raw_minute - MergeTree"]
-    end
-=======
   %% ----------------------------
   %% VPS side
   %% ----------------------------
@@ -267,7 +254,6 @@ flowchart TD
   subgraph LEGACY["Legacy (Debug only)"]
     CSV["Debug CSV (local file / GitHub raw / generated)"]
   end
->>>>>>> b906783 (Update readme)
 
   %% Main ClickHouse path (Home)
   UI -->|POST /api/triage| API
@@ -285,20 +271,6 @@ flowchart TD
   API -->|read/parse| CSV
   CSV -.-> DBG
 ```
-
-### Security Boundary
-
-Public:
-- `api.yourdomain.com` (HTTPS only)
-
-Private:
-- ClickHouse bound to `127.0.0.1`
-- No direct port exposure (8123 / 9000)
-- All browser traffic passes through proxy
-
-ClickHouse is never internet-facing.
-
----
 
 ## Data Model (Current)
 
