@@ -16,7 +16,8 @@ function toStr(v: unknown, fallback = "") {
 }
 
 function toNum(v: unknown, fallback: number) {
-  const n = Number(String(v ?? "").trim());
+  const raw = String(v ?? "").trim();
+  const n = Number(raw);
   return Number.isFinite(n) ? n : fallback;
 }
 
@@ -24,24 +25,35 @@ export async function POST(req: Request) {
   console.log("🔥 USING ROUTE: ui/app/api/triage/route.ts 🔥");
 
   try {
-    const form = await req.formData();
+    const contentType = req.headers.get("content-type") || "";
+
+    let formData: FormData | null = null;
+    let jsonBody: Record<string, any> | null = null;
+
+    if (contentType.includes("application/json")) {
+      jsonBody = (await req.json().catch(() => ({}))) as Record<string, any>;
+    } else {
+      formData = await req.formData();
+    }
+
+    const getVal = (key: string) => (jsonBody ? jsonBody[key] : formData?.get(key));
 
     // -----------------------------
     // Common inputs
     // -----------------------------
-    const dataSource = toStr(form.get("dataSource"), "csv").toLowerCase();
-    const partner = toStr(form.get("partner"), "acme_media");
+    const dataSource = toStr(getVal("dataSource"), "csv").toLowerCase();
+    const partner = toStr(getVal("partner"), "acme_media");
 
-    const service = toStr(form.get("service"), "all");
-    const region = toStr(form.get("region"), "all");
-    const pop = toStr(form.get("pop"), "all");
+    const service = toStr(getVal("service"), "all");
+    const region = toStr(getVal("region"), "all");
+    const pop = toStr(getVal("pop"), "all");
 
-    const windowMinutes = toNum(form.get("windowMinutes"), 60);
+    const windowMinutes = toNum(getVal("windowMinutes"), 60);
     if (!Number.isFinite(windowMinutes) || windowMinutes <= 0) {
       throw new Error("windowMinutes must be a positive number.");
     }
 
-    const debug = toBool(form.get("debug"));
+    const debug = toBool(getVal("debug"));
 
     // -----------------------------
     // ✅ ClickHouse branch
@@ -63,10 +75,10 @@ export async function POST(req: Request) {
         summary: result.summaryText,
         metricsJson: result.metricsJson,
 
-        // ✅ legacy compat (keep until all callers migrate)
+        // ✅ legacy compat (temporary)
         summaryText: result.summaryText,
 
-        // ✅ canonical SQL location (only in debug)
+        // ✅ canonical SQL location (debug only)
         ...(debug && (result as any).debugSql
           ? {
               sql: {
@@ -82,8 +94,8 @@ export async function POST(req: Request) {
     // -----------------------------
     // ✅ CSV branch
     // -----------------------------
-    const csvUrl = toStr(form.get("csvUrl"), "");
-    const file = form.get("file");
+    const csvUrl = toStr(getVal("csvUrl"), "");
+    const file = formData?.get("file") || null; // file uploads only exist with FormData
 
     let csvText = "";
 
