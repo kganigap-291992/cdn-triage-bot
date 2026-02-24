@@ -11,10 +11,12 @@ const ALLOW_EXACT = new Set([
 
 const ALLOW_PREFIX = [
   "/_next", // allow Next internals not covered by matcher (e.g. _next/data)
+
+  // (Optional legacy/demo endpoints — harmless to keep explicit even though /api/* is allowed)
   "/api/demo-login",
   "/api/demo-logout",
 
-  // ✅ public endpoints for UI + curl
+  // public endpoints for UI + curl (also covered by /api/*, but fine to document intent)
   "/api/schema",
   "/api/triage",
   "/api/chat",
@@ -23,7 +25,11 @@ const ALLOW_PREFIX = [
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-<<<<<<< HEAD
+  // ✅ Always allow ALL API routes (otherwise curl + UI fetches can redirect to /demo)
+  if (pathname.startsWith("/api/")) {
+    return NextResponse.next();
+  }
+
   // Allow exact matches
   if (ALLOW_EXACT.has(pathname)) return NextResponse.next();
 
@@ -32,31 +38,7 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // Everything else requires demo cookie
-=======
-  // ✅ Always allow ALL API routes (otherwise curl + UI fetches redirect to /demo)
-  if (pathname.startsWith("/api/")) {
-    return NextResponse.next();
-  }
-
-  // Allow the demo login page
-  if (pathname === "/demo") {
-    return NextResponse.next();
-  }
-
-  // Allow Next internals + common static assets
-  if (
-    pathname.startsWith("/_next") ||
-    pathname === "/favicon.ico" ||
-    pathname === "/robots.txt" ||
-    pathname === "/sitemap.xml" ||
-    pathname === "/cachey-logo.png"
-  ) {
-    return NextResponse.next();
-  }
-
-  // Check demo cookie (UI pages only)
->>>>>>> origin/main
+  // Everything else requires demo cookie (UI pages only)
   const authed = req.cookies.get("cachey_demo")?.value === "1";
   if (authed) return NextResponse.next();
 

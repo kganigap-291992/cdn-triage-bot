@@ -641,7 +641,7 @@ export async function runMockClickhouseTriage(
     region,
     pop,
     contentType = "all", // ✅ new
-    uaFamily = "all",    // ✅ new
+    uaFamily = "all", // ✅ new
     windowMinutes,
     debug,
   } = inputs;
@@ -765,10 +765,7 @@ export async function runMockClickhouseTriage(
   const forceAnomaly = !!debug;
   const forcedBuckets = 8; // 8 * 5m = 40 minutes
 
-<<<<<<< HEAD
-=======
   // ✅ points ascending order, aligned timestamps
->>>>>>> origin/main
   for (let bi = 0; bi <= spanBuckets; bi++) {
     const t = startAlignedMs + bi * bucketMs;
 
@@ -982,32 +979,7 @@ export async function runMockClickhouseTriage(
     `• Error responses: ${int(total5xx)}/${int(totalRequests)} (${pct(errorRatePct ?? 0)}).`,
   ].join("\n");
 
-<<<<<<< HEAD
-  const debugSql = debug
-    ? [
-        `-- MOCK SQL (public-safe)`,
-        `-- Partner: ${partner}`,
-        `-- Filters: service=${service}, region=${region}, pop=${pop}, contentType=${contentType}, uaFamily=${uaFamily}, windowMinutes=${windowMinutes}`,
-        `SELECT`,
-        `  toStartOfInterval(ts, INTERVAL ${bucketSeconds} SECOND) AS bucket,`,
-        `  count() AS totalRequests,`,
-        `  countIf(edge_status >= 500 AND edge_status < 600) AS error5xxCount,`,
-        `  quantileExact(0.95)(ttms_ms) AS p95TtmsMs,`,
-        `  quantileExact(0.99)(ttms_ms) AS p99TtmsMs`,
-        `FROM edge_logs`,
-        `WHERE partner = '${partner}'`,
-        `  AND ts >= now() - INTERVAL ${windowMinutes} MINUTE`,
-        `  AND ('${service}' = 'all' OR service_bucket = '${service}')`,
-        `  AND ('${region}' = 'all' OR region = '${region}')`,
-        `  AND ('${pop}' = 'all' OR pop = '${pop}')`,
-        `  AND ('${contentType}' = 'all' OR content_type = '${contentType}')`,
-        `  AND ('${uaFamily}' = 'all' OR ua_family = '${uaFamily}')`,
-        `GROUP BY bucket`,
-        `ORDER BY bucket ASC;`,
-      ].join("\n")
-    : undefined;
-=======
-  // ✅ CANONICAL SQL payload (Phase 2 patch)
+  // ✅ CANONICAL SQL payload (public-safe mock; real SQL comes from sqlBuilder in runClickhouseTriage)
   const sql =
     debug
       ? {
@@ -1015,7 +987,7 @@ export async function runMockClickhouseTriage(
             [
               `-- MOCK SQL (public-safe)`,
               `-- Partner: ${partner}`,
-              `-- Filters: service=${service}, region=${region}, pop=${pop}, windowMinutes=${windowMinutes}`,
+              `-- Filters: service=${service}, region=${region}, pop=${pop}, contentType=${contentType}, uaFamily=${uaFamily}, windowMinutes=${windowMinutes}`,
               `SELECT`,
               `  toStartOfInterval(ts, INTERVAL ${bucketSeconds} SECOND) AS bucket,`,
               `  count() AS totalRequests,`,
@@ -1028,13 +1000,14 @@ export async function runMockClickhouseTriage(
               `  AND ('${service}' = 'all' OR service_bucket = '${service}')`,
               `  AND ('${region}' = 'all' OR region = '${region}')`,
               `  AND ('${pop}' = 'all' OR pop = '${pop}')`,
+              `  AND ('${contentType}' = 'all' OR content_type = '${contentType}')`,
+              `  AND ('${uaFamily}' = 'all' OR ua_family = '${uaFamily}')`,
               `GROUP BY bucket`,
               `ORDER BY bucket ASC;`,
             ].join("\n"),
           ],
         }
       : undefined;
->>>>>>> origin/main
 
   const metricsJson = {
     available,
