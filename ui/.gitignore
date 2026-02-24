@@ -40,3 +40,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .DS_Store
+
+
+echo "vendor/" >> .gitignore
+git add .gitignore
+git commit -m "chore: ignore vendor directory"
+git push
