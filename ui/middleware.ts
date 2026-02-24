@@ -23,6 +23,7 @@ const ALLOW_PREFIX = [
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
+<<<<<<< HEAD
   // Allow exact matches
   if (ALLOW_EXACT.has(pathname)) return NextResponse.next();
 
@@ -32,6 +33,30 @@ export function middleware(req: NextRequest) {
   }
 
   // Everything else requires demo cookie
+=======
+  // ✅ Always allow ALL API routes (otherwise curl + UI fetches redirect to /demo)
+  if (pathname.startsWith("/api/")) {
+    return NextResponse.next();
+  }
+
+  // Allow the demo login page
+  if (pathname === "/demo") {
+    return NextResponse.next();
+  }
+
+  // Allow Next internals + common static assets
+  if (
+    pathname.startsWith("/_next") ||
+    pathname === "/favicon.ico" ||
+    pathname === "/robots.txt" ||
+    pathname === "/sitemap.xml" ||
+    pathname === "/cachey-logo.png"
+  ) {
+    return NextResponse.next();
+  }
+
+  // Check demo cookie (UI pages only)
+>>>>>>> origin/main
   const authed = req.cookies.get("cachey_demo")?.value === "1";
   if (authed) return NextResponse.next();
 

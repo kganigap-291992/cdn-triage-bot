@@ -7,17 +7,23 @@
 
 ## Overview
 
-Cachey is an automated operational analytics system for CDN incident triage.
+Cachey is a deterministic, warehouse-backed operational analytics system
+designed for CDN incident triage.
 
-It analyzes structured delivery telemetry and produces deterministic,
-evidence-backed summaries suitable for incident response workflows.
+It transforms structured telemetry into:
 
-The system is designed around one core principle:
+-   Deterministic metrics
+-   Inspectable SQL
+-   Evidence-backed summaries
+-   Reproducible triage workflows
 
-> Deterministic metrics computation first.  
+Core principle:
+
+> Deterministic metrics first.
 > AI assistance second.
 
-All telemetry in this repository is synthetically generated to simulate real-world CDN delivery patterns.
+All telemetry used in this repository is synthetically generated to
+simulate real-world CDN delivery patterns. No production logs are used.
 
 ---
 
@@ -192,89 +198,168 @@ flowchart LR
 
 ---
 
+# V4 — Warehouse-Backed Analytics (Current Phase)
+
+## Objective
+
+Replace CSV computation with a production-style ClickHouse warehouse
+while preserving deterministic guarantees.
+
+---
+
+## Locked Time Semantics
+
+For ClickHouse-backed triage:
+
+    now := max(ts)
+
+We DO NOT use ClickHouse `now()`.
+
+Window calculation:
+
+    asOf_ts = SELECT max(ts) FROM cachey.raw_minute (scoped)
+    window_start = asOf_ts - INTERVAL <windowMinutes> MINUTE
+    window_end   = asOf_ts
+
+This guarantees deterministic demo-safe behavior even if ingestion lags.
+
+---
+
+## Infrastructure Architecture - V 4.1
+
+```mermaid
+flowchart TD
+  %% ----------------------------
+  %% Frontend (Vercel)
+  %% ----------------------------
+  subgraph VERCEL["Frontend (Vercel)"]
+    UI["Home (/) Chat UI + Partner selector + Schema helper + Result Cards + Graphs"]
+    DBG["/debug (legacy) CSV deterministic triage UI"]
+    API["Vercel Serverless: /api/triage"]
+  end
+
+  %% ----------------------------
+  %% VPS side
+  %% ----------------------------
+  subgraph VPS["VPS"]
+    CADDY["Caddy (TLS termination)"]
+    PROXY["cachey-proxy API (reverse proxy + auth + query layer)"]
+    CH["ClickHouse (localhost)"]
+    RAW["cachey.raw_minute (MergeTree)"]
+  end
+
+  %% ----------------------------
+  %% Optional legacy CSV source
+  %% ----------------------------
+  subgraph LEGACY["Legacy (Debug only)"]
+    CSV["Debug CSV (local file / GitHub raw / generated)"]
+  end
+
+  %% Main ClickHouse path (Home)
+  UI -->|POST /api/triage| API
+  API -->|HTTPS| CADDY
+  CADDY -->|reverse_proxy| PROXY
+  PROXY -->|HTTP localhost| CH
+  CH --> RAW
+
+  %% Response back
+  PROXY -->|JSON metricsJson + evidence| API
+  API -->|JSON response| UI
+
+  %% Debug CSV path (/debug)
+  DBG -->|POST /api/triage?dataSource=csv| API
+  API -->|read/parse| CSV
+  CSV -.-> DBG
+```
+
+## Data Model (Current)
+
+Table: `cachey.raw_minute`
+
+One row per minute × slice.
+
+Includes:
+
+- ts  
+- partner  
+- service  
+- region  
+- pop  
+- host  
+- content_type  
+- ua_family  
+- requests  
+- bytes_sent  
+- p50_ms / p95_ms / p99_ms  
+- cache_hit_rate  
+- http status buckets (2xx/3xx/4xx/5xx + detailed codes)  
+- crc_errors  
+
+Raw table is source of truth.
+
+---
+
+# Conversational Execution Model
+
+When user types:
+
+    live in bos last 2h
+
+System:
+
+1. Deterministically parses filters  
+2. Computes `asOf_ts = max(ts)`  
+3. Constructs SQL  
+4. Queries ClickHouse  
+5. Returns:
+   - Summary  
+   - Metrics JSON  
+   - Graph data  
+   - Expandable SQL  
+   - Expandable evidence  
+
+LLM:
+- May refine intent  
+- May assist explanation  
+- Never computes metrics  
+
+---
+
 # Technology Stack
 
 ## Frontend
 
-- Framework: Next.js (App Router)  
-- Language: TypeScript  
-- UI Library: React  
-- State Management: LocalStorage (Run History)  
-- Rendering Strategy: Hydration-safe client rendering  
+- Next.js (App Router)  
+- React  
+- TypeScript  
 
-## Backend
+## API Layer
 
-- API Layer: Next.js API Routes  
-- Runtime: Node.js  
-- Analytics Layer: Custom Deterministic Metrics Engine  
+- Next.js API Routes  
+- Node.js runtime  
+- Proxy API on VPS  
 
 ## Data Layer
 
-- Demo Source: Synthetic CDN Telemetry (Generated for Safe Demonstration) 
-- Production Target: ClickHouse (Planned)  
+- Synthetic telemetry generator  
+- ClickHouse (MergeTree)  
+- SQL as source of truth  
 
-> Note: All telemetry used in this project is synthetically generated 
-> to mirror real-world CDN traffic patterns. No production logs or 
-> customer data are used.
+## Infrastructure
 
-## Conversational Layer
-
-- Current Mode: Deterministic Parser  
-- Optional Provider: OpenRouter  
-
-### Example Models
-
-- `google/gemma-3n-e2b-it:free`  
-- `mistral-small-instruct`  
-
-### LLM Scope
-
-- Intent parsing  
-- Explanation assistance  
-- No non-deterministic metric computation  
-
----
-
-# Deployment
-
-## Hosting
-
-- Vercel  
-- Automatic builds from GitHub  
-- Production + Preview environments  
-- Build-time TypeScript validation  
-
-## Previous Demo Method
-
-- Cloudflare Tunnel  
-
-## Migration Reason
-
-- Stable hosting  
-- Reliable demo access  
-- CI/CD integration  
+- VPS-hosted ClickHouse  
+- Caddy reverse proxy  
+- HTTPS domain routing  
+- Vercel deployment for UI  
 
 ---
 
 # Data Safety
 
-- All telemetry is synthetic
-- No production logs are included
-- No customer data is used
-- No proprietary systems are exposed
-
----
-
-# Roadmap
-
-- ClickHouse backend integration  
-- Time-series anomaly detection  
-- Blast radius estimation  
-- Confidence scoring  
-- Metrics export and observability  
-- LLM-assisted explanation layer  
-- Rate limiting  
-- Authentication hardening  
+- All telemetry is synthetic  
+- No production logs  
+- No customer data  
+- No proprietary systems exposed  
 
 ---
 
@@ -282,18 +367,33 @@ flowchart LR
 
 - Deterministic metrics before AI reasoning  
 - Reproducibility over opacity  
-- Separation of control and computation  
-- Explainable summaries  
-- Production-first deployment validation  
+- Clear system boundaries  
+- SQL transparency  
+- Production-first architecture discipline  
 
 ---
 
-# Future Direction (ML Integration)
+# Roadmap
 
-Planned enhancements include:
+## Short-Term
 
+- SQL inspector panel  
+- Evidence sampling from raw table  
+- Query transparency improvements  
+
+## Mid-Term
+
+- Materialized views (5m rollups)  
 - Time-series anomaly detection  
-- Rolling baseline deviation scoring  
-- Blast radius quantification  
-- Severity classification  
-- Model lifecycle integration (future MLOps track)  
+- Rolling baseline scoring  
+- Blast radius estimation  
+
+## Long-Term (MLOps Track)
+
+- Feature store integration  
+- Airflow orchestration  
+- Automated retraining hooks  
+- Severity classification models  
+
+---
+

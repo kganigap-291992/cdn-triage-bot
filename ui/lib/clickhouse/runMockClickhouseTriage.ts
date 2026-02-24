@@ -765,6 +765,10 @@ export async function runMockClickhouseTriage(
   const forceAnomaly = !!debug;
   const forcedBuckets = 8; // 8 * 5m = 40 minutes
 
+<<<<<<< HEAD
+=======
+  // ✅ points ascending order, aligned timestamps
+>>>>>>> origin/main
   for (let bi = 0; bi <= spanBuckets; bi++) {
     const t = startAlignedMs + bi * bucketMs;
 
@@ -947,7 +951,7 @@ export async function runMockClickhouseTriage(
       `No scoped hosts generated for region='${region}' pop='${pop}' in mock (unexpected).`
     );
   }
-  if (forceAnomaly) warnings.push(`debug=true: forcing anomalies in last ${forcedBuckets} buckets for UI testing.`);
+  if (debug) warnings.push(`debug=true: forcing anomalies in last ${forcedBuckets} buckets for UI testing.`);
 
   const summaryText = [
     `🧭 *CDN TRIAGE SUMMARY*`,
@@ -978,6 +982,7 @@ export async function runMockClickhouseTriage(
     `• Error responses: ${int(total5xx)}/${int(totalRequests)} (${pct(errorRatePct ?? 0)}).`,
   ].join("\n");
 
+<<<<<<< HEAD
   const debugSql = debug
     ? [
         `-- MOCK SQL (public-safe)`,
@@ -1001,6 +1006,35 @@ export async function runMockClickhouseTriage(
         `ORDER BY bucket ASC;`,
       ].join("\n")
     : undefined;
+=======
+  // ✅ CANONICAL SQL payload (Phase 2 patch)
+  const sql =
+    debug
+      ? {
+          queries: [
+            [
+              `-- MOCK SQL (public-safe)`,
+              `-- Partner: ${partner}`,
+              `-- Filters: service=${service}, region=${region}, pop=${pop}, windowMinutes=${windowMinutes}`,
+              `SELECT`,
+              `  toStartOfInterval(ts, INTERVAL ${bucketSeconds} SECOND) AS bucket,`,
+              `  count() AS totalRequests,`,
+              `  countIf(edge_status >= 500 AND edge_status < 600) AS error5xxCount,`,
+              `  quantileExact(0.95)(ttms_ms) AS p95TtmsMs,`,
+              `  quantileExact(0.99)(ttms_ms) AS p99TtmsMs`,
+              `FROM edge_logs`,
+              `WHERE partner = '${partner}'`,
+              `  AND ts >= now() - INTERVAL ${windowMinutes} MINUTE`,
+              `  AND ('${service}' = 'all' OR service_bucket = '${service}')`,
+              `  AND ('${region}' = 'all' OR region = '${region}')`,
+              `  AND ('${pop}' = 'all' OR pop = '${pop}')`,
+              `GROUP BY bucket`,
+              `ORDER BY bucket ASC;`,
+            ].join("\n"),
+          ],
+        }
+      : undefined;
+>>>>>>> origin/main
 
   const metricsJson = {
     available,
@@ -1054,9 +1088,14 @@ export async function runMockClickhouseTriage(
     debug: debug ? { note: "ClickHouse mock runner (no real DB access)." } : null,
   };
 
+  // ✅ Phase 2: return canonical + legacy
   return {
-    summaryText,
+    // Canonical
+    summary: summaryText,
     metricsJson,
-    ...(debugSql ? { debugSql } : {}),
+    sql,
+
+    // Legacy compatibility
+    summaryText,
   };
 }

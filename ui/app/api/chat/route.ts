@@ -1,4 +1,4 @@
-// app/api/chat/route.ts
+// ui/app/api/chat/route.ts
 import { NextResponse } from "next/server";
 
 type Role = "system" | "user" | "assistant";
@@ -15,11 +15,11 @@ type CurrentFilters = {
 
 type ChatContext = {
   mode?: "csv" | "clickhouse";
-  chatMode?: "deterministic" | "llm"; // ✅ NEW: honor UI toggle
+  chatMode?: "deterministic" | "llm";
   availableRegions?: string[];
   availablePops?: string[];
   availablePartners?: string[];
-  currentFilters?: CurrentFilters; // ✅ enables “how about live” follow-ups
+  currentFilters?: CurrentFilters;
 };
 
 type Body = {
@@ -55,18 +55,16 @@ function pickOne<T>(arr: T[], seed: string) {
 }
 
 /**
- * ✅ FIXED greeting checks (stable)
+ * Greeting / smalltalk checks
  */
 function isGreetingOrSmallTalk(text: string) {
   const t = normLower(text);
   if (!t) return true;
 
-  // short tokens (keep explicit)
   if (t.length <= 3 && ["hi", "hey", "yo", "ok", "k", "sup", "thx"].includes(t)) {
     return true;
   }
 
-  // treat “what can you do” as help (NOT smalltalk)
   if (t.includes("what can you do") || t.includes("help")) return false;
 
   return (
@@ -86,7 +84,7 @@ function isGreetingOrSmallTalk(text: string) {
 }
 
 /**
- * ✅ NEW: Low-signal guard (avoid calling provider for junk)
+ * Low-signal guard (avoid calling provider for junk)
  */
 function looksLikeLowSignal(text: string) {
   const t = norm(text);
@@ -99,7 +97,6 @@ function looksLikeLowSignal(text: string) {
   const hasNoKV = !/=/.test(lower);
   const hasNoPunct = !/[?.!,]/.test(lower);
 
-  // If it's clearly a known keyword, don't treat as low-signal.
   const knownWords = [
     "help",
     "triage",
@@ -132,13 +129,12 @@ function looksLikeLowSignal(text: string) {
 }
 
 // ------------------------------------------------------------
-// ✅ Edge Case #1: Natural time phrases → window minutes
+// Natural time phrases → window minutes
 // ------------------------------------------------------------
 function extractNaturalWindowMinutes(text: string): number | null {
   const t = normLower(text);
   if (!t) return null;
 
-  // explicit "last 2h", "past 60m", etc.
   const m = t.match(
     /\b(last|past)\s+(\d+)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b/
   );
@@ -151,10 +147,9 @@ function extractNaturalWindowMinutes(text: string): number | null {
     return n;
   }
 
-  // common phrases
-  if (/\blast night\b/.test(t)) return 12 * 60; // “last night” → 12h
+  if (/\blast night\b/.test(t)) return 12 * 60;
   if (/\byesterday\b/.test(t)) return 24 * 60;
-  if (/\btoday\b/.test(t)) return 8 * 60; // “today” default 8h
+  if (/\btoday\b/.test(t)) return 8 * 60;
   if (/\bthis morning\b/.test(t)) return 6 * 60;
   if (/\bthis week\b/.test(t)) return 7 * 24 * 60;
   if (/\blast week\b/.test(t)) return 7 * 24 * 60;
@@ -163,7 +158,7 @@ function extractNaturalWindowMinutes(text: string): number | null {
 }
 
 // ------------------------------------------------------------
-// ATS Cache Result Codes Glossary (deterministic; no LLM/RAG)
+// ATS CRC Glossary (deterministic; no LLM/RAG)
 // ------------------------------------------------------------
 type GlossaryEntry = { title: string; meaning: string; opsHint?: string };
 
@@ -319,31 +314,23 @@ function parseCommand(text: string): CommandKind {
     return "help";
   }
 
-  if (
-    t === "filters" ||
-    t === "show filters" ||
-    t === "show filter" ||
-    t === "current filters"
-  )
+  if (t === "filters" || t === "show filters" || t === "show filter" || t === "current filters")
     return "filters";
 
-  if (t === "reset" || t === "clear" || t === "start over" || t === "wipe")
-    return "reset";
+  if (t === "reset" || t === "clear" || t === "start over" || t === "wipe") return "reset";
 
-  if (t === "explain" || t.startsWith("explain ") || t.includes("what is this"))
-    return "explain";
+  if (t === "explain" || t.startsWith("explain ") || t.includes("what is this")) return "explain";
 
-  if (t === "run" || t === "triage" || t === "go" || t === "execute")
-    return "run";
+  if (t === "run" || t === "triage" || t === "go" || t === "execute") return "run";
 
   return null;
 }
 
 function helpText(mode: "csv" | "clickhouse") {
   const lines = [
-    "Certainly — here’s how I can help.",
+    "Here’s how to use Cachey.",
     "",
-    "I can parse your message into filters (service / region / pop / time window / partner), run triage, and return a concise summary + charts.",
+    "Ask in natural language or key=value. I’ll parse filters and run triage.",
     "",
     "Examples:",
     "- `how was vod last night`",
@@ -352,9 +339,7 @@ function helpText(mode: "csv" | "clickhouse") {
     "",
     "Commands: help • filters • explain • reset • run",
     "",
-    mode === "clickhouse"
-      ? "ClickHouse note: I’ll need a partner (ex: `beta_stream`)."
-      : "CSV note: I’ll use your uploaded CSV or CSV URL.",
+    mode === "clickhouse" ? "ClickHouse note: include a partner (ex: `beta_stream`)." : "CSV note: uses your CSV.",
   ];
   return lines.join("\n");
 }
@@ -374,10 +359,9 @@ function filtersText(args: {
 
   const cur = current || {};
   const curLine =
-    `Current: svc=${cur.service || "all"}, region=${cur.region || "all"}, pop=${
-      cur.pop || "all"
-    }, win=${cur.windowMinutes ?? "?"}m` +
-    (mode === "clickhouse" ? `, partner=${cur.partner || "(missing)"}` : "");
+    `Current: svc=${cur.service || "all"}, region=${cur.region || "all"}, pop=${cur.pop || "all"}, win=${
+      cur.windowMinutes ?? "?"
+    }m` + (mode === "clickhouse" ? `, partner=${cur.partner || "(missing)"}` : "");
 
   return [
     `Mode: ${mode}`,
@@ -391,18 +375,17 @@ function filtersText(args: {
 
 function explainText() {
   return [
-    "Quick explainer:",
+    "What this is:",
     "",
-    "Cachey does two things:",
     "1) Parses your message into filters (service/region/pop/window/partner).",
-    "2) Runs triage and shows metrics + charts for that scope.",
+    "2) Runs triage and returns metrics + charts.",
     "",
-    "Tip: natural language works (`vod last night`) or key=value works (`service=vod win=720`).",
+    "Tip: `vod last night` or `service=vod win=720` both work.",
   ].join("\n");
 }
 
 // ------------------------------------------------------------
-// ✅ Edge Case #2: Partner follow-up collapse
+// Partner follow-up collapse
 // ------------------------------------------------------------
 function looksLikePartnerQuestion(text: string) {
   const t = normLower(text);
@@ -428,25 +411,18 @@ function collapsePartnerFollowup(messages: WireMsg[], partners: string[]) {
   if (!lastUser) return { text: "", partner: null };
 
   const lastUserText = norm(lastUser.content);
-  if (!isLikelyPartnerReply(lastUserText, partners))
-    return { text: lastUserText, partner: null };
+  if (!isLikelyPartnerReply(lastUserText, partners)) return { text: lastUserText, partner: null };
 
   const lastIdx = msgs.lastIndexOf(lastUser);
-  const prevAssistant = [...msgs.slice(0, lastIdx)]
-    .reverse()
-    .find((m) => m.role === "assistant");
+  const prevAssistant = [...msgs.slice(0, lastIdx)].reverse().find((m) => m.role === "assistant");
 
   const partner = normLower(lastUserText);
 
-  // if it wasn't asked as a partner question, treat it as “partner=...”
   if (!prevAssistant || !looksLikePartnerQuestion(prevAssistant.content)) {
     return { text: lastUserText, partner };
   }
 
-  // merge with prior user query
-  const prevUser = [...msgs.slice(0, lastIdx)]
-    .reverse()
-    .find((m) => m.role === "user");
+  const prevUser = [...msgs.slice(0, lastIdx)].reverse().find((m) => m.role === "user");
   const originalQuery = norm(prevUser?.content);
 
   const combined = originalQuery ? `${originalQuery} partner=${partner}` : `partner=${partner}`;
@@ -460,6 +436,7 @@ function looksLikeTriageIntent(text: string) {
   const t = normLower(text);
   if (!t) return false;
   if (t.includes("=")) return true;
+
   const kws = [
     "triage",
     "run",
@@ -580,7 +557,7 @@ function extractPop(text: string, availablePops: string[]): string | null {
   const availSet = new Set((availablePops || []).map((x) => normLower(x)));
   if (availSet.has(candidate)) return candidate;
 
-  // permissive fallback for pop-like tokens
+  // permissive fallback for pop-like tokens (e.g. sjc-01)
   if (candidate.includes("-") && candidate.length >= 5) return candidate;
 
   return null;
@@ -598,15 +575,10 @@ function extractPartner(text: string, availablePartners: string[]): string | nul
 }
 
 function makePartnerQuestion(partners: string[]) {
-  const list = partners?.length
-    ? partners.join(", ")
-    : "acme_media, beta_stream, charlie_video…";
-  return `Quick one — which partner are we triaging? (${list})`;
+  const list = partners?.length ? partners.join(", ") : "acme_media, beta_stream, charlie_video…";
+  return `Which partner should I use? (${list})`;
 }
 
-// ------------------------------------------------------------
-// ✅ Edge Case #3: Follow-up “how about live” uses current filters
-// ------------------------------------------------------------
 function isServiceOnlyFollowup(text: string) {
   const t = normLower(text);
   if (!t) return false;
@@ -620,36 +592,160 @@ function isServiceOnlyFollowup(text: string) {
 }
 
 // ------------------------------------------------------------
-// OpenRouter
+// OpenRouter: model pools + rate-limit cooldown + best-effort fallback
 // ------------------------------------------------------------
-async function callOpenRouter(messages: WireMsg[]) {
+
+// In-memory cooldown across requests (works in dev + in a single serverless instance)
+const rlUntil = new Map<string, number>(); // model -> unix ms
+
+function isCooling(model: string) {
+  const until = rlUntil.get(model) || 0;
+  return Date.now() < until;
+}
+function markCooling(model: string, ms: number) {
+  const dur = Math.max(5_000, Math.min(5 * 60_000, Number(ms) || 45_000));
+  rlUntil.set(model, Date.now() + dur);
+}
+
+function modelPool(kind: "general" | "triage"): string[] {
+  // You can set:
+  // - OPENROUTER_GENERAL_MODELS for quick chat
+  // - OPENROUTER_MODELS for heavier triage assist
+  const envList = kind === "general" ? process.env.OPENROUTER_GENERAL_MODELS : process.env.OPENROUTER_MODELS;
+
+  const fromSingle = norm(process.env.OPENROUTER_MODEL);
+  const fromList = (envList || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const all = [...fromList, fromSingle].filter(Boolean) as string[];
+  const uniq = Array.from(new Set(all));
+
+  // sane fallback
+  return uniq.length ? uniq : ["meta-llama/llama-3.2-3b-instruct:free"];
+}
+
+function isSystemInstructionRejected(errMsg: string) {
+  const m = errMsg.toLowerCase();
+  return (
+    m.includes("developer instruction is not enabled") ||
+    m.includes("system instruction") ||
+    m.includes("developer instruction")
+  );
+}
+
+function parseRateLimit(errMsg: string): { rateLimited: boolean; retryAfterMs: number } {
+  const m = errMsg.toLowerCase();
+
+  // obvious cases
+  if (m.includes("http 429") || m.includes("rate-limited") || m.includes("too many requests")) {
+    // try to parse "retry" hints if any, else default
+    return { rateLimited: true, retryAfterMs: 45_000 };
+  }
+
+  // OpenRouter sometimes embeds provider JSON with code 429
+  if (m.includes('"code":429') || m.includes("code\":429") || m.includes(" code 429")) {
+    return { rateLimited: true, retryAfterMs: 45_000 };
+  }
+
+  return { rateLimited: false, retryAfterMs: 0 };
+}
+
+async function callOpenRouterWithModel(model: string, messages: WireMsg[]) {
   const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_KEY;
   if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
 
-  const model = process.env.OPENROUTER_MODEL || "google/gemma-3n-e2b-it:free";
+  const referer = process.env.OPENROUTER_SITE_URL || "http://localhost:3000";
+  const title = process.env.OPENROUTER_APP_NAME || "cdn-triage-bot";
 
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "http://localhost:3000",
-      "X-Title": "cdn-triage-bot",
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0.6,
-      messages,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25_000);
 
-  const json = await res.json().catch(() => null);
-  if (!res.ok) {
-    const msg =
-      json?.error?.message || json?.message || `OpenRouter error (HTTP ${res.status})`;
-    throw new Error(msg);
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": referer,
+        "X-Title": title,
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.6,
+        messages,
+      }),
+    });
+
+    const rawText = await res.text();
+    let json: any = null;
+    try {
+      json = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      // ignore
+    }
+
+    if (!res.ok) {
+      const msg = json?.error?.message || json?.message || `OpenRouter error (HTTP ${res.status})`;
+      // include rawText for internal parsing; we still won’t surface it to the user unless dev
+      throw new Error(`${msg} :: ${rawText}`);
+    }
+
+    return json;
+  } finally {
+    clearTimeout(timeout);
   }
-  return json;
+}
+
+async function callOpenRouterBestEffort(kind: "general" | "triage", messages: WireMsg[]) {
+  const candidates = modelPool(kind).filter((m) => !isCooling(m));
+  const fallbackCandidates = modelPool(kind); // if all cooling, still try something
+
+  const list = candidates.length ? candidates : fallbackCandidates;
+
+  let lastErr: any = null;
+  let rateLimitHits = 0;
+
+  for (const model of list) {
+    if (isCooling(model)) continue;
+
+    try {
+      const json = await callOpenRouterWithModel(model, messages);
+      return { json, usedModel: model };
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      lastErr = e;
+
+      const rl = parseRateLimit(msg);
+      if (rl.rateLimited) {
+        rateLimitHits += 1;
+        markCooling(model, rl.retryAfterMs || 45_000);
+
+        // Try one more model once; then bail with rateLimited response.
+        if (rateLimitHits >= 2) {
+          const err: any = new Error("RATE_LIMITED");
+          err.rateLimited = true;
+          err.retryAfterMs = rl.retryAfterMs || 45_000;
+          err.usedModel = model;
+          throw err;
+        }
+        continue;
+      }
+
+      // If model rejects system/developer instruction, try next model.
+      if (isSystemInstructionRejected(msg)) continue;
+
+      // Free-tier models are flaky. Try next model for these too.
+      if (msg.toLowerCase().includes("provider returned error") || msg.includes("HTTP 400")) continue;
+
+      // Otherwise: stop early (auth, etc.)
+      throw e;
+    }
+  }
+
+  throw lastErr || new Error("OpenRouter failed for all candidate models.");
 }
 
 function safeJsonParse(s: string) {
@@ -662,17 +758,17 @@ function safeJsonParse(s: string) {
 
 function smallTalkReply(userText: string, mode: "csv" | "clickhouse") {
   const options = [
-    "All set on my end. Shall we chase errors or latency first? (Try: `vod in bos last 60m`.)",
-    "Hey — Cachey here 🤖. Give me service + region/POP + time window and I’ll run triage.",
-    "Ready when you are. Want to start with errors (5xx/4xx) or latency (p95/p99 TTMS)?",
-    "Cool. If you share scope + symptoms, I’ll narrow it down quickly.",
-    "Let’s do it. Try: `live in usw2 at sjc last 2h`.",
+    "Ready. Want errors first or latency first? (Try: `vod in bos last 60m`.)",
+    "Cachey here 🤖 — give me scope + time window and I’ll run triage.",
+    "Send a scope like `live in usw2 at sjc last 2h` and I’ll pull metrics + charts.",
+    "Tell me what’s wrong (errors/latency) + where (region/pop) + when (window).",
+    "Try: `service=live region=all win=360`.",
   ];
   return pickOne(options, `${mode}|${normLower(userText)}`);
 }
 
 // ------------------------------------------------------------
-// ✅ Edge Case #4 + #5 live in route: glossary + low-signal + time phrases + followups
+// Route
 // ------------------------------------------------------------
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as Body;
@@ -689,8 +785,6 @@ export async function POST(req: Request) {
   const pops = Array.isArray(ctx.availablePops) ? ctx.availablePops : [];
 
   const mode = ctx.mode === "clickhouse" ? "clickhouse" : "csv";
-
-  // ✅ NEW: honor UI chatMode (default deterministic)
   const chatMode: "deterministic" | "llm" = ctx.chatMode === "llm" ? "llm" : "deterministic";
 
   const current = ctx.currentFilters || {};
@@ -703,15 +797,12 @@ export async function POST(req: Request) {
       : null;
   const currentPartner = normLower(current.partner || "") || null;
 
-  // ✅ Partner follow-up collapse (beta_stream after partner question)
   const collapsed = collapsePartnerFollowup(rawMsgs, partners);
   const userText =
-    collapsed.text ||
-    norm(rawMsgs.filter((m) => m.role === "user").slice(-1)[0]?.content);
-
+    collapsed.text || norm(rawMsgs.filter((m) => m.role === "user").slice(-1)[0]?.content);
   const partnerFromFollowup = collapsed.partner;
 
-  // ✅ Glossary answers (no provider call)
+  // Glossary answers
   if (isDefinitionQuestion(userText)) {
     const term = extractTermFromDefinitionQuestion(userText);
     const entry = lookupAtsCrc(term);
@@ -727,7 +818,7 @@ export async function POST(req: Request) {
     }
   }
 
-  // ✅ Commands are deterministic (no provider call)
+  // Commands (deterministic)
   const cmd = parseCommand(userText);
   if (cmd === "help") return jsonOk({ ok: true, kind: "general", reply: helpText(mode) });
   if (cmd === "filters")
@@ -741,30 +832,22 @@ export async function POST(req: Request) {
     return jsonOk({
       ok: true,
       kind: "general",
-      reply:
-        "Done — I’ve cleared my side. For a full wipe (filters + local history), please use the Reset button in the UI.",
+      reply: "Cleared. Use UI Reset to wipe local history + filters.",
     });
-  if (cmd === "run")
-    return jsonOk({
-      ok: true,
-      kind: "triage",
-      reply: "Very well — running triage with the current filters…",
-    });
+  if (cmd === "run") return jsonOk({ ok: true, kind: "triage", reply: "Running triage with current filters…" });
 
   const triageish = looksLikeTriageIntent(userText);
 
-  // ✅ Smalltalk: no provider
   if (!triageish && isGreetingOrSmallTalk(userText)) {
     return jsonOk({ ok: true, kind: "general", reply: smallTalkReply(userText, mode) });
   }
 
-  // ✅ Low-signal: no provider
   if (!triageish && looksLikeLowSignal(userText)) {
     return jsonOk({
       ok: true,
       kind: "general",
       reply:
-        "Looks like a quick typo 🙂\n\nTry:\n- `how was vod last night`\n- `live in bos last 2h`\n- `service=live region=all win=360`\n\nOr type `help`.",
+        "Try:\n- `how was vod last night`\n- `live in bos last 2h`\n- `service=live region=all win=360`\n\nOr type `help`.",
     });
   }
 
@@ -773,31 +856,22 @@ export async function POST(req: Request) {
   const detRegion = extractRegion(userText, regions);
   const detPop = extractPop(userText, pops);
 
-  // ✅ time: prefer key/value window, else natural phrases
   const detWinKV = extractWindowMinutesKeyValue(userText);
   const detWinNatural = extractNaturalWindowMinutes(userText);
   const detWindow = detWinKV ?? detWinNatural ?? null;
 
   const detPartner = partnerFromFollowup || extractPartner(userText, partners);
 
-  // ✅ follow-up service-only like "how about live"
   const followupSvcOnly =
-    isServiceOnlyFollowup(userText) &&
-    !!detService &&
-    !detRegion &&
-    !detPop &&
-    detWindow == null;
+    isServiceOnlyFollowup(userText) && !!detService && !detRegion && !detPop && detWindow == null;
 
-  // ✅ FIX: service comes from detService; region/pop/window fall back to current on service-only followups
   const serviceHint = detService ?? null;
   const regionHint = detRegion ?? (followupSvcOnly ? currentRegion : null);
   const popHint = detPop ?? (followupSvcOnly ? currentPop : null);
   const windowHint = detWindow ?? (followupSvcOnly ? currentWin : null);
 
-  // partner: deterministic first, else current (sticky)
   const partnerHint = detPartner ?? currentPartner ?? null;
 
-  // If ClickHouse triage-ish and partner missing → ask partner (deterministic)
   if (mode === "clickhouse" && triageish && !partnerHint) {
     return jsonOk({
       ok: true,
@@ -811,22 +885,15 @@ export async function POST(req: Request) {
     });
   }
 
-  // ------------------------------------------------------------
-  // ✅ NEW: If UI is NOT in LLM mode, never call OpenRouter.
-  // Return deterministic hints only.
-  // ------------------------------------------------------------
+  // If NOT in LLM mode, never call provider
   if (chatMode !== "llm") {
     if (!triageish) {
-      return jsonOk({
-        ok: true,
-        kind: "general",
-        reply: smallTalkReply(userText, mode),
-      });
+      return jsonOk({ ok: true, kind: "general", reply: smallTalkReply(userText, mode) });
     }
     return jsonOk({
       ok: true,
       kind: "triage",
-      reply: "Parsed filters. Proceeding with triage.",
+      reply: "Parsed filters.",
       serviceHint,
       regionHint,
       popHint,
@@ -835,9 +902,9 @@ export async function POST(req: Request) {
     });
   }
 
-  // ------------------------------------------------------------
+  // ----------------------------
   // LLM Assist (only when enabled)
-  // ------------------------------------------------------------
+  // ----------------------------
   const system: WireMsg = {
     role: "system",
     content:
@@ -857,21 +924,24 @@ export async function POST(req: Request) {
       `AvailablePartners=${(partners || []).join(", ")}.`,
   };
 
-  // Keep history short
   const compactHistory = rawMsgs.slice(-12).map((m) => ({
     role: m.role,
     content: norm(m.content),
   }));
 
+  const isDev = process.env.NODE_ENV !== "production";
+
   let llmOut: any = null;
+  let usedModel = "";
 
   try {
-    const or = await callOpenRouter([
+    const { json: or, usedModel: m } = await callOpenRouterBestEffort(triageish ? "triage" : "general", [
       system,
       contextHint,
       ...compactHistory,
       { role: "user", content: userText },
     ]);
+    usedModel = m;
 
     const content = or?.choices?.[0]?.message?.content;
     llmOut = typeof content === "string" ? safeJsonParse(content) : null;
@@ -880,30 +950,47 @@ export async function POST(req: Request) {
     if (!llmOut || typeof llmOut !== "object") {
       const replyText =
         typeof content === "string" && content.trim() ? content.trim() : "Understood.";
-      if (!triageish) return jsonOk({ ok: true, kind: "general", reply: replyText });
+      if (!triageish) return jsonOk({ ok: true, kind: "general", reply: replyText, usedModel });
       llmOut = { kind: "triage", reply: replyText };
     }
-  } catch {
-    // Don’t leak provider errors
+  } catch (e: any) {
+    // ✅ If rate-limited, return a clean, UI-friendly signal
+    if (e?.rateLimited || String(e?.message || "").includes("RATE_LIMITED")) {
+      const retryAfterMs = Number(e?.retryAfterMs) || 45_000;
+      return jsonOk({
+        ok: true,
+        kind: "general",
+        reply: "LLM is rate-limited. Retrying soon, or switch to Deterministic.",
+        rateLimited: true,
+        retryAfterMs,
+        usedModel: String(e?.usedModel || usedModel || ""),
+      });
+    }
+
+    const errMsg = e?.message ? String(e.message) : "Unknown OpenRouter error";
+    console.error("[api/chat] OpenRouter failed:", errMsg);
+
     if (!triageish) {
       return jsonOk({
         ok: true,
         kind: "general",
-        reply:
-          "My LLM assist is temporarily unavailable 😅\n\nYou can still:\n- type `help`\n- ask `what is tcp_hit`\n- run triage like `how was vod last night`",
+        reply: isDev
+          ? `LLM assist failed (dev): ${errMsg}`
+          : "LLM assist temporarily unavailable. Switch to Deterministic.",
       });
     }
+
     llmOut = {
       kind: "triage",
-      reply: "LLM assist is temporarily unavailable. Proceeding with parsed filters.",
+      reply: isDev
+        ? `LLM assist failed (dev): ${errMsg}\nProceeding with parsed filters.`
+        : "LLM assist unavailable. Proceeding with parsed filters.",
     };
   }
 
   const kind = llmOut.kind === "general" ? "general" : "triage";
 
-  // ------------------------------------------------------------
-  // ✅ Deterministic always wins over LLM + sticky current filters
-  // ------------------------------------------------------------
+  // Deterministic always wins + sticky current filters
   const mergedService = serviceHint ?? llmOut.serviceHint ?? currentService ?? null;
   const mergedRegion = regionHint ?? llmOut.regionHint ?? currentRegion ?? null;
   const mergedPop = popHint ?? llmOut.popHint ?? currentPop ?? null;
@@ -916,7 +1003,6 @@ export async function POST(req: Request) {
 
   const mergedPartner = partnerHint ?? llmOut.partnerHint ?? currentPartner ?? null;
 
-  // ClickHouse triage + still missing partner? ask again.
   if (mode === "clickhouse" && kind === "triage" && !mergedPartner) {
     return jsonOk({
       ok: true,
@@ -927,6 +1013,7 @@ export async function POST(req: Request) {
       regionHint: mergedRegion,
       popHint: mergedPop,
       windowHint: mergedWindow,
+      usedModel,
     });
   }
 
@@ -935,6 +1022,7 @@ export async function POST(req: Request) {
       ok: true,
       kind: "general",
       reply: String(llmOut.reply || smallTalkReply(userText, mode)),
+      usedModel,
     });
   }
 
@@ -947,5 +1035,6 @@ export async function POST(req: Request) {
     popHint: mergedPop,
     windowHint: mergedWindow,
     partnerHint: mergedPartner,
+    usedModel,
   });
 }
