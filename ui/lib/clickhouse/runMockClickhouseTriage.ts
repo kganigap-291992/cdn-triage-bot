@@ -52,6 +52,11 @@ function uniqLower(arr: string[]) {
   return out;
 }
 
+function uniqLowerOrAll(arr: string[], limit = 24) {
+  const out = uniqLower(arr);
+  return out.slice(0, limit);
+}
+
 function buildAvailableFromUniverse(universe: {
   regions: string[];
   pops: string[];
@@ -61,6 +66,9 @@ function buildAvailableFromUniverse(universe: {
   crcClasses: string[];
   crcs: string[];
   statusCodes: (number | string)[];
+  // ✅ new
+  contentTypes: string[];
+  uaFamilies: string[];
 }) {
   return {
     regions: uniqLower(universe.regions).slice(0, 80),
@@ -74,6 +82,10 @@ function buildAvailableFromUniverse(universe: {
     statusCodes: Array.from(new Set(universe.statusCodes.map((x) => String(x)).filter(Boolean)))
       .sort((a, b) => Number(a) - Number(b))
       .slice(0, 24),
+
+    // ✅ new for Option B filters
+    contentTypes: uniqLowerOrAll(universe.contentTypes, 24),
+    uaFamilies: uniqLowerOrAll(universe.uaFamilies, 24),
   };
 }
 
@@ -147,19 +159,16 @@ function buildScopedPopsAndHosts(region: string, pop: string, seed: number) {
 
   let scopedPops: string[] = [];
   if (p !== "all") {
-    // pop is explicit; derive macro region if possible
     const parts = p.split("-");
     const macroFromPop = parts[0]; // e.g. ap1
     const macroResolved =
       REGION_POOLS[macroFromPop] ? macroFromPop : macro === "all" ? macroFromPop : macro;
     scopedPops = [p];
-    // hosts strictly from that pop
     const hostSeries = generateHostsForPop(macroResolved, p, seed, 6);
     return { scopedPops, hostSeries };
   }
 
   if (macro !== "all" && REGION_POOLS[macro]) {
-    // region scoped, pop=all -> show a couple pops within region
     scopedPops = stablePick(REGION_POOLS[macro], seed, 2);
     const hostSeries = scopedPops.flatMap((pp, idx) =>
       generateHostsForPop(macro, pp, seed + idx * 101, 3)
@@ -167,7 +176,6 @@ function buildScopedPopsAndHosts(region: string, pop: string, seed: number) {
     return { scopedPops, hostSeries };
   }
 
-  // all/all -> show a small cross-region set
   const macros = Object.keys(REGION_POOLS);
   const chosenMacros = stablePick(macros, seed, 3);
   scopedPops = chosenMacros.flatMap((m, idx) => stablePick(REGION_POOLS[m], seed + idx * 131, 1));
@@ -280,7 +288,6 @@ function severityFrom(
     if (currentAbs >= 2) return "medium";
     return "low";
   }
-  // traffic drop: ratio is baseline/current
   if (ratio >= 2.5 && trafficShare >= 0.2) return "high";
   if (ratio >= 1.8 && trafficShare >= 0.1) return "medium";
   return "low";
@@ -300,19 +307,15 @@ function computeConfidence(
   return clamp01(conf);
 }
 
-// host looks like: cdn-ec-<macro>-<popA>-<popB>-<id>
-// In our generator, pop is typically two segments (e.g. use1-iad, bos-044).
 function popFromHost(host: string) {
   const h = String(host || "").trim().toLowerCase();
   if (!h) return null;
   const parts = h.split("-");
-  // expected: ["cdn","ec",macro,popPart1,popPart2,id]
   if (parts.length >= 6 && parts[0] === "cdn" && parts[1] === "ec") {
     const pop1 = parts[3] ?? "";
     const pop2 = parts[4] ?? "";
     if (pop1 && pop2) return `${pop1}-${pop2}`;
   }
-  // fallback: last two before id
   if (parts.length >= 3) {
     const pop1 = parts[parts.length - 3] ?? "";
     const pop2 = parts[parts.length - 2] ?? "";
@@ -340,7 +343,6 @@ function blastRadiusFromPoints(points: any[], indices: number[], totalWindowRequ
       const c = Number(cRaw) || 0;
       if (!h) continue;
 
-      // ignore synthetic "other"
       if (h !== "other") {
         hosts.add(h);
         const pop = popFromHost(h);
@@ -384,10 +386,8 @@ function computeAnomaliesFromTimeseries(args: {
     };
   }
 
-  // mock: data quality is perfect
   const dqScore = 1.0;
 
-  // detect only near "now"
   const lookback = Math.min(3, points.length);
   const baselineWindow = Math.min(24, Math.max(6, points.length - lookback));
   const minReqPerBucket = 100;
@@ -412,9 +412,7 @@ function computeAnomaliesFromTimeseries(args: {
 
   const signals: AnomalySignal[] = [];
 
-  // -----------------------------
   // 1) Latency p95 spike
-  // -----------------------------
   {
     const flags = new Array(points.length).fill(false);
     const ratios: Array<number | null> = new Array(points.length).fill(null);
@@ -481,9 +479,7 @@ function computeAnomaliesFromTimeseries(args: {
     }
   }
 
-  // -----------------------------
-  // 2) Error rate spike (5xx)
-  // -----------------------------
+  // 2) Error rate spike
   {
     const flags = new Array(points.length).fill(false);
     const ratios: Array<number | null> = new Array(points.length).fill(null);
@@ -540,9 +536,7 @@ function computeAnomaliesFromTimeseries(args: {
     }
   }
 
-  // -----------------------------
   // 3) Traffic drop
-  // -----------------------------
   {
     const flags = new Array(points.length).fill(false);
     const ratios: Array<number | null> = new Array(points.length).fill(null);
@@ -622,7 +616,6 @@ function computeAnomaliesFromTimeseries(args: {
       )}%, traffic ${(top.blastRadius.trafficShare * 100).toFixed(0)}%).`
     : "HEALTHY: No anomalies detected in the last few buckets.";
 
-  // overall blast radius = from the strongest signal (simple, stable)
   const overallBR = top
     ? top.blastRadius
     : { trafficShare: 0, affectedPops: 0, affectedHosts: 0, concentrationTop3Pops: 0 };
@@ -642,9 +635,22 @@ function computeAnomaliesFromTimeseries(args: {
 export async function runMockClickhouseTriage(
   inputs: ClickhouseTriageInputs
 ): Promise<ClickhouseTriageResult> {
-  const { partner, service, region, pop, windowMinutes, debug } = inputs;
+  const {
+    partner,
+    service,
+    region,
+    pop,
+    contentType = "all", // ✅ new
+    uaFamily = "all",    // ✅ new
+    windowMinutes,
+    debug,
+  } = inputs;
 
-  const seed = hashToInt(`${partner}|${service}|${region}|${pop}|${windowMinutes}`);
+  // ✅ seed includes new filters so mock is deterministic per-scope
+  const seed = hashToInt(
+    `${partner}|${service}|${region}|${pop}|${contentType}|${uaFamily}|${windowMinutes}`
+  );
+
   const baseTraffic = 5000 + (seed % 25000);
   const noise = (seed % 1000) / 1000;
 
@@ -670,6 +676,9 @@ export async function runMockClickhouseTriage(
     "vod-library.xcr.comcast.net",
   ];
 
+  const contentTypeUniverse = ["manifest", "segment", "api"];
+  const uaFamilyUniverse = ["web", "mobile", "stb", "smart_tv", "console"];
+
   const crcUniverse = [
     "TCP_HIT",
     "TCP_MISS",
@@ -688,7 +697,6 @@ export async function runMockClickhouseTriage(
   // ✅ scoped pops + hosts (THE KEY CHANGE)
   const { hostSeries } = buildScopedPopsAndHosts(region, pop, seed);
 
-  // keep POP options realistic for dropdowns:
   const pops =
     pop === "all"
       ? popUniverse.filter((pp) =>
@@ -698,7 +706,6 @@ export async function runMockClickhouseTriage(
         )
       : [pop, ...popUniverse].slice(0, 8);
 
-  // available.edgeHosts will match what host chart can show
   const available = buildAvailableFromUniverse({
     regions,
     pops: pop === "all" ? pops : [pop, ...pops].slice(0, 12),
@@ -708,6 +715,10 @@ export async function runMockClickhouseTriage(
     crcClasses: crcClassUniverse,
     crcs: crcUniverse,
     statusCodes: statusUniverse,
+
+    // ✅ new dropdown universes
+    contentTypes: contentTypeUniverse,
+    uaFamilies: uaFamilyUniverse,
   });
 
   // ✅ aligned 5m window (matches CSV behavior)
@@ -735,7 +746,6 @@ export async function runMockClickhouseTriage(
   const ttmsP95Samples: number[] = [];
   const ttmsP99Samples: number[] = [];
 
-  // Stable series (legend order)
   const statusCodeSeries = statusUniverse.map(String);
   const crcSeries = crcUniverse.map((c) => String(c).toUpperCase()).slice(0, 10);
 
@@ -752,38 +762,28 @@ export async function runMockClickhouseTriage(
   }> = [];
 
   // ✅ FORCE a visible anomaly when debug=true (for UI testing)
-  // We'll force anomalies across the last N buckets so blastRadius trafficShare stays meaningful
   const forceAnomaly = !!debug;
-  const forcedBuckets = 8; // 8 * 5m = 40 minutes (baseline stays clean)
+  const forcedBuckets = 8; // 8 * 5m = 40 minutes
 
-
-  // ✅ points ascending order, aligned timestamps
   for (let bi = 0; bi <= spanBuckets; bi++) {
     const t = startAlignedMs + bi * bucketMs;
 
     const wave = 0.75 + 0.5 * Math.sin((bi / Math.max(8, spanBuckets)) * Math.PI * 2);
 
-    // baseline req
     let req = round((baseTraffic * wave * (0.6 + noise * 0.8) / (spanBuckets + 1)) * 60);
-
-    // ensure enough volume to trigger detectors (minReqPerBucket=100)
     req = Math.max(req, 250);
 
     const isForcedRange =
       forceAnomaly && bi >= Math.max(0, spanBuckets - (forcedBuckets - 1));
 
-    // existing randomness
     const randomErrSpike =
       seed % 7 === 0 && bi > Math.floor(spanBuckets * 0.75) ? 2.5 : 1.0;
 
     const randomP95Spike =
       seed % 11 === 0 && bi > Math.floor(spanBuckets * 0.8) ? 2.2 : 1.0;
 
-    // ✅ debug forcing across the last forcedBuckets
     const errSpike = isForcedRange ? 6.0 : randomErrSpike;
     const p95Spike = isForcedRange ? 2.8 : randomP95Spike;
-
-    // ✅ do NOT drop traffic during forced anomalies (it reduces blast radius)
 
     const errPct = clamp(
       baseErrorPct * errSpike * (0.75 + 0.5 * Math.cos(bi / 3)),
@@ -802,12 +802,10 @@ export async function runMockClickhouseTriage(
     ttmsP95Samples.push(p95);
     ttmsP99Samples.push(p99);
 
-    // stacked maps
     const statusCountsByCode: Record<string, number> = {};
     const hostCountsByHost: Record<string, number> = {};
     const crcCountsByCrc: Record<string, number> = {};
 
-    // status distribution
     const s200 = round(req * 0.78);
     const s206 = round(req * 0.12);
     const s304 = round(req * 0.03);
@@ -834,10 +832,10 @@ export async function runMockClickhouseTriage(
         statusCountsByCode["503"]
     );
 
-    // host distribution: ONLY among hostSeries (which is region/pop coherent)
+    // host distribution only among hostSeries
     let remainingHost = req;
     for (let hi = 0; hi < hostSeries.length; hi++) {
-      const baseShare = 0.18 - hi * 0.02; // 18%,16%,14%...
+      const baseShare = 0.18 - hi * 0.02;
       const share =
         hi === hostSeries.length - 1
           ? remainingHost
@@ -850,7 +848,6 @@ export async function runMockClickhouseTriage(
     if (remainingHost > 0)
       hostCountsByHost["other"] = (hostCountsByHost["other"] ?? 0) + remainingHost;
 
-    // crc distribution
     const hit = round(req * 0.70);
     const miss = round(req * 0.10);
     const client = round(req * 0.02);
@@ -931,7 +928,6 @@ export async function runMockClickhouseTriage(
 
   const errorRatePct = totalRequests ? (total5xx / totalRequests) * 100 : null;
 
-  // ✅ anomalies from timeseries (same shape as CSV runTriage() output)
   const anomalies = computeAnomaliesFromTimeseries({
     points,
     bucketSeconds,
@@ -942,10 +938,14 @@ export async function runMockClickhouseTriage(
   const warnings: string[] = [];
   if (totalRequests === 0) warnings.push("No rows matched (mock produced 0 requests).");
   if (service !== "all" && !["live", "vod", "other"].includes(service)) {
-    warnings.push(`Unknown service bucket '${service}' in ClickHouse mock. Expected live|vod|other|all.`);
+    warnings.push(
+      `Unknown service bucket '${service}' in ClickHouse mock. Expected live|vod|other|all.`
+    );
   }
   if ((region !== "all" || pop !== "all") && hostSeries.length === 0) {
-    warnings.push(`No scoped hosts generated for region='${region}' pop='${pop}' in mock (unexpected).`);
+    warnings.push(
+      `No scoped hosts generated for region='${region}' pop='${pop}' in mock (unexpected).`
+    );
   }
   if (forceAnomaly) warnings.push(`debug=true: forcing anomalies in last ${forcedBuckets} buckets for UI testing.`);
 
@@ -953,6 +953,7 @@ export async function runMockClickhouseTriage(
     `🧭 *CDN TRIAGE SUMMARY*`,
     `• Source: \`clickhouse (mock)\` • partner=\`${partner}\``,
     `• Scope: service=\`${service}\`  region=\`${region}\`  pop=\`${pop}\``,
+    `• Filters: contentType=\`${contentType}\` uaFamily=\`${uaFamily}\``,
     `• Window: \`${windowMinutes}m\`  • Time (UTC): \`${startISO}\` → \`${endISO}\``,
     ...(anomalies?.signals?.length
       ? [
@@ -981,7 +982,7 @@ export async function runMockClickhouseTriage(
     ? [
         `-- MOCK SQL (public-safe)`,
         `-- Partner: ${partner}`,
-        `-- Filters: service=${service}, region=${region}, pop=${pop}, windowMinutes=${windowMinutes}`,
+        `-- Filters: service=${service}, region=${region}, pop=${pop}, contentType=${contentType}, uaFamily=${uaFamily}, windowMinutes=${windowMinutes}`,
         `SELECT`,
         `  toStartOfInterval(ts, INTERVAL ${bucketSeconds} SECOND) AS bucket,`,
         `  count() AS totalRequests,`,
@@ -994,6 +995,8 @@ export async function runMockClickhouseTriage(
         `  AND ('${service}' = 'all' OR service_bucket = '${service}')`,
         `  AND ('${region}' = 'all' OR region = '${region}')`,
         `  AND ('${pop}' = 'all' OR pop = '${pop}')`,
+        `  AND ('${contentType}' = 'all' OR content_type = '${contentType}')`,
+        `  AND ('${uaFamily}' = 'all' OR ua_family = '${uaFamily}')`,
         `GROUP BY bucket`,
         `ORDER BY bucket ASC;`,
       ].join("\n")
@@ -1023,7 +1026,6 @@ export async function runMockClickhouseTriage(
       crcSeries,
     },
 
-    // ✅ NEW: anomalies block
     anomalies,
 
     warnings,

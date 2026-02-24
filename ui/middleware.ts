@@ -1,30 +1,37 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+const ALLOW_EXACT = new Set([
+  "/demo",
+  "/favicon.ico",
+  "/robots.txt",
+  "/sitemap.xml",
+  "/cachey-logo.png",
+]);
+
+const ALLOW_PREFIX = [
+  "/_next", // allow Next internals not covered by matcher (e.g. _next/data)
+  "/api/demo-login",
+  "/api/demo-logout",
+
+  // ✅ public endpoints for UI + curl
+  "/api/schema",
+  "/api/triage",
+  "/api/chat",
+];
+
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // Allow the demo login page + login/logout API routes
-  if (
-    pathname === "/demo" ||
-    pathname.startsWith("/api/demo-login") ||
-    pathname.startsWith("/api/demo-logout")
-  ) {
+  // Allow exact matches
+  if (ALLOW_EXACT.has(pathname)) return NextResponse.next();
+
+  // Allow prefix matches
+  if (ALLOW_PREFIX.some((p) => pathname.startsWith(p))) {
     return NextResponse.next();
   }
 
-  // Allow Next internals + common static assets
-  if (
-    pathname.startsWith("/_next") ||
-    pathname === "/favicon.ico" ||
-    pathname === "/robots.txt" ||
-    pathname === "/sitemap.xml" ||
-    pathname === "/cachey-logo.png"
-  ) {
-    return NextResponse.next();
-  }
-
-  // Check demo cookie
+  // Everything else requires demo cookie
   const authed = req.cookies.get("cachey_demo")?.value === "1";
   if (authed) return NextResponse.next();
 
