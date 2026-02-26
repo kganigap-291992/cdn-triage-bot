@@ -1001,8 +1001,19 @@ export default function Home() {
 
     const data = (await response.json().catch(() => null)) as TriageResponse | null;
 
-    if (!response.ok || !data?.ok) {
-      throw new Error(data?.error || `Triage failed (HTTP ${response.status})`);
+    // HTTP-level failure: try to surface API error if it's the error-shape
+    if (!response.ok) {
+      const msg =
+        data && !data.ok ? data.error : `Triage failed (HTTP ${response.status})`;
+      throw new Error(msg);
+    }
+
+    if (!data) {
+      throw new Error("Triage failed (empty response)");
+    }
+
+    if (!data.ok) {
+      throw new Error(data.error);
     }
 
     return {
