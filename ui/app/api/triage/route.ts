@@ -1,9 +1,5 @@
 // ui/app/api/triage/route.ts
 import { NextResponse } from "next/server";
-import {
-  runClickhouseTriage,
-  type ClickhouseTriageInputs,
-} from "@/lib/clickhouse/runClickhouseTriage";
 
 export const runtime = "nodejs";
 
@@ -87,7 +83,9 @@ export async function POST(req: Request) {
   try {
     const inputs = await parseRequest(req);
 
-    const chInputs: ClickhouseTriageInputs = {
+    // Payload we send to the VPS proxy (keep shape stable)
+    const forwardPayload = {
+      dataSource: "clickhouse",
       partner: inputs.partner,
       service: inputs.service,
       region: inputs.region,
@@ -98,8 +96,35 @@ export async function POST(req: Request) {
       uaFamily: inputs.uaFamily,
     };
 
-    const result = await runClickhouseTriage(chInputs);
-    return NextResponse.json(result, { status: 200 });
+    const url = process.env.CACHEY_PROXY_URL!;
+    const user = process.env.CACHEY_BASIC_USER!;
+    const pass = process.env.CACHEY_BASIC_PASS!;
+    const token = process.env.CACHEY_TOKEN!;
+
+    if (!url || !user || !pass || !token) {
+      return NextResponse.json(
+        { ok: false, error: "Missing CACHEY_* env vars" },
+        { status: 500 }
+      );
+    }
+
+    const auth = Buffer.from(`${user}:${pass}`).toString("base64");
+
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Basic ${auth}`,
+        "x-cachey-token": token,
+      },
+      body: JSON.stringify(forwardPayload),
+    });
+
+    const text = await resp.text();
+    return new NextResponse(text, {
+      status: resp.status,
+      headers: { "content-type": "application/json" },
+    });
   } catch (err: any) {
     console.error("api/triage error", err);
     return NextResponse.json(
