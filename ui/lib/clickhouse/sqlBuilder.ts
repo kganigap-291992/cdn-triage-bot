@@ -9,7 +9,7 @@ export type ClickhouseFilters = {
   uaFamily: string; // all|stb|mobile|web|smart_tv|console
   windowMinutes: number; // e.g. 60
 
-  // ✅ NEW: debug-friendly time anchoring
+  // ✅ NEW: dataset-clock anchoring (max(ts)) vs realtime-clock (now())
   anchorToMaxTs?: boolean;
 };
 
@@ -34,19 +34,12 @@ export function buildClickhouseSql(f: ClickhouseFilters): BuiltSql {
   const params: Record<string, any> = {};
   const where: string[] = [];
 
+  // windowMinutes param (shared)
+  params.windowMinutes = Math.max(1, Math.floor(f.windowMinutes || 60));
+
   // required
   where.push(`partner = {partner:String}`);
   params.partner = f.partner;
-
-  // time window (toggle)
-  if (f.anchorToMaxTs) {
-    where.push(
-      `ts >= (SELECT max(ts) FROM cachey.raw_minute) - toIntervalMinute({windowMinutes:Int32})`
-    );
-  } else {
-    where.push(`ts >= now() - toIntervalMinute({windowMinutes:Int32})`);
-  }
-  params.windowMinutes = Math.max(1, Math.floor(f.windowMinutes || 60));
 
   // optional dims
   addEq(where, params, "service", "service", f.service);
@@ -55,10 +48,36 @@ export function buildClickhouseSql(f: ClickhouseFilters): BuiltSql {
   addEq(where, params, "content_type", "contentType", f.contentType);
   addEq(where, params, "ua_family", "uaFamily", f.uaFamily);
 
+  // ✅ Time anchoring (dataset-clock vs realtime-clock)
+  // We define t_end/t_start once and reuse everywhere.
+  //
+  // One-line why: data is backfilled/old, so "now()" windows are empty;
+  // anchoring to max(ts) hits the most recent data in the table.
+  const timeWith = f.anchorToMaxTs
+    ? `
+WITH
+  (SELECT max(ts) FROM cachey.raw_minute) AS t_end,
+  (t_end - toIntervalMinute({windowMinutes:Int32})) AS t_start
+`
+        .trim()
+    : `
+WITH
+  now() AS t_end,
+  (t_end - toIntervalMinute({windowMinutes:Int32})) AS t_start
+`
+        .trim();
+
+  // ✅ ALWAYS include both bounds
+  where.push(`ts >= t_start AND ts <= t_end`);
+
   const whereSql = `WHERE ${where.join(" AND ")}`;
 
   const q0 = `
+${timeWith}
 SELECT
+  t_start AS window_start,
+  t_end   AS window_end,
+
   sum(requests) AS total_requests,
   sum(bytes_sent) AS bytes_sent,
   sum(http_2xx_count) AS http_2xx,
@@ -75,6 +94,7 @@ ${whereSql}
 `.trim();
 
   const q1 = `
+${timeWith}
 SELECT status, c
 FROM
 (
@@ -93,6 +113,7 @@ ORDER BY c DESC
 `.trim();
 
   const q2 = `
+${timeWith}
 SELECT
   pop,
   sum(http_5xx_count) AS http_5xx,

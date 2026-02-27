@@ -64,6 +64,10 @@ export async function runClickhouseTriage(
 ): Promise<ClickhouseTriageResult> {
   const dbPartner = mapPartnerToDb(inputs.partner);
 
+  // 8C: dataset is backfilled/old → anchor window to max(ts) by default
+  // (Later we can add a switch to use now() when ingest is real-time.)
+  const anchorToMaxTs = true;
+
   // ✅ ALWAYS build canonical SQL first
   const built = buildClickhouseSql({
     partner: dbPartner,
@@ -73,9 +77,7 @@ export async function runClickhouseTriage(
     contentType: inputs.contentType,
     uaFamily: inputs.uaFamily,
     windowMinutes: inputs.windowMinutes,
-
-    // If your sqlBuilder supports this, great; if not, it will be ignored.
-    anchorToMaxTs: inputs.debug,
+    anchorToMaxTs,
   } as any);
 
   // Later: swap this for real ClickHouse execution.
@@ -89,13 +91,13 @@ export async function runClickhouseTriage(
   const _mockSql = normalizeSql(raw);
   void _mockSql;
 
-  // ✅ annotate debug so API output proves mapping
+  // ✅ annotate debug so API output proves mapping + clock mode
   if (metricsJson && typeof metricsJson === "object") {
     const dbg =
       metricsJson.debug && typeof metricsJson.debug === "object" ? metricsJson.debug : {};
     dbg.partner = inputs.partner;
     dbg.dbPartner = dbPartner;
-    dbg.anchorToMaxTs = !!inputs.debug;
+    dbg.anchorToMaxTs = anchorToMaxTs;
     metricsJson.debug = dbg;
   }
 
