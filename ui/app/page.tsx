@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import type { TriageResponse } from "@/lib/triage/contracts";
+import { CANON } from "@/lib/schema/canonical";
 
 // ------------------------------------------------------------
 // Home page (/) — Chat-first, dark theme, ClickHouse-first
@@ -12,17 +13,16 @@ import type { TriageResponse } from "@/lib/triage/contracts";
 // ------------------------------------------------------------
 
 const LOGO_SRC = "/cachey-logo.png";
-const PARTNER_KEY = "cdn-triage-partner-v1";
 
-const PARTNER_OPTIONS = [
-  "acme_media",
-  "beta_stream",
-  "charlie_video",
-  "delta_tv",
-  "echo_entertainment",
-] as const;
+// Sticky + TTL keys
+const PARTNER_KEY = "cachey:partner";
+const FILTERS_KEY = "cachey:filters";
+const FILTERS_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
-type Partner = (typeof PARTNER_OPTIONS)[number];
+const PARTNER_OPTIONS = CANON.partners;
+const SERVICE_OPTIONS = CANON.services;
+
+type Partner = (typeof CANON.partners)[number];
 type PartnerOrMissing = Partner | "";
 
 type DataSource = "clickhouse";
@@ -31,9 +31,9 @@ type ChatMode = "deterministic" | "llm";
 type TriageInputs = {
   dataSource: DataSource;
   partner: PartnerOrMissing;
-  service: string;
-  region: string;
-  pop: string;
+  service: string; // required (never "all")
+  region: string; // "all" | canon region
+  pop: string; // "all" | canon pop
   windowMinutes: number;
 };
 
@@ -82,6 +82,15 @@ type TimeseriesData = {
   crcSeries?: string[];
 };
 
+type SchemaState = {
+  partners: string[];
+  services: string[];
+  regions: string[];
+  pops: string[];
+  contentTypes: string[];
+  uaFamilies: string[];
+};
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -96,6 +105,11 @@ function safeGetLS(key: string) {
 function safeSetLS(key: string, val: string) {
   try {
     localStorage.setItem(key, val);
+  } catch {}
+}
+function safeDelLS(key: string) {
+  try {
+    localStorage.removeItem(key);
   } catch {}
 }
 
@@ -394,7 +408,6 @@ function StackedBarTimeseries({
             setDrag({ active: false, x0: 0, x1: 0 });
           }}
         >
-          {/* Axis labels */}
           <text
             x={padLeft - 38}
             y={padTop + plotH / 2}
@@ -414,7 +427,6 @@ function StackedBarTimeseries({
             Time (UTC, {bucketLabel(bucketSeconds)} buckets)
           </text>
 
-          {/* Grid + y ticks */}
           {tickVals.map((v, idx) => {
             const t = v / maxTotal;
             const y = padTop + (1 - t) * plotH;
@@ -441,7 +453,6 @@ function StackedBarTimeseries({
             );
           })}
 
-          {/* Bars */}
           {points.map((p, i) => {
             const x = padLeft + i * (barW + gap);
             const m = getMap(p) || {};
@@ -471,7 +482,6 @@ function StackedBarTimeseries({
             );
           })}
 
-          {/* X labels */}
           {points.map((p, i) => {
             const show = i % xLabelEvery === 0 || i === points.length - 1;
             if (!show) return null;
@@ -491,7 +501,6 @@ function StackedBarTimeseries({
             );
           })}
 
-          {/* Drag selection */}
           {drag.active && selectionW > 2 ? (
             <rect
               x={selectionX}
@@ -820,8 +829,8 @@ function LatencyTimeseriesLines({
 export default function Home() {
   const [mounted, setMounted] = useState(false);
 
-  // sticky partner
-  const [partner, setPartner] = useState<PartnerOrMissing>("beta_stream");
+  // sticky partner (DB IDs only)
+  const [partner, setPartner] = useState<PartnerOrMissing>("partner_01");
   function setPartnerSticky(p: string) {
     const v = String(p || "").trim();
     if (!v) return;
@@ -831,12 +840,23 @@ export default function Home() {
     }
   }
 
-  // chat mode
+  // chat mode (keep existing behavior)
   const [chatMode, setChatMode] = useState<ChatMode>("deterministic");
 
   // UI state
   const [isLoading, setIsLoading] = useState(false);
   const [schemaOpen, setSchemaOpen] = useState(false);
+
+  // Schema state (loaded once on mount)
+  const [schemaState, setSchemaState] = useState<SchemaState>({
+    partners: [...CANON.partners],
+    services: [...CANON.services],
+    regions: [...CANON.regions],
+    pops: [...CANON.pops],
+    contentTypes: [...CANON.contentTypes],
+    uaFamilies: [...CANON.uaFamilies],
+  });
+  const [schemaSource, setSchemaSource] = useState<string>("unknown");
 
   // Chat
   const [chatInput, setChatInput] = useState("");
@@ -856,20 +876,117 @@ export default function Home() {
   }>(null);
   const [rateLimitRemainingMs, setRateLimitRemainingMs] = useState<number>(0);
 
-  // current filters (kept minimal on home)
-  const [service, setService] = useState("all");
-  const [region, setRegion] = useState("all");
-  const [pop, setPop] = useState("all");
-  const [windowMinutes, setWindowMinutes] = useState(120);
+  // current filters (home)
+  // IMPORTANT: service is required => initial ""
+  const [service, setService] = useState<string>("");
+  const [region, setRegion] = useState<string>("all");
+  const [pop, setPop] = useState<string>("all");
+  const [windowMinutes, setWindowMinutes] = useState<number>(120);
 
   useEffect(() => setMounted(true), []);
 
+  // TTL helpers for filter persistence
+  function loadFiltersFromTTL() {
+    const raw = safeGetLS(FILTERS_KEY);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      const expiresAt = Number(parsed?.expiresAt ?? 0);
+      if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+        safeDelLS(FILTERS_KEY);
+        return null;
+      }
+      return parsed?.value ?? null;
+    } catch {
+      safeDelLS(FILTERS_KEY);
+      return null;
+    }
+  }
+  function saveFiltersToTTL(next: {
+    partner: string;
+    service: string;
+    region: string;
+    pop: string;
+    windowMinutes: number;
+    chatMode: ChatMode;
+  }) {
+    safeSetLS(
+      FILTERS_KEY,
+      JSON.stringify({
+        expiresAt: Date.now() + FILTERS_TTL_MS,
+        value: next,
+      })
+    );
+  }
+
+  // Load sticky partner + TTL filters on mount
   useEffect(() => {
     if (!mounted) return;
-    const saved = safeGetLS(PARTNER_KEY);
-    if (saved && (PARTNER_OPTIONS as readonly string[]).includes(saved)) {
-      setPartner(saved as Partner);
+
+    const savedPartner = safeGetLS(PARTNER_KEY);
+    if (savedPartner && (PARTNER_OPTIONS as readonly string[]).includes(savedPartner)) {
+      setPartner(savedPartner as Partner);
     }
+
+    const ttl = loadFiltersFromTTL();
+    if (ttl) {
+      const p = String(ttl.partner || "").trim();
+      if (p && (PARTNER_OPTIONS as readonly string[]).includes(p)) setPartner(p as Partner);
+
+      const s = String(ttl.service || "").trim();
+      if (s && (SERVICE_OPTIONS as readonly string[]).includes(s)) setService(s);
+
+      const r = String(ttl.region || "all").trim();
+      setRegion(r || "all");
+
+      const pp = String(ttl.pop || "all").trim();
+      setPop(pp || "all");
+
+      const w = Number(ttl.windowMinutes ?? 120);
+      if (Number.isFinite(w) && w > 0) setWindowMinutes(w);
+
+      const cm = String(ttl.chatMode || "").trim();
+      if (cm === "deterministic" || cm === "llm") setChatMode(cm);
+    }
+  }, [mounted]);
+
+  // Persist TTL whenever filters change (after mount)
+  useEffect(() => {
+    if (!mounted) return;
+    saveFiltersToTTL({
+      partner: partner || "",
+      service: service || "",
+      region,
+      pop,
+      windowMinutes,
+      chatMode,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, partner, service, region, pop, windowMinutes, chatMode]);
+
+  // Load schema once on mount (drives dropdowns)
+  useEffect(() => {
+    if (!mounted) return;
+    (async () => {
+      try {
+        const resp = await fetch("/api/schema");
+        const json = await resp.json().catch(() => null);
+        if (!resp.ok || !json?.ok || !json?.schema) return;
+
+        const s = json.schema as SchemaState;
+        setSchemaState({
+          partners: Array.isArray(s.partners) ? s.partners.map(String) : [...CANON.partners],
+          services: Array.isArray(s.services) ? s.services.map(String) : [...CANON.services],
+          regions: Array.isArray(s.regions) ? s.regions.map(String) : [...CANON.regions],
+          pops: Array.isArray(s.pops) ? s.pops.map(String) : [...CANON.pops],
+          contentTypes: Array.isArray(s.contentTypes) ? s.contentTypes.map(String) : [...CANON.contentTypes],
+          uaFamilies: Array.isArray(s.uaFamilies) ? s.uaFamilies.map(String) : [...CANON.uaFamilies],
+        });
+        setSchemaSource(String(json.source || "unknown"));
+      } catch {
+        // keep CANON defaults
+      }
+    })();
   }, [mounted]);
 
   function clearRateLimit() {
@@ -906,9 +1023,9 @@ export default function Home() {
         ts: nowIso(),
         text:
           "Cachey 🤖 — chat-first triage.\n\n" +
-          "Pick a partner (sticky), then ask:\n" +
+          "Pick a partner + service (sticky), then ask:\n" +
           "- `how was live last 2h`\n" +
-          "- `vod in bos last night`\n\n" +
+          "- `vod in pop_010 last night`\n\n" +
           "Triage results render inline as cards.",
       },
     ]);
@@ -926,33 +1043,20 @@ export default function Home() {
     }
   }, [chatMessages]);
 
-  // Derive available regions/pops from last triage card (if any)
-  const lastMetricsJson = useMemo(() => {
-    const lastTriage = [...chatMessages].reverse().find((m) => m.type === "triage") as
-      | ChatTriage
-      | undefined;
-    return lastTriage?.run?.metricsJson || null;
-  }, [chatMessages]);
-
+  // Dropdown options are schema-driven (NOT triage-driven)
   const availableRegions: string[] = useMemo(() => {
-    const arr = lastMetricsJson?.available?.regions;
-    const list = Array.isArray(arr) ? arr : [];
-    const cleaned = list
-      .map((x: any) => String(x ?? "").trim().toLowerCase())
-      .filter(Boolean);
-    const uniq = Array.from(new Set(cleaned)).sort((a, b) => a.localeCompare(b));
+    const uniq = Array.from(
+      new Set((schemaState.regions || []).map((x) => String(x || "").trim()).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b));
     return ["all", ...uniq];
-  }, [lastMetricsJson]);
+  }, [schemaState.regions]);
 
   const availablePops: string[] = useMemo(() => {
-    const arr = lastMetricsJson?.available?.pops;
-    const list = Array.isArray(arr) ? arr : [];
-    const cleaned = list
-      .map((x: any) => String(x ?? "").trim().toLowerCase())
-      .filter(Boolean);
-    const uniq = Array.from(new Set(cleaned)).sort((a, b) => a.localeCompare(b));
+    const uniq = Array.from(
+      new Set((schemaState.pops || []).map((x) => String(x || "").trim()).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b));
     return ["all", ...uniq];
-  }, [lastMetricsJson]);
+  }, [schemaState.pops]);
 
   // Parse metricsJson.timeseries into TimeseriesData
   function parseTimeseries(metricsJson: any): TimeseriesData | null {
@@ -1001,20 +1105,12 @@ export default function Home() {
 
     const data = (await response.json().catch(() => null)) as TriageResponse | null;
 
-    // HTTP-level failure: try to surface API error if it's the error-shape
     if (!response.ok) {
-      const msg =
-        data && !data.ok ? data.error : `Triage failed (HTTP ${response.status})`;
+      const msg = data && !data.ok ? data.error : `Triage failed (HTTP ${response.status})`;
       throw new Error(msg);
     }
-
-    if (!data) {
-      throw new Error("Triage failed (empty response)");
-    }
-
-    if (!data.ok) {
-      throw new Error(data.error);
-    }
+    if (!data) throw new Error("Triage failed (empty response)");
+    if (!data.ok) throw new Error(data.error);
 
     return {
       summaryText: data.summaryText ?? data.summary ?? "",
@@ -1022,7 +1118,7 @@ export default function Home() {
     };
   }
 
-  // /api/chat call
+  // /api/chat call (kept)
   async function callChatApi(userText: string) {
     const wireMsgs = chatMessages
       .filter((m): m is ChatText => m.type === "text")
@@ -1098,8 +1194,20 @@ export default function Home() {
       setChatMessages((prev) => [...prev, userMsg]);
     }
 
+    // Partner required
     if (!partner) {
       addText("assistant", `Pick a partner first. (${PARTNER_OPTIONS.join(", ")})`);
+      setTyping(false);
+      setIsLoading(false);
+      return;
+    }
+
+    // Service required (NEW)
+    if (!service) {
+      addText(
+        "assistant",
+        `Pick a service first. (${SERVICE_OPTIONS.join(", ")})`
+      );
       setTyping(false);
       setIsLoading(false);
       return;
@@ -1142,7 +1250,11 @@ export default function Home() {
       const nextPop = String(out?.popHint ?? pop);
       const nextWindow = Number(out?.windowHint ?? windowMinutes);
 
-      if (out?.serviceHint) setService(nextService);
+      // Only accept service hints that are canonical
+      if (out?.serviceHint && (SERVICE_OPTIONS as readonly string[]).includes(nextService)) {
+        setService(nextService);
+      }
+
       if (out?.regionHint) setRegion(nextRegion);
       if (out?.popHint) setPop(nextPop);
       if (Number.isFinite(nextWindow) && nextWindow > 0) setWindowMinutes(nextWindow);
@@ -1194,7 +1306,7 @@ export default function Home() {
       const msg = e?.message || "Chat/Triage failed";
       addText(
         "assistant",
-        `Chat failed: ${msg}\n\nIf LLM is down, switch to Deterministic and run:\n- \`live in usw2 at sjc last 2h\`\n- \`service=vod win=720\``
+        `Chat failed: ${msg}\n\nIf LLM is down, switch to Deterministic and run:\n- \`live region=us-east pop=pop_003 last 2h\`\n- \`service=vod win=720\``
       );
     } finally {
       setTyping(false);
@@ -1252,6 +1364,11 @@ export default function Home() {
             <div className="text-sm font-semibold text-gray-100 truncate">
               partner={run.inputs.partner} • svc={run.inputs.service} • region={run.inputs.region} • pop={run.inputs.pop} • win={run.inputs.windowMinutes}m
             </div>
+            {ts?.startTs && ts?.endTs ? (
+              <div className="text-[11px] text-gray-500 mt-1">
+                actual window: {formatUtcYmdHm(ts.startTs)} → {formatUtcYmdHm(ts.endTs)} UTC
+              </div>
+            ) : null}
           </div>
           <div className="text-xs text-gray-500">/api/triage</div>
         </div>
@@ -1326,7 +1443,6 @@ export default function Home() {
           </div>
         </details>
 
-        {/* local CSS for triage card entrance */}
         <style jsx>{`
           .triage-enter {
             animation: triageIn 220ms ease-out;
@@ -1347,6 +1463,7 @@ export default function Home() {
   }
 
   const partnerMissing = !partner;
+  const serviceMissing = !service;
 
   return (
     <main className="min-h-screen bg-black text-gray-100">
@@ -1364,7 +1481,9 @@ export default function Home() {
             <div className="font-semibold text-lg text-white">
               Cachey <span className="text-gray-400">🤖</span>
             </div>
-            <div className="text-xs text-gray-400">Chat-first triage</div>
+            <div className="text-xs text-gray-400">
+              Chat-first triage • schema: <span className="text-gray-200">{schemaSource}</span>
+            </div>
           </div>
 
           <div className="ml-auto flex items-center gap-3">
@@ -1380,6 +1499,77 @@ export default function Home() {
                 {PARTNER_OPTIONS.map((p) => (
                   <option key={p} value={p} className="bg-black">
                     {p}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Service selector (REQUIRED) */}
+            <div className="flex items-center gap-2">
+              <div className="text-xs text-gray-400">Service</div>
+              <select
+                className="rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                value={service}
+                onChange={(e) => setService(String(e.target.value || ""))}
+                disabled={!mounted}
+              >
+                <option value="" className="bg-black">
+                  Select…
+                </option>
+                {SERVICE_OPTIONS.map((s) => (
+                  <option key={s} value={s} className="bg-black">
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Region selector */}
+            <div className="flex items-center gap-2">
+              <div className="text-xs text-gray-400">Region</div>
+              <select
+                className="rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                value={region}
+                onChange={(e) => setRegion(String(e.target.value || "all"))}
+                disabled={!mounted}
+              >
+                {availableRegions.map((r) => (
+                  <option key={r} value={r} className="bg-black">
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* POP selector */}
+            <div className="flex items-center gap-2">
+              <div className="text-xs text-gray-400">POP</div>
+              <select
+                className="rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                value={pop}
+                onChange={(e) => setPop(String(e.target.value || "all"))}
+                disabled={!mounted}
+              >
+                {availablePops.map((p) => (
+                  <option key={p} value={p} className="bg-black">
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Window selector */}
+            <div className="flex items-center gap-2">
+              <div className="text-xs text-gray-400">Window</div>
+              <select
+                className="rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                value={String(windowMinutes)}
+                onChange={(e) => setWindowMinutes(Number(e.target.value))}
+                disabled={!mounted}
+              >
+                {[30, 60, 120, 360, 720, 1440].map((m) => (
+                  <option key={m} value={String(m)} className="bg-black">
+                    {m}m
                   </option>
                 ))}
               </select>
@@ -1437,14 +1627,17 @@ export default function Home() {
 
       {/* Body */}
       <div className="mx-auto max-w-6xl px-6 py-6">
-        {/* Partner missing banner */}
-        {partnerMissing ? (
+        {/* Partner/service missing banner */}
+        {partnerMissing || serviceMissing ? (
           <div className="mb-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4">
             <div className="text-sm font-semibold text-amber-200">
-              Partner required
+              Required filters missing
             </div>
             <div className="text-xs text-amber-100/80 mt-1">
-              Pick a partner in the top bar to run ClickHouse triage.
+              {partnerMissing ? "Pick a partner" : null}
+              {partnerMissing && serviceMissing ? " and " : null}
+              {serviceMissing ? "pick a service" : null}
+              {" "}in the top bar to run ClickHouse triage.
             </div>
           </div>
         ) : null}
@@ -1460,11 +1653,7 @@ export default function Home() {
                 const isUser = m.role === "user";
                 const isSystem = m.role === "system";
 
-                // bubble widths: assistant wider than user
-                const bubbleMax =
-                  isUser ? "max-w-[70%]" : "max-w-[82%]";
-
-                // alignment: assistant left, user right. system centered
+                const bubbleMax = isUser ? "max-w-[70%]" : "max-w-[82%]";
                 const rowAlign = isSystem
                   ? "justify-center"
                   : isUser
@@ -1480,7 +1669,6 @@ export default function Home() {
                 return (
                   <div key={m.id} className={`flex ${rowAlign}`}>
                     <div className={`${bubbleMax} w-full`}>
-                      {/* tiny timestamp only (no User:/Assistant:) */}
                       <div
                         className={`text-[10px] text-gray-500 mb-1 ${
                           isSystem ? "text-center" : isUser ? "text-right" : "text-left"
@@ -1490,14 +1678,11 @@ export default function Home() {
                       </div>
 
                       {m.type === "text" ? (
-                        <div
-                          className={`rounded-2xl border ${bubbleStyle} px-4 py-3`}
-                        >
+                        <div className={`rounded-2xl border ${bubbleStyle} px-4 py-3`}>
                           <pre className="whitespace-pre-wrap text-sm leading-relaxed">
                             {m.text}
                           </pre>
 
-                          {/* inline rate-limit banner under assistant bubble */}
                           {rateLimit && m.id === rateLimit.msgId ? (
                             <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
                               <div className="text-xs text-gray-200">
@@ -1546,7 +1731,6 @@ export default function Home() {
                 );
               })}
 
-              {/* typing indicator bubble (assistant, left) */}
               {typing ? (
                 <div className="flex justify-start">
                   <div className="max-w-[82%] w-full">
@@ -1573,7 +1757,7 @@ export default function Home() {
                   handleSend();
                 }
               }}
-              placeholder="Try: live in bos last 2h"
+              placeholder="Try: how was live last 2h"
               className="flex-1 rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-blue-500/40"
               disabled={isLoading}
             />
@@ -1612,12 +1796,10 @@ export default function Home() {
             </div>
 
             <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-gray-200">
-              <div className="text-xs text-gray-400 mb-2">Coming soon</div>
-              <ul className="list-disc ml-5 space-y-1 text-gray-200/90">
-                <li>Partner + service/region/pop definitions</li>
-                <li>CRC glossary shortcuts</li>
-                <li>Example prompts + filter syntax</li>
-              </ul>
+              <div className="text-xs text-gray-400 mb-2">Current schema</div>
+              <pre className="whitespace-pre-wrap text-xs text-gray-200/90">
+                {JSON.stringify(schemaState, null, 2)}
+              </pre>
             </div>
           </div>
         </div>

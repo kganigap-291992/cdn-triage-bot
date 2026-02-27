@@ -1,5 +1,6 @@
 // ui/app/api/schema/route.ts
 import { NextResponse } from "next/server";
+import { CANON } from "@/lib/schema/canonical";
 
 export const runtime = "nodejs";
 
@@ -31,7 +32,7 @@ export async function GET() {
       const resp = await fetch(url, {
         method: "GET",
         headers: {
-          "Accept": "application/json",
+          Accept: "application/json",
           "X-CACHEY-KEY": proxyKey,
         },
       });
@@ -39,9 +40,7 @@ export async function GET() {
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
         throw new Error(
-          `Proxy schema failed (${resp.status} ${resp.statusText})${
-            text ? `: ${text}` : ""
-          }`
+          `Proxy schema failed (${resp.status} ${resp.statusText})${text ? `: ${text}` : ""}`
         );
       }
 
@@ -58,30 +57,23 @@ export async function GET() {
       });
     } catch (err) {
       console.error("Schema proxy error:", err);
-      // fall through to static fallback
+      // fall through to canonical fallback
     }
   }
 
-  // ✅ Static fallback (Phase 1 / local mode)
+  // ✅ Static fallback (Phase 1 / local mode) — CANON is the single source of truth
   const schema = {
-    partners: [
-      "partner_01",
-      "partner_02",
-      "partner_03",
-      "partner_04",
-      "partner_05",
-      "partner_06",
-    ],
-    services: ["live", "vod"],
-    regions: ["us", "eu", "apac"],
-    pops: ["lax", "sjc", "iad", "cdg"],
-    contentTypes: ["manifest", "segment", "api"],
-    uaFamilies: ["web", "mobile", "stb", "smart_tv", "console"],
+    partners: [...CANON.partners],
+    services: [...CANON.services],
+    regions: [...CANON.regions],
+    pops: [...CANON.pops],
+    contentTypes: [...CANON.contentTypes],
+    uaFamilies: [...CANON.uaFamilies],
   };
 
   return NextResponse.json({
     ok: true,
     schema,
-    source: "static-fallback",
+    source: "canon-fallback",
   });
 }
