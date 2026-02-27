@@ -249,20 +249,19 @@ function StackedBarTimeseries({
   height?: number;
   windowMinutes: number;
 }) {
-  const maxBars =
-    windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
+  const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
   const basePoints = (ts.points || []).slice(-maxBars);
   const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
 
   const points =
-    zoom && zoom.end > zoom.start
-      ? basePoints.slice(zoom.start, zoom.end + 1)
-      : basePoints;
+    zoom && zoom.end > zoom.start ? basePoints.slice(zoom.start, zoom.end + 1) : basePoints;
 
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>(
-    { active: false, x0: 0, x1: 0 }
-  );
+  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({
+    active: false,
+    x0: 0,
+    x1: 0,
+  });
 
   if (!points.length) return null;
 
@@ -304,10 +303,7 @@ function StackedBarTimeseries({
 
   const barCount = points.length;
   const gap = clamp(Math.round(plotW / (barCount * 10)), 2, 6);
-  const barW = Math.max(
-    4,
-    Math.floor((plotW - gap * (barCount - 1)) / barCount)
-  );
+  const barW = Math.max(4, Math.floor((plotW - gap * (barCount - 1)) / barCount));
 
   const yTicks = 4;
   const tickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
@@ -350,9 +346,9 @@ function StackedBarTimeseries({
           <div className="text-sm font-semibold text-gray-100">{title}</div>
           <div className="text-[11px] text-gray-400 mt-1">
             {ts.startTs && ts.endTs
-              ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(
-                  ts.endTs
-                )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
+              ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(ts.endTs)} UTC (bucket: ${bucketLabel(
+                  bucketSeconds
+                )})`
               : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
           </div>
           <div className="text-[11px] text-gray-500 mt-1">
@@ -372,9 +368,7 @@ function StackedBarTimeseries({
         <div className="text-right">
           <div className="text-xs text-gray-400">Latest</div>
           <div className="text-[11px] text-gray-200">
-            {latest
-              ? `${formatUtcHM(latest.ts)} UTC • ${latestTotal.toLocaleString()} events`
-              : "n/a"}
+            {latest ? `${formatUtcHM(latest.ts)} UTC • ${latestTotal.toLocaleString()} events` : "n/a"}
           </div>
         </div>
       </div>
@@ -417,13 +411,7 @@ function StackedBarTimeseries({
           >
             Events
           </text>
-          <text
-            x={padLeft + plotW / 2}
-            y={h - 10}
-            fontSize="10"
-            fill="#9ca3af"
-            textAnchor="middle"
-          >
+          <text x={padLeft + plotW / 2} y={h - 10} fontSize="10" fill="#9ca3af" textAnchor="middle">
             Time (UTC, {bucketLabel(bucketSeconds)} buckets)
           </text>
 
@@ -432,21 +420,8 @@ function StackedBarTimeseries({
             const y = padTop + (1 - t) * plotH;
             return (
               <g key={idx} opacity={0.35}>
-                <line
-                  x1={padLeft}
-                  y1={y}
-                  x2={padLeft + plotW}
-                  y2={y}
-                  stroke="currentColor"
-                />
-                <text
-                  x={padLeft - 10}
-                  y={y + 3}
-                  fontSize="10"
-                  fill="#9ca3af"
-                  textAnchor="end"
-                  opacity={0.95}
-                >
+                <line x1={padLeft} y1={y} x2={padLeft + plotW} y2={y} stroke="currentColor" />
+                <text x={padLeft - 10} y={y + 3} fontSize="10" fill="#9ca3af" textAnchor="end" opacity={0.95}>
                   {formatCountTick(v)}
                 </text>
               </g>
@@ -488,14 +463,7 @@ function StackedBarTimeseries({
             const x = padLeft + i * (barW + gap) + barW / 2;
             const label = timeLabelShort(p.ts, windowMinutes);
             return (
-              <text
-                key={`xl-${p.ts}`}
-                x={x}
-                y={padTop + plotH + 18}
-                fontSize="10"
-                fill="#9ca3af"
-                textAnchor="middle"
-              >
+              <text key={`xl-${p.ts}`} x={x} y={padTop + plotH + 18} fontSize="10" fill="#9ca3af" textAnchor="middle">
                 {label}
               </text>
             );
@@ -518,10 +486,7 @@ function StackedBarTimeseries({
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-300">
           {keys.map((k) => (
             <div key={k} className="flex items-center gap-1.5">
-              <span
-                className="inline-block h-2.5 w-2.5 rounded-full"
-                style={{ background: stableColorForKey(k) }}
-              />
+              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: stableColorForKey(k) }} />
               <span className="truncate max-w-[220px]">{k}</span>
             </div>
           ))}
@@ -545,27 +510,25 @@ function LatencyTimeseriesLines({
   height?: number;
   windowMinutes: number;
 }) {
-  const maxBars =
-    windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
+  const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
   const base = points.slice(-maxBars);
 
   const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
-  const slice =
-    zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
+  const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
 
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>(
-    { active: false, x0: 0, x1: 0 }
-  );
+  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({
+    active: false,
+    x0: 0,
+    x1: 0,
+  });
 
   if (!slice.length) return null;
 
   const vals: number[] = [];
   for (const p of slice) {
-    if (p.p95TtmsMs != null && Number.isFinite(p.p95TtmsMs))
-      vals.push(Number(p.p95TtmsMs));
-    if (p.p99TtmsMs != null && Number.isFinite(p.p99TtmsMs))
-      vals.push(Number(p.p99TtmsMs));
+    if (p.p95TtmsMs != null && Number.isFinite(p.p95TtmsMs)) vals.push(Number(p.p95TtmsMs));
+    if (p.p99TtmsMs != null && Number.isFinite(p.p99TtmsMs)) vals.push(Number(p.p99TtmsMs));
   }
 
   const minV = vals.length ? Math.min(...vals) : 0;
@@ -604,9 +567,7 @@ function LatencyTimeseriesLines({
   });
 
   const yTicks = 4;
-  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
-    Math.round(minV + (span * (yTicks - i)) / yTicks)
-  );
+  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) => Math.round(minV + (span * (yTicks - i)) / yTicks));
 
   const xLabelEvery = Math.max(1, Math.floor(n / 6));
   const latest = slice[slice.length - 1];
@@ -639,24 +600,18 @@ function LatencyTimeseriesLines({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs text-gray-400">Latency timeseries</div>
-          <div className="text-sm font-semibold text-gray-100">
-            p95 / p99 TTMS
-          </div>
+          <div className="text-sm font-semibold text-gray-100">p95 / p99 TTMS</div>
           <div className="text-[11px] text-gray-400 mt-1">
             {slice.length
-              ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
-                  slice[slice.length - 1].ts
-                )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
+              ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(slice[slice.length - 1].ts)} UTC (bucket: ${bucketLabel(
+                  bucketSeconds
+                )})`
               : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
           </div>
           <div className="text-[11px] text-gray-500 mt-1">
             Drag to zoom • double-click to reset
             {zoom ? (
-              <button
-                type="button"
-                className="ml-2 underline hover:text-gray-300"
-                onClick={() => setZoom(null)}
-              >
+              <button type="button" className="ml-2 underline hover:text-gray-300" onClick={() => setZoom(null)}>
                 reset zoom
               </button>
             ) : null}
@@ -666,9 +621,7 @@ function LatencyTimeseriesLines({
           <div className="text-xs text-gray-400">Latest</div>
           <div className="text-[11px] text-gray-200">
             {latest
-              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(
-                  latest.p95TtmsMs
-                )} • p99=${formatMsOrNA(latest.p99TtmsMs)}`
+              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(latest.p95TtmsMs)} • p99=${formatMsOrNA(latest.p99TtmsMs)}`
               : "n/a"}
           </div>
         </div>
@@ -712,13 +665,7 @@ function LatencyTimeseriesLines({
           >
             Latency (ms)
           </text>
-          <text
-            x={padLeft + plotW / 2}
-            y={h - 10}
-            fontSize="10"
-            fill="#9ca3af"
-            textAnchor="middle"
-          >
+          <text x={padLeft + plotW / 2} y={h - 10} fontSize="10" fill="#9ca3af" textAnchor="middle">
             Time (UTC, {bucketLabel(bucketSeconds)} buckets)
           </text>
 
@@ -727,21 +674,8 @@ function LatencyTimeseriesLines({
             const yy = padTop + (1 - t) * plotH;
             return (
               <g key={idx} opacity={0.35}>
-                <line
-                  x1={padLeft}
-                  y1={yy}
-                  x2={padLeft + plotW}
-                  y2={yy}
-                  stroke="currentColor"
-                />
-                <text
-                  x={padLeft - 10}
-                  y={yy + 3}
-                  fontSize="10"
-                  fill="#9ca3af"
-                  textAnchor="end"
-                  opacity={0.95}
-                >
+                <line x1={padLeft} y1={yy} x2={padLeft + plotW} y2={yy} stroke="currentColor" />
+                <text x={padLeft - 10} y={yy + 3} fontSize="10" fill="#9ca3af" textAnchor="end" opacity={0.95}>
                   {v}
                 </text>
               </g>
@@ -771,14 +705,7 @@ function LatencyTimeseriesLines({
             const xx = x(i);
             const label = timeLabelShort(p.ts, windowMinutes);
             return (
-              <text
-                key={`xl-${p.ts}`}
-                x={xx}
-                y={padTop + plotH + 18}
-                fontSize="10"
-                fill="#9ca3af"
-                textAnchor="middle"
-              >
+              <text key={`xl-${p.ts}`} x={xx} y={padTop + plotH + 18} fontSize="10" fill="#9ca3af" textAnchor="middle">
                 {label}
               </text>
             );
@@ -800,17 +727,11 @@ function LatencyTimeseriesLines({
 
         <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
           <div className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ background: "rgba(37,99,235,0.92)" }}
-            />
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(37,99,235,0.92)" }} />
             <span>p95</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ background: "rgba(17,24,39,0.55)" }}
-            />
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(17,24,39,0.55)" }} />
             <span>p99</span>
           </div>
           <div className="text-gray-500">
@@ -844,8 +765,16 @@ export default function Home() {
   const [chatMode, setChatMode] = useState<ChatMode>("deterministic");
 
   // UI state
-  const [isLoading, setIsLoading] = useState(false);
   const [schemaOpen, setSchemaOpen] = useState(false);
+
+  // IMPORTANT: split loading states (chat vs triage)
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const [isTriageLoading, setIsTriageLoading] = useState(false);
+  const isLoading = isChatLoading || isTriageLoading;
+
+  // Filters UX: collapsible panel + staged selections
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filtersDirty, setFiltersDirty] = useState(false);
 
   // Schema state (loaded once on mount)
   const [schemaState, setSchemaState] = useState<SchemaState>({
@@ -864,8 +793,12 @@ export default function Home() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const lastMsgIdRef = useRef<string | null>(null);
 
-  // typing indicator (assistant bubble)
+  // typing indicator
   const [typing, setTyping] = useState(false);
+
+  // Run log (system messages) separated
+  const [runLogOpen, setRunLogOpen] = useState(false);
+  const [runLog, setRunLog] = useState<Array<{ ts: string; text: string }>>([]);
 
   // rate limit banner state
   const [rateLimit, setRateLimit] = useState<null | {
@@ -876,12 +809,17 @@ export default function Home() {
   }>(null);
   const [rateLimitRemainingMs, setRateLimitRemainingMs] = useState<number>(0);
 
-  // current filters (home)
-  // IMPORTANT: service is required => initial ""
+  // current filters (applied)
   const [service, setService] = useState<string>("");
   const [region, setRegion] = useState<string>("all");
   const [pop, setPop] = useState<string>("all");
   const [windowMinutes, setWindowMinutes] = useState<number>(120);
+
+  // staged filters (draft UI selections before Apply)
+  const [draftService, setDraftService] = useState<string>("");
+  const [draftRegion, setDraftRegion] = useState<string>("all");
+  const [draftPop, setDraftPop] = useState<string>("all");
+  const [draftWindowMinutes, setDraftWindowMinutes] = useState<number>(120);
 
   useEffect(() => setMounted(true), []);
 
@@ -934,23 +872,38 @@ export default function Home() {
       if (p && (PARTNER_OPTIONS as readonly string[]).includes(p)) setPartner(p as Partner);
 
       const s = String(ttl.service || "").trim();
-      if (s && (SERVICE_OPTIONS as readonly string[]).includes(s)) setService(s);
+      if (s && (SERVICE_OPTIONS as readonly string[]).includes(s)) {
+        setService(s);
+        setDraftService(s);
+      }
 
-      const r = String(ttl.region || "all").trim();
-      setRegion(r || "all");
+      const r = String(ttl.region || "all").trim() || "all";
+      setRegion(r);
+      setDraftRegion(r);
 
-      const pp = String(ttl.pop || "all").trim();
-      setPop(pp || "all");
+      const pp = String(ttl.pop || "all").trim() || "all";
+      setPop(pp);
+      setDraftPop(pp);
 
       const w = Number(ttl.windowMinutes ?? 120);
-      if (Number.isFinite(w) && w > 0) setWindowMinutes(w);
+      if (Number.isFinite(w) && w > 0) {
+        setWindowMinutes(w);
+        setDraftWindowMinutes(w);
+      }
 
       const cm = String(ttl.chatMode || "").trim();
       if (cm === "deterministic" || cm === "llm") setChatMode(cm);
+    } else {
+      // initialize drafts from defaults
+      setDraftService(service);
+      setDraftRegion(region);
+      setDraftPop(pop);
+      setDraftWindowMinutes(windowMinutes);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted]);
 
-  // Persist TTL whenever filters change (after mount)
+  // Persist TTL whenever applied filters change
   useEffect(() => {
     if (!mounted) return;
     saveFiltersToTTL({
@@ -1010,7 +963,7 @@ export default function Home() {
     return () => clearInterval(id);
   }, [rateLimit]);
 
-  // welcome message once (NO personal greeting)
+  // welcome message once
   useEffect(() => {
     if (!mounted) return;
     if (chatMessages.length) return;
@@ -1026,7 +979,7 @@ export default function Home() {
           "Pick a partner + service (sticky), then ask:\n" +
           "- `how was live last 2h`\n" +
           "- `vod in pop_010 last night`\n\n" +
-          "Triage results render inline as cards.",
+          "Tip: Use Filters → Apply, then Run to execute triage.",
       },
     ]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1045,16 +998,16 @@ export default function Home() {
 
   // Dropdown options are schema-driven (NOT triage-driven)
   const availableRegions: string[] = useMemo(() => {
-    const uniq = Array.from(
-      new Set((schemaState.regions || []).map((x) => String(x || "").trim()).filter(Boolean))
-    ).sort((a, b) => a.localeCompare(b));
+    const uniq = Array.from(new Set((schemaState.regions || []).map((x) => String(x || "").trim()).filter(Boolean))).sort(
+      (a, b) => a.localeCompare(b)
+    );
     return ["all", ...uniq];
   }, [schemaState.regions]);
 
   const availablePops: string[] = useMemo(() => {
-    const uniq = Array.from(
-      new Set((schemaState.pops || []).map((x) => String(x || "").trim()).filter(Boolean))
-    ).sort((a, b) => a.localeCompare(b));
+    const uniq = Array.from(new Set((schemaState.pops || []).map((x) => String(x || "").trim()).filter(Boolean))).sort(
+      (a, b) => a.localeCompare(b)
+    );
     return ["all", ...uniq];
   }, [schemaState.pops]);
 
@@ -1082,12 +1035,14 @@ export default function Home() {
       startTs: t.startTs ? String(t.startTs) : null,
       endTs: t.endTs ? String(t.endTs) : null,
       points,
-      statusCodeSeries: Array.isArray(t.statusCodeSeries)
-        ? t.statusCodeSeries.map(String)
-        : undefined,
+      statusCodeSeries: Array.isArray(t.statusCodeSeries) ? t.statusCodeSeries.map(String) : undefined,
       hostSeries: Array.isArray(t.hostSeries) ? t.hostSeries.map(String) : undefined,
       crcSeries: Array.isArray(t.crcSeries) ? t.crcSeries.map(String) : undefined,
     };
+  }
+
+  function pushRunLog(text: string) {
+    setRunLog((prev) => [...prev.slice(-80), { ts: nowIso(), text }]);
   }
 
   // /api/triage call (unchanged backend)
@@ -1102,7 +1057,6 @@ export default function Home() {
     formData.append("windowMinutes", String(inputs.windowMinutes));
 
     const response = await fetch("/api/triage", { method: "POST", body: formData });
-
     const data = (await response.json().catch(() => null)) as TriageResponse | null;
 
     if (!response.ok) {
@@ -1113,8 +1067,8 @@ export default function Home() {
     if (!data.ok) throw new Error(data.error);
 
     return {
-      summaryText: data.summaryText ?? data.summary ?? "",
-      metricsJson: data.metricsJson ?? null,
+      summaryText: (data as any).summaryText ?? (data as any).summary ?? "",
+      metricsJson: (data as any).metricsJson ?? null,
     };
   }
 
@@ -1176,11 +1130,29 @@ export default function Home() {
     ]);
   }
 
+  function applyDraftFilters() {
+    // validate service
+    const s = String(draftService || "").trim();
+    if (!s) return { ok: false, error: "Pick a service before Apply." };
+    if (!(SERVICE_OPTIONS as readonly string[]).includes(s)) return { ok: false, error: "Invalid service selection." };
+
+    // apply
+    setService(s);
+    setRegion(String(draftRegion || "all"));
+    setPop(String(draftPop || "all"));
+    setWindowMinutes(Number(draftWindowMinutes) || 120);
+
+    setFiltersDirty(false);
+    setFiltersOpen(false);
+    pushRunLog(`Applied filters: svc=${s} region=${draftRegion} pop=${draftPop} win=${draftWindowMinutes}m`);
+    return { ok: true as const };
+  }
+
   async function sendUserText(userText: string, opts?: { appendUser?: boolean }) {
     const appendUser = opts?.appendUser !== false;
     if (!userText.trim() || isLoading) return;
 
-    setIsLoading(true);
+    setIsChatLoading(true);
     setTyping(true);
 
     if (appendUser) {
@@ -1194,29 +1166,22 @@ export default function Home() {
       setChatMessages((prev) => [...prev, userMsg]);
     }
 
-    // Partner required
     if (!partner) {
       addText("assistant", `Pick a partner first. (${PARTNER_OPTIONS.join(", ")})`);
       setTyping(false);
-      setIsLoading(false);
+      setIsChatLoading(false);
       return;
     }
-
-    // Service required (NEW)
     if (!service) {
-      addText(
-        "assistant",
-        `Pick a service first. (${SERVICE_OPTIONS.join(", ")})`
-      );
+      addText("assistant", `Pick a service first and hit Filters → Apply. (${SERVICE_OPTIONS.join(", ")})`);
       setTyping(false);
-      setIsLoading(false);
+      setIsChatLoading(false);
       return;
     }
 
     try {
       const out = await callChatApi(userText);
 
-      // Rate limit banner path (from your route.ts)
       if (out?.rateLimited) {
         const assistantId = addText(
           "assistant",
@@ -1231,33 +1196,40 @@ export default function Home() {
           lastUserText: userText,
         });
         setTyping(false);
-        setIsLoading(false);
+        setIsChatLoading(false);
         return;
       }
 
-      // general
       if (out?.kind === "general") {
         addText("assistant", String(out.reply || "Got it."));
         clearRateLimit();
         setTyping(false);
-        setIsLoading(false);
+        setIsChatLoading(false);
         return;
       }
 
-      // triage: update hints if present
       const nextService = String(out?.serviceHint ?? service);
       const nextRegion = String(out?.regionHint ?? region);
       const nextPop = String(out?.popHint ?? pop);
       const nextWindow = Number(out?.windowHint ?? windowMinutes);
 
-      // Only accept service hints that are canonical
+      // Only adopt hints if valid
       if (out?.serviceHint && (SERVICE_OPTIONS as readonly string[]).includes(nextService)) {
         setService(nextService);
+        setDraftService(nextService);
       }
-
-      if (out?.regionHint) setRegion(nextRegion);
-      if (out?.popHint) setPop(nextPop);
-      if (Number.isFinite(nextWindow) && nextWindow > 0) setWindowMinutes(nextWindow);
+      if (out?.regionHint) {
+        setRegion(nextRegion);
+        setDraftRegion(nextRegion);
+      }
+      if (out?.popHint) {
+        setPop(nextPop);
+        setDraftPop(nextPop);
+      }
+      if (Number.isFinite(nextWindow) && nextWindow > 0) {
+        setWindowMinutes(nextWindow);
+        setDraftWindowMinutes(nextWindow);
+      }
 
       const pHint = String(out?.partnerHint || "").trim();
       if (pHint && (PARTNER_OPTIONS as readonly string[]).includes(pHint)) {
@@ -1268,14 +1240,11 @@ export default function Home() {
         addText("assistant", String(out.partnerQuestion || "Which partner?"));
         clearRateLimit();
         setTyping(false);
-        setIsLoading(false);
+        setIsChatLoading(false);
         return;
       }
 
-      addText(
-        "system",
-        `Running triage: partner=${partner} svc=${nextService} region=${nextRegion} pop=${nextPop} win=${nextWindow}m`
-      );
+      pushRunLog(`Chat requested triage: partner=${partner} svc=${nextService} region=${nextRegion} pop=${nextPop} win=${nextWindow}m`);
 
       const data = await runTriage({
         dataSource: "clickhouse",
@@ -1283,8 +1252,7 @@ export default function Home() {
         service: nextService,
         region: nextRegion,
         pop: nextPop,
-        windowMinutes:
-          Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
+        windowMinutes: Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
       });
 
       addTriageCard({
@@ -1294,8 +1262,7 @@ export default function Home() {
           service: nextService,
           region: nextRegion,
           pop: nextPop,
-          windowMinutes:
-            Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
+          windowMinutes: Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
         },
         summaryText: data.summaryText || "",
         metricsJson: data.metricsJson || null,
@@ -1310,7 +1277,7 @@ export default function Home() {
       );
     } finally {
       setTyping(false);
-      setIsLoading(false);
+      setIsChatLoading(false);
     }
   }
 
@@ -1319,6 +1286,47 @@ export default function Home() {
     if (!text) return;
     setChatInput("");
     await sendUserText(text, { appendUser: true });
+  }
+
+  // Run triage directly from applied filters
+  async function handleRunFromFilters() {
+    if (isLoading) return;
+
+    if (!partner) {
+      addText("assistant", `Pick a partner first. (${PARTNER_OPTIONS.join(", ")})`);
+      return;
+    }
+    if (!service) {
+      addText("assistant", `Pick a service first. (${SERVICE_OPTIONS.join(", ")})`);
+      return;
+    }
+
+    setIsTriageLoading(true);
+    setTyping(true);
+
+    try {
+      pushRunLog(`Running triage (filters): partner=${partner} svc=${service} region=${region} pop=${pop} win=${windowMinutes}m`);
+
+      const data = await runTriage({
+        dataSource: "clickhouse",
+        partner,
+        service,
+        region,
+        pop,
+        windowMinutes,
+      });
+
+      addTriageCard({
+        inputs: { dataSource: "clickhouse", partner, service, region, pop, windowMinutes },
+        summaryText: data.summaryText || "",
+        metricsJson: data.metricsJson || null,
+      });
+    } catch (e: any) {
+      addText("assistant", `Triage failed: ${e?.message || "unknown error"}`);
+    } finally {
+      setTyping(false);
+      setIsTriageLoading(false);
+    }
   }
 
   function MetricChips({ metricsJson }: { metricsJson: any }) {
@@ -1340,10 +1348,7 @@ export default function Home() {
     return (
       <div className="flex flex-wrap gap-2">
         {chips.map((c) => (
-          <span
-            key={c.k}
-            className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200"
-          >
+          <span key={c.k} className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
             <span className="text-gray-400 mr-1">{c.k}</span>
             <span className="font-semibold">{c.v}</span>
           </span>
@@ -1377,9 +1382,7 @@ export default function Home() {
 
         <div className="rounded-xl border border-white/10 bg-black/30 p-3">
           <div className="text-xs text-gray-400 mb-2">Summary</div>
-          <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">
-            {run.summaryText || "(no summary)"}
-          </pre>
+          <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">{run.summaryText || "(no summary)"}</pre>
         </div>
 
         {ts && ts.points.length > 0 ? (
@@ -1426,21 +1429,13 @@ export default function Home() {
         )}
 
         <details className="rounded-xl border border-white/10 bg-black/20 p-3">
-          <summary className="cursor-pointer text-sm text-gray-200">
-            Evidence (placeholder)
-          </summary>
-          <div className="text-xs text-gray-400 mt-2">
-            Placeholder for deterministic trace / evidence list.
-          </div>
+          <summary className="cursor-pointer text-sm text-gray-200">Evidence (placeholder)</summary>
+          <div className="text-xs text-gray-400 mt-2">Placeholder for deterministic trace / evidence list.</div>
         </details>
 
         <details className="rounded-xl border border-white/10 bg-black/20 p-3">
-          <summary className="cursor-pointer text-sm text-gray-200">
-            SQL Query (placeholder)
-          </summary>
-          <div className="text-xs text-gray-400 mt-2">
-            Placeholder for SQL text + copy button.
-          </div>
+          <summary className="cursor-pointer text-sm text-gray-200">SQL Query (placeholder)</summary>
+          <div className="text-xs text-gray-400 mt-2">Placeholder for SQL text + copy button.</div>
         </details>
 
         <style jsx>{`
@@ -1465,163 +1460,325 @@ export default function Home() {
   const partnerMissing = !partner;
   const serviceMissing = !service;
 
+  // Compact header "chips" (show applied filters)
+  const appliedChips = useMemo(() => {
+    const chips: Array<{ k: string; v: string }> = [];
+    chips.push({ k: "partner", v: partner || "—" });
+    chips.push({ k: "svc", v: service || "—" });
+    chips.push({ k: "region", v: region || "all" });
+    chips.push({ k: "pop", v: pop || "all" });
+    chips.push({ k: "win", v: `${windowMinutes}m` });
+    return chips;
+  }, [partner, service, region, pop, windowMinutes]);
+
   return (
     <main className="min-h-screen bg-black text-gray-100">
       {/* Sticky header */}
-      <div className="sticky top-0 z-50 border-b border-white/10 bg-black/70 backdrop-blur">
-        <div className="mx-auto max-w-6xl px-6 py-4 flex items-center gap-3">
-          <Image
-            src={LOGO_SRC}
-            alt="Cachey"
-            width={34}
-            height={34}
-            className="rounded-full"
-          />
-          <div className="min-w-0">
-            <div className="font-semibold text-lg text-white">
-              Cachey <span className="text-gray-400">🤖</span>
+      <div className="sticky top-0 z-50 border-b border-white/10 bg-black/75 backdrop-blur">
+        <div className="mx-auto max-w-6xl px-6 py-4">
+          {/* Row 1: brand + actions */}
+          <div className="flex items-center gap-3">
+            <Image src={LOGO_SRC} alt="Cachey" width={34} height={34} className="rounded-full" />
+            <div className="min-w-0">
+              <div className="font-semibold text-lg text-white leading-tight">
+                Cachey <span className="text-gray-400">🤖</span>
+              </div>
+              <div className="text-xs text-gray-400">
+                Chat-first triage • schema: <span className="text-gray-200">{schemaSource}</span>
+              </div>
             </div>
-            <div className="text-xs text-gray-400">
-              Chat-first triage • schema: <span className="text-gray-200">{schemaSource}</span>
+
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setFiltersOpen((v) => !v)}
+                className={`rounded-full border border-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15 ${
+                  filtersOpen ? "bg-white/15" : "bg-white/10"
+                }`}
+                title="Filters"
+              >
+                Filters{filtersDirty ? <span className="ml-2 text-[11px] text-amber-300">(draft)</span> : null}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSchemaOpen(true)}
+                className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
+                title="Schema helper"
+              >
+                Schema
+              </button>
+
+              <div className="inline-flex rounded-full border border-white/10 bg-white/5 p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setChatMode("deterministic");
+                    clearRateLimit();
+                  }}
+                  className={`px-3 py-1 text-xs rounded-full ${
+                    chatMode === "deterministic" ? "bg-white/15 text-white" : "text-gray-300 hover:text-white"
+                  }`}
+                >
+                  Deterministic
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChatMode("llm")}
+                  className={`px-3 py-1 text-xs rounded-full ${
+                    chatMode === "llm" ? "bg-white/15 text-white" : "text-gray-300 hover:text-white"
+                  }`}
+                >
+                  LLM
+                </button>
+              </div>
+
+              <a
+                href="/debug"
+                className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
+                title="Legacy /debug page"
+              >
+                Debug
+              </a>
             </div>
           </div>
 
-          <div className="ml-auto flex items-center gap-3">
-            {/* Partner selector */}
-            <div className="flex items-center gap-2">
-              <div className="text-xs text-gray-400">Partner</div>
-              <select
-                className="rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                value={partner}
-                onChange={(e) => setPartnerSticky(e.target.value)}
-                disabled={!mounted}
-              >
-                {PARTNER_OPTIONS.map((p) => (
-                  <option key={p} value={p} className="bg-black">
-                    {p}
-                  </option>
-                ))}
-              </select>
-            </div>
+          {/* Row 2: compact applied chips + Run */}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {appliedChips.map((c) => (
+              <span key={c.k} className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
+                <span className="text-gray-500 mr-1">{c.k}</span>
+                <span className="font-semibold">{c.v}</span>
+              </span>
+            ))}
 
-            {/* Service selector (REQUIRED) */}
-            <div className="flex items-center gap-2">
-              <div className="text-xs text-gray-400">Service</div>
-              <select
-                className="rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                value={service}
-                onChange={(e) => setService(String(e.target.value || ""))}
-                disabled={!mounted}
-              >
-                <option value="" className="bg-black">
-                  Select…
-                </option>
-                {SERVICE_OPTIONS.map((s) => (
-                  <option key={s} value={s} className="bg-black">
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Region selector */}
-            <div className="flex items-center gap-2">
-              <div className="text-xs text-gray-400">Region</div>
-              <select
-                className="rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                value={region}
-                onChange={(e) => setRegion(String(e.target.value || "all"))}
-                disabled={!mounted}
-              >
-                {availableRegions.map((r) => (
-                  <option key={r} value={r} className="bg-black">
-                    {r}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* POP selector */}
-            <div className="flex items-center gap-2">
-              <div className="text-xs text-gray-400">POP</div>
-              <select
-                className="rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                value={pop}
-                onChange={(e) => setPop(String(e.target.value || "all"))}
-                disabled={!mounted}
-              >
-                {availablePops.map((p) => (
-                  <option key={p} value={p} className="bg-black">
-                    {p}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Window selector */}
-            <div className="flex items-center gap-2">
-              <div className="text-xs text-gray-400">Window</div>
-              <select
-                className="rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                value={String(windowMinutes)}
-                onChange={(e) => setWindowMinutes(Number(e.target.value))}
-                disabled={!mounted}
-              >
-                {[30, 60, 120, 360, 720, 1440].map((m) => (
-                  <option key={m} value={String(m)} className="bg-black">
-                    {m}m
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Schema helper */}
-            <button
-              type="button"
-              onClick={() => setSchemaOpen(true)}
-              className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
-              title="Schema helper"
-            >
-              Schema
-            </button>
-
-            {/* Chat mode toggle */}
-            <div className="inline-flex rounded-full border border-white/10 bg-white/5 p-1">
+            <div className="ml-auto flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  setChatMode("deterministic");
-                  clearRateLimit();
-                }}
-                className={`px-3 py-1 text-xs rounded-full ${
-                  chatMode === "deterministic"
-                    ? "bg-white/15 text-white"
-                    : "text-gray-300 hover:text-white"
-                }`}
+                onClick={() => setRunLogOpen((v) => !v)}
+                className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-200 hover:bg-white/10"
+                title="Run log"
               >
-                Deterministic
+                Log
               </button>
+
               <button
                 type="button"
-                onClick={() => setChatMode("llm")}
-                className={`px-3 py-1 text-xs rounded-full ${
-                  chatMode === "llm"
-                    ? "bg-white/15 text-white"
-                    : "text-gray-300 hover:text-white"
-                }`}
+                onClick={handleRunFromFilters}
+                disabled={isLoading || !partner || !service}
+                className="rounded-xl px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Run triage using the applied filters"
               >
-                LLM
+                {isTriageLoading ? "Running..." : "Run"}
               </button>
             </div>
-
-            <a
-              href="/debug"
-              className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
-              title="Legacy /debug page"
-            >
-              Debug
-            </a>
           </div>
+
+          {/* Row 3: Filters panel (collapsible) */}
+          {filtersOpen ? (
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-white">Filters</div>
+                  <div className="text-xs text-gray-400 mt-1">
+                    Select values, then hit <span className="text-gray-200">Apply</span>. Run executes triage.
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // reset drafts to applied
+                      setDraftService(service);
+                      setDraftRegion(region);
+                      setDraftPop(pop);
+                      setDraftWindowMinutes(windowMinutes);
+                      setFiltersDirty(false);
+                    }}
+                    className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+                  >
+                    Reset draft
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFiltersOpen(false)}
+                    className="rounded-lg border border-white/10 bg-white/10 px-3 py-2 text-xs hover:bg-white/15"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-5 gap-3">
+                {/* Partner */}
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-400 mb-1">Partner</div>
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                    value={partner}
+                    onChange={(e) => setPartnerSticky(e.target.value)}
+                    disabled={!mounted}
+                  >
+                    {PARTNER_OPTIONS.map((p) => (
+                      <option key={p} value={p} className="bg-black">
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Service (draft) */}
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-400 mb-1">
+                    Service <span className="text-amber-300">*</span>
+                  </div>
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                    value={draftService}
+                    onChange={(e) => {
+                      setDraftService(String(e.target.value || ""));
+                      setFiltersDirty(true);
+                    }}
+                    disabled={!mounted}
+                  >
+                    <option value="" className="bg-black">
+                      Select…
+                    </option>
+                    {SERVICE_OPTIONS.map((s) => (
+                      <option key={s} value={s} className="bg-black">
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Region (draft) */}
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-400 mb-1">Region</div>
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                    value={draftRegion}
+                    onChange={(e) => {
+                      setDraftRegion(String(e.target.value || "all"));
+                      setFiltersDirty(true);
+                    }}
+                    disabled={!mounted}
+                  >
+                    {availableRegions.map((r) => (
+                      <option key={r} value={r} className="bg-black">
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* POP (draft) */}
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-400 mb-1">POP</div>
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                    value={draftPop}
+                    onChange={(e) => {
+                      setDraftPop(String(e.target.value || "all"));
+                      setFiltersDirty(true);
+                    }}
+                    disabled={!mounted}
+                  >
+                    {availablePops.map((p) => (
+                      <option key={p} value={p} className="bg-black">
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Window (draft) */}
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-400 mb-1">Window</div>
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                    value={String(draftWindowMinutes)}
+                    onChange={(e) => {
+                      setDraftWindowMinutes(Number(e.target.value));
+                      setFiltersDirty(true);
+                    }}
+                    disabled={!mounted}
+                  >
+                    {[30, 60, 120, 360, 720, 1440].map((m) => (
+                      <option key={m} value={String(m)} className="bg-black">
+                        {m}m
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="text-xs text-gray-400">
+                  Apply updates the chips (top bar). Run executes triage using applied filters.
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const res = applyDraftFilters();
+                      if (!res.ok) addText("assistant", res.error);
+                    }}
+                    className="rounded-xl px-4 py-2 text-sm font-semibold bg-white/10 hover:bg-white/15 border border-white/10"
+                  >
+                    Apply
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const res = applyDraftFilters();
+                      if (!res.ok) {
+                        addText("assistant", res.error);
+                        return;
+                      }
+                      await handleRunFromFilters();
+                    }}
+                    disabled={isLoading}
+                    className="rounded-xl px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Apply & Run
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {/* Run log (collapsible) */}
+          {runLogOpen ? (
+            <div className="mt-4 rounded-2xl border border-white/10 bg-black/40 p-4">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold text-white">Run log</div>
+                <button
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                  onClick={() => setRunLog([])}
+                  type="button"
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="mt-3 max-h-[200px] overflow-auto rounded-xl border border-white/10 bg-black/30 p-3">
+                {runLog.length ? (
+                  <div className="space-y-2">
+                    {runLog.slice().reverse().map((x, idx) => (
+                      <div key={`${x.ts}-${idx}`} className="text-xs text-gray-300">
+                        <span className="text-gray-500 mr-2">{formatUtcYmdHm(x.ts)}</span>
+                        {x.text}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-500">No runs yet.</div>
+                )}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -1630,14 +1787,11 @@ export default function Home() {
         {/* Partner/service missing banner */}
         {partnerMissing || serviceMissing ? (
           <div className="mb-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4">
-            <div className="text-sm font-semibold text-amber-200">
-              Required filters missing
-            </div>
+            <div className="text-sm font-semibold text-amber-200">Required filters missing</div>
             <div className="text-xs text-amber-100/80 mt-1">
               {partnerMissing ? "Pick a partner" : null}
               {partnerMissing && serviceMissing ? " and " : null}
-              {serviceMissing ? "pick a service" : null}
-              {" "}in the top bar to run ClickHouse triage.
+              {serviceMissing ? "pick a service (Filters → Apply)" : null} in the top bar to run ClickHouse triage.
             </div>
           </div>
         ) : null}
@@ -1654,11 +1808,7 @@ export default function Home() {
                 const isSystem = m.role === "system";
 
                 const bubbleMax = isUser ? "max-w-[70%]" : "max-w-[82%]";
-                const rowAlign = isSystem
-                  ? "justify-center"
-                  : isUser
-                  ? "justify-end"
-                  : "justify-start";
+                const rowAlign = isSystem ? "justify-center" : isUser ? "justify-end" : "justify-start";
 
                 const bubbleStyle = isSystem
                   ? "border-white/10 bg-white/5 text-gray-300"
@@ -1670,35 +1820,26 @@ export default function Home() {
                   <div key={m.id} className={`flex ${rowAlign}`}>
                     <div className={`${bubbleMax} w-full`}>
                       <div
-                        className={`text-[10px] text-gray-500 mb-1 ${
-                          isSystem ? "text-center" : isUser ? "text-right" : "text-left"
-                        }`}
+                        className={`text-[10px] text-gray-500 mb-1 ${isSystem ? "text-center" : isUser ? "text-right" : "text-left"}`}
                       >
                         {mounted ? new Date(m.ts).toLocaleString() : m.ts}
                       </div>
 
                       {m.type === "text" ? (
                         <div className={`rounded-2xl border ${bubbleStyle} px-4 py-3`}>
-                          <pre className="whitespace-pre-wrap text-sm leading-relaxed">
-                            {m.text}
-                          </pre>
+                          <pre className="whitespace-pre-wrap text-sm leading-relaxed">{m.text}</pre>
 
                           {rateLimit && m.id === rateLimit.msgId ? (
                             <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
                               <div className="text-xs text-gray-200">
                                 LLM is rate-limited. Retrying in{" "}
-                                <span className="font-semibold">
-                                  {fmtCountdown(rateLimitRemainingMs)}
-                                </span>{" "}
-                                or switch to Deterministic.
+                                <span className="font-semibold">{fmtCountdown(rateLimitRemainingMs)}</span> or switch to Deterministic.
                               </div>
                               <div className="mt-2 flex gap-2">
                                 <button
                                   type="button"
                                   onClick={async () => {
-                                    await sendUserText(rateLimit.lastUserText, {
-                                      appendUser: false,
-                                    });
+                                    await sendUserText(rateLimit.lastUserText, { appendUser: false });
                                   }}
                                   className="rounded-lg border border-white/10 bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15 disabled:opacity-50"
                                   disabled={isLoading}
@@ -1710,10 +1851,7 @@ export default function Home() {
                                   onClick={() => {
                                     setChatMode("deterministic");
                                     clearRateLimit();
-                                    addText(
-                                      "assistant",
-                                      "Switched to Deterministic. Try the same query again."
-                                    );
+                                    addText("assistant", "Switched to Deterministic. Try the same query again.");
                                   }}
                                   className="rounded-lg border border-white/10 bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15"
                                 >
@@ -1724,6 +1862,8 @@ export default function Home() {
                           ) : null}
                         </div>
                       ) : (
+                        // triage card unchanged (uses charts)
+                        // @ts-ignore
                         <TriageCard run={m.run} />
                       )}
                     </div>
@@ -1734,9 +1874,7 @@ export default function Home() {
               {typing ? (
                 <div className="flex justify-start">
                   <div className="max-w-[82%] w-full">
-                    <div className="text-[10px] text-gray-500 mb-1 text-left">
-                      {mounted ? new Date().toLocaleString() : nowIso()}
-                    </div>
+                    <div className="text-[10px] text-gray-500 mb-1 text-left">{mounted ? new Date().toLocaleString() : nowIso()}</div>
                     <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
                       <TypingDots />
                     </div>
@@ -1766,26 +1904,24 @@ export default function Home() {
               disabled={isLoading || !chatInput.trim()}
               className="rounded-2xl px-5 py-3 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isLoading ? "Running..." : "Send"}
+              {isChatLoading ? "Sending..." : "Send"}
             </button>
           </div>
 
           <div className="mt-2 text-xs text-gray-500">
-            Enter sends • Results appear inline as cards • Evidence/SQL are placeholders
+            Enter sends • Filters → Apply sets scope • Run executes triage • Results appear inline as cards
           </div>
         </div>
       </div>
 
-      {/* Schema modal (placeholder) */}
+      {/* Schema modal */}
       {schemaOpen ? (
         <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-6">
           <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#0b0b0b] p-6">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-lg font-semibold text-white">Schema helper</div>
-                <div className="text-sm text-gray-400 mt-1">
-                  Contract / fields / examples (placeholder).
-                </div>
+                <div className="text-sm text-gray-400 mt-1">Contract / fields / examples (placeholder).</div>
               </div>
               <button
                 onClick={() => setSchemaOpen(false)}
@@ -1797,9 +1933,7 @@ export default function Home() {
 
             <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-gray-200">
               <div className="text-xs text-gray-400 mb-2">Current schema</div>
-              <pre className="whitespace-pre-wrap text-xs text-gray-200/90">
-                {JSON.stringify(schemaState, null, 2)}
-              </pre>
+              <pre className="whitespace-pre-wrap text-xs text-gray-200/90">{JSON.stringify(schemaState, null, 2)}</pre>
             </div>
           </div>
         </div>

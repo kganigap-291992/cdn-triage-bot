@@ -5,14 +5,15 @@
 
 import { buildClickhouseSql } from "./sqlBuilder";
 import { runMockClickhouseTriage } from "./runMockClickhouseTriage";
+import { CANON } from "@/lib/schema/canonical";
 
 export type ClickhouseTriageInputs = {
   partner: string;
 
-  // Core scope filters
-  service: string; // live|vod|all
-  region: string;  // region|all
-  pop: string;     // pop|all
+  // Core scope filters (service REQUIRED; no "all")
+  service: string; // canon only (live|vod|dvr|eas|live_ott|app_backend)
+  region: string;  // all|<canon>
+  pop: string;     // all|<canon>
 
   // Generator schema dims
   contentType: string; // all|manifest|segment|api
@@ -39,7 +40,10 @@ export type ClickhouseTriageResult = {
 function normalizeSql(result: any): SqlPayload | undefined {
   const q1 = result?.sql?.queries;
   if (Array.isArray(q1) && q1.length) {
-    return { queries: q1.map((x: any) => String(x)), params: result?.sql?.params ?? undefined };
+    return {
+      queries: q1.map((x: any) => String(x)),
+      params: result?.sql?.params ?? undefined,
+    };
   }
 
   const dbg = result?.debugSql;
@@ -49,20 +53,48 @@ function normalizeSql(result: any): SqlPayload | undefined {
   return undefined;
 }
 
-// ✅ Map friendly UI partner names to DB partner IDs (optional)
-function mapPartnerToDb(partner: string) {
-  const p = String(partner ?? "").trim();
-  const m: Record<string, string> = {
-    beta_stream: "partner_01",
-    // Add more mappings later if/when needed.
-  };
-  return m[p] ?? p;
+function isCanon(x: string, allowed: readonly string[]) {
+  return allowed.includes(x);
 }
 
 export async function runClickhouseTriage(
   inputs: ClickhouseTriageInputs
 ): Promise<ClickhouseTriageResult> {
-  const dbPartner = mapPartnerToDb(inputs.partner);
+  // -----------------------------
+  // Defensive checks (should already be enforced in /api/triage)
+  // -----------------------------
+  const partner = String(inputs.partner || "").trim().toLowerCase();
+  const service = String(inputs.service || "").trim().toLowerCase();
+  const region = String(inputs.region || "all").trim().toLowerCase();
+  const pop = String(inputs.pop || "all").trim().toLowerCase();
+
+  const contentType = String(inputs.contentType || "all").trim().toLowerCase();
+  const uaFamily = String(inputs.uaFamily || "all").trim().toLowerCase();
+
+  if (!partner || !isCanon(partner, CANON.partners as readonly string[])) {
+    throw new Error(`runClickhouseTriage: invalid partner '${inputs.partner}'`);
+  }
+  if (!service || service === "all" || !isCanon(service, CANON.services as readonly string[])) {
+    throw new Error(`runClickhouseTriage: invalid service '${inputs.service}'`);
+  }
+  if (region !== "all" && !isCanon(region, CANON.regions as readonly string[])) {
+    throw new Error(`runClickhouseTriage: invalid region '${inputs.region}'`);
+  }
+  if (pop !== "all" && !isCanon(pop, CANON.pops as readonly string[])) {
+    throw new Error(`runClickhouseTriage: invalid pop '${inputs.pop}'`);
+  }
+  if (
+    contentType !== "all" &&
+    !isCanon(contentType, CANON.contentTypes as readonly string[])
+  ) {
+    throw new Error(`runClickhouseTriage: invalid contentType '${inputs.contentType}'`);
+  }
+  if (
+    uaFamily !== "all" &&
+    !isCanon(uaFamily, CANON.uaFamilies as readonly string[])
+  ) {
+    throw new Error(`runClickhouseTriage: invalid uaFamily '${inputs.uaFamily}'`);
+  }
 
   // 8C: dataset is backfilled/old → anchor window to max(ts) by default
   // (Later we can add a switch to use now() when ingest is real-time.)
@@ -70,18 +102,26 @@ export async function runClickhouseTriage(
 
   // ✅ ALWAYS build canonical SQL first
   const built = buildClickhouseSql({
-    partner: dbPartner,
-    service: inputs.service,
-    region: inputs.region,
-    pop: inputs.pop,
-    contentType: inputs.contentType,
-    uaFamily: inputs.uaFamily,
+    partner,
+    service,
+    region,
+    pop,
+    contentType,
+    uaFamily,
     windowMinutes: inputs.windowMinutes,
     anchorToMaxTs,
   } as any);
 
   // Later: swap this for real ClickHouse execution.
-  const raw = await runMockClickhouseTriage(inputs);
+  const raw = await runMockClickhouseTriage({
+    ...inputs,
+    partner,
+    service,
+    region,
+    pop,
+    contentType,
+    uaFamily,
+  });
 
   const summary = String(raw?.summary ?? raw?.summaryText ?? "");
   const metricsJson = raw?.metricsJson ?? null;
@@ -91,12 +131,11 @@ export async function runClickhouseTriage(
   const _mockSql = normalizeSql(raw);
   void _mockSql;
 
-  // ✅ annotate debug so API output proves mapping + clock mode
+  // ✅ annotate debug so API output proves clock mode + canonical normalization
   if (metricsJson && typeof metricsJson === "object") {
     const dbg =
       metricsJson.debug && typeof metricsJson.debug === "object" ? metricsJson.debug : {};
-    dbg.partner = inputs.partner;
-    dbg.dbPartner = dbPartner;
+    dbg.partner = partner;
     dbg.anchorToMaxTs = anchorToMaxTs;
     metricsJson.debug = dbg;
   }

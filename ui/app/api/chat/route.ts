@@ -11,14 +11,23 @@ type CurrentFilters = {
   region?: string;
   pop?: string;
   windowMinutes?: number;
+
+  // ✅ schema-aligned
+  contentType?: string; // all|manifest|segment|api
+  uaFamily?: string; // all|stb|mobile|web|smart_tv|console
 };
 
 type ChatContext = {
   mode?: "csv" | "clickhouse";
   chatMode?: "deterministic" | "llm";
+
   availableRegions?: string[];
   availablePops?: string[];
   availablePartners?: string[];
+  availableServices?: string[];
+  availableContentTypes?: string[];
+  availableUaFamilies?: string[];
+
   currentFilters?: CurrentFilters;
 };
 
@@ -37,6 +46,24 @@ function norm(s: any) {
 }
 function normLower(s: any) {
   return norm(s).toLowerCase();
+}
+
+function uniqLower(arr: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const x of arr || []) {
+    const v = normLower(x);
+    if (!v) continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+function inAllowed(v: string | null, allowed: string[]) {
+  if (!v) return false;
+  return allowed.includes(normLower(v));
 }
 
 // deterministic-ish variety without persistent memory
@@ -106,12 +133,23 @@ function looksLikeLowSignal(text: string) {
     "latency",
     "p95",
     "p99",
-    "ttms",
     "service",
+    "svc",
     "region",
     "pop",
+    "partner",
     "vod",
     "live",
+    "dvr",
+    "eas",
+    "live_ott",
+    "app_backend",
+    "contenttype",
+    "ua",
+    "uafamily",
+    "manifest",
+    "segment",
+    "api",
     "all",
     "reset",
     "filters",
@@ -119,6 +157,11 @@ function looksLikeLowSignal(text: string) {
     "yesterday",
     "today",
     "last night",
+    "last",
+    "past",
+    "in",
+    "for",
+    "within",
   ];
   const containsKnown = knownWords.some((k) => lower.includes(k));
 
@@ -135,6 +178,20 @@ function extractNaturalWindowMinutes(text: string): number | null {
   const t = normLower(text);
   if (!t) return null;
 
+  // ✅ "in 1hr", "for 2 hours", "within 30m"
+  const mInFor = t.match(
+    /\b(in|for|within)\s+(\d+)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b/
+  );
+  if (mInFor) {
+    const n = Number(mInFor[2]);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const unit = mInFor[3];
+    if (unit.startsWith("d")) return n * 1440;
+    if (unit.startsWith("h")) return n * 60;
+    return n;
+  }
+
+  // existing: "last/past 2h"
   const m = t.match(
     /\b(last|past)\s+(\d+)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b/
   );
@@ -144,6 +201,17 @@ function extractNaturalWindowMinutes(text: string): number | null {
     const unit = m[3];
     if (unit.startsWith("d")) return n * 1440;
     if (unit.startsWith("h")) return n * 60;
+    return n;
+  }
+
+  // ✅ bare: "1hr", "2h", "90m"
+  const mBare = t.match(/\b(\d+)\s*(d|h|hr|hrs|m|min|mins)\b/);
+  if (mBare) {
+    const n = Number(mBare[1]);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const unit = mBare[2];
+    if (unit === "d") return n * 1440;
+    if (unit.startsWith("h") || unit.startsWith("hr")) return n * 60;
     return n;
   }
 
@@ -157,139 +225,22 @@ function extractNaturalWindowMinutes(text: string): number | null {
   return null;
 }
 
-// ------------------------------------------------------------
-// ATS CRC Glossary (deterministic; no LLM/RAG)
-// ------------------------------------------------------------
-type GlossaryEntry = { title: string; meaning: string; opsHint?: string };
-
-const ATS_CRC_GLOSSARY: Record<string, GlossaryEntry> = {
-  tcp_hit: {
-    title: "TCP_HIT",
-    meaning:
-      "A valid copy of the requested object was in cache and Traffic Server sent it to the client.",
-    opsHint: "Healthy cache behavior. Expect lower origin traffic and lower latency.",
-  },
-  tcp_cf_hit: {
-    title: "TCP_CF_HIT",
-    meaning:
-      "A valid copy is being updated in cache and Traffic Server served the existing valid copy.",
-    opsHint: "Often indicates refresh/revalidation while still serving a valid copy.",
-  },
-  tcp_miss: {
-    title: "TCP_MISS",
-    meaning:
-      "Object not in cache; Traffic Server fetched from origin/parent and served to client.",
-    opsHint: "Spikes can mean cold cache, cache-busting URLs, short TTLs, or new content.",
-  },
-  tcp_refresh_hit: {
-    title: "TCP_REFRESH_HIT",
-    meaning:
-      "Object was stale; ATS revalidated with origin, got 304 Not Modified, served cached object.",
-    opsHint: "Revalidation succeeded (304). Usually fine; watch if it becomes excessive.",
-  },
-  tcp_ref_fail_hit: {
-    title: "TCP_REF_FAIL_HIT",
-    meaning:
-      "Object was stale; ATS attempted revalidation but origin didn’t respond; served cached object.",
-    opsHint: "Origin may be unhealthy/timeout. ATS served stale to protect clients.",
-  },
-  tcp_refresh_miss: {
-    title: "TCP_REFRESH_MISS",
-    meaning:
-      "Object was stale; ATS revalidated and origin returned new content; served new content.",
-    opsHint: "Can increase origin load if frequent.",
-  },
-  tcp_client_refresh: {
-    title: "TCP_CLIENT_REFRESH",
-    meaning:
-      "Client requested no-cache; ATS fetched from origin and deleted prior cached copy.",
-    opsHint: "Can look like cache thrash when clients/devices force refresh.",
-  },
-  tcp_ims_hit: {
-    title: "TCP_IMS_HIT",
-    meaning:
-      "Client sent If-Modified-Since; ATS served from cache (fresh enough or validated as fresh).",
-    opsHint: "Conditional requests satisfied by cache. Usually good.",
-  },
-  tcp_ims_miss: {
-    title: "TCP_IMS_MISS",
-    meaning:
-      "Client IMS could not be satisfied by cache; ATS fetched updated content from origin.",
-    opsHint: "Watch for cacheability/TTL issues or changing URLs.",
-  },
-  tcp_swapfail: {
-    title: "TCP_SWAPFAIL",
-    meaning: "Object was in cache but could not be accessed; client did not receive object.",
-    opsHint: "Potential cache disk/access issues if volume is non-trivial.",
-  },
-  err_client_abort: {
-    title: "ERR_CLIENT_ABORT",
-    meaning: "Client disconnected before the complete object was sent.",
-    opsHint: "Often user/device/network aborts. Watch spikes by region/device type.",
-  },
-  err_client_read_error: {
-    title: "ERR_CLIENT_READ_ERROR",
-    meaning: "The client had read errors (network problems).",
-    opsHint: "Commonly last-mile connectivity issues or flaky clients.",
-  },
-  err_connect_fail: {
-    title: "ERR_CONNECT_FAIL",
-    meaning: "ATS could not reach the origin server.",
-    opsHint: "Origin unreachable (routing/firewall/outage). Check origin health/connectivity.",
-  },
-  err_dns_fail: {
-    title: "ERR_DNS_FAIL",
-    meaning: "DNS could not resolve the origin hostname or resolvers were unreachable.",
-    opsHint: "DNS outage/misconfig. Check resolver health and origin hostname.",
-  },
-  err_invalid_req: {
-    title: "ERR_INVALID_REQ",
-    meaning: "Client HTTP request was invalid (unknown methods may be forwarded).",
-    opsHint: "Malformed clients/bots. Check samples + user agents.",
-  },
-  err_read_timeout: {
-    title: "ERR_READ_TIMEOUT",
-    meaning: "Origin did not respond within the timeout interval.",
-    opsHint: "Origin slow/unresponsive. Check upstream saturation + origin latency.",
-  },
-  err_proxy_denied: {
-    title: "ERR_PROXY_DENIED",
-    meaning: "Client service was denied.",
-    opsHint: "ACL/auth/policy denial. Check rules, geo blocks, token/auth failures.",
-  },
-  err_unknown: {
-    title: "ERR_UNKNOWN",
-    meaning: "Client connected but disconnected without sending a request.",
-    opsHint: "Often connection churn/scans. Look at connection metrics and edge logs.",
-  },
-};
-
-function isDefinitionQuestion(text: string) {
+function extractWindowMinutesKeyValue(text: string): number | null {
   const t = normLower(text);
-  if (!t) return false;
-  return (
-    t.startsWith("what is ") ||
-    t.startsWith("what’s ") ||
-    t.startsWith("whats ") ||
-    t.startsWith("define ") ||
-    t.startsWith("meaning of ") ||
-    t.startsWith("explain ")
+
+  const m2 = t.match(
+    /\b(win|window)\s*(=|\s)\s*(\d+)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)?\b/
   );
-}
+  if (m2) {
+    const n = Number(m2[3]);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const unit = m2[4] || "m";
+    if (unit.startsWith("d")) return n * 1440;
+    if (unit.startsWith("h")) return n * 60;
+    return n;
+  }
 
-function extractTermFromDefinitionQuestion(text: string) {
-  const t = norm(text);
-  const m =
-    t.match(/^(what is|what’s|whats|define|meaning of|explain)\s+(.+)$/i) || [];
-  const term = (m[2] || "").trim();
-  return term.replace(/[?.!]+$/, "").trim();
-}
-
-function lookupAtsCrc(raw: string): GlossaryEntry | null {
-  const k0 = normLower(raw);
-  if (!k0) return null;
-  const k = k0.replace(/\s+/g, "_");
-  return ATS_CRC_GLOSSARY[k] || null;
+  return null;
 }
 
 // -------- Command handling (NO LLM) --------
@@ -330,16 +281,19 @@ function helpText(mode: "csv" | "clickhouse") {
   const lines = [
     "Here’s how to use Cachey.",
     "",
-    "Ask in natural language or key=value. I’ll parse filters and run triage.",
+    "Ask in natural language or key=value. I’ll parse filters for triage.",
     "",
     "Examples:",
-    "- `how was vod last night`",
-    "- `live in usw2 at sjc last 2h`",
-    "- `service=live region=all pop=all win=360`",
+    "- `how was live last 2h`",
+    "- `vod in pop_010 last night`",
+    "- `partner=partner_01 service=live region=us-east pop=all win=60`",
+    "- `contentType=manifest uaFamily=web last 1h`",
     "",
     "Commands: help • filters • explain • reset • run",
     "",
-    mode === "clickhouse" ? "ClickHouse note: include a partner (ex: `beta_stream`)." : "CSV note: uses your CSV.",
+    mode === "clickhouse"
+      ? "ClickHouse note: partner + service are required."
+      : "CSV note: uses your CSV runner.",
   ];
   return lines.join("\n");
 }
@@ -347,29 +301,40 @@ function helpText(mode: "csv" | "clickhouse") {
 function filtersText(args: {
   mode: "csv" | "clickhouse";
   partners: string[];
+  services: string[];
   regions: string[];
   pops: string[];
+  contentTypes: string[];
+  uaFamilies: string[];
   current?: CurrentFilters;
 }) {
-  const { mode, partners, regions, pops, current } = args;
-
-  const p = partners?.length ? partners.slice(0, 25).join(", ") : "(none)";
-  const r = regions?.length ? regions.slice(0, 25).join(", ") : "(none)";
-  const po = pops?.length ? pops.slice(0, 25).join(", ") : "(none)";
+  const { mode, partners, services, regions, pops, contentTypes, uaFamilies, current } = args;
 
   const cur = current || {};
   const curLine =
-    `Current: svc=${cur.service || "all"}, region=${cur.region || "all"}, pop=${cur.pop || "all"}, win=${
-      cur.windowMinutes ?? "?"
-    }m` + (mode === "clickhouse" ? `, partner=${cur.partner || "(missing)"}` : "");
+    `Current: partner=${cur.partner || "(missing)"}, svc=${cur.service || "(missing)"}, region=${
+      cur.region || "all"
+    }, pop=${cur.pop || "all"}, win=${cur.windowMinutes ?? "?"}m, contentType=${
+      cur.contentType || "all"
+    }, uaFamily=${cur.uaFamily || "all"}`;
+
+  const p = partners?.length ? partners.slice(0, 25).join(", ") : "(none)";
+  const s = services?.length ? services.slice(0, 25).join(", ") : "(none)";
+  const r = regions?.length ? regions.slice(0, 25).join(", ") : "(none)";
+  const po = pops?.length ? pops.slice(0, 25).join(", ") : "(none)";
+  const ct = contentTypes?.length ? contentTypes.join(", ") : "(none)";
+  const ua = uaFamilies?.length ? uaFamilies.join(", ") : "(none)";
 
   return [
     `Mode: ${mode}`,
     curLine,
     "",
     `Partners: ${p}${partners.length > 25 ? " …" : ""}`,
+    `Services: ${s}${services.length > 25 ? " …" : ""}`,
     `Regions: ${r}${regions.length > 25 ? " …" : ""}`,
     `POPs: ${po}${pops.length > 25 ? " …" : ""}`,
+    `ContentTypes: ${ct}`,
+    `UA Families: ${ua}`,
   ].join("\n");
 }
 
@@ -377,10 +342,10 @@ function explainText() {
   return [
     "What this is:",
     "",
-    "1) Parses your message into filters (service/region/pop/window/partner).",
-    "2) Runs triage and returns metrics + charts.",
+    "1) Parses your message into filters (partner/service/region/pop/window/contentType/uaFamily).",
+    "2) UI applies filters, then Run executes triage.",
     "",
-    "Tip: `vod last night` or `service=vod win=720` both work.",
+    "Tip: `how was live in 1hr` should set win=60.",
   ].join("\n");
 }
 
@@ -430,9 +395,9 @@ function collapsePartnerFollowup(messages: WireMsg[], partners: string[]) {
 }
 
 // ------------------------------------------------------------
-// Deterministic extraction helpers
+// Deterministic extraction helpers (schema-aligned)
 // ------------------------------------------------------------
-function looksLikeTriageIntent(text: string) {
+function looksLikeTriageIntent(text: string, services: string[]) {
   const t = normLower(text);
   if (!t) return false;
   if (t.includes("=")) return true;
@@ -442,14 +407,13 @@ function looksLikeTriageIntent(text: string) {
     "run",
     "status",
     "errors",
+    "error",
     "p95",
     "p99",
-    "ttms",
     "latency",
-    "vod",
-    "live",
     "region",
     "pop",
+    "partner",
     "last",
     "past",
     "yesterday",
@@ -457,312 +421,218 @@ function looksLikeTriageIntent(text: string) {
     "last night",
     "how was",
     "how about",
+    "contenttype",
+    "ua",
+    "uafamily",
+    "manifest",
+    "segment",
+    "api",
   ];
-  return kws.some((k) => t.includes(k));
+
+  if (kws.some((k) => t.includes(k))) return true;
+
+  // service names imply triage intent
+  for (const svc of services || []) {
+    if (!svc) continue;
+    if (t.includes(svc)) return true;
+  }
+  return false;
 }
 
-function extractService(text: string): string | null {
+function extractService(text: string, services: string[]): string | null {
   const t = normLower(text);
-  const m1 = t.match(/\b(service|svc)\s*=\s*(all|live|vod)\b/);
-  if (m1?.[2]) return m1[2];
-  const m2 = t.match(/\b(all|live|vod)\b/);
-  return m2?.[1] ?? null;
-}
+  const allowed = uniqLower(services || []);
 
-function extractWindowMinutesKeyValue(text: string): number | null {
-  const t = normLower(text);
+  // svc=live | service=vod | service=dvr etc
+  const m1 = t.match(/\b(service|svc)\s*=\s*([a-z0-9_]+)\b/);
+  if (m1?.[2] && inAllowed(m1[2], allowed)) return normLower(m1[2]);
 
-  const m2 = t.match(
-    /\b(win|window)\s*(=|\s)\s*(\d+)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)?\b/
-  );
-  if (m2) {
-    const n = Number(m2[3]);
-    if (!Number.isFinite(n) || n <= 0) return null;
-    const unit = m2[4] || "m";
-    if (unit.startsWith("d")) return n * 1440;
-    if (unit.startsWith("h")) return n * 60;
-    return n;
+  // bare token: "live" / "dvr" / "live_ott" / "app_backend"
+  for (const svc of allowed) {
+    if (new RegExp(`\\b${svc.replace(/_/g, "\\_")}\\b`, "i").test(t)) return svc;
   }
 
   return null;
 }
 
-const REGION_ALIASES: Record<string, string> = {
-  boston: "bos",
-  bos: "bos",
-  newyork: "nyc",
-  "new york": "nyc",
-  nyc: "nyc",
-  atlanta: "atl",
-  atl: "atl",
-  iad: "iad",
-  dc: "iad",
-  sanjose: "sjc",
-  "san jose": "sjc",
-  sjc: "sjc",
-  seattle: "sea",
-  sea: "sea",
-  london: "lon",
-  lon: "lon",
-  frankfurt: "fra",
-  fra: "fra",
-  singapore: "sin",
-  sin: "sin",
-  tokyo: "tyo",
-  tyo: "tyo",
-  sydney: "syd",
-  syd: "syd",
-  use1: "use1",
-  usw2: "usw2",
-  eu1: "eu1",
-  ap1: "ap1",
+// minimal canonical region aliasing, but still validated against availableRegions
+const CANON_REGION_ALIASES: Record<string, string> = {
+  use1: "us-east",
+  "us-east-1": "us-east",
+  useast: "us-east",
+  "us east": "us-east",
+
+  usw2: "us-west",
+  "us-west-2": "us-west",
+  uswest: "us-west",
+  "us west": "us-west",
+
+  usc1: "us-central",
+  uscentral: "us-central",
+  "us central": "us-central",
+
+  euw1: "eu-west",
+  euwest: "eu-west",
+  "eu west": "eu-west",
+
+  euc1: "eu-central",
+  eucentral: "eu-central",
+  "eu central": "eu-central",
+
+  aps1: "ap-south",
+  apsouth: "ap-south",
+  "ap south": "ap-south",
+
+  apne1: "ap-northeast",
+  apnortheast: "ap-northeast",
+  "ap northeast": "ap-northeast",
+
+  sae1: "sa-east",
+  saeast: "sa-east",
+  "sa east": "sa-east",
 };
 
 function extractRegion(text: string, availableRegions: string[]): string | null {
   const t = normLower(text);
+  const allowed = uniqLower(availableRegions || []);
+  if (!allowed.length) return null;
 
   const m = t.match(/\bregion\s*=\s*([a-z0-9_\-]+)\b/);
-  if (m?.[1]) return m[1];
+  if (m?.[1]) {
+    const raw = normLower(m[1]);
+    const aliased = CANON_REGION_ALIASES[raw] || raw;
+    if (allowed.includes(aliased)) return aliased;
+    if (allowed.includes(raw)) return raw;
+  }
 
   // "in <region>"
   const m2 = t.match(/\bin\s+([a-z0-9_\-]+)\b/);
-  const candidate = m2?.[1] ?? "";
+  if (m2?.[1]) {
+    const raw = normLower(m2[1]);
+    const aliased = CANON_REGION_ALIASES[raw] || raw;
+    if (allowed.includes(aliased)) return aliased;
+    if (allowed.includes(raw)) return raw;
+  }
 
-  if (candidate && REGION_ALIASES[candidate]) return REGION_ALIASES[candidate];
-
-  for (const [k, v] of Object.entries(REGION_ALIASES)) {
-    if (k.includes(" ")) {
-      if (t.includes(k)) return v;
-    } else {
-      if (new RegExp(`\\b${k}\\b`, "i").test(t)) return v;
+  // phrase aliases with spaces
+  for (const [k, v] of Object.entries(CANON_REGION_ALIASES)) {
+    if (k.includes(" ") && t.includes(k)) {
+      if (allowed.includes(v)) return v;
     }
   }
 
-  const availSet = new Set((availableRegions || []).map((x) => normLower(x)));
-  if (candidate && availSet.has(candidate)) return candidate;
+  // direct match of any allowed region token
+  for (const r of allowed) {
+    if (r === "all") continue;
+    if (new RegExp(`\\b${r.replace(/-/g, "\\-")}\\b`, "i").test(t)) return r;
+  }
 
   return null;
 }
 
 function extractPop(text: string, availablePops: string[]): string | null {
   const t = normLower(text);
+  const allowed = uniqLower(availablePops || []);
+  if (!allowed.length) return null;
 
   const m = t.match(/\bpop\s*=\s*([a-z0-9_\-]+)\b/);
-  if (m?.[1]) return m[1];
+  if (m?.[1]) {
+    const raw = normLower(m[1]);
+    if (allowed.includes(raw)) return raw;
+  }
 
-  const m2 = t.match(/\bat\s+([a-z0-9_\-]+)\b/);
-  const candidate = m2?.[1] ?? "";
-  if (!candidate) return null;
+  // "in pop_010" or "at pop_010"
+  const m2 = t.match(/\b(in|at)\s+(pop_\d{3}|pop-\d{3}|pop\d{3})\b/);
+  if (m2?.[2]) {
+    const raw = normLower(m2[2]).replace("pop-", "pop_").replace(/^pop(\d{3})$/, "pop_$1");
+    if (allowed.includes(raw)) return raw;
+  }
 
-  const availSet = new Set((availablePops || []).map((x) => normLower(x)));
-  if (availSet.has(candidate)) return candidate;
-
-  // permissive fallback for pop-like tokens (e.g. sjc-01)
-  if (candidate.includes("-") && candidate.length >= 5) return candidate;
+  // any pop_### token
+  const m3 = t.match(/\b(pop_\d{3}|pop-\d{3}|pop\d{3})\b/);
+  if (m3?.[1]) {
+    const raw = normLower(m3[1]).replace("pop-", "pop_").replace(/^pop(\d{3})$/, "pop_$1");
+    if (allowed.includes(raw)) return raw;
+  }
 
   return null;
 }
 
 function extractPartner(text: string, availablePartners: string[]): string | null {
   const t = normLower(text);
-  const set = new Set((availablePartners || []).map((p) => normLower(p)));
-  if (set.has(t)) return t;
+  const allowed = uniqLower(availablePartners || []);
+  if (!allowed.length) return null;
+
+  // exact reply (partner_03)
+  if (allowed.includes(t)) return t;
 
   const m = t.match(/\bpartner\s*=\s*([a-z0-9_\-]+)\b/);
-  if (m?.[1] && set.has(m[1])) return m[1];
+  if (m?.[1]) {
+    const raw = normLower(m[1]);
+    if (allowed.includes(raw)) return raw;
+  }
+
+  // any "partner_0x" token
+  const m2 = t.match(/\bpartner_\d{2}\b/);
+  if (m2?.[0] && allowed.includes(m2[0])) return m2[0];
 
   return null;
 }
 
+function extractContentType(text: string, availableContentTypes: string[]): string | null {
+  const t = normLower(text);
+  const allowed = uniqLower(availableContentTypes || []);
+  if (!allowed.length) return null;
+
+  const m = t.match(/\b(contenttype|content_type|ct)\s*=\s*([a-z0-9_]+)\b/);
+  if (m?.[2] && inAllowed(m[2], allowed)) return normLower(m[2]);
+
+  // bare: manifest/segment/api
+  for (const ct of allowed) {
+    if (ct === "all") continue;
+    if (new RegExp(`\\b${ct}\\b`, "i").test(t)) return ct;
+  }
+  return null;
+}
+
+function extractUaFamily(text: string, availableUaFamilies: string[]): string | null {
+  const t = normLower(text);
+  const allowed = uniqLower(availableUaFamilies || []);
+  if (!allowed.length) return null;
+
+  const m = t.match(/\b(uafamily|ua_family|ua)\s*=\s*([a-z0-9_]+)\b/);
+  if (m?.[2] && inAllowed(m[2], allowed)) return normLower(m[2]);
+
+  // bare: stb/mobile/web/smart_tv/console
+  for (const ua of allowed) {
+    if (ua === "all") continue;
+    if (new RegExp(`\\b${ua.replace(/_/g, "\\_")}\\b`, "i").test(t)) return ua;
+  }
+  return null;
+}
+
 function makePartnerQuestion(partners: string[]) {
-  const list = partners?.length ? partners.join(", ") : "acme_media, beta_stream, charlie_video…";
+  const list = partners?.length ? partners.join(", ") : "partner_01, partner_02, …";
   return `Which partner should I use? (${list})`;
 }
 
-function isServiceOnlyFollowup(text: string) {
+function isServiceOnlyFollowup(text: string, services: string[]) {
   const t = normLower(text);
   if (!t) return false;
-  return (
-    /\bhow about\b/.test(t) ||
-    /\bwhat about\b/.test(t) ||
-    /\band live\b/.test(t) ||
-    /^\s*live\s*$/.test(t) ||
-    /^\s*vod\s*$/.test(t)
-  );
-}
 
-// ------------------------------------------------------------
-// OpenRouter: model pools + rate-limit cooldown + best-effort fallback
-// ------------------------------------------------------------
+  // "live" or "vod" or "dvr" etc alone, or "and live"
+  const allowed = uniqLower(services || []);
+  if (allowed.includes(t)) return true;
 
-// In-memory cooldown across requests (works in dev + in a single serverless instance)
-const rlUntil = new Map<string, number>(); // model -> unix ms
-
-function isCooling(model: string) {
-  const until = rlUntil.get(model) || 0;
-  return Date.now() < until;
-}
-function markCooling(model: string, ms: number) {
-  const dur = Math.max(5_000, Math.min(5 * 60_000, Number(ms) || 45_000));
-  rlUntil.set(model, Date.now() + dur);
-}
-
-function modelPool(kind: "general" | "triage"): string[] {
-  // You can set:
-  // - OPENROUTER_GENERAL_MODELS for quick chat
-  // - OPENROUTER_MODELS for heavier triage assist
-  const envList = kind === "general" ? process.env.OPENROUTER_GENERAL_MODELS : process.env.OPENROUTER_MODELS;
-
-  const fromSingle = norm(process.env.OPENROUTER_MODEL);
-  const fromList = (envList || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const all = [...fromList, fromSingle].filter(Boolean) as string[];
-  const uniq = Array.from(new Set(all));
-
-  // sane fallback
-  return uniq.length ? uniq : ["meta-llama/llama-3.2-3b-instruct:free"];
-}
-
-function isSystemInstructionRejected(errMsg: string) {
-  const m = errMsg.toLowerCase();
-  return (
-    m.includes("developer instruction is not enabled") ||
-    m.includes("system instruction") ||
-    m.includes("developer instruction")
-  );
-}
-
-function parseRateLimit(errMsg: string): { rateLimited: boolean; retryAfterMs: number } {
-  const m = errMsg.toLowerCase();
-
-  // obvious cases
-  if (m.includes("http 429") || m.includes("rate-limited") || m.includes("too many requests")) {
-    // try to parse "retry" hints if any, else default
-    return { rateLimited: true, retryAfterMs: 45_000 };
-  }
-
-  // OpenRouter sometimes embeds provider JSON with code 429
-  if (m.includes('"code":429') || m.includes("code\":429") || m.includes(" code 429")) {
-    return { rateLimited: true, retryAfterMs: 45_000 };
-  }
-
-  return { rateLimited: false, retryAfterMs: 0 };
-}
-
-async function callOpenRouterWithModel(model: string, messages: WireMsg[]) {
-  const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_KEY;
-  if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
-
-  const referer = process.env.OPENROUTER_SITE_URL || "http://localhost:3000";
-  const title = process.env.OPENROUTER_APP_NAME || "cdn-triage-bot";
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25_000);
-
-  try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": referer,
-        "X-Title": title,
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.6,
-        messages,
-      }),
-    });
-
-    const rawText = await res.text();
-    let json: any = null;
-    try {
-      json = rawText ? JSON.parse(rawText) : null;
-    } catch {
-      // ignore
-    }
-
-    if (!res.ok) {
-      const msg = json?.error?.message || json?.message || `OpenRouter error (HTTP ${res.status})`;
-      // include rawText for internal parsing; we still won’t surface it to the user unless dev
-      throw new Error(`${msg} :: ${rawText}`);
-    }
-
-    return json;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function callOpenRouterBestEffort(kind: "general" | "triage", messages: WireMsg[]) {
-  const candidates = modelPool(kind).filter((m) => !isCooling(m));
-  const fallbackCandidates = modelPool(kind); // if all cooling, still try something
-
-  const list = candidates.length ? candidates : fallbackCandidates;
-
-  let lastErr: any = null;
-  let rateLimitHits = 0;
-
-  for (const model of list) {
-    if (isCooling(model)) continue;
-
-    try {
-      const json = await callOpenRouterWithModel(model, messages);
-      return { json, usedModel: model };
-    } catch (e: any) {
-      const msg = String(e?.message || e);
-      lastErr = e;
-
-      const rl = parseRateLimit(msg);
-      if (rl.rateLimited) {
-        rateLimitHits += 1;
-        markCooling(model, rl.retryAfterMs || 45_000);
-
-        // Try one more model once; then bail with rateLimited response.
-        if (rateLimitHits >= 2) {
-          const err: any = new Error("RATE_LIMITED");
-          err.rateLimited = true;
-          err.retryAfterMs = rl.retryAfterMs || 45_000;
-          err.usedModel = model;
-          throw err;
-        }
-        continue;
-      }
-
-      // If model rejects system/developer instruction, try next model.
-      if (isSystemInstructionRejected(msg)) continue;
-
-      // Free-tier models are flaky. Try next model for these too.
-      if (msg.toLowerCase().includes("provider returned error") || msg.includes("HTTP 400")) continue;
-
-      // Otherwise: stop early (auth, etc.)
-      throw e;
-    }
-  }
-
-  throw lastErr || new Error("OpenRouter failed for all candidate models.");
-}
-
-function safeJsonParse(s: string) {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
-  }
+  return /\bhow about\b/.test(t) || /\bwhat about\b/.test(t) || /\band\s+\w+\b/.test(t);
 }
 
 function smallTalkReply(userText: string, mode: "csv" | "clickhouse") {
   const options = [
-    "Ready. Want errors first or latency first? (Try: `vod in bos last 60m`.)",
-    "Cachey here 🤖 — give me scope + time window and I’ll run triage.",
-    "Send a scope like `live in usw2 at sjc last 2h` and I’ll pull metrics + charts.",
-    "Tell me what’s wrong (errors/latency) + where (region/pop) + when (window).",
-    "Try: `service=live region=all win=360`.",
+    "Ready. Pick partner + service, then ask: `how was live in 1hr`.",
+    "Cachey here 🤖 — give me partner + service + time window and I’ll parse filters.",
+    "Try: `partner=partner_01 service=live region=all pop=all win=60`.",
+    "Try: `vod in pop_010 last night`.",
   ];
   return pickOne(options, `${mode}|${normLower(userText)}`);
 }
@@ -780,12 +650,28 @@ export async function POST(req: Request) {
   const rawMsgs = Array.isArray(body.messages) ? body.messages : [];
   const ctx = body.context || {};
 
-  const partners = Array.isArray(ctx.availablePartners) ? ctx.availablePartners : [];
-  const regions = Array.isArray(ctx.availableRegions) ? ctx.availableRegions : [];
-  const pops = Array.isArray(ctx.availablePops) ? ctx.availablePops : [];
-
   const mode = ctx.mode === "clickhouse" ? "clickhouse" : "csv";
   const chatMode: "deterministic" | "llm" = ctx.chatMode === "llm" ? "llm" : "deterministic";
+
+  // ✅ prefer passed lists; fall back to safe defaults (still schema-aligned)
+  const partners = uniqLower(Array.isArray(ctx.availablePartners) ? ctx.availablePartners : []);
+  const regions = uniqLower(Array.isArray(ctx.availableRegions) ? ctx.availableRegions : []);
+  const pops = uniqLower(Array.isArray(ctx.availablePops) ? ctx.availablePops : []);
+
+  const services = uniqLower(
+    Array.isArray(ctx.availableServices)
+      ? ctx.availableServices
+      : // fallback canonical services list
+        ["live", "vod", "dvr", "eas", "live_ott", "app_backend"]
+  );
+
+  const contentTypes = uniqLower(
+    Array.isArray(ctx.availableContentTypes) ? ctx.availableContentTypes : ["all", "manifest", "segment", "api"]
+  );
+
+  const uaFamilies = uniqLower(
+    Array.isArray(ctx.availableUaFamilies) ? ctx.availableUaFamilies : ["all", "stb", "mobile", "web", "smart_tv", "console"]
+  );
 
   const current = ctx.currentFilters || {};
   const currentService = normLower(current.service || "") || null;
@@ -797,26 +683,13 @@ export async function POST(req: Request) {
       : null;
   const currentPartner = normLower(current.partner || "") || null;
 
+  const currentContentType = normLower(current.contentType || "") || null;
+  const currentUaFamily = normLower(current.uaFamily || "") || null;
+
   const collapsed = collapsePartnerFollowup(rawMsgs, partners);
   const userText =
     collapsed.text || norm(rawMsgs.filter((m) => m.role === "user").slice(-1)[0]?.content);
   const partnerFromFollowup = collapsed.partner;
-
-  // Glossary answers
-  if (isDefinitionQuestion(userText)) {
-    const term = extractTermFromDefinitionQuestion(userText);
-    const entry = lookupAtsCrc(term);
-    if (entry) {
-      const reply = [
-        `${entry.title}`,
-        entry.meaning,
-        entry.opsHint ? `\nOps hint: ${entry.opsHint}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n");
-      return jsonOk({ ok: true, kind: "general", reply });
-    }
-  }
 
   // Commands (deterministic)
   const cmd = parseCommand(userText);
@@ -825,7 +698,16 @@ export async function POST(req: Request) {
     return jsonOk({
       ok: true,
       kind: "general",
-      reply: filtersText({ mode, partners, regions, pops, current }),
+      reply: filtersText({
+        mode,
+        partners,
+        services,
+        regions,
+        pops,
+        contentTypes,
+        uaFamilies,
+        current,
+      }),
     });
   if (cmd === "explain") return jsonOk({ ok: true, kind: "general", reply: explainText() });
   if (cmd === "reset")
@@ -834,9 +716,10 @@ export async function POST(req: Request) {
       kind: "general",
       reply: "Cleared. Use UI Reset to wipe local history + filters.",
     });
-  if (cmd === "run") return jsonOk({ ok: true, kind: "triage", reply: "Running triage with current filters…" });
+  if (cmd === "run")
+    return jsonOk({ ok: true, kind: "triage", reply: "Running triage with current filters…" });
 
-  const triageish = looksLikeTriageIntent(userText);
+  const triageish = looksLikeTriageIntent(userText, services);
 
   if (!triageish && isGreetingOrSmallTalk(userText)) {
     return jsonOk({ ok: true, kind: "general", reply: smallTalkReply(userText, mode) });
@@ -847,30 +730,40 @@ export async function POST(req: Request) {
       ok: true,
       kind: "general",
       reply:
-        "Try:\n- `how was vod last night`\n- `live in bos last 2h`\n- `service=live region=all win=360`\n\nOr type `help`.",
+        "Try:\n- `how was live in 1hr`\n- `vod in pop_010 last night`\n- `partner=partner_01 service=live win=60`\n\nOr type `help`.",
     });
   }
 
-  // Deterministic extraction (authoritative fallback)
-  const detService = extractService(userText);
+  // Deterministic extraction
+  const detService = extractService(userText, services);
   const detRegion = extractRegion(userText, regions);
   const detPop = extractPop(userText, pops);
+  const detPartner = partnerFromFollowup || extractPartner(userText, partners);
 
   const detWinKV = extractWindowMinutesKeyValue(userText);
   const detWinNatural = extractNaturalWindowMinutes(userText);
   const detWindow = detWinKV ?? detWinNatural ?? null;
 
-  const detPartner = partnerFromFollowup || extractPartner(userText, partners);
+  const detContentType = extractContentType(userText, contentTypes);
+  const detUaFamily = extractUaFamily(userText, uaFamilies);
 
   const followupSvcOnly =
-    isServiceOnlyFollowup(userText) && !!detService && !detRegion && !detPop && detWindow == null;
+    isServiceOnlyFollowup(userText, services) &&
+    !!detService &&
+    !detRegion &&
+    !detPop &&
+    detWindow == null &&
+    !detContentType &&
+    !detUaFamily;
 
   const serviceHint = detService ?? null;
   const regionHint = detRegion ?? (followupSvcOnly ? currentRegion : null);
   const popHint = detPop ?? (followupSvcOnly ? currentPop : null);
   const windowHint = detWindow ?? (followupSvcOnly ? currentWin : null);
-
   const partnerHint = detPartner ?? currentPartner ?? null;
+
+  const contentTypeHint = detContentType ?? (followupSvcOnly ? currentContentType : null);
+  const uaFamilyHint = detUaFamily ?? (followupSvcOnly ? currentUaFamily : null);
 
   if (mode === "clickhouse" && triageish && !partnerHint) {
     return jsonOk({
@@ -882,14 +775,18 @@ export async function POST(req: Request) {
       regionHint,
       popHint,
       windowHint,
+      partnerHint: null,
+      contentTypeHint,
+      uaFamilyHint,
     });
   }
 
-  // If NOT in LLM mode, never call provider
+  // Deterministic-only mode: never call provider
   if (chatMode !== "llm") {
     if (!triageish) {
       return jsonOk({ ok: true, kind: "general", reply: smallTalkReply(userText, mode) });
     }
+
     return jsonOk({
       ok: true,
       kind: "triage",
@@ -899,142 +796,16 @@ export async function POST(req: Request) {
       popHint,
       windowHint,
       partnerHint,
+      contentTypeHint,
+      uaFamilyHint,
     });
   }
 
-  // ----------------------------
-  // LLM Assist (only when enabled)
-  // ----------------------------
-  const system: WireMsg = {
-    role: "system",
-    content:
-      "You are Cachey 🤖 — a calm, helpful CDN triage concierge.\n" +
-      "Return ONLY valid JSON with keys:\n" +
-      "kind ('triage'|'general'), reply (string), serviceHint, regionHint, popHint, windowHint (minutes), partnerHint, needsPartnerQuestion (bool), partnerQuestion (string).\n" +
-      "No markdown, no code fences, no extra text.",
-  };
-
-  const contextHint: WireMsg = {
-    role: "system",
-    content:
-      `Context: mode=${mode}. ` +
-      `CurrentFilters: svc=${currentService || "all"}, region=${currentRegion || "all"}, pop=${currentPop || "all"}, win=${currentWin ?? "?"}m, partner=${currentPartner || "(none)"}. ` +
-      `AvailableRegions=${(regions || []).slice(0, 50).join(", ")}. ` +
-      `AvailablePops=${(pops || []).slice(0, 50).join(", ")}. ` +
-      `AvailablePartners=${(partners || []).join(", ")}.`,
-  };
-
-  const compactHistory = rawMsgs.slice(-12).map((m) => ({
-    role: m.role,
-    content: norm(m.content),
-  }));
-
-  const isDev = process.env.NODE_ENV !== "production";
-
-  let llmOut: any = null;
-  let usedModel = "";
-
-  try {
-    const { json: or, usedModel: m } = await callOpenRouterBestEffort(triageish ? "triage" : "general", [
-      system,
-      contextHint,
-      ...compactHistory,
-      { role: "user", content: userText },
-    ]);
-    usedModel = m;
-
-    const content = or?.choices?.[0]?.message?.content;
-    llmOut = typeof content === "string" ? safeJsonParse(content) : null;
-
-    // If model ignored JSON-only instruction, accept plain text safely
-    if (!llmOut || typeof llmOut !== "object") {
-      const replyText =
-        typeof content === "string" && content.trim() ? content.trim() : "Understood.";
-      if (!triageish) return jsonOk({ ok: true, kind: "general", reply: replyText, usedModel });
-      llmOut = { kind: "triage", reply: replyText };
-    }
-  } catch (e: any) {
-    // ✅ If rate-limited, return a clean, UI-friendly signal
-    if (e?.rateLimited || String(e?.message || "").includes("RATE_LIMITED")) {
-      const retryAfterMs = Number(e?.retryAfterMs) || 45_000;
-      return jsonOk({
-        ok: true,
-        kind: "general",
-        reply: "LLM is rate-limited. Retrying soon, or switch to Deterministic.",
-        rateLimited: true,
-        retryAfterMs,
-        usedModel: String(e?.usedModel || usedModel || ""),
-      });
-    }
-
-    const errMsg = e?.message ? String(e.message) : "Unknown OpenRouter error";
-    console.error("[api/chat] OpenRouter failed:", errMsg);
-
-    if (!triageish) {
-      return jsonOk({
-        ok: true,
-        kind: "general",
-        reply: isDev
-          ? `LLM assist failed (dev): ${errMsg}`
-          : "LLM assist temporarily unavailable. Switch to Deterministic.",
-      });
-    }
-
-    llmOut = {
-      kind: "triage",
-      reply: isDev
-        ? `LLM assist failed (dev): ${errMsg}\nProceeding with parsed filters.`
-        : "LLM assist unavailable. Proceeding with parsed filters.",
-    };
-  }
-
-  const kind = llmOut.kind === "general" ? "general" : "triage";
-
-  // Deterministic always wins + sticky current filters
-  const mergedService = serviceHint ?? llmOut.serviceHint ?? currentService ?? null;
-  const mergedRegion = regionHint ?? llmOut.regionHint ?? currentRegion ?? null;
-  const mergedPop = popHint ?? llmOut.popHint ?? currentPop ?? null;
-
-  let mergedWindow: number | null = windowHint;
-  if (mergedWindow == null && llmOut.windowHint != null && Number.isFinite(Number(llmOut.windowHint))) {
-    mergedWindow = Number(llmOut.windowHint);
-  }
-  if (mergedWindow == null && currentWin != null) mergedWindow = currentWin;
-
-  const mergedPartner = partnerHint ?? llmOut.partnerHint ?? currentPartner ?? null;
-
-  if (mode === "clickhouse" && kind === "triage" && !mergedPartner) {
-    return jsonOk({
-      ok: true,
-      kind: "triage",
-      needsPartnerQuestion: true,
-      partnerQuestion: makePartnerQuestion(partners),
-      serviceHint: mergedService,
-      regionHint: mergedRegion,
-      popHint: mergedPop,
-      windowHint: mergedWindow,
-      usedModel,
-    });
-  }
-
-  if (kind === "general") {
-    return jsonOk({
-      ok: true,
-      kind: "general",
-      reply: String(llmOut.reply || smallTalkReply(userText, mode)),
-      usedModel,
-    });
-  }
-
+  // If you later re-enable LLM mode, keep your existing OpenRouter section,
+  // but you should merge deterministic hints the same way (and include contentTypeHint/uaFamilyHint).
   return jsonOk({
     ok: true,
-    kind: "triage",
-    reply: String(llmOut.reply || ""),
-    serviceHint: mergedService,
-    regionHint: mergedRegion,
-    popHint: mergedPop,
-    windowHint: mergedWindow,
-    partnerHint: mergedPartner,
-    usedModel,
+    kind: "general",
+    reply: "LLM mode is not wired in this schema-aligned rewrite. Switch to Deterministic.",
   });
 }
