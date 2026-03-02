@@ -42,19 +42,101 @@ function isAllOrOneOf(x: string, allowed: readonly string[]) {
   return x === "all" || allowed.includes(x);
 }
 
+/**
+ * ✅ Normalizes legacy metrics shape → UI contract shape.
+ * Legacy: { requests, p50_ms, p95_ms, p99_ms, errors_5xx }
+ * UI expects: { totalRequests, p50TtmsMs, p95TtmsMs, p99TtmsMs, error5xxCount, errorRatePct }
+ */
+function normalizeMetricsJson(metricsJson: any) {
+  if (!metricsJson || typeof metricsJson !== "object") return metricsJson;
+
+  // already normalized
+  if (
+    "totalRequests" in metricsJson ||
+    "p95TtmsMs" in metricsJson ||
+    "errorRatePct" in metricsJson
+  ) {
+    // ensure debug exists
+    const dbg =
+      metricsJson.debug && typeof metricsJson.debug === "object"
+        ? metricsJson.debug
+        : {};
+    metricsJson.debug = dbg;
+    return metricsJson;
+  }
+
+  const requests = Number(metricsJson.requests ?? 0);
+  const p50 = Number(metricsJson.p50_ms ?? 0);
+  const p95 = Number(metricsJson.p95_ms ?? 0);
+  const p99 = Number(metricsJson.p99_ms ?? 0);
+  const e5 = Number(metricsJson.errors_5xx ?? 0);
+  const errPct =
+    Number.isFinite(requests) && requests > 0 && Number.isFinite(e5)
+      ? (e5 / requests) * 100
+      : 0;
+
+  const dbg =
+    metricsJson.debug && typeof metricsJson.debug === "object"
+      ? metricsJson.debug
+      : {};
+
+  return {
+    ...metricsJson,
+
+    // ✅ stable UI contract
+    totalRequests: Number.isFinite(requests) ? requests : 0,
+    p50TtmsMs: Number.isFinite(p50) ? p50 : 0,
+    p95TtmsMs: Number.isFinite(p95) ? p95 : 0,
+    p99TtmsMs: Number.isFinite(p99) ? p99 : 0,
+    error5xxCount: Number.isFinite(e5) ? e5 : 0,
+    errorRatePct: Number.isFinite(errPct) ? errPct : 0,
+
+    // UI sometimes renders charts; keep empty timeseries if missing
+    timeseries:
+      metricsJson.timeseries ??
+      { bucketSeconds: null, startTs: null, endTs: null, points: [] },
+
+    debug: {
+      ...dbg,
+      normalizedAt: new Date().toISOString(),
+      normalizedFrom: "legacy_clickhouse_shape",
+    },
+  };
+}
+
+function normalizeSqlForUi(sql: any) {
+  if (!sql) return undefined;
+
+  // Already { queries: [...] }
+  if (Array.isArray(sql.queries)) {
+    return { queries: sql.queries.map((q: any) => String(q)), params: sql.params ?? undefined };
+  }
+
+  // Legacy { query: "..." }
+  if (typeof sql.query === "string" && sql.query.trim()) {
+    return { queries: [sql.query.trim()], params: sql.params ?? undefined };
+  }
+
+  return undefined;
+}
+
 function normalize(x: Record<string, any>): Inputs {
   // required
   const partner = tok(x.partner);
-  const service = tok(x.service);
+
+  // ✅ accept svc alias (UI chips often show `svc`)
+  const service = tok(x.service ?? x.svc);
 
   // optional filters (allow "all")
   const region = tok(x.region) || "all";
   const pop = tok(x.pop) || "all";
 
-  const ctRaw = tok(x.contentType ?? x.content_type) || "all";
-  const uaRaw = tok(x.uaFamily ?? x.ua_family) || "all";
+  // ✅ accept ct / ua aliases
+  const ctRaw = tok(x.contentType ?? x.content_type ?? x.ct) || "all";
+  const uaRaw = tok(x.uaFamily ?? x.ua_family ?? x.ua) || "all";
 
-  const wmRaw = Number(x.windowMinutes ?? 60);
+  // ✅ accept win/window aliases (UI chips often show `win`)
+  const wmRaw = Number(x.windowMinutes ?? x.win ?? x.window ?? 60);
   const windowMinutes = Number.isFinite(wmRaw) ? clampInt(wmRaw, 5, 1440) : 60;
 
   const debug = boolish(x.debug);
@@ -119,7 +201,7 @@ function hasProxyEnv() {
 
 /**
  * Local dev fallback:
- * - Runs clickhouse runner in-process (mock or real later)
+ * - Runs clickhouse runner in-process (mock for now, real later)
  * - Returns same API contract as proxy path
  */
 async function runLocal(inputs: Inputs) {
@@ -134,12 +216,15 @@ async function runLocal(inputs: Inputs) {
     debug: inputs.debug,
   });
 
+  const metricsJson = normalizeMetricsJson(result.metricsJson ?? null);
+  const sql = normalizeSqlForUi(result.sql ?? undefined);
+
   return okJson({
     ok: true,
     summaryText: result.summaryText ?? result.summary ?? "",
     summary: result.summary ?? result.summaryText ?? "",
-    metricsJson: result.metricsJson ?? null,
-    sql: result.sql ?? undefined,
+    metricsJson,
+    sql,
     _mode: "local",
   });
 }
@@ -152,17 +237,17 @@ async function runLocal(inputs: Inputs) {
 function adaptProxyToUi(parsed: any) {
   const ok = !!parsed?.ok;
 
-  // Prefer the canonical "metricsJson" if proxy ever returns it later,
-  // otherwise fall back to "metrics" (current proxy shape).
-  const metricsJson = parsed?.metricsJson ?? parsed?.metrics ?? null;
+  const metricsJson = normalizeMetricsJson(parsed?.metricsJson ?? parsed?.metrics ?? null);
+  const sql = normalizeSqlForUi(parsed?.sql ?? undefined);
 
   return {
     ok,
     summaryText: parsed?.summaryText ?? parsed?.summary ?? "",
     summary: parsed?.summary ?? parsed?.summaryText ?? "",
     metricsJson,
-    sql: parsed?.sql ?? undefined,
-    inputs: parsed?.inputs ?? undefined, // keep for debugging / evidence
+    sql,
+    inputs: parsed?.inputs ?? undefined,
+    _mode: "proxy",
   };
 }
 
@@ -170,8 +255,7 @@ export async function POST(req: Request) {
   try {
     const inputs = await parseRequest(req);
 
-    // Dev convenience: if dataset is stale, default debug=true locally
-    // so you see real data without hunting timestamps.
+    // Dev convenience: default debug=true locally
     if (process.env.NODE_ENV !== "production" && inputs.debug === false) {
       inputs.debug = true;
     }
@@ -183,7 +267,9 @@ export async function POST(req: Request) {
       return badRequest("partner is required", { allowedPartners: CANON.partners });
     }
     if (!isCanonPartner(inputs.partner)) {
-      return badRequest(`invalid partner: ${inputs.partner}`, { allowedPartners: CANON.partners });
+      return badRequest(`invalid partner: ${inputs.partner}`, {
+        allowedPartners: CANON.partners,
+      });
     }
 
     if (!inputs.service) {
@@ -193,7 +279,9 @@ export async function POST(req: Request) {
       return badRequest(`service cannot be "all"`, { allowedServices: CANON.services });
     }
     if (!isCanonService(inputs.service)) {
-      return badRequest(`invalid service: ${inputs.service}`, { allowedServices: CANON.services });
+      return badRequest(`invalid service: ${inputs.service}`, {
+        allowedServices: CANON.services,
+      });
     }
 
     if (!isAllOrOneOf(inputs.region, CANON.regions as readonly string[])) {
@@ -220,70 +308,59 @@ export async function POST(req: Request) {
       });
     }
 
-    // If proxy envs not configured -> local fallback
+    // -----------------------------
+    // Mode selection
+    // -----------------------------
     if (!hasProxyEnv()) {
       return await runLocal(inputs);
     }
 
-    // -----------------------------
-    // Proxy forward path (prod)
-    // -----------------------------
-    const forwardPayload = {
-      dataSource: "clickhouse",
-      partner: inputs.partner,
-      service: inputs.service,
-      region: inputs.region,
-      pop: inputs.pop,
-      windowMinutes: inputs.windowMinutes,
-      debug: inputs.debug,
-      contentType: inputs.contentType,
-      uaFamily: inputs.uaFamily,
-    };
-
-    const url = process.env.CACHEY_PROXY_URL!;
+    // Proxy path
+    const proxyUrl = process.env.CACHEY_PROXY_URL!;
     const user = process.env.CACHEY_BASIC_USER!;
     const pass = process.env.CACHEY_BASIC_PASS!;
-    const token = process.env.CACHEY_TOKEN!; // kept for now (route gating), proxy ignores if from Caddy
+    const token = process.env.CACHEY_TOKEN!;
 
-    const auth = Buffer.from(`${user}:${pass}`).toString("base64");
+    const base = proxyUrl.replace(/\/+$/, "");
+    const triageUrl = base.endsWith("/triage") ? base : `${base}/triage`;
+    const upstream = await fetch(triageUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`,
+        "X-Cachey-Token": token,
+      },
+      body: JSON.stringify({
+        partner: inputs.partner,
+        service: inputs.service,
+        region: inputs.region,
+        pop: inputs.pop,
+        windowMinutes: inputs.windowMinutes,
+        debug: inputs.debug,
+        contentType: inputs.contentType,
+        uaFamily: inputs.uaFamily,
+      }),
+    });
 
-    let resp: Response;
-    try {
-      resp = await fetch(url, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Basic ${auth}`,
-          "x-cachey-token": token,
-        },
-        body: JSON.stringify(forwardPayload),
-      });
-    } catch {
-      // proxy unreachable -> local fallback
-      return await runLocal(inputs);
+    const text = await upstream.text().catch(() => "");
+    const parsed = (() => {
+      try { return text ? JSON.parse(text) : null; } catch { return null; }
+    })();
+
+    if (!upstream.ok) {
+      const msg =
+        parsed && typeof parsed === "object" && parsed?.error
+          ? String(parsed.error)
+          : text
+          ? `proxy triage failed (HTTP ${upstream.status}): ${text.slice(0, 220)}`
+          : `proxy triage failed (HTTP ${upstream.status})`;
+      return NextResponse.json({ ok: false, error: msg }, { status: 502 });
     }
 
-    const text = await resp.text();
-
-    // Parse + adapt to UI contract
-    try {
-      const parsed = JSON.parse(text);
-
-      // If proxy returned non-ok, still adapt and pass through status
-      const adapted = adaptProxyToUi(parsed);
-
-      return NextResponse.json(
-        { ...adapted, _mode: "proxy" },
-        { status: resp.status }
-      );
-    } catch {
-      // non-json response -> local fallback
-      return await runLocal(inputs);
-    }
-  } catch (err: any) {
-    console.error("api/triage error", err);
+    return okJson(adaptProxyToUi(parsed));
+  } catch (e: any) {
     return NextResponse.json(
-      { ok: false, error: String(err?.message ?? err) },
+      { ok: false, error: e?.message || "triage failed" },
       { status: 500 }
     );
   }

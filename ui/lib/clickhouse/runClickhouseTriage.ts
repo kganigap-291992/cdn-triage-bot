@@ -12,12 +12,12 @@ export type ClickhouseTriageInputs = {
 
   // Core scope filters (service REQUIRED; no "all")
   service: string; // canon only (live|vod|dvr|eas|live_ott|app_backend)
-  region: string;  // all|<canon>
-  pop: string;     // all|<canon>
+  region: string; // all|<canon>
+  pop: string; // all|<canon>
 
   // Generator schema dims
   contentType: string; // all|manifest|segment|api
-  uaFamily: string;    // all|stb|mobile|web|smart_tv|console
+  uaFamily: string; // all|stb|mobile|web|smart_tv|console
 
   windowMinutes: number;
   debug: boolean;
@@ -57,6 +57,90 @@ function isCanon(x: string, allowed: readonly string[]) {
   return allowed.includes(x);
 }
 
+function n(x: any, d = 0) {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : d;
+}
+
+/**
+ * Normalize ClickHouse/mock outputs to the UI contract expected by app/page.tsx
+ *
+ * UI expects:
+ *  - totalRequests
+ *  - p50TtmsMs / p95TtmsMs / p99TtmsMs
+ *  - error5xxCount / errorRatePct
+ *  - optional timeseries: { bucketSeconds, startTs, endTs, points: [...] }
+ */
+function normalizeMetricsToUiShape(
+  raw: any,
+  meta: {
+    partner: string;
+    service: string;
+    region: string;
+    pop: string;
+    contentType: string;
+    uaFamily: string;
+    windowMinutes: number;
+    anchorToMaxTs: boolean;
+  }
+) {
+  // Accept either naming style:
+  const requests = n(raw?.totalRequests ?? raw?.requests ?? raw?.total_requests, 0);
+  const p50 = n(raw?.p50TtmsMs ?? raw?.p50_ms ?? raw?.p50, 0);
+  const p95 = n(raw?.p95TtmsMs ?? raw?.p95_ms ?? raw?.p95, 0);
+  const p99 = n(raw?.p99TtmsMs ?? raw?.p99_ms ?? raw?.p99, 0);
+  const e5 = n(
+    raw?.error5xxCount ?? raw?.errors_5xx ?? raw?.http_5xx_count ?? raw?.error_5xx,
+    0
+  );
+
+  const errPct = requests > 0 ? (e5 / requests) * 100 : 0;
+
+  // If upstream already provides a full timeseries in the UI shape, keep it.
+  // Otherwise create a minimal placeholder so UI doesn't crash.
+  const t = raw?.timeseries;
+  const timeseries =
+    t && typeof t === "object" && Array.isArray(t.points)
+      ? t
+      : {
+          bucketSeconds: null,
+          startTs: null,
+          endTs: null,
+          points: [],
+        };
+
+  const priorDebug =
+    raw?.debug && typeof raw.debug === "object" ? raw.debug : {};
+
+  // IMPORTANT: keep raw fields, but enforce canonical UI keys afterwards.
+  return {
+    ...raw,
+
+    // ✅ stable UI contract keys
+    totalRequests: requests,
+    p50TtmsMs: p50,
+    p95TtmsMs: p95,
+    p99TtmsMs: p99,
+    error5xxCount: e5,
+    errorRatePct: errPct,
+    timeseries,
+
+    // ✅ debug always present
+    debug: {
+      ...priorDebug,
+      partner: meta.partner,
+      service: meta.service,
+      region: meta.region,
+      pop: meta.pop,
+      contentType: meta.contentType,
+      uaFamily: meta.uaFamily,
+      windowMinutes: meta.windowMinutes,
+      anchorToMaxTs: meta.anchorToMaxTs,
+      normalizedAt: new Date().toISOString(),
+    },
+  };
+}
+
 export async function runClickhouseTriage(
   inputs: ClickhouseTriageInputs
 ): Promise<ClickhouseTriageResult> {
@@ -83,21 +167,19 @@ export async function runClickhouseTriage(
   if (pop !== "all" && !isCanon(pop, CANON.pops as readonly string[])) {
     throw new Error(`runClickhouseTriage: invalid pop '${inputs.pop}'`);
   }
-  if (
-    contentType !== "all" &&
-    !isCanon(contentType, CANON.contentTypes as readonly string[])
-  ) {
+  if (contentType !== "all" && !isCanon(contentType, CANON.contentTypes as readonly string[])) {
     throw new Error(`runClickhouseTriage: invalid contentType '${inputs.contentType}'`);
   }
-  if (
-    uaFamily !== "all" &&
-    !isCanon(uaFamily, CANON.uaFamilies as readonly string[])
-  ) {
+  if (uaFamily !== "all" && !isCanon(uaFamily, CANON.uaFamilies as readonly string[])) {
     throw new Error(`runClickhouseTriage: invalid uaFamily '${inputs.uaFamily}'`);
   }
 
+  const win = Number(inputs.windowMinutes);
+  if (!Number.isFinite(win) || win <= 0) {
+    throw new Error(`runClickhouseTriage: invalid windowMinutes '${inputs.windowMinutes}'`);
+  }
+
   // 8C: dataset is backfilled/old → anchor window to max(ts) by default
-  // (Later we can add a switch to use now() when ingest is real-time.)
   const anchorToMaxTs = true;
 
   // ✅ ALWAYS build canonical SQL first
@@ -108,7 +190,7 @@ export async function runClickhouseTriage(
     pop,
     contentType,
     uaFamily,
-    windowMinutes: inputs.windowMinutes,
+    windowMinutes: win,
     anchorToMaxTs,
   } as any);
 
@@ -121,30 +203,45 @@ export async function runClickhouseTriage(
     pop,
     contentType,
     uaFamily,
+    windowMinutes: win,
   });
 
   const summary = String(raw?.summary ?? raw?.summaryText ?? "");
-  const metricsJson = raw?.metricsJson ?? null;
   const evidence = raw?.evidence ?? undefined;
 
   // If mock runner supplies SQL, ignore it in favor of canonical builder SQL.
   const _mockSql = normalizeSql(raw);
   void _mockSql;
 
-  // ✅ annotate debug so API output proves clock mode + canonical normalization
-  if (metricsJson && typeof metricsJson === "object") {
-    const dbg =
-      metricsJson.debug && typeof metricsJson.debug === "object" ? metricsJson.debug : {};
-    dbg.partner = partner;
-    dbg.anchorToMaxTs = anchorToMaxTs;
-    metricsJson.debug = dbg;
-  }
+  // ✅ Normalize metricsJson to the UI contract
+  // Prefer raw.metricsJson if present, else allow raw to be metrics itself.
+  const baseMetrics = raw?.metricsJson ?? raw ?? {};
+  const normalizedMetrics = normalizeMetricsToUiShape(baseMetrics, {
+    partner,
+    service,
+    region,
+    pop,
+    contentType,
+    uaFamily,
+    windowMinutes: win,
+    anchorToMaxTs,
+  });
+
+  // If summary is empty, give a tiny deterministic summary so the card isn't blank.
+  const finalSummary =
+    summary ||
+    `Triage: partner=${partner} service=${service} region=${region} pop=${pop} win=${win}m ct=${contentType} ua=${uaFamily}\n` +
+      `requests=${normalizedMetrics.totalRequests} p95=${Math.round(
+        normalizedMetrics.p95TtmsMs
+      )}ms 5xx=${normalizedMetrics.error5xxCount} (${Number(
+        normalizedMetrics.errorRatePct
+      ).toFixed(2)}%)`;
 
   return {
-    summary,
-    metricsJson,
+    summary: finalSummary,
+    summaryText: finalSummary, // legacy
+    metricsJson: normalizedMetrics,
     evidence,
     sql: { queries: built.queries, params: built.params },
-    summaryText: summary, // legacy
   };
 }

@@ -1,3 +1,4 @@
+// ui/app/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -6,10 +7,11 @@ import type { TriageResponse } from "@/lib/triage/contracts";
 import { CANON } from "@/lib/schema/canonical";
 
 // ------------------------------------------------------------
-// Home page (/) — Chat-first, dark theme, ClickHouse-first
-// Keeps /debug as legacy page (unchanged).
-// Keeps /demo unchanged.
-// Keeps /api/triage unchanged.
+// Home page (/) — Deterministic v1 (Option A)
+// - Single deterministic behavior (Run + cards)
+// - No LLM mode / no schema modal
+// - Keep /debug as legacy page (unchanged)
+// - Keep schema fetch silently (dropdown options)
 // ------------------------------------------------------------
 
 const LOGO_SRC = "/cachey-logo.png";
@@ -26,7 +28,6 @@ type Partner = (typeof CANON.partners)[number];
 type PartnerOrMissing = Partner | "";
 
 type DataSource = "clickhouse";
-type ChatMode = "deterministic" | "llm";
 
 type TriageInputs = {
   dataSource: DataSource;
@@ -35,6 +36,10 @@ type TriageInputs = {
   region: string; // "all" | canon region
   pop: string; // "all" | canon pop
   windowMinutes: number;
+
+  // schema-aligned filters
+  contentType: string; // all|manifest|segment|api
+  uaFamily: string; // all|stb|mobile|web|smart_tv|console
 };
 
 type ChatText = {
@@ -54,6 +59,7 @@ type ChatTriage = {
     inputs: TriageInputs;
     summaryText: string;
     metricsJson: any;
+    sql?: any | null;
   };
 };
 
@@ -253,8 +259,7 @@ function StackedBarTimeseries({
   const basePoints = (ts.points || []).slice(-maxBars);
   const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
 
-  const points =
-    zoom && zoom.end > zoom.start ? basePoints.slice(zoom.start, zoom.end + 1) : basePoints;
+  const points = zoom && zoom.end > zoom.start ? basePoints.slice(zoom.start, zoom.end + 1) : basePoints;
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({
@@ -276,10 +281,7 @@ function StackedBarTimeseries({
     .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
     .map(([k]) => k);
 
-  const ordered = [
-    ...seriesKeys.filter((k) => present.has(k)),
-    ...presentKeys.filter((k) => !seriesKeys.includes(k)),
-  ];
+  const ordered = [...seriesKeys.filter((k) => present.has(k)), ...presentKeys.filter((k) => !seriesKeys.includes(k))];
 
   const keys = ordered.slice(0, 10);
   if (!keys.length) return null;
@@ -306,9 +308,7 @@ function StackedBarTimeseries({
   const barW = Math.max(4, Math.floor((plotW - gap * (barCount - 1)) / barCount));
 
   const yTicks = 4;
-  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
-    Math.round((maxTotal * (yTicks - i)) / yTicks)
-  );
+  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) => Math.round((maxTotal * (yTicks - i)) / yTicks));
 
   const xLabelEvery = Math.max(1, Math.floor(points.length / 6));
   const latest = points[points.length - 1];
@@ -346,19 +346,13 @@ function StackedBarTimeseries({
           <div className="text-sm font-semibold text-gray-100">{title}</div>
           <div className="text-[11px] text-gray-400 mt-1">
             {ts.startTs && ts.endTs
-              ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(ts.endTs)} UTC (bucket: ${bucketLabel(
-                  bucketSeconds
-                )})`
+              ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(ts.endTs)} UTC (bucket: ${bucketLabel(bucketSeconds)})`
               : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
           </div>
           <div className="text-[11px] text-gray-500 mt-1">
             Drag to zoom • double-click to reset
             {zoom ? (
-              <button
-                type="button"
-                className="ml-2 underline hover:text-gray-300"
-                onClick={() => setZoom(null)}
-              >
+              <button type="button" className="ml-2 underline hover:text-gray-300" onClick={() => setZoom(null)}>
                 reset zoom
               </button>
             ) : null}
@@ -375,10 +369,10 @@ function StackedBarTimeseries({
 
       <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
         <svg
-          ref={svgRef}
           viewBox={`0 0 ${w} ${h}`}
           className="w-full"
           style={{ height, touchAction: "none", cursor: "crosshair" }}
+          ref={svgRef}
           onDoubleClick={() => setZoom(null)}
           onPointerDown={(e) => {
             const sx = toSvgX(e.clientX);
@@ -621,7 +615,9 @@ function LatencyTimeseriesLines({
           <div className="text-xs text-gray-400">Latest</div>
           <div className="text-[11px] text-gray-200">
             {latest
-              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(latest.p95TtmsMs)} • p99=${formatMsOrNA(latest.p99TtmsMs)}`
+              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(latest.p95TtmsMs)} • p99=${formatMsOrNA(
+                  latest.p99TtmsMs
+                )}`
               : "n/a"}
           </div>
         </div>
@@ -750,7 +746,7 @@ function LatencyTimeseriesLines({
 export default function Home() {
   const [mounted, setMounted] = useState(false);
 
-  // sticky partner (DB IDs only)
+  // sticky partner
   const [partner, setPartner] = useState<PartnerOrMissing>("partner_01");
   function setPartnerSticky(p: string) {
     const v = String(p || "").trim();
@@ -761,31 +757,23 @@ export default function Home() {
     }
   }
 
-  // chat mode (keep existing behavior)
-  const [chatMode, setChatMode] = useState<ChatMode>("deterministic");
-
   // UI state
-  const [schemaOpen, setSchemaOpen] = useState(false);
-
-  // IMPORTANT: split loading states (chat vs triage)
-  const [isChatLoading, setIsChatLoading] = useState(false);
   const [isTriageLoading, setIsTriageLoading] = useState(false);
-  const isLoading = isChatLoading || isTriageLoading;
+  const isLoading = isTriageLoading;
 
   // Filters UX: collapsible panel + staged selections
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filtersDirty, setFiltersDirty] = useState(false);
 
-  // Schema state (loaded once on mount)
+  // Schema state (loaded once on mount) — SILENT
   const [schemaState, setSchemaState] = useState<SchemaState>({
     partners: [...CANON.partners],
     services: [...CANON.services],
     regions: [...CANON.regions],
     pops: [...CANON.pops],
-    contentTypes: [...CANON.contentTypes],
-    uaFamilies: [...CANON.uaFamilies],
+    contentTypes: ["all", ...CANON.contentTypes],
+    uaFamilies: ["all", ...CANON.uaFamilies],
   });
-  const [schemaSource, setSchemaSource] = useState<string>("unknown");
 
   // Chat
   const [chatInput, setChatInput] = useState("");
@@ -800,26 +788,23 @@ export default function Home() {
   const [runLogOpen, setRunLogOpen] = useState(false);
   const [runLog, setRunLog] = useState<Array<{ ts: string; text: string }>>([]);
 
-  // rate limit banner state
-  const [rateLimit, setRateLimit] = useState<null | {
-    msgId: string;
-    untilMs: number;
-    retryAfterMs: number;
-    lastUserText: string;
-  }>(null);
-  const [rateLimitRemainingMs, setRateLimitRemainingMs] = useState<number>(0);
-
   // current filters (applied)
   const [service, setService] = useState<string>("");
   const [region, setRegion] = useState<string>("all");
   const [pop, setPop] = useState<string>("all");
   const [windowMinutes, setWindowMinutes] = useState<number>(120);
 
+  // extra filters
+  const [contentType, setContentType] = useState<string>("all");
+  const [uaFamily, setUaFamily] = useState<string>("all");
+
   // staged filters (draft UI selections before Apply)
   const [draftService, setDraftService] = useState<string>("");
   const [draftRegion, setDraftRegion] = useState<string>("all");
   const [draftPop, setDraftPop] = useState<string>("all");
   const [draftWindowMinutes, setDraftWindowMinutes] = useState<number>(120);
+  const [draftContentType, setDraftContentType] = useState<string>("all");
+  const [draftUaFamily, setDraftUaFamily] = useState<string>("all");
 
   useEffect(() => setMounted(true), []);
 
@@ -846,7 +831,8 @@ export default function Home() {
     region: string;
     pop: string;
     windowMinutes: number;
-    chatMode: ChatMode;
+    contentType: string;
+    uaFamily: string;
   }) {
     safeSetLS(
       FILTERS_KEY,
@@ -891,14 +877,21 @@ export default function Home() {
         setDraftWindowMinutes(w);
       }
 
-      const cm = String(ttl.chatMode || "").trim();
-      if (cm === "deterministic" || cm === "llm") setChatMode(cm);
+      const ct = String(ttl.contentType || "all").trim() || "all";
+      setContentType(ct);
+      setDraftContentType(ct);
+
+      const ua = String(ttl.uaFamily || "all").trim() || "all";
+      setUaFamily(ua);
+      setDraftUaFamily(ua);
     } else {
       // initialize drafts from defaults
       setDraftService(service);
       setDraftRegion(region);
       setDraftPop(pop);
       setDraftWindowMinutes(windowMinutes);
+      setDraftContentType(contentType);
+      setDraftUaFamily(uaFamily);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted]);
@@ -912,12 +905,13 @@ export default function Home() {
       region,
       pop,
       windowMinutes,
-      chatMode,
+      contentType,
+      uaFamily,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mounted, partner, service, region, pop, windowMinutes, chatMode]);
+  }, [mounted, partner, service, region, pop, windowMinutes, contentType, uaFamily]);
 
-  // Load schema once on mount (drives dropdowns)
+  // Load schema once on mount (drives dropdowns) — SILENT
   useEffect(() => {
     if (!mounted) return;
     (async () => {
@@ -927,41 +921,24 @@ export default function Home() {
         if (!resp.ok || !json?.ok || !json?.schema) return;
 
         const s = json.schema as SchemaState;
-        setSchemaState({
+        const next: SchemaState = {
           partners: Array.isArray(s.partners) ? s.partners.map(String) : [...CANON.partners],
           services: Array.isArray(s.services) ? s.services.map(String) : [...CANON.services],
           regions: Array.isArray(s.regions) ? s.regions.map(String) : [...CANON.regions],
           pops: Array.isArray(s.pops) ? s.pops.map(String) : [...CANON.pops],
-          contentTypes: Array.isArray(s.contentTypes) ? s.contentTypes.map(String) : [...CANON.contentTypes],
-          uaFamilies: Array.isArray(s.uaFamilies) ? s.uaFamilies.map(String) : [...CANON.uaFamilies],
-        });
-        setSchemaSource(String(json.source || "unknown"));
+          contentTypes: Array.isArray(s.contentTypes) ? s.contentTypes.map(String) : ["all", ...CANON.contentTypes],
+          uaFamilies: Array.isArray(s.uaFamilies) ? s.uaFamilies.map(String) : ["all", ...CANON.uaFamilies],
+        };
+
+        if (!next.contentTypes.includes("all")) next.contentTypes = ["all", ...next.contentTypes];
+        if (!next.uaFamilies.includes("all")) next.uaFamilies = ["all", ...next.uaFamilies];
+
+        setSchemaState(next);
       } catch {
         // keep CANON defaults
       }
     })();
   }, [mounted]);
-
-  function clearRateLimit() {
-    setRateLimit(null);
-    setRateLimitRemainingMs(0);
-  }
-
-  function fmtCountdown(ms: number) {
-    const s = Math.max(0, Math.ceil(ms / 1000));
-    return `${s}s`;
-  }
-
-  useEffect(() => {
-    if (!rateLimit) return;
-    const tick = () => {
-      const left = Math.max(0, rateLimit.untilMs - Date.now());
-      setRateLimitRemainingMs(left);
-    };
-    tick();
-    const id = setInterval(tick, 250);
-    return () => clearInterval(id);
-  }, [rateLimit]);
 
   // welcome message once
   useEffect(() => {
@@ -975,11 +952,11 @@ export default function Home() {
         role: "system",
         ts: nowIso(),
         text:
-          "Cachey 🤖 — chat-first triage.\n\n" +
-          "Pick a partner + service (sticky), then ask:\n" +
-          "- `how was live last 2h`\n" +
-          "- `vod in pop_010 last night`\n\n" +
-          "Tip: Use Filters → Apply, then Run to execute triage.",
+          "Cachey 🤖 — deterministic triage.\n\n" +
+          "Pick a partner + service, then:\n" +
+          "- Apply filters\n" +
+          "- Run triage\n\n" +
+          "Send box is a shortcut: it logs what you typed and triggers Run using the applied filters.",
       },
     ]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -996,7 +973,7 @@ export default function Home() {
     }
   }, [chatMessages]);
 
-  // Dropdown options are schema-driven (NOT triage-driven)
+  // Dropdown options are schema-driven
   const availableRegions: string[] = useMemo(() => {
     const uniq = Array.from(new Set((schemaState.regions || []).map((x) => String(x || "").trim()).filter(Boolean))).sort(
       (a, b) => a.localeCompare(b)
@@ -1010,6 +987,20 @@ export default function Home() {
     );
     return ["all", ...uniq];
   }, [schemaState.pops]);
+
+  const availableContentTypes: string[] = useMemo(() => {
+    const uniq = Array.from(
+      new Set((schemaState.contentTypes || []).map((x) => String(x || "").trim()).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b));
+    return uniq.includes("all") ? uniq : ["all", ...uniq];
+  }, [schemaState.contentTypes]);
+
+  const availableUaFamilies: string[] = useMemo(() => {
+    const uniq = Array.from(
+      new Set((schemaState.uaFamilies || []).map((x) => String(x || "").trim()).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b));
+    return uniq.includes("all") ? uniq : ["all", ...uniq];
+  }, [schemaState.uaFamilies]);
 
   // Parse metricsJson.timeseries into TimeseriesData
   function parseTimeseries(metricsJson: any): TimeseriesData | null {
@@ -1045,71 +1036,6 @@ export default function Home() {
     setRunLog((prev) => [...prev.slice(-80), { ts: nowIso(), text }]);
   }
 
-  // /api/triage call (unchanged backend)
-  async function runTriage(inputs: TriageInputs) {
-    const formData = new FormData();
-    formData.append("dataSource", inputs.dataSource);
-    formData.append("partner", inputs.partner || "");
-    formData.append("csvUrl", "");
-    formData.append("service", inputs.service);
-    formData.append("region", inputs.region);
-    formData.append("pop", inputs.pop);
-    formData.append("windowMinutes", String(inputs.windowMinutes));
-
-    const response = await fetch("/api/triage", { method: "POST", body: formData });
-    const data = (await response.json().catch(() => null)) as TriageResponse | null;
-
-    if (!response.ok) {
-      const msg = data && !data.ok ? data.error : `Triage failed (HTTP ${response.status})`;
-      throw new Error(msg);
-    }
-    if (!data) throw new Error("Triage failed (empty response)");
-    if (!data.ok) throw new Error(data.error);
-
-    return {
-      summaryText: (data as any).summaryText ?? (data as any).summary ?? "",
-      metricsJson: (data as any).metricsJson ?? null,
-    };
-  }
-
-  // /api/chat call (kept)
-  async function callChatApi(userText: string) {
-    const wireMsgs = chatMessages
-      .filter((m): m is ChatText => m.type === "text")
-      .slice(-12)
-      .map((m) => ({ role: m.role, content: m.text }));
-
-    wireMsgs.push({ role: "user", content: userText });
-
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: wireMsgs,
-        context: {
-          mode: "clickhouse",
-          chatMode,
-          availableRegions,
-          availablePops,
-          availablePartners: Array.from(PARTNER_OPTIONS),
-          currentFilters: {
-            dataSource: "clickhouse",
-            partner,
-            service,
-            region,
-            pop,
-            windowMinutes,
-          },
-        },
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    if (!json) throw new Error("api/chat returned non-JSON");
-    return json as any;
-  }
-
-  // add message helpers
   function addText(role: ChatText["role"], text: string) {
     const id = `${Date.now()}-${Math.random()}`;
     const msg: ChatText = { id, type: "text", role, ts: nowIso(), text };
@@ -1130,162 +1056,76 @@ export default function Home() {
     ]);
   }
 
+  function isAllowed(val: string, allowed: string[]) {
+    const v = String(val ?? "").trim();
+    if (!v) return false;
+    return allowed.includes(v);
+  }
+
   function applyDraftFilters() {
     // validate service
     const s = String(draftService || "").trim();
-    if (!s) return { ok: false, error: "Pick a service before Apply." };
-    if (!(SERVICE_OPTIONS as readonly string[]).includes(s)) return { ok: false, error: "Invalid service selection." };
+    if (!s) return { ok: false as const, error: "Pick a service before Apply." };
+    if (!(SERVICE_OPTIONS as readonly string[]).includes(s)) return { ok: false as const, error: "Invalid service selection." };
+
+    // validate contentType/uaFamily
+    const ct = String(draftContentType || "all").trim() || "all";
+    const ua = String(draftUaFamily || "all").trim() || "all";
+
+    const allowedCT = availableContentTypes.length ? availableContentTypes : ["all", "manifest", "segment", "api"];
+    const allowedUA = availableUaFamilies.length ? availableUaFamilies : ["all", "stb", "mobile", "web", "smart_tv", "console"];
+
+    if (!isAllowed(ct, allowedCT)) return { ok: false as const, error: "Invalid contentType selection." };
+    if (!isAllowed(ua, allowedUA)) return { ok: false as const, error: "Invalid uaFamily selection." };
 
     // apply
     setService(s);
     setRegion(String(draftRegion || "all"));
     setPop(String(draftPop || "all"));
     setWindowMinutes(Number(draftWindowMinutes) || 120);
+    setContentType(ct);
+    setUaFamily(ua);
 
     setFiltersDirty(false);
     setFiltersOpen(false);
-    pushRunLog(`Applied filters: svc=${s} region=${draftRegion} pop=${draftPop} win=${draftWindowMinutes}m`);
+
+    pushRunLog(`Applied filters: svc=${s} region=${draftRegion} pop=${draftPop} win=${draftWindowMinutes}m ct=${ct} ua=${ua}`);
     return { ok: true as const };
   }
 
-  async function sendUserText(userText: string, opts?: { appendUser?: boolean }) {
-    const appendUser = opts?.appendUser !== false;
-    if (!userText.trim() || isLoading) return;
+  // One deterministic triage call
+  async function runTriage(inputs: TriageInputs) {
+    const formData = new FormData();
 
-    setIsChatLoading(true);
-    setTyping(true);
+    formData.append("dataSource", inputs.dataSource);
+    formData.append("partner", inputs.partner || "");
+    formData.append("csvUrl", ""); // harmless legacy
+    formData.append("service", inputs.service);
+    formData.append("region", inputs.region);
+    formData.append("pop", inputs.pop);
+    formData.append("windowMinutes", String(inputs.windowMinutes));
+    formData.append("contentType", String(inputs.contentType || "all"));
+    formData.append("uaFamily", String(inputs.uaFamily || "all"));
 
-    if (appendUser) {
-      const userMsg: ChatText = {
-        id: `${Date.now()}-${Math.random()}`,
-        type: "text",
-        role: "user",
-        ts: nowIso(),
-        text: userText,
-      };
-      setChatMessages((prev) => [...prev, userMsg]);
+    if (process.env.NODE_ENV !== "production") {
+      formData.append("debug", "true");
     }
 
-    if (!partner) {
-      addText("assistant", `Pick a partner first. (${PARTNER_OPTIONS.join(", ")})`);
-      setTyping(false);
-      setIsChatLoading(false);
-      return;
+    const response = await fetch("/api/triage", { method: "POST", body: formData });
+    const data = (await response.json().catch(() => null)) as TriageResponse | null;
+
+    if (!response.ok) {
+      const msg = data && !data.ok ? (data as any).error : `Triage failed (HTTP ${response.status})`;
+      throw new Error(msg);
     }
-    if (!service) {
-      addText("assistant", `Pick a service first and hit Filters → Apply. (${SERVICE_OPTIONS.join(", ")})`);
-      setTyping(false);
-      setIsChatLoading(false);
-      return;
-    }
+    if (!data) throw new Error("Triage failed (empty response)");
+    if (!data.ok) throw new Error((data as any).error);
 
-    try {
-      const out = await callChatApi(userText);
-
-      if (out?.rateLimited) {
-        const assistantId = addText(
-          "assistant",
-          String(out?.reply || "LLM is rate-limited. Try again shortly or switch to Deterministic.")
-        );
-        const retryAfter = Number(out?.retryAfterMs ?? 45000);
-        const untilMs = Date.now() + (Number.isFinite(retryAfter) ? retryAfter : 45000);
-        setRateLimit({
-          msgId: assistantId,
-          untilMs,
-          retryAfterMs: retryAfter,
-          lastUserText: userText,
-        });
-        setTyping(false);
-        setIsChatLoading(false);
-        return;
-      }
-
-      if (out?.kind === "general") {
-        addText("assistant", String(out.reply || "Got it."));
-        clearRateLimit();
-        setTyping(false);
-        setIsChatLoading(false);
-        return;
-      }
-
-      const nextService = String(out?.serviceHint ?? service);
-      const nextRegion = String(out?.regionHint ?? region);
-      const nextPop = String(out?.popHint ?? pop);
-      const nextWindow = Number(out?.windowHint ?? windowMinutes);
-
-      // Only adopt hints if valid
-      if (out?.serviceHint && (SERVICE_OPTIONS as readonly string[]).includes(nextService)) {
-        setService(nextService);
-        setDraftService(nextService);
-      }
-      if (out?.regionHint) {
-        setRegion(nextRegion);
-        setDraftRegion(nextRegion);
-      }
-      if (out?.popHint) {
-        setPop(nextPop);
-        setDraftPop(nextPop);
-      }
-      if (Number.isFinite(nextWindow) && nextWindow > 0) {
-        setWindowMinutes(nextWindow);
-        setDraftWindowMinutes(nextWindow);
-      }
-
-      const pHint = String(out?.partnerHint || "").trim();
-      if (pHint && (PARTNER_OPTIONS as readonly string[]).includes(pHint)) {
-        setPartnerSticky(pHint);
-      }
-
-      if (out?.needsPartnerQuestion) {
-        addText("assistant", String(out.partnerQuestion || "Which partner?"));
-        clearRateLimit();
-        setTyping(false);
-        setIsChatLoading(false);
-        return;
-      }
-
-      pushRunLog(`Chat requested triage: partner=${partner} svc=${nextService} region=${nextRegion} pop=${nextPop} win=${nextWindow}m`);
-
-      const data = await runTriage({
-        dataSource: "clickhouse",
-        partner,
-        service: nextService,
-        region: nextRegion,
-        pop: nextPop,
-        windowMinutes: Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
-      });
-
-      addTriageCard({
-        inputs: {
-          dataSource: "clickhouse",
-          partner,
-          service: nextService,
-          region: nextRegion,
-          pop: nextPop,
-          windowMinutes: Number.isFinite(nextWindow) && nextWindow > 0 ? nextWindow : windowMinutes,
-        },
-        summaryText: data.summaryText || "",
-        metricsJson: data.metricsJson || null,
-      });
-
-      clearRateLimit();
-    } catch (e: any) {
-      const msg = e?.message || "Chat/Triage failed";
-      addText(
-        "assistant",
-        `Chat failed: ${msg}\n\nIf LLM is down, switch to Deterministic and run:\n- \`live region=us-east pop=pop_003 last 2h\`\n- \`service=vod win=720\``
-      );
-    } finally {
-      setTyping(false);
-      setIsChatLoading(false);
-    }
-  }
-
-  async function handleSend() {
-    const text = chatInput.trim();
-    if (!text) return;
-    setChatInput("");
-    await sendUserText(text, { appendUser: true });
+    return {
+      summaryText: (data as any).summaryText ?? (data as any).summary ?? "",
+      metricsJson: (data as any).metricsJson ?? null,
+      sql: (data as any).sql ?? null,
+    };
   }
 
   // Run triage directly from applied filters
@@ -1297,7 +1137,7 @@ export default function Home() {
       return;
     }
     if (!service) {
-      addText("assistant", `Pick a service first. (${SERVICE_OPTIONS.join(", ")})`);
+      addText("assistant", `Pick a service first. (Filters → Apply) (${SERVICE_OPTIONS.join(", ")})`);
       return;
     }
 
@@ -1305,7 +1145,9 @@ export default function Home() {
     setTyping(true);
 
     try {
-      pushRunLog(`Running triage (filters): partner=${partner} svc=${service} region=${region} pop=${pop} win=${windowMinutes}m`);
+      pushRunLog(
+        `Running triage: partner=${partner} svc=${service} region=${region} pop=${pop} win=${windowMinutes}m ct=${contentType} ua=${uaFamily}`
+      );
 
       const data = await runTriage({
         dataSource: "clickhouse",
@@ -1314,12 +1156,15 @@ export default function Home() {
         region,
         pop,
         windowMinutes,
+        contentType,
+        uaFamily,
       });
 
       addTriageCard({
-        inputs: { dataSource: "clickhouse", partner, service, region, pop, windowMinutes },
+        inputs: { dataSource: "clickhouse", partner, service, region, pop, windowMinutes, contentType, uaFamily },
         summaryText: data.summaryText || "",
         metricsJson: data.metricsJson || null,
+        sql: data.sql ?? null,
       });
     } catch (e: any) {
       addText("assistant", `Triage failed: ${e?.message || "unknown error"}`);
@@ -1327,6 +1172,16 @@ export default function Home() {
       setTyping(false);
       setIsTriageLoading(false);
     }
+  }
+
+  // Composer: log text, then run using applied filters
+  async function handleSend() {
+    const text = chatInput.trim();
+    if (!text || isLoading) return;
+    setChatInput("");
+
+    addText("user", text);
+    await handleRunFromFilters();
   }
 
   function MetricChips({ metricsJson }: { metricsJson: any }) {
@@ -1357,9 +1212,48 @@ export default function Home() {
     );
   }
 
+  function buildSummaryFallback(run: ChatTriage["run"]) {
+    const m = run.metricsJson || {};
+    const totalRequests = Number(m.totalRequests) || 0;
+    const p95 = m.p95TtmsMs == null ? null : Number(m.p95TtmsMs);
+    const p99 = m.p99TtmsMs == null ? null : Number(m.p99TtmsMs);
+    const err5xx = m.error5xxCount == null ? null : Number(m.error5xxCount);
+
+    const errPct =
+      m.errorRatePct != null && Number.isFinite(Number(m.errorRatePct))
+        ? Number(m.errorRatePct)
+        : totalRequests > 0 && err5xx != null
+        ? (Number(err5xx) / totalRequests) * 100
+        : null;
+
+    // Simple demo-safe health thresholds
+    const p95ms = p95 == null ? null : Number(p95);
+    const errp = errPct == null ? null : Number(errPct);
+
+    let health = "GREEN";
+    if ((errp != null && errp >= 1.0) || (p95ms != null && p95ms >= 1500)) health = "RED";
+    else if ((errp != null && errp >= 0.2) || (p95ms != null && p95ms >= 500)) health = "AMBER";
+
+    const scope = `Scope: ${run.inputs.partner || "—"} / ${run.inputs.service} / region=${run.inputs.region} / pop=${run.inputs.pop} / win=${run.inputs.windowMinutes}m / ct=${run.inputs.contentType} / ua=${run.inputs.uaFamily}`;
+    const traffic = `Traffic: ${formatIntOrNA(totalRequests)} requests`;
+    const latency = `Latency: p95=${formatMsOrNA(p95)} • p99=${formatMsOrNA(p99)}`;
+    const errors = `Errors: 5xx=${err5xx == null ? "n/a" : formatIntOrNA(err5xx)} • 5xx%=${formatPctOrNA(errPct)}`;
+    const h = `Health: ${health}`;
+
+    return [scope, traffic, latency, errors, h].join("\n");
+  }
+
   function TriageCard({ run }: { run: ChatTriage["run"] }) {
     const ts = parseTimeseries(run.metricsJson);
     const bucketSeconds = ts?.bucketSeconds ?? run.metricsJson?.timeseries?.bucketSeconds ?? null;
+
+    const summary = String(run.summaryText || "").trim();
+    const summaryText = summary ? summary : buildSummaryFallback(run);
+
+    const pointsCount = ts?.points?.length ?? 0;
+    const debug = run.metricsJson?.debug ?? null;
+    const normalizedFrom = debug?.normalizedFrom ?? debug?.normalized_from ?? null;
+    const normalizedAt = debug?.normalizedAt ?? debug?.normalized_at ?? null;
 
     return (
       <div className="triage-enter rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] space-y-3">
@@ -1367,7 +1261,8 @@ export default function Home() {
           <div className="min-w-0">
             <div className="text-xs text-gray-400">Triage result</div>
             <div className="text-sm font-semibold text-gray-100 truncate">
-              partner={run.inputs.partner} • svc={run.inputs.service} • region={run.inputs.region} • pop={run.inputs.pop} • win={run.inputs.windowMinutes}m
+              partner={run.inputs.partner} • svc={run.inputs.service} • region={run.inputs.region} • pop={run.inputs.pop} • win=
+              {run.inputs.windowMinutes}m • ct={run.inputs.contentType} • ua={run.inputs.uaFamily}
             </div>
             {ts?.startTs && ts?.endTs ? (
               <div className="text-[11px] text-gray-500 mt-1">
@@ -1382,7 +1277,7 @@ export default function Home() {
 
         <div className="rounded-xl border border-white/10 bg-black/30 p-3">
           <div className="text-xs text-gray-400 mb-2">Summary</div>
-          <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">{run.summaryText || "(no summary)"}</pre>
+          <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">{summaryText}</pre>
         </div>
 
         {ts && ts.points.length > 0 ? (
@@ -1397,12 +1292,7 @@ export default function Home() {
               height={190}
               windowMinutes={run.inputs.windowMinutes}
             />
-            <LatencyTimeseriesLines
-              points={ts.points}
-              bucketSeconds={bucketSeconds}
-              height={190}
-              windowMinutes={run.inputs.windowMinutes}
-            />
+            <LatencyTimeseriesLines points={ts.points} bucketSeconds={bucketSeconds} height={190} windowMinutes={run.inputs.windowMinutes} />
             <StackedBarTimeseries
               title="Host (stacked)"
               subtitle="Traffic timeseries"
@@ -1425,17 +1315,46 @@ export default function Home() {
             />
           </div>
         ) : (
-          <div className="text-sm text-gray-400">No timeseries returned.</div>
+          <div className="text-sm text-gray-400">Timeseries: 0 points (aggregate-only).</div>
         )}
 
         <details className="rounded-xl border border-white/10 bg-black/20 p-3">
-          <summary className="cursor-pointer text-sm text-gray-200">Evidence (placeholder)</summary>
-          <div className="text-xs text-gray-400 mt-2">Placeholder for deterministic trace / evidence list.</div>
+          <summary className="cursor-pointer text-sm text-gray-200">Deterministic Evidence</summary>
+          <div className="mt-3 space-y-3">
+            <div>
+              <div className="text-[11px] text-gray-400 mb-1">Inputs</div>
+              <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3">
+                {JSON.stringify(run.inputs, null, 2)}
+              </pre>
+            </div>
+
+            <div className="text-xs text-gray-300">
+              <span className="text-gray-400">Timeseries points:</span> <span className="font-semibold">{pointsCount}</span>
+            </div>
+
+            {normalizedFrom || normalizedAt ? (
+              <div className="text-xs text-gray-300">
+                <span className="text-gray-400">Normalization:</span>{" "}
+                {normalizedFrom ? <span className="font-semibold">from={String(normalizedFrom)} </span> : null}
+                {normalizedAt ? <span className="font-semibold">at={String(normalizedAt)}</span> : null}
+              </div>
+            ) : (
+              <div className="text-xs text-gray-500">Normalization stamps not provided by API.</div>
+            )}
+          </div>
         </details>
 
         <details className="rounded-xl border border-white/10 bg-black/20 p-3">
-          <summary className="cursor-pointer text-sm text-gray-200">SQL Query (placeholder)</summary>
-          <div className="text-xs text-gray-400 mt-2">Placeholder for SQL text + copy button.</div>
+          <summary className="cursor-pointer text-sm text-gray-200">SQL Query</summary>
+          <div className="mt-3">
+            {run.sql ? (
+              <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3">
+                {typeof run.sql === "string" ? run.sql : JSON.stringify(run.sql, null, 2)}
+              </pre>
+            ) : (
+              <div className="text-xs text-gray-500">No SQL returned by API (will be added in v2).</div>
+            )}
+          </div>
         </details>
 
         <style jsx>{`
@@ -1468,8 +1387,10 @@ export default function Home() {
     chips.push({ k: "region", v: region || "all" });
     chips.push({ k: "pop", v: pop || "all" });
     chips.push({ k: "win", v: `${windowMinutes}m` });
+    chips.push({ k: "ct", v: contentType || "all" });
+    chips.push({ k: "ua", v: uaFamily || "all" });
     return chips;
-  }, [partner, service, region, pop, windowMinutes]);
+  }, [partner, service, region, pop, windowMinutes, contentType, uaFamily]);
 
   return (
     <main className="min-h-screen bg-black text-gray-100">
@@ -1483,9 +1404,7 @@ export default function Home() {
               <div className="font-semibold text-lg text-white leading-tight">
                 Cachey <span className="text-gray-400">🤖</span>
               </div>
-              <div className="text-xs text-gray-400">
-                Chat-first triage • schema: <span className="text-gray-200">{schemaSource}</span>
-              </div>
+              <div className="text-xs text-gray-400">Deterministic triage • ClickHouse path</div>
             </div>
 
             <div className="ml-auto flex items-center gap-2">
@@ -1499,39 +1418,6 @@ export default function Home() {
               >
                 Filters{filtersDirty ? <span className="ml-2 text-[11px] text-amber-300">(draft)</span> : null}
               </button>
-
-              <button
-                type="button"
-                onClick={() => setSchemaOpen(true)}
-                className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
-                title="Schema helper"
-              >
-                Schema
-              </button>
-
-              <div className="inline-flex rounded-full border border-white/10 bg-white/5 p-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setChatMode("deterministic");
-                    clearRateLimit();
-                  }}
-                  className={`px-3 py-1 text-xs rounded-full ${
-                    chatMode === "deterministic" ? "bg-white/15 text-white" : "text-gray-300 hover:text-white"
-                  }`}
-                >
-                  Deterministic
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setChatMode("llm")}
-                  className={`px-3 py-1 text-xs rounded-full ${
-                    chatMode === "llm" ? "bg-white/15 text-white" : "text-gray-300 hover:text-white"
-                  }`}
-                >
-                  LLM
-                </button>
-              </div>
 
               <a
                 href="/debug"
@@ -1593,6 +1479,8 @@ export default function Home() {
                       setDraftRegion(region);
                       setDraftPop(pop);
                       setDraftWindowMinutes(windowMinutes);
+                      setDraftContentType(contentType);
+                      setDraftUaFamily(uaFamily);
                       setFiltersDirty(false);
                     }}
                     className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
@@ -1609,7 +1497,7 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="mt-4 grid grid-cols-1 md:grid-cols-5 gap-3">
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-7 gap-3">
                 {/* Partner */}
                 <div className="min-w-0">
                   <div className="text-xs text-gray-400 mb-1">Partner</div>
@@ -1711,12 +1599,50 @@ export default function Home() {
                     ))}
                   </select>
                 </div>
+
+                {/* contentType (draft) */}
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-400 mb-1">ContentType</div>
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                    value={draftContentType}
+                    onChange={(e) => {
+                      setDraftContentType(String(e.target.value || "all"));
+                      setFiltersDirty(true);
+                    }}
+                    disabled={!mounted}
+                  >
+                    {availableContentTypes.map((ct) => (
+                      <option key={ct} value={ct} className="bg-black">
+                        {ct}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* uaFamily (draft) */}
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-400 mb-1">UA Family</div>
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                    value={draftUaFamily}
+                    onChange={(e) => {
+                      setDraftUaFamily(String(e.target.value || "all"));
+                      setFiltersDirty(true);
+                    }}
+                    disabled={!mounted}
+                  >
+                    {availableUaFamilies.map((ua) => (
+                      <option key={ua} value={ua} className="bg-black">
+                        {ua}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="text-xs text-gray-400">
-                  Apply updates the chips (top bar). Run executes triage using applied filters.
-                </div>
+                <div className="text-xs text-gray-400">Apply updates the chips (top bar). Run executes triage using applied filters.</div>
 
                 <div className="flex items-center gap-2">
                   <button
@@ -1766,12 +1692,15 @@ export default function Home() {
               <div className="mt-3 max-h-[200px] overflow-auto rounded-xl border border-white/10 bg-black/30 p-3">
                 {runLog.length ? (
                   <div className="space-y-2">
-                    {runLog.slice().reverse().map((x, idx) => (
-                      <div key={`${x.ts}-${idx}`} className="text-xs text-gray-300">
-                        <span className="text-gray-500 mr-2">{formatUtcYmdHm(x.ts)}</span>
-                        {x.text}
-                      </div>
-                    ))}
+                    {runLog
+                      .slice()
+                      .reverse()
+                      .map((x, idx) => (
+                        <div key={`${x.ts}-${idx}`} className="text-xs text-gray-300">
+                          <span className="text-gray-500 mr-2">{formatUtcYmdHm(x.ts)}</span>
+                          {x.text}
+                        </div>
+                      ))}
                   </div>
                 ) : (
                   <div className="text-xs text-gray-500">No runs yet.</div>
@@ -1791,7 +1720,7 @@ export default function Home() {
             <div className="text-xs text-amber-100/80 mt-1">
               {partnerMissing ? "Pick a partner" : null}
               {partnerMissing && serviceMissing ? " and " : null}
-              {serviceMissing ? "pick a service (Filters → Apply)" : null} in the top bar to run ClickHouse triage.
+              {serviceMissing ? "pick a service (Filters → Apply)" : null} in the top bar to run triage.
             </div>
           </div>
         ) : null}
@@ -1820,7 +1749,9 @@ export default function Home() {
                   <div key={m.id} className={`flex ${rowAlign}`}>
                     <div className={`${bubbleMax} w-full`}>
                       <div
-                        className={`text-[10px] text-gray-500 mb-1 ${isSystem ? "text-center" : isUser ? "text-right" : "text-left"}`}
+                        className={`text-[10px] text-gray-500 mb-1 ${
+                          isSystem ? "text-center" : isUser ? "text-right" : "text-left"
+                        }`}
                       >
                         {mounted ? new Date(m.ts).toLocaleString() : m.ts}
                       </div>
@@ -1828,41 +1759,8 @@ export default function Home() {
                       {m.type === "text" ? (
                         <div className={`rounded-2xl border ${bubbleStyle} px-4 py-3`}>
                           <pre className="whitespace-pre-wrap text-sm leading-relaxed">{m.text}</pre>
-
-                          {rateLimit && m.id === rateLimit.msgId ? (
-                            <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
-                              <div className="text-xs text-gray-200">
-                                LLM is rate-limited. Retrying in{" "}
-                                <span className="font-semibold">{fmtCountdown(rateLimitRemainingMs)}</span> or switch to Deterministic.
-                              </div>
-                              <div className="mt-2 flex gap-2">
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    await sendUserText(rateLimit.lastUserText, { appendUser: false });
-                                  }}
-                                  className="rounded-lg border border-white/10 bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15 disabled:opacity-50"
-                                  disabled={isLoading}
-                                >
-                                  Retry now
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setChatMode("deterministic");
-                                    clearRateLimit();
-                                    addText("assistant", "Switched to Deterministic. Try the same query again.");
-                                  }}
-                                  className="rounded-lg border border-white/10 bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15"
-                                >
-                                  Switch to Deterministic
-                                </button>
-                              </div>
-                            </div>
-                          ) : null}
                         </div>
                       ) : (
-                        // triage card unchanged (uses charts)
                         // @ts-ignore
                         <TriageCard run={m.run} />
                       )}
@@ -1874,7 +1772,9 @@ export default function Home() {
               {typing ? (
                 <div className="flex justify-start">
                   <div className="max-w-[82%] w-full">
-                    <div className="text-[10px] text-gray-500 mb-1 text-left">{mounted ? new Date().toLocaleString() : nowIso()}</div>
+                    <div className="text-[10px] text-gray-500 mb-1 text-left">
+                      {mounted ? new Date().toLocaleString() : nowIso()}
+                    </div>
                     <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
                       <TypingDots />
                     </div>
@@ -1895,7 +1795,7 @@ export default function Home() {
                   handleSend();
                 }
               }}
-              placeholder="Try: how was live last 2h"
+              placeholder="Type anything (logged) → runs triage using applied filters"
               className="flex-1 rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-blue-500/40"
               disabled={isLoading}
             />
@@ -1904,40 +1804,13 @@ export default function Home() {
               disabled={isLoading || !chatInput.trim()}
               className="rounded-2xl px-5 py-3 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isChatLoading ? "Sending..." : "Send"}
+              {isLoading ? "Running..." : "Run"}
             </button>
           </div>
 
-          <div className="mt-2 text-xs text-gray-500">
-            Enter sends • Filters → Apply sets scope • Run executes triage • Results appear inline as cards
-          </div>
+          <div className="mt-2 text-xs text-gray-500">Send/Enter logs your message and runs deterministic triage using applied filters.</div>
         </div>
       </div>
-
-      {/* Schema modal */}
-      {schemaOpen ? (
-        <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-6">
-          <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#0b0b0b] p-6">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-lg font-semibold text-white">Schema helper</div>
-                <div className="text-sm text-gray-400 mt-1">Contract / fields / examples (placeholder).</div>
-              </div>
-              <button
-                onClick={() => setSchemaOpen(false)}
-                className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
-              >
-                Close
-              </button>
-            </div>
-
-            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-gray-200">
-              <div className="text-xs text-gray-400 mb-2">Current schema</div>
-              <pre className="whitespace-pre-wrap text-xs text-gray-200/90">{JSON.stringify(schemaState, null, 2)}</pre>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </main>
   );
 }
