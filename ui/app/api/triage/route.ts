@@ -1,4 +1,4 @@
-// app/api/triage/route.ts
+// ui/app/api/triage/route.ts
 import { NextResponse } from "next/server";
 import { CANON } from "@/lib/schema/canonical";
 import { runClickhouseTriage } from "@/lib/clickhouse/runClickhouseTriage";
@@ -23,8 +23,10 @@ function boolish(v: unknown) {
   return ["1", "true", "yes", "on"].includes(s);
 }
 
+// IMPORTANT: do NOT lowercase canonical tokens.
+// Canon tokens are already normalized in generator (partner_01, us-east, etc).
 function tok(v: unknown) {
-  return String(v ?? "").trim().toLowerCase();
+  return String(v ?? "").trim();
 }
 
 function clampInt(n: number, min: number, max: number) {
@@ -86,7 +88,7 @@ function normalizeSqlForUi(sql: any) {
 }
 
 function normalize(x: Record<string, any>): Inputs {
-  const dataSource = tok(x.dataSource ?? x.data_source ?? "clickhouse");
+  const dataSource = String(x.dataSource ?? x.data_source ?? "clickhouse").trim().toLowerCase();
 
   const partner = tok(x.partner);
   const service = tok(x.service ?? x.svc);
@@ -161,6 +163,13 @@ function hasProxyEnv() {
   return !!(url && user && pass && token);
 }
 
+function proxyTriageUrl() {
+  const proxyUrl = process.env.CACHEY_PROXY_URL!;
+  const base = proxyUrl.replace(/\/+$/, "");
+  // Accept either base or explicit /triage path, with/without trailing slash.
+  return base.endsWith("/triage") ? base : `${base}/triage`;
+}
+
 async function runLocal(inputs: Inputs) {
   const result = await runClickhouseTriage({
     partner: inputs.partner,
@@ -192,8 +201,17 @@ async function runLocal(inputs: Inputs) {
   });
 }
 
-function adaptProxyToUi(parsed: any) {
+function safeAdaptProxyToUi(parsed: any) {
+  // If proxy returned a non-success payload, do NOT try to assert metricsJson.
   const ok = !!parsed?.ok;
+  if (!ok) {
+    return {
+      ok: false,
+      error: parsed?.error ? String(parsed.error) : "proxy returned ok=false",
+      _mode: "proxy",
+    };
+  }
+
   const metricsJson = assertCanonicalMetricsJson(parsed?.metricsJson ?? parsed?.metrics);
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
@@ -204,7 +222,7 @@ function adaptProxyToUi(parsed: any) {
   const sql = normalizeSqlForUi(parsed?.sql ?? undefined);
 
   return {
-    ok,
+    ok: true,
     summaryText: parsed?.summaryText ?? parsed?.summary ?? "",
     summary: parsed?.summary ?? parsed?.summaryText ?? "",
     metricsJson,
@@ -265,13 +283,11 @@ export async function POST(req: Request) {
     }
 
     // Proxy path
-    const proxyUrl = process.env.CACHEY_PROXY_URL!;
     const user = process.env.CACHEY_BASIC_USER!;
     const pass = process.env.CACHEY_BASIC_PASS!;
     const token = process.env.CACHEY_TOKEN!;
 
-    const base = proxyUrl.replace(/\/+$/, "");
-    const triageUrl = base.endsWith("/triage") ? base : `${base}/triage`;
+    const triageUrl = proxyTriageUrl();
 
     const upstream = await fetch(triageUrl, {
       method: "POST",
@@ -303,15 +319,54 @@ export async function POST(req: Request) {
 
     if (!upstream.ok) {
       const msg =
-        parsed && typeof parsed === "object" && parsed?.error
-          ? String(parsed.error)
+        parsed && typeof parsed === "object" && (parsed as any)?.error
+          ? String((parsed as any).error)
           : text
           ? `proxy triage failed (HTTP ${upstream.status}): ${text.slice(0, 220)}`
           : `proxy triage failed (HTTP ${upstream.status})`;
-      return NextResponse.json({ ok: false, error: msg }, { status: 502 });
+
+      // Include a tiny debug stub so UI can still show source badge correctly.
+      return NextResponse.json(
+        {
+          ok: false,
+          error: msg,
+          metricsJson: {
+            totalRequests: 0,
+            p95TtmsMs: null,
+            error5xxCount: 0,
+            errorRatePct: 0,
+            timeseries: { bucketSeconds: null, startTs: null, endTs: null, points: [] },
+            debug: { hasProxyEnv: true, forcedLocal: false, upstreamStatus: upstream.status },
+          },
+          _mode: "proxy",
+        },
+        { status: 502 }
+      );
     }
 
-    return okJson(adaptProxyToUi(parsed));
+    const adapted = safeAdaptProxyToUi(parsed);
+
+    // If proxy replied ok=false with a JSON body, map it to 502 with a clean message.
+    if (!adapted.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: (adapted as any).error || "proxy returned ok=false",
+          metricsJson: {
+            totalRequests: 0,
+            p95TtmsMs: null,
+            error5xxCount: 0,
+            errorRatePct: 0,
+            timeseries: { bucketSeconds: null, startTs: null, endTs: null, points: [] },
+            debug: { hasProxyEnv: true, forcedLocal: false, upstreamStatus: upstream.status },
+          },
+          _mode: "proxy",
+        },
+        { status: 502 }
+      );
+    }
+
+    return okJson(adapted);
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "triage failed" }, { status: 500 });
   }

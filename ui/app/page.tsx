@@ -8,18 +8,15 @@ import { CANON } from "@/lib/schema/canonical";
 
 // ------------------------------------------------------------
 // Home page (/) — Deterministic v1 (Option A)
-// - Single deterministic behavior (Run + cards)
-// - No LLM mode / no schema modal
-// - Keep /debug as legacy page (unchanged)
-// - Keep schema fetch silently (dropdown options)
 // ------------------------------------------------------------
 
 const LOGO_SRC = "/cachey-logo.png";
 
 // Sticky + TTL keys
 const PARTNER_KEY = "cachey:partner";
+const SERVICE_KEY = "cachey:service"; // ✅ service persists separately
 const FILTERS_KEY = "cachey:filters";
-const FILTERS_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const FILTERS_TTL_MS = 10 * 60 * 1000; // ✅ 10 minutes
 
 const PARTNER_OPTIONS = CANON.partners;
 const SERVICE_OPTIONS = CANON.services;
@@ -36,8 +33,6 @@ type TriageInputs = {
   region: string; // "all" | canon region
   pop: string; // "all" | canon pop
   windowMinutes: number;
-
-  // schema-aligned filters
   contentType: string; // all|manifest|segment|api
   uaFamily: string; // all|stb|mobile|web|smart_tv|console
 };
@@ -757,6 +752,16 @@ export default function Home() {
     }
   }
 
+  // ✅ sticky service (persists even when TTL resets)
+  function setServiceSticky(s: string) {
+    const v = String(s || "").trim();
+    if (!v) return;
+    if ((SERVICE_OPTIONS as readonly string[]).includes(v)) {
+      setService(v);
+      safeSetLS(SERVICE_KEY, v);
+    }
+  }
+
   // UI state
   const [isTriageLoading, setIsTriageLoading] = useState(false);
   const isLoading = isTriageLoading;
@@ -789,12 +794,10 @@ export default function Home() {
   const [runLog, setRunLog] = useState<Array<{ ts: string; text: string }>>([]);
 
   // current filters (applied)
-  const [service, setService] = useState<string>("");
+  const [service, setService] = useState<string>(""); // required
   const [region, setRegion] = useState<string>("all");
   const [pop, setPop] = useState<string>("all");
   const [windowMinutes, setWindowMinutes] = useState<number>(120);
-
-  // extra filters
   const [contentType, setContentType] = useState<string>("all");
   const [uaFamily, setUaFamily] = useState<string>("all");
 
@@ -809,25 +812,32 @@ export default function Home() {
   useEffect(() => setMounted(true), []);
 
   // TTL helpers for filter persistence
-  function loadFiltersFromTTL() {
+  function loadFiltersEnvelope() {
     const raw = safeGetLS(FILTERS_KEY);
     if (!raw) return null;
     try {
       const parsed = JSON.parse(raw);
       const expiresAt = Number(parsed?.expiresAt ?? 0);
-      if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-        safeDelLS(FILTERS_KEY);
-        return null;
-      }
-      return parsed?.value ?? null;
+      const value = parsed?.value ?? null;
+      return { expiresAt, value };
     } catch {
       safeDelLS(FILTERS_KEY);
       return null;
     }
   }
+
+  function loadFiltersFromTTL() {
+    const env = loadFiltersEnvelope();
+    if (!env) return null;
+    const expiresAt = Number(env.expiresAt ?? 0);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      safeDelLS(FILTERS_KEY);
+      return null;
+    }
+    return env.value ?? null;
+  }
+
   function saveFiltersToTTL(next: {
-    partner: string;
-    service: string;
     region: string;
     pop: string;
     windowMinutes: number;
@@ -843,7 +853,83 @@ export default function Home() {
     );
   }
 
-  // Load sticky partner + TTL filters on mount
+  function pushRunLog(text: string) {
+    setRunLog((prev) => [...prev.slice(-80), { ts: nowIso(), text }]);
+  }
+
+  function addText(role: ChatText["role"], text: string) {
+    const id = `${Date.now()}-${Math.random()}`;
+    const msg: ChatText = { id, type: "text", role, ts: nowIso(), text };
+    setChatMessages((prev) => [...prev, msg]);
+    return id;
+  }
+
+  function addTriageCard(run: ChatTriage["run"]) {
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random()}`,
+        type: "triage",
+        role: "assistant",
+        ts: nowIso(),
+        run,
+      },
+    ]);
+  }
+
+  // ✅ TTL expiry handler: keep partner + service, reset the rest
+  function resetNonStickyFiltersBecauseExpired() {
+    safeDelLS(FILTERS_KEY);
+
+    // applied (keep partner + service)
+    setRegion("all");
+    setPop("all");
+    setWindowMinutes(120);
+    setContentType("all");
+    setUaFamily("all");
+
+    // drafts follow applied (keep draft service as current service)
+    setDraftService(service || "");
+    setDraftRegion("all");
+    setDraftPop("all");
+    setDraftWindowMinutes(120);
+    setDraftContentType("all");
+    setDraftUaFamily("all");
+
+    setFiltersDirty(false);
+    pushRunLog("TTL expired: reset region/pop/window/contentType/uaFamily (kept partner + service).");
+    addText("assistant", "TTL expired (10m): reset non-sticky filters. Partner + service were kept.");
+  }
+
+  // ✅ Hard reset: clears saved TTL + partner + service and resets UI
+  function resetAllFilters() {
+    safeDelLS(FILTERS_KEY);
+    safeDelLS(PARTNER_KEY);
+    safeDelLS(SERVICE_KEY);
+
+    // applied
+    setPartner("partner_01");
+    setService("");
+    setRegion("all");
+    setPop("all");
+    setWindowMinutes(120);
+    setContentType("all");
+    setUaFamily("all");
+
+    // drafts
+    setDraftService("");
+    setDraftRegion("all");
+    setDraftPop("all");
+    setDraftWindowMinutes(120);
+    setDraftContentType("all");
+    setDraftUaFamily("all");
+
+    setFiltersDirty(false);
+    pushRunLog("Reset: cleared saved filters + partner + service");
+    addText("assistant", "Reset complete: cleared saved filters (10m TTL), partner, and service.");
+  }
+
+  // Load sticky partner + sticky service + TTL filters on mount
   useEffect(() => {
     if (!mounted) return;
 
@@ -852,56 +938,77 @@ export default function Home() {
       setPartner(savedPartner as Partner);
     }
 
+    const savedService = safeGetLS(SERVICE_KEY);
+    if (savedService && (SERVICE_OPTIONS as readonly string[]).includes(savedService)) {
+      setService(savedService);
+      setDraftService(savedService);
+    }
+
     const ttl = loadFiltersFromTTL();
     if (ttl) {
-      const p = String(ttl.partner || "").trim();
-      if (p && (PARTNER_OPTIONS as readonly string[]).includes(p)) setPartner(p as Partner);
-
-      const s = String(ttl.service || "").trim();
-      if (s && (SERVICE_OPTIONS as readonly string[]).includes(s)) {
-        setService(s);
-        setDraftService(s);
-      }
-
       const r = String(ttl.region || "all").trim() || "all";
+      const pp = String(ttl.pop || "all").trim() || "all";
+      const w = Number(ttl.windowMinutes ?? 120);
+      const ct = String(ttl.contentType || "all").trim() || "all";
+      const ua = String(ttl.uaFamily || "all").trim() || "all";
+
       setRegion(r);
       setDraftRegion(r);
 
-      const pp = String(ttl.pop || "all").trim() || "all";
       setPop(pp);
       setDraftPop(pp);
 
-      const w = Number(ttl.windowMinutes ?? 120);
       if (Number.isFinite(w) && w > 0) {
         setWindowMinutes(w);
         setDraftWindowMinutes(w);
       }
 
-      const ct = String(ttl.contentType || "all").trim() || "all";
       setContentType(ct);
       setDraftContentType(ct);
 
-      const ua = String(ttl.uaFamily || "all").trim() || "all";
       setUaFamily(ua);
       setDraftUaFamily(ua);
+
+      pushRunLog("Loaded non-sticky filters from TTL (10m).");
     } else {
-      // initialize drafts from defaults
-      setDraftService(service);
-      setDraftRegion(region);
-      setDraftPop(pop);
-      setDraftWindowMinutes(windowMinutes);
-      setDraftContentType(contentType);
-      setDraftUaFamily(uaFamily);
+      // defaults for non-sticky filters
+      setDraftRegion("all");
+      setDraftPop("all");
+      setDraftWindowMinutes(120);
+      setDraftContentType("all");
+      setDraftUaFamily("all");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted]);
 
-  // Persist TTL whenever applied filters change
+  // ✅ Enforce TTL expiry while page is open (prevents “stuck” filters)
   useEffect(() => {
     if (!mounted) return;
+
+    const tick = () => {
+      const env = loadFiltersEnvelope();
+      if (!env) return;
+      const expiresAt = Number(env.expiresAt ?? 0);
+      if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= Date.now()) {
+        resetNonStickyFiltersBecauseExpired();
+      }
+    };
+
+    tick();
+    const id = window.setInterval(tick, 15_000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, service]);
+
+  // ✅ Persist TTL whenever applied NON-STICKY filters change — but ONLY if service is set
+  useEffect(() => {
+    if (!mounted) return;
+    if (!service) {
+      safeDelLS(FILTERS_KEY);
+      return;
+    }
+
     saveFiltersToTTL({
-      partner: partner || "",
-      service: service || "",
       region,
       pop,
       windowMinutes,
@@ -909,7 +1016,7 @@ export default function Home() {
       uaFamily,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mounted, partner, service, region, pop, windowMinutes, contentType, uaFamily]);
+  }, [mounted, service, region, pop, windowMinutes, contentType, uaFamily]);
 
   // Load schema once on mount (drives dropdowns) — SILENT
   useEffect(() => {
@@ -1032,30 +1139,6 @@ export default function Home() {
     };
   }
 
-  function pushRunLog(text: string) {
-    setRunLog((prev) => [...prev.slice(-80), { ts: nowIso(), text }]);
-  }
-
-  function addText(role: ChatText["role"], text: string) {
-    const id = `${Date.now()}-${Math.random()}`;
-    const msg: ChatText = { id, type: "text", role, ts: nowIso(), text };
-    setChatMessages((prev) => [...prev, msg]);
-    return id;
-  }
-
-  function addTriageCard(run: ChatTriage["run"]) {
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: `${Date.now()}-${Math.random()}`,
-        type: "triage",
-        role: "assistant",
-        ts: nowIso(),
-        run,
-      },
-    ]);
-  }
-
   function isAllowed(val: string, allowed: string[]) {
     const v = String(val ?? "").trim();
     if (!v) return false;
@@ -1063,12 +1146,14 @@ export default function Home() {
   }
 
   function applyDraftFilters() {
-    // validate service
     const s = String(draftService || "").trim();
     if (!s) return { ok: false as const, error: "Pick a service before Apply." };
     if (!(SERVICE_OPTIONS as readonly string[]).includes(s)) return { ok: false as const, error: "Invalid service selection." };
 
-    // validate contentType/uaFamily
+    // ✅ apply + persist service (sticky)
+    setServiceSticky(s);
+    setDraftService(s);
+
     const ct = String(draftContentType || "all").trim() || "all";
     const ua = String(draftUaFamily || "all").trim() || "all";
 
@@ -1078,8 +1163,6 @@ export default function Home() {
     if (!isAllowed(ct, allowedCT)) return { ok: false as const, error: "Invalid contentType selection." };
     if (!isAllowed(ua, allowedUA)) return { ok: false as const, error: "Invalid uaFamily selection." };
 
-    // apply
-    setService(s);
     setRegion(String(draftRegion || "all"));
     setPop(String(draftPop || "all"));
     setWindowMinutes(Number(draftWindowMinutes) || 120);
@@ -1093,7 +1176,6 @@ export default function Home() {
     return { ok: true as const };
   }
 
-  // One deterministic triage call
   async function runTriage(inputs: TriageInputs) {
     const formData = new FormData();
 
@@ -1128,7 +1210,6 @@ export default function Home() {
     };
   }
 
-  // Run triage directly from applied filters
   async function handleRunFromFilters() {
     if (isLoading) return;
 
@@ -1174,7 +1255,6 @@ export default function Home() {
     }
   }
 
-  // Composer: log text, then run using applied filters
   async function handleSend() {
     const text = chatInput.trim();
     if (!text || isLoading) return;
@@ -1226,11 +1306,9 @@ export default function Home() {
         ? (Number(err5xx) / totalRequests) * 100
         : null;
 
-    // Simple demo-safe health thresholds
+    let health = "GREEN";
     const p95ms = p95 == null ? null : Number(p95);
     const errp = errPct == null ? null : Number(errPct);
-
-    let health = "GREEN";
     if ((errp != null && errp >= 1.0) || (p95ms != null && p95ms >= 1500)) health = "RED";
     else if ((errp != null && errp >= 0.2) || (p95ms != null && p95ms >= 500)) health = "AMBER";
 
@@ -1252,8 +1330,13 @@ export default function Home() {
 
     const pointsCount = ts?.points?.length ?? 0;
     const debug = run.metricsJson?.debug ?? null;
-    const normalizedFrom = debug?.normalizedFrom ?? debug?.normalized_from ?? null;
-    const normalizedAt = debug?.normalizedAt ?? debug?.normalized_at ?? null;
+    const runnerVersion = debug?.__runnerVersion ? String(debug.__runnerVersion) : "unknown";
+
+    const forcedLocal = Boolean(debug?.forcedLocal);
+    const proxyEnabled = Boolean(debug?.hasProxyEnv);
+
+    const answerSource = forcedLocal ? "Forced Local" : proxyEnabled ? "Proxy enabled" : "Local";
+    const debugOn = process.env.NODE_ENV !== "production";
 
     return (
       <div className="triage-enter rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] space-y-3">
@@ -1270,7 +1353,40 @@ export default function Home() {
               </div>
             ) : null}
           </div>
-          <div className="text-xs text-gray-500">/api/triage</div>
+          <div className="flex flex-col items-end gap-1 text-[11px]">
+            <div className="flex flex-wrap justify-end gap-1.5">
+              <span
+                className={`px-2 py-1 rounded-full border ${
+                  forcedLocal
+                    ? "border-amber-400/30 bg-amber-400/10 text-amber-200"
+                    : proxyEnabled
+                    ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+                    : "border-white/10 bg-white/5 text-gray-200"
+                }`}
+                title="Answer source (demo trust)"
+              >
+                <span className="text-gray-400 mr-1">source</span>
+                <span className="font-semibold">{answerSource}</span>
+              </span>
+
+              <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200" title="Runner version">
+                <span className="text-gray-400 mr-1">runner</span>
+                <span className="font-semibold">{runnerVersion}</span>
+              </span>
+
+              <span
+                className={`px-2 py-1 rounded-full border ${
+                  debugOn ? "border-sky-400/30 bg-sky-400/10 text-sky-200" : "border-white/10 bg-white/5 text-gray-200"
+                }`}
+                title="Debug flag"
+              >
+                <span className="text-gray-400 mr-1">debug</span>
+                <span className="font-semibold">{debugOn ? "on" : "off"}</span>
+              </span>
+            </div>
+
+            <div className="text-gray-500">/api/triage</div>
+          </div>
         </div>
 
         <MetricChips metricsJson={run.metricsJson} />
@@ -1331,16 +1447,6 @@ export default function Home() {
             <div className="text-xs text-gray-300">
               <span className="text-gray-400">Timeseries points:</span> <span className="font-semibold">{pointsCount}</span>
             </div>
-
-            {normalizedFrom || normalizedAt ? (
-              <div className="text-xs text-gray-300">
-                <span className="text-gray-400">Normalization:</span>{" "}
-                {normalizedFrom ? <span className="font-semibold">from={String(normalizedFrom)} </span> : null}
-                {normalizedAt ? <span className="font-semibold">at={String(normalizedAt)}</span> : null}
-              </div>
-            ) : (
-              <div className="text-xs text-gray-500">Normalization stamps not provided by API.</div>
-            )}
           </div>
         </details>
 
@@ -1379,7 +1485,6 @@ export default function Home() {
   const partnerMissing = !partner;
   const serviceMissing = !service;
 
-  // Compact header "chips" (show applied filters)
   const appliedChips = useMemo(() => {
     const chips: Array<{ k: string; v: string }> = [];
     chips.push({ k: "partner", v: partner || "—" });
@@ -1394,10 +1499,8 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-black text-gray-100">
-      {/* Sticky header */}
       <div className="sticky top-0 z-50 border-b border-white/10 bg-black/75 backdrop-blur">
         <div className="mx-auto max-w-6xl px-6 py-4">
-          {/* Row 1: brand + actions */}
           <div className="flex items-center gap-3">
             <Image src={LOGO_SRC} alt="Cachey" width={34} height={34} className="rounded-full" />
             <div className="min-w-0">
@@ -1410,7 +1513,22 @@ export default function Home() {
             <div className="ml-auto flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => setFiltersOpen((v) => !v)}
+                onClick={() => {
+                  setFiltersOpen((v) => {
+                    const next = !v;
+                    if (next) {
+                      // ✅ sync drafts from applied on open (prevents stale/stuck drafts)
+                      setDraftService(service);
+                      setDraftRegion(region);
+                      setDraftPop(pop);
+                      setDraftWindowMinutes(windowMinutes);
+                      setDraftContentType(contentType);
+                      setDraftUaFamily(uaFamily);
+                      setFiltersDirty(false);
+                    }
+                    return next;
+                  });
+                }}
                 className={`rounded-full border border-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15 ${
                   filtersOpen ? "bg-white/15" : "bg-white/10"
                 }`}
@@ -1429,7 +1547,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Row 2: compact applied chips + Run */}
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {appliedChips.map((c) => (
               <span key={c.k} className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
@@ -1460,7 +1577,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Row 3: Filters panel (collapsible) */}
           {filtersOpen ? (
             <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
               <div className="flex items-start justify-between gap-3">
@@ -1468,13 +1584,13 @@ export default function Home() {
                   <div className="text-sm font-semibold text-white">Filters</div>
                   <div className="text-xs text-gray-400 mt-1">
                     Select values, then hit <span className="text-gray-200">Apply</span>. Run executes triage.
+                    <span className="ml-2 text-gray-500">(TTL: 10m; service persists)</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={() => {
-                      // reset drafts to applied
                       setDraftService(service);
                       setDraftRegion(region);
                       setDraftPop(pop);
@@ -1487,6 +1603,16 @@ export default function Home() {
                   >
                     Reset draft
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={resetAllFilters}
+                    className="rounded-lg border border-white/10 bg-red-500/10 px-3 py-2 text-xs text-red-200 hover:bg-red-500/15"
+                    title="Clear saved TTL + reset applied filters"
+                  >
+                    Reset (clear saved)
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => setFiltersOpen(false)}
@@ -1498,7 +1624,6 @@ export default function Home() {
               </div>
 
               <div className="mt-4 grid grid-cols-1 md:grid-cols-7 gap-3">
-                {/* Partner */}
                 <div className="min-w-0">
                   <div className="text-xs text-gray-400 mb-1">Partner</div>
                   <select
@@ -1515,7 +1640,6 @@ export default function Home() {
                   </select>
                 </div>
 
-                {/* Service (draft) */}
                 <div className="min-w-0">
                   <div className="text-xs text-gray-400 mb-1">
                     Service <span className="text-amber-300">*</span>
@@ -1540,7 +1664,6 @@ export default function Home() {
                   </select>
                 </div>
 
-                {/* Region (draft) */}
                 <div className="min-w-0">
                   <div className="text-xs text-gray-400 mb-1">Region</div>
                   <select
@@ -1560,7 +1683,6 @@ export default function Home() {
                   </select>
                 </div>
 
-                {/* POP (draft) */}
                 <div className="min-w-0">
                   <div className="text-xs text-gray-400 mb-1">POP</div>
                   <select
@@ -1580,7 +1702,6 @@ export default function Home() {
                   </select>
                 </div>
 
-                {/* Window (draft) */}
                 <div className="min-w-0">
                   <div className="text-xs text-gray-400 mb-1">Window</div>
                   <select
@@ -1600,7 +1721,6 @@ export default function Home() {
                   </select>
                 </div>
 
-                {/* contentType (draft) */}
                 <div className="min-w-0">
                   <div className="text-xs text-gray-400 mb-1">ContentType</div>
                   <select
@@ -1620,7 +1740,6 @@ export default function Home() {
                   </select>
                 </div>
 
-                {/* uaFamily (draft) */}
                 <div className="min-w-0">
                   <div className="text-xs text-gray-400 mb-1">UA Family</div>
                   <select
@@ -1676,7 +1795,6 @@ export default function Home() {
             </div>
           ) : null}
 
-          {/* Run log (collapsible) */}
           {runLogOpen ? (
             <div className="mt-4 rounded-2xl border border-white/10 bg-black/40 p-4">
               <div className="flex items-center justify-between">
@@ -1711,9 +1829,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Body */}
       <div className="mx-auto max-w-6xl px-6 py-6">
-        {/* Partner/service missing banner */}
         {partnerMissing || serviceMissing ? (
           <div className="mb-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4">
             <div className="text-sm font-semibold text-amber-200">Required filters missing</div>
@@ -1725,7 +1841,6 @@ export default function Home() {
           </div>
         ) : null}
 
-        {/* Chat surface */}
         <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
           <div
             ref={chatScrollRef}
@@ -1784,7 +1899,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Composer */}
           <div className="mt-4 flex gap-3">
             <input
               value={chatInput}
