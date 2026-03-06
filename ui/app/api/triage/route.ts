@@ -1,5 +1,6 @@
 // ui/app/api/triage/route.ts
 import { NextResponse } from "next/server";
+import { Buffer } from "node:buffer";
 import { CANON } from "@/lib/schema/canonical";
 import { runClickhouseTriage } from "@/lib/clickhouse/runClickhouseTriage";
 
@@ -12,10 +13,19 @@ type Inputs = {
   region: string; // all|<canon>
   pop: string; // all|<canon>
   windowMinutes: number;
+
+  // Absolute range (UTC ISO) — optional, but must be BOTH if present
+  startTsUtc: string | null;
+  endTsUtc: string | null;
+
   debug: boolean;
   contentType: string; // all|manifest|segment|api
   uaFamily: string; // all|stb|mobile|web|smart_tv|console
 };
+
+type TimeMode =
+  | { mode: "relative" }
+  | { mode: "absolute"; startIso: string; endIso: string };
 
 function boolish(v: unknown) {
   if (typeof v === "boolean") return v;
@@ -24,7 +34,6 @@ function boolish(v: unknown) {
 }
 
 // IMPORTANT: do NOT lowercase canonical tokens.
-// Canon tokens are already normalized in generator (partner_01, us-east, etc).
 function tok(v: unknown) {
   return String(v ?? "").trim();
 }
@@ -45,7 +54,7 @@ function isAllOrOneOf(x: string, allowed: readonly string[]) {
 }
 
 /**
- * ✅ Generator is source of truth.
+ * Generator is source of truth.
  * Route must NOT reshape metrics.
  * Only asserts + ensures debug/timeseries exist.
  */
@@ -73,6 +82,17 @@ function assertCanonicalMetricsJson(metricsJson: any) {
   return metricsJson;
 }
 
+function canonicalStubMetricsJson(debug: Record<string, any>) {
+  return {
+    totalRequests: 0,
+    p95TtmsMs: null,
+    error5xxCount: 0,
+    errorRatePct: 0,
+    timeseries: { bucketSeconds: null, startTs: null, endTs: null, points: [] },
+    debug: { ...(debug || {}) },
+  };
+}
+
 function normalizeSqlForUi(sql: any) {
   if (!sql) return undefined;
 
@@ -88,7 +108,9 @@ function normalizeSqlForUi(sql: any) {
 }
 
 function normalize(x: Record<string, any>): Inputs {
-  const dataSource = String(x.dataSource ?? x.data_source ?? "clickhouse").trim().toLowerCase();
+  const dataSource = String(x.dataSource ?? x.data_source ?? "clickhouse")
+    .trim()
+    .toLowerCase();
 
   const partner = tok(x.partner);
   const service = tok(x.service ?? x.svc);
@@ -102,6 +124,9 @@ function normalize(x: Record<string, any>): Inputs {
   const wmRaw = Number(x.windowMinutes ?? x.win ?? x.window ?? 60);
   const windowMinutes = Number.isFinite(wmRaw) ? clampInt(wmRaw, 5, 1440) : 60;
 
+  const startTsUtc = tok(x.startTsUtc ?? x.start_ts_utc ?? x.start ?? "").trim() || null;
+  const endTsUtc = tok(x.endTsUtc ?? x.end_ts_utc ?? x.end ?? "").trim() || null;
+
   const debug = boolish(x.debug);
 
   return {
@@ -111,6 +136,8 @@ function normalize(x: Record<string, any>): Inputs {
     region,
     pop,
     windowMinutes,
+    startTsUtc,
+    endTsUtc,
     debug,
     contentType: ctRaw,
     uaFamily: uaRaw,
@@ -140,15 +167,13 @@ async function parseRequest(req: Request): Promise<Inputs> {
     return normalize(obj);
   }
 
+  // last resort
   const body = (await req.json().catch(() => ({}))) as any;
   return normalize(body);
 }
 
 function badRequest(error: string, extra?: Record<string, any>) {
-  return NextResponse.json(
-    { ok: false, error, ...(extra ? { details: extra } : {}) },
-    { status: 400 }
-  );
+  return NextResponse.json({ ok: false, error, ...(extra ? { details: extra } : {}) }, { status: 400 });
 }
 
 function okJson(payload: any) {
@@ -166,12 +191,43 @@ function hasProxyEnv() {
 function proxyTriageUrl() {
   const proxyUrl = process.env.CACHEY_PROXY_URL!;
   const base = proxyUrl.replace(/\/+$/, "");
-  // Accept either base or explicit /triage path, with/without trailing slash.
   return base.endsWith("/triage") ? base : `${base}/triage`;
 }
 
-async function runLocal(inputs: Inputs) {
-  const result = await runClickhouseTriage({
+function parseIsoOrNull(s: string | null): { ok: true; iso: string } | { ok: false; error: string } {
+  if (!s) return { ok: false, error: "missing" };
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return { ok: false, error: `invalid ISO: ${s}` };
+  return { ok: true, iso: d.toISOString() };
+}
+
+function computeTimeMode(inputs: Inputs): TimeMode {
+  const hasStart = !!inputs.startTsUtc;
+  const hasEnd = !!inputs.endTsUtc;
+
+  if (!hasStart && !hasEnd) return { mode: "relative" };
+
+  if (hasStart !== hasEnd) {
+    throw new Error("startTsUtc and endTsUtc must both be provided for absolute range");
+  }
+
+  const s = parseIsoOrNull(inputs.startTsUtc);
+  const e = parseIsoOrNull(inputs.endTsUtc);
+  if (!s.ok || !e.ok) {
+    throw new Error("startTsUtc/endTsUtc must be valid UTC ISO strings");
+  }
+
+  const sMs = new Date(s.iso).getTime();
+  const eMs = new Date(e.iso).getTime();
+  if (!Number.isFinite(sMs) || !Number.isFinite(eMs) || eMs <= sMs) {
+    throw new Error("invalid range: endTsUtc must be after startTsUtc");
+  }
+
+  return { mode: "absolute", startIso: s.iso, endIso: e.iso };
+}
+
+async function runLocal(inputs: Inputs, tm: TimeMode) {
+  const payload: any = {
     partner: inputs.partner,
     service: inputs.service,
     region: inputs.region,
@@ -180,13 +236,25 @@ async function runLocal(inputs: Inputs) {
     uaFamily: inputs.uaFamily,
     windowMinutes: inputs.windowMinutes,
     debug: inputs.debug,
-  });
+  };
+
+  if (tm.mode === "absolute") {
+    payload.startTsUtc = tm.startIso;
+    payload.endTsUtc = tm.endIso;
+  }
+
+  const result = await runClickhouseTriage(payload);
 
   const metricsJson = assertCanonicalMetricsJson(result.metricsJson);
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
     hasProxyEnv: hasProxyEnv(),
     forcedLocal: true,
+    timeMode: tm.mode,
+    startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
+    endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
+    // if absolute, do NOT anchor to max(ts)
+    anchorToMaxTs: tm.mode === "absolute" ? false : metricsJson.debug?.anchorToMaxTs ?? undefined,
   };
 
   const sql = normalizeSqlForUi(result.sql ?? undefined);
@@ -201,8 +269,7 @@ async function runLocal(inputs: Inputs) {
   });
 }
 
-function safeAdaptProxyToUi(parsed: any) {
-  // If proxy returned a non-success payload, do NOT try to assert metricsJson.
+function safeAdaptProxyToUi(parsed: any, tm: TimeMode) {
   const ok = !!parsed?.ok;
   if (!ok) {
     return {
@@ -217,6 +284,10 @@ function safeAdaptProxyToUi(parsed: any) {
     ...(metricsJson.debug || {}),
     hasProxyEnv: true,
     forcedLocal: false,
+    timeMode: tm.mode,
+    startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
+    endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
+    anchorToMaxTs: tm.mode === "absolute" ? false : metricsJson.debug?.anchorToMaxTs ?? undefined,
   };
 
   const sql = normalizeSqlForUi(parsed?.sql ?? undefined);
@@ -243,51 +314,78 @@ export async function POST(req: Request) {
 
     // Guardrails
     if (!inputs.partner) return badRequest("partner is required", { allowedPartners: CANON.partners });
-    if (!isCanonPartner(inputs.partner))
+    if (!isCanonPartner(inputs.partner)) {
       return badRequest(`invalid partner: ${inputs.partner}`, { allowedPartners: CANON.partners });
+    }
 
     if (!inputs.service) return badRequest("service is required", { allowedServices: CANON.services });
-    if (inputs.service === "all")
-      return badRequest(`service cannot be "all"`, { allowedServices: CANON.services });
-    if (!isCanonService(inputs.service))
+    if (inputs.service === "all") return badRequest(`service cannot be "all"`, { allowedServices: CANON.services });
+    if (!isCanonService(inputs.service)) {
       return badRequest(`invalid service: ${inputs.service}`, { allowedServices: CANON.services });
+    }
 
-    if (!isAllOrOneOf(inputs.region, CANON.regions as readonly string[]))
+    if (!isAllOrOneOf(inputs.region, CANON.regions as readonly string[])) {
       return badRequest(`invalid region: ${inputs.region}`, { allowedRegions: ["all", ...CANON.regions] });
+    }
 
-    if (!isAllOrOneOf(inputs.pop, CANON.pops as readonly string[]))
+    if (!isAllOrOneOf(inputs.pop, CANON.pops as readonly string[])) {
       return badRequest(`invalid pop: ${inputs.pop}`, { allowedPops: ["all", ...CANON.pops] });
+    }
 
-    if (!isAllOrOneOf(inputs.contentType, CANON.contentTypes as readonly string[]))
+    if (!isAllOrOneOf(inputs.contentType, CANON.contentTypes as readonly string[])) {
       return badRequest(`invalid contentType: ${inputs.contentType}`, {
         allowedContentTypes: ["all", ...CANON.contentTypes],
       });
+    }
 
-    if (!isAllOrOneOf(inputs.uaFamily, CANON.uaFamilies as readonly string[]))
+    if (!isAllOrOneOf(inputs.uaFamily, CANON.uaFamilies as readonly string[])) {
       return badRequest(`invalid uaFamily: ${inputs.uaFamily}`, {
         allowedUaFamilies: ["all", ...CANON.uaFamilies],
       });
+    }
 
-    // ✅ Mode selection override:
-    // If user asks for clickhouse AND we're in dev, force local so we can iterate.
+    // Validate time mode once (and canonicalize ISO)
+    let tm: TimeMode;
+    try {
+      tm = computeTimeMode(inputs);
+    } catch (err: any) {
+      return badRequest(err?.message || "invalid time range");
+    }
+
     const wantsClickhouse = inputs.dataSource === "clickhouse";
     const isDev = process.env.NODE_ENV !== "production";
 
+    // Dev override: always run local for clickhouse in dev (fast iteration)
     if (wantsClickhouse && isDev) {
-      return await runLocal(inputs);
+      return await runLocal(inputs, tm);
     }
 
-    // Otherwise, use proxy if configured; else local fallback.
+    // Use proxy if configured; else local fallback.
     if (!hasProxyEnv()) {
-      return await runLocal(inputs);
+      return await runLocal(inputs, tm);
     }
 
     // Proxy path
     const user = process.env.CACHEY_BASIC_USER!;
     const pass = process.env.CACHEY_BASIC_PASS!;
     const token = process.env.CACHEY_TOKEN!;
-
     const triageUrl = proxyTriageUrl();
+
+    const upstreamBody: any = {
+      partner: inputs.partner,
+      service: inputs.service,
+      region: inputs.region,
+      pop: inputs.pop,
+      windowMinutes: inputs.windowMinutes,
+      debug: inputs.debug,
+      contentType: inputs.contentType,
+      uaFamily: inputs.uaFamily,
+    };
+
+    if (tm.mode === "absolute") {
+      upstreamBody.startTsUtc = tm.startIso;
+      upstreamBody.endTsUtc = tm.endIso;
+    }
 
     const upstream = await fetch(triageUrl, {
       method: "POST",
@@ -296,16 +394,7 @@ export async function POST(req: Request) {
         Authorization: `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`,
         "X-Cachey-Token": token,
       },
-      body: JSON.stringify({
-        partner: inputs.partner,
-        service: inputs.service,
-        region: inputs.region,
-        pop: inputs.pop,
-        windowMinutes: inputs.windowMinutes,
-        debug: inputs.debug,
-        contentType: inputs.contentType,
-        uaFamily: inputs.uaFamily,
-      }),
+      body: JSON.stringify(upstreamBody),
     });
 
     const text = await upstream.text().catch(() => "");
@@ -325,41 +414,41 @@ export async function POST(req: Request) {
           ? `proxy triage failed (HTTP ${upstream.status}): ${text.slice(0, 220)}`
           : `proxy triage failed (HTTP ${upstream.status})`;
 
-      // Include a tiny debug stub so UI can still show source badge correctly.
       return NextResponse.json(
         {
           ok: false,
           error: msg,
-          metricsJson: {
-            totalRequests: 0,
-            p95TtmsMs: null,
-            error5xxCount: 0,
-            errorRatePct: 0,
-            timeseries: { bucketSeconds: null, startTs: null, endTs: null, points: [] },
-            debug: { hasProxyEnv: true, forcedLocal: false, upstreamStatus: upstream.status },
-          },
+          metricsJson: canonicalStubMetricsJson({
+            hasProxyEnv: true,
+            forcedLocal: false,
+            upstreamStatus: upstream.status,
+            timeMode: tm.mode,
+            startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
+            endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
+            anchorToMaxTs: tm.mode === "absolute" ? false : undefined,
+          }),
           _mode: "proxy",
         },
         { status: 502 }
       );
     }
 
-    const adapted = safeAdaptProxyToUi(parsed);
+    const adapted = safeAdaptProxyToUi(parsed, tm);
 
-    // If proxy replied ok=false with a JSON body, map it to 502 with a clean message.
     if (!adapted.ok) {
       return NextResponse.json(
         {
           ok: false,
           error: (adapted as any).error || "proxy returned ok=false",
-          metricsJson: {
-            totalRequests: 0,
-            p95TtmsMs: null,
-            error5xxCount: 0,
-            errorRatePct: 0,
-            timeseries: { bucketSeconds: null, startTs: null, endTs: null, points: [] },
-            debug: { hasProxyEnv: true, forcedLocal: false, upstreamStatus: upstream.status },
-          },
+          metricsJson: canonicalStubMetricsJson({
+            hasProxyEnv: true,
+            forcedLocal: false,
+            upstreamStatus: upstream.status,
+            timeMode: tm.mode,
+            startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
+            endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
+            anchorToMaxTs: tm.mode === "absolute" ? false : undefined,
+          }),
           _mode: "proxy",
         },
         { status: 502 }

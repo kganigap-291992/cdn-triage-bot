@@ -23,7 +23,11 @@ export type ClickhouseTriageInputs = {
   contentType: string; // all|manifest|segment|api
   uaFamily: string; // all|stb|mobile|web|smart_tv|console
 
-  windowMinutes: number;
+  // ✅ time range (choose one)
+  windowMinutes: number; // used when absolute range not provided
+  startTsUtc?: string | null; // ISO string
+  endTsUtc?: string | null; // ISO string
+
   debug: boolean;
 };
 
@@ -42,6 +46,40 @@ export type ClickhouseTriageResult = {
 
 function isCanon(x: string, allowed: readonly string[]) {
   return allowed.includes(x);
+}
+
+function asString(x: any): string | null {
+  if (typeof x === "string" && x.trim()) return x;
+  return null;
+}
+
+function parseIsoOrNull(s: string | null | undefined): string | null {
+  const raw = typeof s === "string" ? s.trim() : "";
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function computeTimeMode(inputs: ClickhouseTriageInputs):
+  | { mode: "absolute"; startIso: string; endIso: string }
+  | { mode: "relative" } {
+  const startIso = parseIsoOrNull(inputs.startTsUtc ?? null);
+  const endIso = parseIsoOrNull(inputs.endTsUtc ?? null);
+
+  if (!startIso && !endIso) return { mode: "relative" };
+
+  if (!startIso || !endIso) {
+    throw new Error("runClickhouseTriage: startTsUtc and endTsUtc must both be provided for absolute range");
+  }
+
+  const sMs = new Date(startIso).getTime();
+  const eMs = new Date(endIso).getTime();
+  if (!Number.isFinite(sMs) || !Number.isFinite(eMs) || eMs <= sMs) {
+    throw new Error("runClickhouseTriage: invalid absolute range (endTsUtc must be after startTsUtc)");
+  }
+
+  return { mode: "absolute", startIso, endIso };
 }
 
 function assertCanonicalMetrics(metricsJson: any) {
@@ -67,22 +105,43 @@ function assertCanonicalMetrics(metricsJson: any) {
   const debugIn = metricsJson.debug;
   const debug = debugIn && typeof debugIn === "object" ? debugIn : {};
 
-  // ✅ Strip legacy keys by returning ONLY canonical shape
-  return {
+  // ✅ Preserve/derive timeRangeUTC
+  const tr = metricsJson.timeRangeUTC;
+  const start = (tr && typeof tr === "object" && asString(tr.start)) || asString(timeseries.startTs);
+  const end = (tr && typeof tr === "object" && asString(tr.end)) || asString(timeseries.endTs);
+
+  const timeRangeUTC = start && end ? { start, end } : null;
+
+  // ✅ Keep optional canonical fields if present (allowlist)
+  const out: any = {
     totalRequests: Number(metricsJson.totalRequests) || 0,
     p50TtmsMs: metricsJson.p50TtmsMs == null ? null : Number(metricsJson.p50TtmsMs),
     p95TtmsMs: metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs),
     p99TtmsMs: metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs),
     error5xxCount: Number(metricsJson.error5xxCount) || 0,
     errorRatePct: Number(metricsJson.errorRatePct) || 0,
+
     timeseries,
+    timeRangeUTC,
     debug,
   };
+
+  // Optional extras (kept if provided by runner)
+  if (metricsJson.cacheHitPct != null) out.cacheHitPct = Number(metricsJson.cacheHitPct);
+  if (metricsJson.cacheMissPct != null) out.cacheMissPct = Number(metricsJson.cacheMissPct);
+
+  if (Array.isArray(metricsJson.statusCounts)) out.statusCounts = metricsJson.statusCounts;
+  if (Array.isArray(metricsJson.topCrcClass)) out.topCrcClass = metricsJson.topCrcClass;
+  if (Array.isArray(metricsJson.topErrorCrc)) out.topErrorCrc = metricsJson.topErrorCrc;
+
+  if (metricsJson.available && typeof metricsJson.available === "object") out.available = metricsJson.available;
+  if (Array.isArray(metricsJson.warnings)) out.warnings = metricsJson.warnings;
+
+  return out;
 }
 
-export async function runClickhouseTriage(
-  inputs: ClickhouseTriageInputs
-): Promise<ClickhouseTriageResult> {
+export async function runClickhouseTriage(inputs: ClickhouseTriageInputs): Promise<ClickhouseTriageResult> {
+  // Keep internal normalization consistent with CANON (lowercase)
   const partner = String(inputs.partner || "").trim().toLowerCase();
   const service = String(inputs.service || "").trim().toLowerCase();
   const region = String(inputs.region || "all").trim().toLowerCase();
@@ -114,10 +173,14 @@ export async function runClickhouseTriage(
     throw new Error(`runClickhouseTriage: invalid windowMinutes '${inputs.windowMinutes}'`);
   }
 
-  // Dataset is backfilled/old → anchor window to max(ts) by default
-  const anchorToMaxTs = true;
+  // ✅ Decide time mode
+  const tm = computeTimeMode(inputs);
+
+  // Dataset is backfilled/old → anchor window to max(ts) by default (relative mode only)
+  const anchorToMaxTs = tm.mode === "relative";
 
   // ✅ ALWAYS build canonical SQL first
+  // NOTE: buildClickhouseSql must support optional start/end. If not yet, it will ignore them.
   const built = buildClickhouseSql({
     partner,
     service,
@@ -125,11 +188,20 @@ export async function runClickhouseTriage(
     pop,
     contentType,
     uaFamily,
+
+    // relative default
     windowMinutes: win,
+
+    // absolute override
+    startTsUtc: tm.mode === "absolute" ? tm.startIso : undefined,
+    endTsUtc: tm.mode === "absolute" ? tm.endIso : undefined,
+
+    // anchoring logic
     anchorToMaxTs,
   } as any);
 
   // Later: swap this for real ClickHouse execution.
+  // ✅ Tell the mock what bucket to simulate + what table semantics we selected
   const raw = await runMockClickhouseTriage({
     ...inputs,
     partner,
@@ -139,37 +211,79 @@ export async function runClickhouseTriage(
     contentType,
     uaFamily,
     windowMinutes: win,
-  });
+
+    // absolute range (if present)
+    startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
+    endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
+
+    // NEW: give mock the chosen table semantics
+    tableUsed: built.meta.tableUsed,
+    bucketSeconds: built.meta.bucketSeconds,
+    anchorToMaxTs,
+  } as any);
 
   const summary = String(raw?.summary ?? raw?.summaryText ?? "");
   const evidence = raw?.evidence ?? undefined;
 
-  // ✅ Require canonical metricsJson from mock (generator is truth)
   const baseMetrics = raw?.metricsJson ?? raw ?? {};
   const metricsJson = assertCanonicalMetrics(baseMetrics);
+
+  // ✅ Force bucketSeconds consistency (even if mock forgot)
+  metricsJson.timeseries = metricsJson.timeseries || { bucketSeconds: null, startTs: null, endTs: null, points: [] };
+  metricsJson.timeseries.bucketSeconds = built.meta.bucketSeconds;
+
+  // ✅ Ensure timeseries bounds align with absolute range if used (UI trust)
+  if (tm.mode === "absolute") {
+    metricsJson.timeseries.startTs = tm.startIso;
+    metricsJson.timeseries.endTs = tm.endIso;
+    metricsJson.timeRangeUTC = { start: tm.startIso, end: tm.endIso };
+  } else {
+    // Ensure timeRangeUTC is never null when we have timeseries bounds
+    if (!metricsJson.timeRangeUTC) {
+      const s = asString(metricsJson.timeseries?.startTs);
+      const e = asString(metricsJson.timeseries?.endTs);
+      if (s && e) metricsJson.timeRangeUTC = { start: s, end: e };
+    }
+  }
 
   // ✅ stamp runner version + meta
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
-    __runnerVersion: "runclickhouse-vSTRICT-001",
+    __runnerVersion: "runclickhouse-vSTRICT-003",
+
+    // dims
     partner,
     service,
     region,
     pop,
     contentType,
     uaFamily,
+
+    // time mode
+    timeMode: tm.mode,
     windowMinutes: win,
+    startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
+    endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
+
+    // anchoring + selection
     anchorToMaxTs,
+    tableUsed: built.meta.tableUsed,
+    bucketSeconds: built.meta.bucketSeconds,
   };
+
+  const anchorLabel = anchorToMaxTs ? "max(ts)" : "absolute";
+  const rangeLabel =
+    tm.mode === "absolute"
+      ? `range=${tm.startIso}→${tm.endIso} UTC`
+      : `win=${win}m anchor=max(ts)`;
 
   const finalSummary =
     summary ||
-    `Triage: partner=${partner} service=${service} region=${region} pop=${pop} win=${win}m ct=${contentType} ua=${uaFamily}\n` +
+    `Triage: partner=${partner} service=${service} region=${region} pop=${pop} ${rangeLabel} ct=${contentType} ua=${uaFamily}\n` +
+      `table=${built.meta.tableUsed} bucket=${built.meta.bucketSeconds}s anchor=${anchorLabel}\n` +
       `requests=${Number(metricsJson.totalRequests).toLocaleString()} p95=${Math.round(
         Number(metricsJson.p95TtmsMs)
-      )}ms 5xx=${Number(metricsJson.error5xxCount).toLocaleString()} (${Number(
-        metricsJson.errorRatePct
-      ).toFixed(2)}%)`;
+      )}ms 5xx=${Number(metricsJson.error5xxCount).toLocaleString()} (${Number(metricsJson.errorRatePct).toFixed(2)}%)`;
 
   return {
     summary: finalSummary,

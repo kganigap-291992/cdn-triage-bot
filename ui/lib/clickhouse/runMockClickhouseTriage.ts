@@ -2,6 +2,10 @@
 // Public-safe mock ClickHouse runner.
 // ✅ Returns CANONICAL metricsJson only (generator is truth).
 // ✅ No legacy keys like requests/p95_ms/errors_5xx are returned.
+//
+// ✅ Level-2 time support:
+// - Relative: windowMinutes + anchorToMaxTs (existing behavior)
+// - Absolute: startTsUtc + endTsUtc (UTC ISO), overrides anchoring, generates points inside range
 
 import type { ClickhouseTriageInputs, ClickhouseTriageResult } from "./runClickhouseTriage";
 import { CANON } from "@/lib/schema/canonical";
@@ -16,10 +20,6 @@ function hashToInt(s: string): number {
 }
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
-}
-function clamp01(n: number) {
-  if (!Number.isFinite(n)) return 0;
-  return clamp(n, 0, 1);
 }
 function round(n: number) {
   return Math.round(n);
@@ -37,9 +37,7 @@ function int(n: number) {
   return `${Math.round(n)}`;
 }
 function uniqLower(arr: string[]) {
-  const out = Array.from(
-    new Set(arr.map((x) => String(x || "").trim().toLowerCase()).filter(Boolean))
-  );
+  const out = Array.from(new Set(arr.map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)));
   out.sort((a, b) => a.localeCompare(b));
   return out;
 }
@@ -70,6 +68,21 @@ function quantile(samples: number[], q: number) {
   return s[idx];
 }
 
+function parseIsoMs(v: unknown): number | null {
+  const s = typeof v === "string" ? v.trim() : "";
+  if (!s) return null;
+  const ms = Date.parse(s);
+  if (!Number.isFinite(ms)) return null;
+  return ms;
+}
+
+function floorToBucket(ms: number, bucketMs: number) {
+  return Math.floor(ms / bucketMs) * bucketMs;
+}
+function ceilToBucket(ms: number, bucketMs: number) {
+  return Math.ceil(ms / bucketMs) * bucketMs;
+}
+
 function buildAvailableFromUniverse(universe: {
   regions: string[];
   pops: string[];
@@ -96,11 +109,6 @@ function buildAvailableFromUniverse(universe: {
     contentTypes: uniqLowerLimit(universe.contentTypes, 24),
     uaFamilies: uniqLowerLimit(universe.uaFamilies, 24),
   };
-}
-
-// ✅ Force parity with CSV: always 5-minute buckets
-function chooseBucketSeconds() {
-  return 300;
 }
 
 // -----------------------------
@@ -143,6 +151,15 @@ function buildScopedPopsAndHostsCanon(region: string, pop: string, seed: number)
 // -----------------------------
 // Mock runner (CANON-only output)
 // -----------------------------
+//
+// NOTE: we allow extra "runner-provided meta" fields via (inputs as any)
+// because ClickhouseTriageInputs is shared with real runner.
+// These are passed from runClickhouseTriage (or route later):
+//   - bucketSeconds: 60|900 (picked by sqlBuilder; legacy 300 allowed)
+//   - tableUsed: "cachey.raw_minute"|"cachey.agg_15m"
+//   - anchorToMaxTs: boolean
+//   - startTsUtc/endTsUtc: ISO strings (absolute mode)
+//
 export async function runMockClickhouseTriage(
   inputs: ClickhouseTriageInputs
 ): Promise<ClickhouseTriageResult> {
@@ -157,18 +174,54 @@ export async function runMockClickhouseTriage(
     debug,
   } = inputs;
 
-  const seed = hashToInt(
-    `${partner}|${service}|${region}|${pop}|${contentType}|${uaFamily}|${windowMinutes}`
-  );
+  // Runner-provided meta (optional)
+  const bucketSecondsIn = Number((inputs as any)?.bucketSeconds);
+  const bucketSeconds =
+    bucketSecondsIn === 60 || bucketSecondsIn === 900 || bucketSecondsIn === 300 ? bucketSecondsIn : 300;
 
-  const baseTraffic = 5000 + (seed % 25000);
-  const noise = (seed % 1000) / 1000;
+  const tableUsedRaw = String((inputs as any)?.tableUsed || "cachey.raw_minute");
+  const tableUsed =
+    tableUsedRaw === "cachey.agg_15m" || tableUsedRaw === "cachey.raw_minute"
+      ? tableUsedRaw
+      : "cachey.raw_minute";
+
+  // Absolute range (optional)
+  const startTsUtcIn = (inputs as any)?.startTsUtc ?? null;
+  const endTsUtcIn = (inputs as any)?.endTsUtc ?? null;
+  const absStartMs = parseIsoMs(startTsUtcIn);
+  const absEndMs = parseIsoMs(endTsUtcIn);
+  const isAbsolute = absStartMs != null && absEndMs != null;
+
+  // Anchor (ignored for absolute)
+  const anchorToMaxTs = isAbsolute ? false : !!(inputs as any)?.anchorToMaxTs;
+
+  const bucketMs = bucketSeconds * 1000;
+
+  // ✅ IMPORTANT: include meta in seed so switching table/bucket/range changes output deterministically
+  const seed = hashToInt(
+    [
+      partner,
+      service,
+      region,
+      pop,
+      contentType,
+      uaFamily,
+      `win=${windowMinutes}`,
+      `bucket=${bucketSeconds}`,
+      `table=${tableUsed}`,
+      `anchor=${anchorToMaxTs ? "max" : "now"}`,
+      isAbsolute ? `abs=${new Date(absStartMs!).toISOString()}..${new Date(absEndMs!).toISOString()}` : "abs=none",
+    ].join("|")
+  );
 
   const canonRegions = (CANON.regions as readonly string[]).map(String);
   const canonPops = (CANON.pops as readonly string[]).map(String);
   const canonServices = (CANON.services as readonly string[]).map(String);
   const canonContentTypes = (CANON.contentTypes as readonly string[]).map(String);
   const canonUaFamilies = (CANON.uaFamilies as readonly string[]).map(String);
+
+  const baseTraffic = 5000 + (seed % 25000);
+  const noise = (seed % 1000) / 1000;
 
   // CRC/status universes are mock-only (not part of CANON vocab step)
   const crcUniverse = [
@@ -199,18 +252,40 @@ export async function runMockClickhouseTriage(
     uaFamilies: canonUaFamilies,
   });
 
-  const bucketSeconds = chooseBucketSeconds(); // 300
-  const bucketMs = bucketSeconds * 1000;
+  // ✅ Time bounds
+  let startAlignedMs: number;
+  let endAlignedMs: number;
 
-  const nowMs = Date.now();
-  const endAlignedMs = Math.floor(nowMs / bucketMs) * bucketMs;
+  if (isAbsolute) {
+    // Align to buckets; treat end as exclusive.
+    // Use floor for start so it begins at or before requested start,
+    // and ceil for end so it covers up through requested end.
+    startAlignedMs = floorToBucket(absStartMs!, bucketMs);
+    endAlignedMs = ceilToBucket(absEndMs!, bucketMs);
 
-  const spanMinutes = Math.max(1, windowMinutes);
-  const spanBuckets = Math.max(1, Math.ceil((spanMinutes * 60) / bucketSeconds)); // number of buckets
-  const startAlignedMs = endAlignedMs - spanBuckets * bucketMs;
+    // If user gives a tiny/invalid range, ensure at least 1 bucket.
+    if (!Number.isFinite(startAlignedMs) || !Number.isFinite(endAlignedMs) || endAlignedMs <= startAlignedMs) {
+      endAlignedMs = startAlignedMs + bucketMs;
+    }
+  } else {
+    // Existing behavior: anchor to "max(ts)" (simulated lag) or "now()"
+    const nowMs = Date.now();
+    const nowAlignedMs = floorToBucket(nowMs, bucketMs);
+
+    // stable synthetic "max(ts)" lag (0..~3 buckets), deterministic per seed
+    const maxLagBuckets = Math.min(3, Math.max(0, seed % 4)); // 0..3
+    endAlignedMs = anchorToMaxTs ? nowAlignedMs - maxLagBuckets * bucketMs : nowAlignedMs;
+
+    const spanMinutes = Math.max(1, Number(windowMinutes) || 60);
+    const spanBuckets = Math.max(1, Math.ceil((spanMinutes * 60) / bucketSeconds));
+    startAlignedMs = endAlignedMs - spanBuckets * bucketMs;
+  }
 
   const startISO = new Date(startAlignedMs).toISOString();
   const endISO = new Date(endAlignedMs).toISOString();
+
+  const spanBuckets = Math.max(1, Math.floor((endAlignedMs - startAlignedMs) / bucketMs));
+  const spanMinutesEffective = Math.max(1, Math.round((endAlignedMs - startAlignedMs) / 60000));
 
   const baseErrorPct = (service === "live" ? 0.9 : service === "vod" ? 0.5 : 0.7) + noise * 1.2;
 
@@ -239,12 +314,11 @@ export async function runMockClickhouseTriage(
 
   // ✅ Force a visible anomaly when debug=true (for UI testing)
   const forceAnomaly = !!debug;
-  const forcedBuckets = 8; // 8 * 5m = 40 minutes
+  const forcedBuckets = bucketSeconds === 900 ? 4 : bucketSeconds === 60 ? 20 : 8;
 
   // Stable “top hosts” ordering (keeps legends stable)
   const hostSeriesOrdered = stableColorKeyList(hostSeries, seed, Math.min(18, hostSeries.length));
 
-  // ✅ points count is EXACTLY spanBuckets (no off-by-one)
   for (let bi = 0; bi < spanBuckets; bi++) {
     const t = startAlignedMs + bi * bucketMs;
 
@@ -253,8 +327,7 @@ export async function runMockClickhouseTriage(
     let req = round(((baseTraffic * wave * (0.6 + noise * 0.8)) / spanBuckets) * 60);
     req = Math.max(req, 250);
 
-    const isForcedRange =
-      forceAnomaly && bi >= Math.max(0, spanBuckets - forcedBuckets);
+    const isForcedRange = forceAnomaly && bi >= Math.max(0, spanBuckets - forcedBuckets);
 
     const randomErrSpike = seed % 7 === 0 && bi > Math.floor(spanBuckets * 0.75) ? 2.5 : 1.0;
     const randomP95Spike = seed % 11 === 0 && bi > Math.floor(spanBuckets * 0.8) ? 2.2 : 1.0;
@@ -301,10 +374,7 @@ export async function runMockClickhouseTriage(
     let remainingHost = req;
     for (let hi = 0; hi < hostSeriesOrdered.length; hi++) {
       const baseShare = 0.18 - hi * 0.02;
-      const share =
-        hi === hostSeriesOrdered.length - 1
-          ? remainingHost
-          : round(req * clamp(baseShare, 0.04, 0.18));
+      const share = hi === hostSeriesOrdered.length - 1 ? remainingHost : round(req * clamp(baseShare, 0.04, 0.18));
       const v = clamp(share, 0, remainingHost);
       hostCountsByHost[hostSeriesOrdered[hi]] = v;
       remainingHost -= v;
@@ -343,14 +413,11 @@ export async function runMockClickhouseTriage(
     });
   }
 
-  // Stable quantiles
   const p95TtmsMs = quantile(ttmsP95Samples, 0.95);
   const p99TtmsMs = quantile(ttmsP99Samples, 0.99);
 
   const cacheHitPct =
-    service === "vod"
-      ? clamp(82 + (seed % 12) - noise * 4, 20, 99)
-      : clamp(68 + (seed % 18) - noise * 6, 10, 95);
+    service === "vod" ? clamp(82 + (seed % 12) - noise * 4, 20, 99) : clamp(68 + (seed % 18) - noise * 6, 10, 95);
   const cacheMissPct = clamp(100 - cacheHitPct, 0, 100);
 
   const statusCounts = [
@@ -384,18 +451,18 @@ export async function runMockClickhouseTriage(
 
   const warnings: string[] = [];
   if (totalRequests === 0) warnings.push("No rows matched (mock produced 0 requests).");
-  if (debug) {
-    warnings.push(
-      `debug=true: forcing spikes in last ${forcedBuckets} buckets for UI testing.`
-    );
-  }
+  if (debug) warnings.push(`debug=true: forcing spikes in last ${forcedBuckets} buckets for UI testing.`);
+  if (isAbsolute) warnings.push(`absolute range mode: startTsUtc/endTsUtc provided (anchor forced to now()).`);
+
+  const windowLabel = isAbsolute ? `abs(${spanMinutesEffective}m)` : `${windowMinutes}m`;
 
   const summaryText = [
     `🧭 *CDN TRIAGE SUMMARY*`,
     `• Source: \`clickhouse (mock)\` • partner=\`${partner}\``,
     `• Scope: service=\`${service}\`  region=\`${region}\`  pop=\`${pop}\``,
     `• Filters: contentType=\`${contentType}\` uaFamily=\`${uaFamily}\``,
-    `• Window: \`${windowMinutes}m\`  • Time (UTC): \`${startISO}\` → \`${endISO}\``,
+    `• Window: \`${windowLabel}\`  • Time (UTC): \`${startISO}\` → \`${endISO}\``,
+    `• Bucket: \`${bucketSeconds}s\`  • Table: \`${tableUsed}\`  • Anchor: \`${anchorToMaxTs ? "max(ts)" : "now()"}\``,
     ...(warnings.length ? ["", `⚠️ *Warnings*`, ...warnings.map((w) => `• ${w}`)] : []),
     "",
     `📊 *Traffic & Performance*`,
@@ -413,13 +480,17 @@ export async function runMockClickhouseTriage(
   ].join("\n");
 
   // public-safe mock SQL (only when debug)
+  // NOTE: this is illustrative only; it does not actually run against cachey tables.
   const sql = debug
     ? {
         queries: [
           [
-            `-- MOCK SQL (public-safe)`,
+            `-- MOCK SQL (public-safe, illustrative only)`,
             `-- Partner: ${partner}`,
-            `-- Filters: service=${service}, region=${region}, pop=${pop}, contentType=${contentType}, uaFamily=${uaFamily}, windowMinutes=${windowMinutes}`,
+            `-- Table(selected): ${tableUsed}`,
+            `-- Bucket(selected): ${bucketSeconds}s`,
+            `-- Anchor(selected): ${anchorToMaxTs ? "max(ts)" : "now()"}`,
+            isAbsolute ? `-- Absolute range: ${startISO} → ${endISO} (UTC)` : `-- Relative window: last ${windowMinutes}m`,
             `SELECT`,
             `  toStartOfInterval(ts, INTERVAL ${bucketSeconds} SECOND) AS bucket,`,
             `  count() AS totalRequests,`,
@@ -428,7 +499,9 @@ export async function runMockClickhouseTriage(
             `  quantileExact(0.99)(ttms_ms) AS p99TtmsMs`,
             `FROM edge_logs`,
             `WHERE partner = '${partner}'`,
-            `  AND ts >= now() - INTERVAL ${windowMinutes} MINUTE`,
+            isAbsolute
+              ? `  AND ts >= toDateTime('${startISO}') AND ts < toDateTime('${endISO}')`
+              : `  AND ts >= now() - INTERVAL ${windowMinutes} MINUTE`,
             `  AND service_bucket = '${service}'`,
             `  AND ('${region}' = 'all' OR region = '${region}')`,
             `  AND ('${pop}' = 'all' OR pop = '${pop}')`,
@@ -441,7 +514,6 @@ export async function runMockClickhouseTriage(
       }
     : undefined;
 
-  // ✅ CANONICAL metricsJson (NO legacy fields)
   const metricsJson = {
     totalRequests,
     p95TtmsMs,
@@ -460,8 +532,8 @@ export async function runMockClickhouseTriage(
 
     timeseries: {
       bucketSeconds,
-      startTs: points.length ? points[0].ts : startISO,
-      endTs: points.length ? points[points.length - 1].ts : endISO,
+      startTs: startISO,
+      endTs: endISO,
       points,
       statusCodeSeries,
       hostSeries: hostSeriesOrdered,
@@ -471,10 +543,20 @@ export async function runMockClickhouseTriage(
     warnings,
 
     debug: {
-      __runnerVersion: "mockclickhouse-vCANON-002",
+      __runnerVersion: "mockclickhouse-vCANON-004",
       note: "ClickHouse mock runner (no real DB access).",
       forcedAnomalies: !!debug,
-      forcedBuckets: forcedBuckets,
+      forcedBuckets,
+      tableUsed,
+      bucketSeconds,
+      anchorToMaxTs,
+
+      // ✅ Level-2 time debug fields
+      startTsUtc: isAbsolute ? startISO : null,
+      endTsUtc: isAbsolute ? endISO : null,
+      timeMode: isAbsolute ? "absolute" : "relative",
+      effectiveWindowMinutes: spanMinutesEffective,
+      spanBuckets,
     },
   };
 

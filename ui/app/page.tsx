@@ -8,6 +8,9 @@ import { CANON } from "@/lib/schema/canonical";
 
 // ------------------------------------------------------------
 // Home page (/) — Deterministic v1 (Option A)
+// - UTC everywhere (chat timestamps, typing timestamp)
+// - Grafana-style UTC time picker (Relative + Absolute)
+// - TTL persistence (10m) includes time range fields
 // ------------------------------------------------------------
 
 const LOGO_SRC = "/cachey-logo.png";
@@ -25,6 +28,7 @@ type Partner = (typeof CANON.partners)[number];
 type PartnerOrMissing = Partner | "";
 
 type DataSource = "clickhouse";
+type TimeMode = "relative" | "absolute";
 
 type TriageInputs = {
   dataSource: DataSource;
@@ -32,7 +36,12 @@ type TriageInputs = {
   service: string; // required (never "all")
   region: string; // "all" | canon region
   pop: string; // "all" | canon pop
-  windowMinutes: number;
+
+  // ✅ time range (choose one)
+  windowMinutes: number; // used when timeMode="relative" OR derived from absolute range
+  startTsUtc?: string | null; // ISO string
+  endTsUtc?: string | null; // ISO string
+
   contentType: string; // all|manifest|segment|api
   uaFamily: string; // all|stb|mobile|web|smart_tv|console
 };
@@ -131,6 +140,14 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
+function windowMinutesFromRange(startIso?: string | null, endIso?: string | null, fallback = 120) {
+  if (!startIso || !endIso) return fallback;
+  const s = new Date(startIso).getTime();
+  const e = new Date(endIso).getTime();
+  if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) return fallback;
+  return Math.max(1, Math.round((e - s) / 60000));
+}
+
 function bucketLabel(bucketSeconds: number | null | undefined) {
   const s = Number(bucketSeconds || 0);
   if (!Number.isFinite(s) || s <= 0) return "bucket";
@@ -139,7 +156,7 @@ function bucketLabel(bucketSeconds: number | null | undefined) {
   return `${s}s`;
 }
 
-// ---- UTC label helpers (charts) ----
+// ---- UTC label helpers (charts + chips + chat) ----
 function formatUtcHM(iso: string): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -188,6 +205,40 @@ function formatCountTick(v: number): string {
   if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return Math.round(n).toString();
+}
+
+// ✅ datetime-local helpers (treat input as UTC)
+function isoToDatetimeLocalUtc(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const y = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const da = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${y}-${mo}-${da}T${hh}:${mm}`;
+}
+function parseDatetimeLocalAsUtcToIso(v: string): string | null {
+  const raw = String(v || "").trim();
+  if (!raw) return null;
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], 0, 0));
+  return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
+}
+
+// ✅ Keep this for display in chips/title (UTC)
+function isoToUtcText(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const y = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const da = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${y}-${mo}-${da} ${hh}:${mm}`;
 }
 
 // Stable palette used in old page
@@ -610,9 +661,7 @@ function LatencyTimeseriesLines({
           <div className="text-xs text-gray-400">Latest</div>
           <div className="text-[11px] text-gray-200">
             {latest
-              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(latest.p95TtmsMs)} • p99=${formatMsOrNA(
-                  latest.p99TtmsMs
-                )}`
+              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(latest.p95TtmsMs)} • p99=${formatMsOrNA(latest.p99TtmsMs)}`
               : "n/a"}
           </div>
         </div>
@@ -643,9 +692,9 @@ function LatencyTimeseriesLines({
           }}
           onPointerCancel={() => setDrag({ active: false, x0: 0, x1: 0 })}
           onPointerLeave={() => {
-            if (!drag.active) return;
-            setDrag({ active: false, x0: 0, x1: 0 });
-          }}
+           if (!drag.active) return;
+           setDrag({ active: false, x0: 0, x1: 0 });
+        }}
         >
           <text
             x={padLeft - 38}
@@ -752,16 +801,6 @@ export default function Home() {
     }
   }
 
-  // ✅ sticky service (persists even when TTL resets)
-  function setServiceSticky(s: string) {
-    const v = String(s || "").trim();
-    if (!v) return;
-    if ((SERVICE_OPTIONS as readonly string[]).includes(v)) {
-      setService(v);
-      safeSetLS(SERVICE_KEY, v);
-    }
-  }
-
   // UI state
   const [isTriageLoading, setIsTriageLoading] = useState(false);
   const isLoading = isTriageLoading;
@@ -801,6 +840,21 @@ export default function Home() {
   const [contentType, setContentType] = useState<string>("all");
   const [uaFamily, setUaFamily] = useState<string>("all");
 
+  // ✅ time mode + applied absolute range (UTC ISO)
+  const [timeMode, setTimeMode] = useState<TimeMode>("relative");
+  const [startTsUtc, setStartTsUtc] = useState<string | null>(null);
+  const [endTsUtc, setEndTsUtc] = useState<string | null>(null);
+
+  // ✅ sticky service (persists even when TTL resets)
+  function setServiceSticky(s: string) {
+    const v = String(s || "").trim();
+    if (!v) return;
+    if ((SERVICE_OPTIONS as readonly string[]).includes(v)) {
+      setService(v);
+      safeSetLS(SERVICE_KEY, v);
+    }
+  }
+
   // staged filters (draft UI selections before Apply)
   const [draftService, setDraftService] = useState<string>("");
   const [draftRegion, setDraftRegion] = useState<string>("all");
@@ -808,6 +862,11 @@ export default function Home() {
   const [draftWindowMinutes, setDraftWindowMinutes] = useState<number>(120);
   const [draftContentType, setDraftContentType] = useState<string>("all");
   const [draftUaFamily, setDraftUaFamily] = useState<string>("all");
+
+  // ✅ time picker draft state
+  const [draftTimeMode, setDraftTimeMode] = useState<TimeMode>("relative");
+  const [draftStartUtcLocal, setDraftStartUtcLocal] = useState<string>(""); // datetime-local (UTC interpreted)
+  const [draftEndUtcLocal, setDraftEndUtcLocal] = useState<string>("");
 
   useEffect(() => setMounted(true), []);
 
@@ -843,6 +902,9 @@ export default function Home() {
     windowMinutes: number;
     contentType: string;
     uaFamily: string;
+    timeMode: TimeMode;
+    startTsUtc: string | null;
+    endTsUtc: string | null;
   }) {
     safeSetLS(
       FILTERS_KEY,
@@ -867,13 +929,7 @@ export default function Home() {
   function addTriageCard(run: ChatTriage["run"]) {
     setChatMessages((prev) => [
       ...prev,
-      {
-        id: `${Date.now()}-${Math.random()}`,
-        type: "triage",
-        role: "assistant",
-        ts: nowIso(),
-        run,
-      },
+      { id: `${Date.now()}-${Math.random()}`, type: "triage", role: "assistant", ts: nowIso(), run },
     ]);
   }
 
@@ -888,6 +944,11 @@ export default function Home() {
     setContentType("all");
     setUaFamily("all");
 
+    // ✅ reset time (Level 2)
+    setTimeMode("relative");
+    setStartTsUtc(null);
+    setEndTsUtc(null);
+
     // drafts follow applied (keep draft service as current service)
     setDraftService(service || "");
     setDraftRegion("all");
@@ -896,8 +957,12 @@ export default function Home() {
     setDraftContentType("all");
     setDraftUaFamily("all");
 
+    setDraftTimeMode("relative");
+    setDraftStartUtcLocal("");
+    setDraftEndUtcLocal("");
+
     setFiltersDirty(false);
-    pushRunLog("TTL expired: reset region/pop/window/contentType/uaFamily (kept partner + service).");
+    pushRunLog("TTL expired: reset non-sticky filters (kept partner + service).");
     addText("assistant", "TTL expired (10m): reset non-sticky filters. Partner + service were kept.");
   }
 
@@ -916,6 +981,11 @@ export default function Home() {
     setContentType("all");
     setUaFamily("all");
 
+    // ✅ reset time (Level 2)
+    setTimeMode("relative");
+    setStartTsUtc(null);
+    setEndTsUtc(null);
+
     // drafts
     setDraftService("");
     setDraftRegion("all");
@@ -923,6 +993,10 @@ export default function Home() {
     setDraftWindowMinutes(120);
     setDraftContentType("all");
     setDraftUaFamily("all");
+
+    setDraftTimeMode("relative");
+    setDraftStartUtcLocal("");
+    setDraftEndUtcLocal("");
 
     setFiltersDirty(false);
     pushRunLog("Reset: cleared saved filters + partner + service");
@@ -969,6 +1043,20 @@ export default function Home() {
       setUaFamily(ua);
       setDraftUaFamily(ua);
 
+      // ✅ load time fields
+      const tm: TimeMode = ttl.timeMode === "absolute" ? "absolute" : "relative";
+      setTimeMode(tm);
+      setDraftTimeMode(tm);
+
+      const sIso = ttl.startTsUtc ? String(ttl.startTsUtc) : null;
+      const eIso = ttl.endTsUtc ? String(ttl.endTsUtc) : null;
+
+      setStartTsUtc(sIso);
+      setEndTsUtc(eIso);
+
+      setDraftStartUtcLocal(isoToDatetimeLocalUtc(sIso));
+      setDraftEndUtcLocal(isoToDatetimeLocalUtc(eIso));
+
       pushRunLog("Loaded non-sticky filters from TTL (10m).");
     } else {
       // defaults for non-sticky filters
@@ -977,6 +1065,10 @@ export default function Home() {
       setDraftWindowMinutes(120);
       setDraftContentType("all");
       setDraftUaFamily("all");
+
+      setDraftTimeMode("relative");
+      setDraftStartUtcLocal("");
+      setDraftEndUtcLocal("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted]);
@@ -1014,9 +1106,12 @@ export default function Home() {
       windowMinutes,
       contentType,
       uaFamily,
+      timeMode,
+      startTsUtc,
+      endTsUtc,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mounted, service, region, pop, windowMinutes, contentType, uaFamily]);
+  }, [mounted, service, region, pop, windowMinutes, contentType, uaFamily, timeMode, startTsUtc, endTsUtc]);
 
   // Load schema once on mount (drives dropdowns) — SILENT
   useEffect(() => {
@@ -1103,9 +1198,9 @@ export default function Home() {
   }, [schemaState.contentTypes]);
 
   const availableUaFamilies: string[] = useMemo(() => {
-    const uniq = Array.from(
-      new Set((schemaState.uaFamilies || []).map((x) => String(x || "").trim()).filter(Boolean))
-    ).sort((a, b) => a.localeCompare(b));
+    const uniq = Array.from(new Set((schemaState.uaFamilies || []).map((x) => String(x || "").trim()).filter(Boolean))).sort(
+      (a, b) => a.localeCompare(b)
+    );
     return uniq.includes("all") ? uniq : ["all", ...uniq];
   }, [schemaState.uaFamilies]);
 
@@ -1154,6 +1249,36 @@ export default function Home() {
     setServiceSticky(s);
     setDraftService(s);
 
+    // ✅ validate/apply time mode
+    const tm: TimeMode = draftTimeMode === "absolute" ? "absolute" : "relative";
+    if (tm === "absolute") {
+      const sIso = parseDatetimeLocalAsUtcToIso(draftStartUtcLocal);
+      const eIso = parseDatetimeLocalAsUtcToIso(draftEndUtcLocal);
+
+      if (!sIso || !eIso) {
+        return { ok: false as const, error: "Pick start and end time (UTC) using the calendar inputs." };
+      }
+
+      const sMs = new Date(sIso).getTime();
+      const eMs = new Date(eIso).getTime();
+      if (!Number.isFinite(sMs) || !Number.isFinite(eMs) || eMs <= sMs) {
+        return { ok: false as const, error: "Invalid range: end must be after start." };
+      }
+
+      setTimeMode("absolute");
+      setStartTsUtc(sIso);
+      setEndTsUtc(eIso);
+
+      // also keep a sensible derived windowMinutes for charts/chips
+      const derivedWin = windowMinutesFromRange(sIso, eIso, draftWindowMinutes || 120);
+      setWindowMinutes(derivedWin);
+      setDraftWindowMinutes(derivedWin);
+    } else {
+      setTimeMode("relative");
+      setStartTsUtc(null);
+      setEndTsUtc(null);
+    }
+
     const ct = String(draftContentType || "all").trim() || "all";
     const ua = String(draftUaFamily || "all").trim() || "all";
 
@@ -1165,14 +1290,18 @@ export default function Home() {
 
     setRegion(String(draftRegion || "all"));
     setPop(String(draftPop || "all"));
-    setWindowMinutes(Number(draftWindowMinutes) || 120);
+    if (tm === "relative") {
+      setWindowMinutes(Number(draftWindowMinutes) || 120);
+    }
     setContentType(ct);
     setUaFamily(ua);
 
     setFiltersDirty(false);
     setFiltersOpen(false);
 
-    pushRunLog(`Applied filters: svc=${s} region=${draftRegion} pop=${draftPop} win=${draftWindowMinutes}m ct=${ct} ua=${ua}`);
+    pushRunLog(
+      `Applied filters: svc=${s} timeMode=${tm} region=${draftRegion} pop=${draftPop} win=${draftWindowMinutes}m ct=${ct} ua=${ua}`
+    );
     return { ok: true as const };
   }
 
@@ -1188,6 +1317,10 @@ export default function Home() {
     formData.append("windowMinutes", String(inputs.windowMinutes));
     formData.append("contentType", String(inputs.contentType || "all"));
     formData.append("uaFamily", String(inputs.uaFamily || "all"));
+
+    // ✅ absolute time range
+    if (inputs.startTsUtc) formData.append("startTsUtc", inputs.startTsUtc);
+    if (inputs.endTsUtc) formData.append("endTsUtc", inputs.endTsUtc);
 
     if (process.env.NODE_ENV !== "production") {
       formData.append("debug", "true");
@@ -1226,8 +1359,18 @@ export default function Home() {
     setTyping(true);
 
     try {
+      const effectiveWin =
+        timeMode === "absolute" && startTsUtc && endTsUtc
+          ? windowMinutesFromRange(startTsUtc, endTsUtc, windowMinutes)
+          : windowMinutes;
+
+      const timeLabel =
+        timeMode === "absolute" && startTsUtc && endTsUtc
+          ? `abs=${isoToUtcText(startTsUtc)}→${isoToUtcText(endTsUtc)} UTC`
+          : `win=${effectiveWin}m`;
+
       pushRunLog(
-        `Running triage: partner=${partner} svc=${service} region=${region} pop=${pop} win=${windowMinutes}m ct=${contentType} ua=${uaFamily}`
+        `Running triage: partner=${partner} svc=${service} region=${region} pop=${pop} ${timeLabel} ct=${contentType} ua=${uaFamily}`
       );
 
       const data = await runTriage({
@@ -1236,13 +1379,26 @@ export default function Home() {
         service,
         region,
         pop,
-        windowMinutes,
+        windowMinutes: effectiveWin,
+        startTsUtc: timeMode === "absolute" ? startTsUtc : null,
+        endTsUtc: timeMode === "absolute" ? endTsUtc : null,
         contentType,
         uaFamily,
       });
 
       addTriageCard({
-        inputs: { dataSource: "clickhouse", partner, service, region, pop, windowMinutes, contentType, uaFamily },
+        inputs: {
+          dataSource: "clickhouse",
+          partner,
+          service,
+          region,
+          pop,
+          windowMinutes: effectiveWin,
+          startTsUtc: timeMode === "absolute" ? startTsUtc : null,
+          endTsUtc: timeMode === "absolute" ? endTsUtc : null,
+          contentType,
+          uaFamily,
+        },
         summaryText: data.summaryText || "",
         metricsJson: data.metricsJson || null,
         sql: data.sql ?? null,
@@ -1323,6 +1479,9 @@ export default function Home() {
 
   function TriageCard({ run }: { run: ChatTriage["run"] }) {
     const ts = parseTimeseries(run.metricsJson);
+
+    const effectiveWindowMinutes = windowMinutesFromRange(run.inputs.startTsUtc, run.inputs.endTsUtc, run.inputs.windowMinutes);
+
     const bucketSeconds = ts?.bucketSeconds ?? run.metricsJson?.timeseries?.bucketSeconds ?? null;
 
     const summary = String(run.summaryText || "").trim();
@@ -1335,6 +1494,10 @@ export default function Home() {
     const forcedLocal = Boolean(debug?.forcedLocal);
     const proxyEnabled = Boolean(debug?.hasProxyEnv);
 
+    const tableUsed = debug?.tableUsed ? String(debug.tableUsed) : "unknown";
+    const debugBucketSeconds = debug?.bucketSeconds != null ? Number(debug.bucketSeconds) : null;
+    const anchorMode = debug?.anchorToMaxTs ? "max(ts)" : "now()";
+
     const answerSource = forcedLocal ? "Forced Local" : proxyEnabled ? "Proxy enabled" : "Local";
     const debugOn = process.env.NODE_ENV !== "production";
 
@@ -1344,8 +1507,11 @@ export default function Home() {
           <div className="min-w-0">
             <div className="text-xs text-gray-400">Triage result</div>
             <div className="text-sm font-semibold text-gray-100 truncate">
-              partner={run.inputs.partner} • svc={run.inputs.service} • region={run.inputs.region} • pop={run.inputs.pop} • win=
-              {run.inputs.windowMinutes}m • ct={run.inputs.contentType} • ua={run.inputs.uaFamily}
+              partner={run.inputs.partner} • svc={run.inputs.service} • region={run.inputs.region} • pop={run.inputs.pop} •{" "}
+              {run.inputs.startTsUtc && run.inputs.endTsUtc
+                ? `range=${isoToUtcText(run.inputs.startTsUtc)}→${isoToUtcText(run.inputs.endTsUtc)} UTC`
+                : `win=${run.inputs.windowMinutes}m`}{" "}
+              • ct={run.inputs.contentType} • ua={run.inputs.uaFamily}
             </div>
             {ts?.startTs && ts?.endTs ? (
               <div className="text-[11px] text-gray-500 mt-1">
@@ -1372,6 +1538,21 @@ export default function Home() {
               <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200" title="Runner version">
                 <span className="text-gray-400 mr-1">runner</span>
                 <span className="font-semibold">{runnerVersion}</span>
+              </span>
+
+              <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200" title="Table used">
+                <span className="text-gray-400 mr-1">table</span>
+                <span className="font-semibold">{tableUsed}</span>
+              </span>
+
+              <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200" title="Bucket size">
+                <span className="text-gray-400 mr-1">bucket</span>
+                <span className="font-semibold">{debugBucketSeconds != null ? `${debugBucketSeconds}s` : "n/a"}</span>
+              </span>
+
+              <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200" title="Anchor mode">
+                <span className="text-gray-400 mr-1">anchor</span>
+                <span className="font-semibold">{anchorMode}</span>
               </span>
 
               <span
@@ -1406,9 +1587,9 @@ export default function Home() {
               seriesKeys={ts.statusCodeSeries || []}
               getMap={(p) => p.statusCountsByCode}
               height={190}
-              windowMinutes={run.inputs.windowMinutes}
+              windowMinutes={effectiveWindowMinutes}
             />
-            <LatencyTimeseriesLines points={ts.points} bucketSeconds={bucketSeconds} height={190} windowMinutes={run.inputs.windowMinutes} />
+            <LatencyTimeseriesLines points={ts.points} bucketSeconds={bucketSeconds} height={190} windowMinutes={effectiveWindowMinutes} />
             <StackedBarTimeseries
               title="Host (stacked)"
               subtitle="Traffic timeseries"
@@ -1417,7 +1598,7 @@ export default function Home() {
               seriesKeys={ts.hostSeries || []}
               getMap={(p) => p.hostCountsByHost}
               height={190}
-              windowMinutes={run.inputs.windowMinutes}
+              windowMinutes={effectiveWindowMinutes}
             />
             <StackedBarTimeseries
               title="CRC (stacked)"
@@ -1427,7 +1608,7 @@ export default function Home() {
               seriesKeys={ts.crcSeries || []}
               getMap={(p) => p.crcCountsByCrc}
               height={190}
-              windowMinutes={run.inputs.windowMinutes}
+              windowMinutes={effectiveWindowMinutes}
             />
           </div>
         ) : (
@@ -1491,11 +1672,17 @@ export default function Home() {
     chips.push({ k: "svc", v: service || "—" });
     chips.push({ k: "region", v: region || "all" });
     chips.push({ k: "pop", v: pop || "all" });
-    chips.push({ k: "win", v: `${windowMinutes}m` });
+
+    if (timeMode === "absolute" && startTsUtc && endTsUtc) {
+      chips.push({ k: "range", v: `${isoToUtcText(startTsUtc)} → ${isoToUtcText(endTsUtc)} UTC` });
+    } else {
+      chips.push({ k: "win", v: `${windowMinutes}m` });
+    }
+
     chips.push({ k: "ct", v: contentType || "all" });
     chips.push({ k: "ua", v: uaFamily || "all" });
     return chips;
-  }, [partner, service, region, pop, windowMinutes, contentType, uaFamily]);
+  }, [partner, service, region, pop, windowMinutes, contentType, uaFamily, timeMode, startTsUtc, endTsUtc]);
 
   return (
     <main className="min-h-screen bg-black text-gray-100">
@@ -1517,13 +1704,17 @@ export default function Home() {
                   setFiltersOpen((v) => {
                     const next = !v;
                     if (next) {
-                      // ✅ sync drafts from applied on open (prevents stale/stuck drafts)
                       setDraftService(service);
                       setDraftRegion(region);
                       setDraftPop(pop);
                       setDraftWindowMinutes(windowMinutes);
                       setDraftContentType(contentType);
                       setDraftUaFamily(uaFamily);
+
+                      setDraftTimeMode(timeMode);
+                      setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
+                      setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
+
                       setFiltersDirty(false);
                     }
                     return next;
@@ -1597,6 +1788,11 @@ export default function Home() {
                       setDraftWindowMinutes(windowMinutes);
                       setDraftContentType(contentType);
                       setDraftUaFamily(uaFamily);
+
+                      setDraftTimeMode(timeMode);
+                      setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
+                      setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
+
                       setFiltersDirty(false);
                     }}
                     className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
@@ -1702,23 +1898,112 @@ export default function Home() {
                   </select>
                 </div>
 
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-400 mb-1">Window</div>
-                  <select
-                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                    value={String(draftWindowMinutes)}
-                    onChange={(e) => {
-                      setDraftWindowMinutes(Number(e.target.value));
-                      setFiltersDirty(true);
-                    }}
-                    disabled={!mounted}
-                  >
-                    {[30, 60, 120, 360, 720, 1440].map((m) => (
-                      <option key={m} value={String(m)} className="bg-black">
-                        {m}m
-                      </option>
-                    ))}
-                  </select>
+                {/* ✅ Grafana-style time picker (UTC) */}
+                <div className="min-w-0 md:col-span-2">
+                  <div className="text-xs text-gray-400 mb-1">Time (UTC)</div>
+
+                  <div className="flex items-center gap-2 mb-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraftTimeMode("relative");
+                        setFiltersDirty(true);
+                      }}
+                      className={`px-3 py-1.5 rounded-full border text-xs ${
+                        draftTimeMode === "relative"
+                          ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
+                          : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+                      }`}
+                    >
+                      Relative
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraftTimeMode("absolute");
+                        setFiltersDirty(true);
+                      }}
+                      className={`px-3 py-1.5 rounded-full border text-xs ${
+                        draftTimeMode === "absolute"
+                          ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
+                          : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+                      }`}
+                    >
+                      Absolute
+                    </button>
+                  </div>
+
+                  {draftTimeMode === "relative" ? (
+                    <select
+                      className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                      value={String(draftWindowMinutes)}
+                      onChange={(e) => {
+                        setDraftWindowMinutes(Number(e.target.value));
+                        setFiltersDirty(true);
+                      }}
+                      disabled={!mounted}
+                    >
+                      {[30, 60, 120, 360, 720, 1440].map((m) => (
+                        <option key={m} value={String(m)} className="bg-black">
+                          Last {m}m
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div>
+                        <div className="text-[11px] text-gray-400 mb-1">Start (UTC)</div>
+                        <input
+                          type="datetime-local"
+                          value={draftStartUtcLocal}
+                          onChange={(e) => {
+                            setDraftStartUtcLocal(e.target.value);
+                            setFiltersDirty(true);
+                          }}
+                          className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                        />
+                      </div>
+                      <div>
+                        <div className="text-[11px] text-gray-400 mb-1">End (UTC)</div>
+                        <input
+                          type="datetime-local"
+                          value={draftEndUtcLocal}
+                          onChange={(e) => {
+                            setDraftEndUtcLocal(e.target.value);
+                            setFiltersDirty(true);
+                          }}
+                          className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                        />
+                      </div>
+
+                      <div className="sm:col-span-2 flex flex-wrap gap-2 mt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const now = new Date();
+                            setDraftEndUtcLocal(isoToDatetimeLocalUtc(now.toISOString()));
+                            setFiltersDirty(true);
+                          }}
+                          className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                        >
+                          Set End=Now
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const end = new Date();
+                            const start = new Date(end.getTime() - 60 * 60 * 1000);
+                            setDraftStartUtcLocal(isoToDatetimeLocalUtc(start.toISOString()));
+                            setDraftEndUtcLocal(isoToDatetimeLocalUtc(end.toISOString()));
+                            setFiltersDirty(true);
+                          }}
+                          className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                        >
+                          Last 60m
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="min-w-0">
@@ -1815,7 +2100,7 @@ export default function Home() {
                       .reverse()
                       .map((x, idx) => (
                         <div key={`${x.ts}-${idx}`} className="text-xs text-gray-300">
-                          <span className="text-gray-500 mr-2">{formatUtcYmdHm(x.ts)}</span>
+                          <span className="text-gray-500 mr-2">{formatUtcYmdHm(x.ts)} UTC</span>
                           {x.text}
                         </div>
                       ))}
@@ -1842,10 +2127,7 @@ export default function Home() {
         ) : null}
 
         <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
-          <div
-            ref={chatScrollRef}
-            className="h-[66vh] min-h-[520px] overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-4"
-          >
+          <div ref={chatScrollRef} className="h-[66vh] min-h-[520px] overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-4">
             <div className="space-y-4">
               {chatMessages.map((m) => {
                 const isUser = m.role === "user";
@@ -1863,12 +2145,8 @@ export default function Home() {
                 return (
                   <div key={m.id} className={`flex ${rowAlign}`}>
                     <div className={`${bubbleMax} w-full`}>
-                      <div
-                        className={`text-[10px] text-gray-500 mb-1 ${
-                          isSystem ? "text-center" : isUser ? "text-right" : "text-left"
-                        }`}
-                      >
-                        {mounted ? new Date(m.ts).toLocaleString() : m.ts}
+                      <div className={`text-[10px] text-gray-500 mb-1 ${isSystem ? "text-center" : isUser ? "text-right" : "text-left"}`}>
+                        {mounted ? `${formatUtcYmdHm(m.ts)} UTC` : m.ts}
                       </div>
 
                       {m.type === "text" ? (
@@ -1887,9 +2165,7 @@ export default function Home() {
               {typing ? (
                 <div className="flex justify-start">
                   <div className="max-w-[82%] w-full">
-                    <div className="text-[10px] text-gray-500 mb-1 text-left">
-                      {mounted ? new Date().toLocaleString() : nowIso()}
-                    </div>
+                    <div className="text-[10px] text-gray-500 mb-1 text-left">{mounted ? `${formatUtcYmdHm(nowIso())} UTC` : nowIso()}</div>
                     <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
                       <TypingDots />
                     </div>
