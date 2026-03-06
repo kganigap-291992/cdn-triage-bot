@@ -1,4 +1,3 @@
-// ui/app/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -7,43 +6,42 @@ import type { TriageResponse } from "@/lib/triage/contracts";
 import { CANON } from "@/lib/schema/canonical";
 
 // ------------------------------------------------------------
-// Home page (/) — Deterministic v1 (Option A)
-// - UTC everywhere (chat timestamps, typing timestamp)
-// - Grafana-style UTC time picker (Relative + Absolute)
-// - TTL persistence (10m) includes time range fields
+// Home page (/) — Chat-first deterministic triage
+// - UTC everywhere
+// - Collapsible advanced filters
+// - Chat-first layout
+// - Hero graphs: Requests, Error Rate, Latency
+// - Diagnostic graphs: Status, Host, CRC
+// - Local focus mode for stacked charts (no DB re-query)
 // ------------------------------------------------------------
 
 const LOGO_SRC = "/cachey-logo.png";
 
 // Sticky + TTL keys
 const PARTNER_KEY = "cachey:partner";
-const SERVICE_KEY = "cachey:service"; // ✅ service persists separately
+const SERVICE_KEY = "cachey:service";
 const FILTERS_KEY = "cachey:filters";
-const FILTERS_TTL_MS = 10 * 60 * 1000; // ✅ 10 minutes
+const FILTERS_TTL_MS = 10 * 60 * 1000;
 
 const PARTNER_OPTIONS = CANON.partners;
 const SERVICE_OPTIONS = CANON.services;
 
 type Partner = (typeof CANON.partners)[number];
 type PartnerOrMissing = Partner | "";
-
 type DataSource = "clickhouse";
 type TimeMode = "relative" | "absolute";
 
 type TriageInputs = {
   dataSource: DataSource;
   partner: PartnerOrMissing;
-  service: string; // required (never "all")
-  region: string; // "all" | canon region
-  pop: string; // "all" | canon pop
-
-  // ✅ time range (choose one)
-  windowMinutes: number; // used when timeMode="relative" OR derived from absolute range
-  startTsUtc?: string | null; // ISO string
-  endTsUtc?: string | null; // ISO string
-
-  contentType: string; // all|manifest|segment|api
-  uaFamily: string; // all|stb|mobile|web|smart_tv|console
+  service: string;
+  region: string;
+  pop: string;
+  windowMinutes: number;
+  startTsUtc?: string | null;
+  endTsUtc?: string | null;
+  contentType: string;
+  uaFamily: string;
 };
 
 type ChatText = {
@@ -63,7 +61,6 @@ type ChatTriage = {
     inputs: TriageInputs;
     summaryText: string;
     metricsJson: any;
-    sql?: any | null;
   };
 };
 
@@ -76,10 +73,24 @@ type TimeseriesPoint = {
   errorRatePct: number;
   p95TtmsMs: number | null;
   p99TtmsMs: number | null;
-
+  cacheHitRate?: number | null;
+  crcErrorCount?: number;
   statusCountsByCode?: Record<string, number>;
-  hostCountsByHost?: Record<string, number>;
-  crcCountsByCrc?: Record<string, number>;
+};
+
+type HostSeriesItem = {
+  host: string;
+  totalRequests: number;
+  error5xxCount: number;
+  crcErrorCount: number;
+  errorRatePct: number;
+  p95TtmsMs: number | null;
+  p99TtmsMs: number | null;
+};
+
+type CrcSeriesItem = {
+  ts: string;
+  crcErrorCount: number;
 };
 
 type TimeseriesData = {
@@ -88,8 +99,8 @@ type TimeseriesData = {
   endTs: string | null;
   points: TimeseriesPoint[];
   statusCodeSeries?: string[];
-  hostSeries?: string[];
-  crcSeries?: string[];
+  hostSeries?: HostSeriesItem[];
+  crcSeries?: CrcSeriesItem[];
 };
 
 type SchemaState = {
@@ -123,6 +134,10 @@ function safeDelLS(key: string) {
   } catch {}
 }
 
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
 function formatMsOrNA(x: number | null | undefined): string {
   if (x == null || !Number.isFinite(Number(x))) return "n/a";
   return `${Math.round(Number(x))} ms`;
@@ -134,10 +149,6 @@ function formatPctOrNA(x: number | null | undefined): string {
 function formatIntOrNA(x: number | null | undefined): string {
   if (x == null || !Number.isFinite(Number(x))) return "0";
   return `${Math.round(Number(x)).toLocaleString()}`;
-}
-
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
 }
 
 function windowMinutesFromRange(startIso?: string | null, endIso?: string | null, fallback = 120) {
@@ -156,7 +167,17 @@ function bucketLabel(bucketSeconds: number | null | undefined) {
   return `${s}s`;
 }
 
-// ---- UTC label helpers (charts + chips + chat) ----
+function formatCountTick(v: number): string {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "";
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return Math.round(n).toString();
+}
+
+// ---- UTC helpers ----
 function formatUtcHM(iso: string): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -197,17 +218,6 @@ function timeLabelShort(tsIso: string, spanMinutes: number) {
   return `${y}-${mo}-${da}`;
 }
 
-function formatCountTick(v: number): string {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "";
-  const abs = Math.abs(n);
-  if (abs >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
-  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return Math.round(n).toString();
-}
-
-// ✅ datetime-local helpers (treat input as UTC)
 function isoToDatetimeLocalUtc(iso: string | null | undefined): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -227,8 +237,6 @@ function parseDatetimeLocalAsUtcToIso(v: string): string | null {
   const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], 0, 0));
   return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
 }
-
-// ✅ Keep this for display in chips/title (UTC)
 function isoToUtcText(iso: string | null | undefined): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -241,7 +249,7 @@ function isoToUtcText(iso: string | null | undefined): string {
   return `${y}-${mo}-${da} ${hh}:${mm}`;
 }
 
-// Stable palette used in old page
+// ---- color helpers ----
 function stableColorForKey(key: string) {
   const palette = [
     "#2563eb",
@@ -266,8 +274,37 @@ function stableColorForKey(key: string) {
   return palette[h % palette.length];
 }
 
+function statusColorForCode(code: string) {
+  switch (code) {
+    case "200":
+    case "206":
+      return "#22c55e";
+    case "304":
+      return "#14b8a6";
+    case "403":
+    case "404":
+    case "429":
+      return "#f59e0b";
+    case "500":
+      return "#ef4444";
+    case "502":
+      return "#dc2626";
+    case "503":
+      return "#f43f5e";
+    case "504":
+      return "#7f1d1d";
+    default:
+      return stableColorForKey(code);
+  }
+}
+
+function seriesColor(kind: "status" | "host" | "crc", key: string) {
+  if (kind === "status") return statusColorForCode(key);
+  return stableColorForKey(key);
+}
+
 // ------------------------------------------------------------
-// Typing dots (subtle)
+// Typing dots
 // ------------------------------------------------------------
 function TypingDots() {
   return (
@@ -280,7 +317,7 @@ function TypingDots() {
 }
 
 // ------------------------------------------------------------
-// Generic stacked bar chart (ported from old page)
+// Generic stacked chart with local focus mode
 // ------------------------------------------------------------
 function StackedBarTimeseries({
   title,
@@ -291,6 +328,7 @@ function StackedBarTimeseries({
   getMap,
   height = 190,
   windowMinutes,
+  kind,
 }: {
   title: string;
   subtitle: string;
@@ -300,10 +338,12 @@ function StackedBarTimeseries({
   getMap: (p: TimeseriesPoint) => Record<string, number> | undefined;
   height?: number;
   windowMinutes: number;
+  kind: "status" | "host" | "crc";
 }) {
   const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
   const basePoints = (ts.points || []).slice(-maxBars);
   const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
+  const [focusedKey, setFocusedKey] = useState<string | null>(null);
 
   const points = zoom && zoom.end > zoom.start ? basePoints.slice(zoom.start, zoom.end + 1) : basePoints;
 
@@ -323,14 +363,16 @@ function StackedBarTimeseries({
       present.set(k, (present.get(k) ?? 0) + Number(m[k] ?? 0));
     }
   }
-  const presentKeys = Array.from(present.entries())
-    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
-    .map(([k]) => k);
 
-  const ordered = [...seriesKeys.filter((k) => present.has(k)), ...presentKeys.filter((k) => !seriesKeys.includes(k))];
+  const ordered = [
+    ...seriesKeys.filter((k) => present.has(k)),
+    ...Array.from(present.keys()).filter((k) => !seriesKeys.includes(k)),
+  ];
 
-  const keys = ordered.slice(0, 10);
-  if (!keys.length) return null;
+  const allKeys = ordered.slice(0, 10);
+  if (!allKeys.length) return null;
+
+  const keys = focusedKey && allKeys.includes(focusedKey) ? [focusedKey] : allKeys;
 
   const totals = points.map((p) => {
     const m = getMap(p) || {};
@@ -350,8 +392,8 @@ function StackedBarTimeseries({
   const plotH = h - padTop - padBottom;
 
   const barCount = points.length;
-  const gap = clamp(Math.round(plotW / (barCount * 10)), 2, 6);
-  const barW = Math.max(4, Math.floor((plotW - gap * (barCount - 1)) / barCount));
+  const gap = clamp(Math.round(plotW / (Math.max(1, barCount) * 10)), 2, 6);
+  const barW = Math.max(4, Math.floor((plotW - gap * Math.max(0, barCount - 1)) / Math.max(1, barCount)));
 
   const yTicks = 4;
   const tickVals = Array.from({ length: yTicks + 1 }, (_, i) => Math.round((maxTotal * (yTicks - i)) / yTicks));
@@ -396,12 +438,20 @@ function StackedBarTimeseries({
               : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
           </div>
           <div className="text-[11px] text-gray-500 mt-1">
-            Drag to zoom • double-click to reset
-            {zoom ? (
-              <button type="button" className="ml-2 underline hover:text-gray-300" onClick={() => setZoom(null)}>
-                reset zoom
-              </button>
-            ) : null}
+            {focusedKey ? (
+              <>
+                Focused: <span className="text-gray-200">{focusedKey}</span>
+                <button
+                  type="button"
+                  className="ml-2 underline hover:text-gray-300"
+                  onClick={() => setFocusedKey(null)}
+                >
+                  reset focus
+                </button>
+              </>
+            ) : (
+              <>Click legend to isolate a series • Drag to zoom • double-click to reset</>
+            )}
           </div>
         </div>
 
@@ -488,7 +538,7 @@ function StackedBarTimeseries({
                       width={barW}
                       height={Math.max(0, segH)}
                       rx={2}
-                      fill={stableColorForKey(k)}
+                      fill={seriesColor(kind, k)}
                       opacity={0.95}
                     />
                   );
@@ -524,12 +574,24 @@ function StackedBarTimeseries({
         </svg>
 
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-300">
-          {keys.map((k) => (
-            <div key={k} className="flex items-center gap-1.5">
-              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: stableColorForKey(k) }} />
-              <span className="truncate max-w-[220px]">{k}</span>
-            </div>
-          ))}
+          {allKeys.map((k) => {
+            const active = focusedKey ? focusedKey === k : true;
+            return (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setFocusedKey((prev) => (prev === k ? null : k))}
+                className={`flex items-center gap-1.5 rounded-full border px-2 py-1 transition ${
+                  active
+                    ? "border-white/10 bg-white/5 text-gray-100"
+                    : "border-white/5 bg-white/[0.02] text-gray-500"
+                }`}
+              >
+                <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: seriesColor(kind, k) }} />
+                <span className="truncate max-w-[220px]">{k}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>
@@ -537,7 +599,268 @@ function StackedBarTimeseries({
 }
 
 // ------------------------------------------------------------
-// Latency line chart (ported from old page)
+// Hero line chart: Requests + Error Rate
+// ------------------------------------------------------------
+function RequestsErrorRateLines({
+  points,
+  bucketSeconds,
+  height = 190,
+  windowMinutes,
+}: {
+  points: TimeseriesPoint[];
+  bucketSeconds: number | null;
+  height?: number;
+  windowMinutes: number;
+}) {
+  const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
+  const base = points.slice(-maxBars);
+
+  const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
+  const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
+
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({
+    active: false,
+    x0: 0,
+    x1: 0,
+  });
+
+  if (!slice.length) return null;
+
+  const reqVals = slice.map((p) => Number(p.totalRequests || 0));
+  const errVals = slice.map((p) =>
+    Number.isFinite(Number(p.errorRatePct))
+      ? Number(p.errorRatePct)
+      : p.totalRequests > 0
+      ? (Number(p.error5xxCount || 0) / Number(p.totalRequests)) * 100
+      : 0
+  );
+
+  const reqMax = Math.max(1, ...reqVals);
+  const errMaxRaw = Math.max(0, ...errVals);
+  const errMax = Math.max(0.5, errMaxRaw * 1.2 || 0.5);
+
+  const w = 360;
+  const h = height;
+  const padLeft = 54;
+  const padRight = 44;
+  const padTop = 12;
+  const padBottom = 44;
+  const plotW = w - padLeft - padRight;
+  const plotH = h - padTop - padBottom;
+
+  const n = slice.length;
+  const denom = Math.max(1, n - 1);
+
+  function x(i: number) {
+    return padLeft + (i / denom) * plotW;
+  }
+  function yReq(v: number) {
+    const t = v / reqMax;
+    return padTop + (1 - t) * plotH;
+  }
+  function yErr(v: number) {
+    const t = v / errMax;
+    return padTop + (1 - t) * plotH;
+  }
+
+  const reqPts: string[] = [];
+  const errPts: string[] = [];
+  slice.forEach((p, i) => {
+    const xx = x(i);
+    reqPts.push(`${xx},${yReq(Number(p.totalRequests || 0))}`);
+    const err = Number.isFinite(Number(p.errorRatePct))
+      ? Number(p.errorRatePct)
+      : p.totalRequests > 0
+      ? (Number(p.error5xxCount || 0) / Number(p.totalRequests)) * 100
+      : 0;
+    errPts.push(`${xx},${yErr(err)}`);
+  });
+
+  const xLabelEvery = Math.max(1, Math.floor(n / 6));
+  const latest = slice[slice.length - 1];
+  const latestErr =
+    latest && Number.isFinite(Number(latest.errorRatePct))
+      ? Number(latest.errorRatePct)
+      : latest && latest.totalRequests > 0
+      ? (Number(latest.error5xxCount || 0) / Number(latest.totalRequests)) * 100
+      : 0;
+
+  function toSvgX(clientX: number) {
+    const el = svgRef.current;
+    if (!el) return 0;
+    const r = el.getBoundingClientRect();
+    const rel = (clientX - r.left) / Math.max(1, r.width);
+    return rel * w;
+  }
+  function idxFromSvgX(sx: number) {
+    const t = (sx - padLeft) / Math.max(1, plotW);
+    const i = Math.round(t * (base.length - 1));
+    return clamp(i, 0, Math.max(0, base.length - 1));
+  }
+  function commitZoom(x0: number, x1: number) {
+    const a = Math.min(x0, x1);
+    const b = Math.max(x0, x1);
+    const i0 = idxFromSvgX(a);
+    const i1 = idxFromSvgX(b);
+    if (i1 - i0 >= 2) setZoom({ start: i0, end: i1 });
+  }
+
+  const selectionX = Math.min(drag.x0, drag.x1);
+  const selectionW = Math.abs(drag.x1 - drag.x0);
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] min-w-0">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs text-gray-400">Traffic + incident signal</div>
+          <div className="text-sm font-semibold text-gray-100">Requests / Error Rate</div>
+          <div className="text-[11px] text-gray-400 mt-1">
+            {slice.length
+              ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(slice[slice.length - 1].ts)} UTC (bucket: ${bucketLabel(
+                  bucketSeconds
+                )})`
+              : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
+          </div>
+          <div className="text-[11px] text-gray-500 mt-1">Drag to zoom • double-click to reset</div>
+        </div>
+        <div className="text-right">
+          <div className="text-xs text-gray-400">Latest</div>
+          <div className="text-[11px] text-gray-200">
+            {latest
+              ? `${formatUtcHM(latest.ts)} UTC • req=${formatIntOrNA(latest.totalRequests)} • err=${formatPctOrNA(
+                  latestErr
+                )}`
+              : "n/a"}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${w} ${h}`}
+          className="w-full"
+          style={{ height, touchAction: "none", cursor: "crosshair" }}
+          onDoubleClick={() => setZoom(null)}
+          onPointerDown={(e) => {
+            const sx = toSvgX(e.clientX);
+            setDrag({ active: true, x0: sx, x1: sx });
+            (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            if (!drag.active) return;
+            setDrag((d) => ({ ...d, x1: toSvgX(e.clientX) }));
+          }}
+          onPointerUp={() => {
+            if (!drag.active) return;
+            setDrag((d) => {
+              commitZoom(d.x0, d.x1);
+              return { active: false, x0: 0, x1: 0 };
+            });
+          }}
+          onPointerCancel={() => setDrag({ active: false, x0: 0, x1: 0 })}
+          onPointerLeave={() => {
+            if (!drag.active) return;
+            setDrag({ active: false, x0: 0, x1: 0 });
+          }}
+        >
+          <text
+            x={padLeft - 38}
+            y={padTop + plotH / 2}
+            fontSize="10"
+            fill="#9ca3af"
+            transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
+          >
+            Requests
+          </text>
+          <text
+            x={w - padRight + 28}
+            y={padTop + plotH / 2}
+            fontSize="10"
+            fill="#9ca3af"
+            transform={`rotate(90 ${w - padRight + 28} ${padTop + plotH / 2})`}
+          >
+            Error %
+          </text>
+
+          {[0, 0.25, 0.5, 0.75, 1].map((t, idx) => {
+            const yy = padTop + (1 - t) * plotH;
+            const reqTick = Math.round(reqMax * t);
+            const errTick = errMax * t;
+            return (
+              <g key={idx} opacity={0.35}>
+                <line x1={padLeft} y1={yy} x2={padLeft + plotW} y2={yy} stroke="currentColor" />
+                <text x={padLeft - 10} y={yy + 3} fontSize="10" fill="#9ca3af" textAnchor="end">
+                  {formatCountTick(reqTick)}
+                </text>
+                <text x={padLeft + plotW + 10} y={yy + 3} fontSize="10" fill="#9ca3af" textAnchor="start">
+                  {errTick.toFixed(2)}%
+                </text>
+              </g>
+            );
+          })}
+
+          <polyline
+            fill="none"
+            stroke="rgba(59,130,246,0.92)"
+            strokeWidth="2.75"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            points={reqPts.join(" ")}
+          />
+          <polyline
+            fill="none"
+            stroke="rgba(239,68,68,0.92)"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            points={errPts.join(" ")}
+          />
+
+          {slice.map((p, i) => {
+            const show = i % xLabelEvery === 0 || i === slice.length - 1;
+            if (!show) return null;
+            const xx = x(i);
+            const label = timeLabelShort(p.ts, windowMinutes);
+            return (
+              <text key={`xl-${p.ts}`} x={xx} y={padTop + plotH + 18} fontSize="10" fill="#9ca3af" textAnchor="middle">
+                {label}
+              </text>
+            );
+          })}
+
+          {drag.active && selectionW > 2 ? (
+            <rect
+              x={selectionX}
+              y={padTop}
+              width={selectionW}
+              height={plotH}
+              fill="rgba(59,130,246,0.12)"
+              stroke="rgba(59,130,246,0.55)"
+              strokeWidth={1}
+              rx={6}
+            />
+          ) : null}
+        </svg>
+
+        <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
+          <div className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(59,130,246,0.92)" }} />
+            <span>requests</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(239,68,68,0.92)" }} />
+            <span>error rate</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+// Latency line chart
 // ------------------------------------------------------------
 function LatencyTimeseriesLines({
   points,
@@ -639,7 +962,7 @@ function LatencyTimeseriesLines({
     <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] min-w-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-xs text-gray-400">Latency timeseries</div>
+          <div className="text-xs text-gray-400">Latency trend</div>
           <div className="text-sm font-semibold text-gray-100">p95 / p99 TTMS</div>
           <div className="text-[11px] text-gray-400 mt-1">
             {slice.length
@@ -648,20 +971,15 @@ function LatencyTimeseriesLines({
                 )})`
               : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
           </div>
-          <div className="text-[11px] text-gray-500 mt-1">
-            Drag to zoom • double-click to reset
-            {zoom ? (
-              <button type="button" className="ml-2 underline hover:text-gray-300" onClick={() => setZoom(null)}>
-                reset zoom
-              </button>
-            ) : null}
-          </div>
+          <div className="text-[11px] text-gray-500 mt-1">Drag to zoom • double-click to reset</div>
         </div>
         <div className="text-right">
           <div className="text-xs text-gray-400">Latest</div>
           <div className="text-[11px] text-gray-200">
             {latest
-              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(latest.p95TtmsMs)} • p99=${formatMsOrNA(latest.p99TtmsMs)}`
+              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(latest.p95TtmsMs)} • p99=${formatMsOrNA(
+                  latest.p99TtmsMs
+                )}`
               : "n/a"}
           </div>
         </div>
@@ -692,9 +1010,9 @@ function LatencyTimeseriesLines({
           }}
           onPointerCancel={() => setDrag({ active: false, x0: 0, x1: 0 })}
           onPointerLeave={() => {
-           if (!drag.active) return;
-           setDrag({ active: false, x0: 0, x1: 0 });
-        }}
+            if (!drag.active) return;
+            setDrag({ active: false, x0: 0, x1: 0 });
+          }}
         >
           <text
             x={padLeft - 38}
@@ -715,7 +1033,7 @@ function LatencyTimeseriesLines({
             return (
               <g key={idx} opacity={0.35}>
                 <line x1={padLeft} y1={yy} x2={padLeft + plotW} y2={yy} stroke="currentColor" />
-                <text x={padLeft - 10} y={yy + 3} fontSize="10" fill="#9ca3af" textAnchor="end" opacity={0.95}>
+                <text x={padLeft - 10} y={yy + 3} fontSize="10" fill="#9ca3af" textAnchor="end">
                   {v}
                 </text>
               </g>
@@ -724,7 +1042,7 @@ function LatencyTimeseriesLines({
 
           <polyline
             fill="none"
-            stroke="rgba(37,99,235,0.92)"
+            stroke="rgba(59,130,246,0.92)"
             strokeWidth="2.75"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -732,7 +1050,7 @@ function LatencyTimeseriesLines({
           />
           <polyline
             fill="none"
-            stroke="rgba(17,24,39,0.55)"
+            stroke="rgba(139,92,246,0.92)"
             strokeWidth="2.75"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -767,16 +1085,261 @@ function LatencyTimeseriesLines({
 
         <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
           <div className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(37,99,235,0.92)" }} />
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(59,130,246,0.92)" }} />
             <span>p95</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(17,24,39,0.55)" }} />
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(139,92,246,0.92)" }} />
             <span>p99</span>
           </div>
-          <div className="text-gray-500">
-            min <span className="text-gray-200">{Math.round(minV)}ms</span> • max{" "}
-            <span className="text-gray-200">{Math.round(maxV)}ms</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HostSummaryCard({ hosts }: { hosts: HostSeriesItem[] }) {
+  const rows = (hosts || []).slice(0, 10);
+  if (!rows.length) return null;
+
+  const maxReq = Math.max(1, ...rows.map((r) => Number(r.totalRequests || 0)));
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] min-w-0">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs text-gray-400">Diagnostic view</div>
+          <div className="text-sm font-semibold text-gray-100">Host distribution</div>
+          <div className="text-[11px] text-gray-500 mt-1">Top hosts by request volume in the current window</div>
+        </div>
+        <div className="text-right">
+          <div className="text-xs text-gray-400">Hosts</div>
+          <div className="text-[11px] text-gray-200">{rows.length}</div>
+        </div>
+      </div>
+
+      <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
+        <div className="space-y-3">
+          {rows.map((row) => {
+            const widthPct = Math.max(4, (Number(row.totalRequests || 0) / maxReq) * 100);
+            return (
+              <div key={row.host} className="space-y-1.5">
+                <div className="flex items-center justify-between gap-3 text-[11px]">
+                  <div className="truncate text-gray-200 font-medium">{row.host}</div>
+                  <div className="shrink-0 text-gray-400">
+                    req={formatIntOrNA(row.totalRequests)} • 5xx={formatPctOrNA(row.errorRatePct)} • crc={formatIntOrNA(row.crcErrorCount)}
+                  </div>
+                </div>
+                <div className="h-2.5 rounded-full bg-white/5 overflow-hidden">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${widthPct}%`,
+                      background: stableColorForKey(row.host),
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CrcTimeseriesBars({
+  crcSeries,
+  bucketSeconds,
+  height = 190,
+  windowMinutes,
+}: {
+  crcSeries: CrcSeriesItem[];
+  bucketSeconds: number | null;
+  height?: number;
+  windowMinutes: number;
+}) {
+  const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
+  const base = (crcSeries || []).slice(-maxBars);
+  const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
+  const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
+
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({
+    active: false,
+    x0: 0,
+    x1: 0,
+  });
+
+  if (!slice.length) return null;
+
+  const maxVal = Math.max(1, ...slice.map((p) => Number(p.crcErrorCount || 0)));
+
+  const w = 360;
+  const h = height;
+  const padLeft = 54;
+  const padRight = 12;
+  const padTop = 12;
+  const padBottom = 44;
+  const plotW = w - padLeft - padRight;
+  const plotH = h - padTop - padBottom;
+
+  const count = slice.length;
+  const gap = clamp(Math.round(plotW / (Math.max(1, count) * 10)), 2, 6);
+  const barW = Math.max(4, Math.floor((plotW - gap * Math.max(0, count - 1)) / Math.max(1, count)));
+  const xLabelEvery = Math.max(1, Math.floor(slice.length / 6));
+
+  function toSvgX(clientX: number) {
+    const el = svgRef.current;
+    if (!el) return 0;
+    const r = el.getBoundingClientRect();
+    const rel = (clientX - r.left) / Math.max(1, r.width);
+    return rel * w;
+  }
+
+  function idxFromSvgX(sx: number) {
+    const raw = Math.floor((sx - padLeft) / Math.max(1, barW + gap));
+    return clamp(raw, 0, Math.max(0, base.length - 1));
+  }
+
+  function commitZoom(x0: number, x1: number) {
+    const a = Math.min(x0, x1);
+    const b = Math.max(x0, x1);
+    const i0 = idxFromSvgX(a);
+    const i1 = idxFromSvgX(b);
+    if (i1 - i0 >= 2) setZoom({ start: i0, end: i1 });
+  }
+
+  const latest = slice[slice.length - 1];
+  const selectionX = Math.min(drag.x0, drag.x1);
+  const selectionW = Math.abs(drag.x1 - drag.x0);
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] min-w-0">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs text-gray-400">Diagnostic view</div>
+          <div className="text-sm font-semibold text-gray-100">CRC / response classification</div>
+          <div className="text-[11px] text-gray-400 mt-1">
+            {slice.length
+              ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(slice[slice.length - 1].ts)} UTC (bucket: ${bucketLabel(
+                  bucketSeconds
+                )})`
+              : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
+          </div>
+          <div className="text-[11px] text-gray-500 mt-1">Drag to zoom • double-click to reset</div>
+        </div>
+        <div className="text-right">
+          <div className="text-xs text-gray-400">Latest</div>
+          <div className="text-[11px] text-gray-200">
+            {latest ? `${formatUtcHM(latest.ts)} UTC • crc=${formatIntOrNA(latest.crcErrorCount)}` : "n/a"}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
+        <svg
+          viewBox={`0 0 ${w} ${h}`}
+          className="w-full"
+          style={{ height, touchAction: "none", cursor: "crosshair" }}
+          ref={svgRef}
+          onDoubleClick={() => setZoom(null)}
+          onPointerDown={(e) => {
+            const sx = toSvgX(e.clientX);
+            setDrag({ active: true, x0: sx, x1: sx });
+            (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            if (!drag.active) return;
+            setDrag((d) => ({ ...d, x1: toSvgX(e.clientX) }));
+          }}
+          onPointerUp={() => {
+            if (!drag.active) return;
+            setDrag((d) => {
+              commitZoom(d.x0, d.x1);
+              return { active: false, x0: 0, x1: 0 };
+            });
+          }}
+          onPointerCancel={() => setDrag({ active: false, x0: 0, x1: 0 })}
+          onPointerLeave={() => {
+            if (!drag.active) return;
+            setDrag({ active: false, x0: 0, x1: 0 });
+          }}
+        >
+          <text
+            x={padLeft - 38}
+            y={padTop + plotH / 2}
+            fontSize="10"
+            fill="#9ca3af"
+            transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
+          >
+            CRC count
+          </text>
+          <text x={padLeft + plotW / 2} y={h - 10} fontSize="10" fill="#9ca3af" textAnchor="middle">
+            Time (UTC, {bucketLabel(bucketSeconds)} buckets)
+          </text>
+
+          {[0, 0.25, 0.5, 0.75, 1].map((t, idx) => {
+            const y = padTop + (1 - t) * plotH;
+            const v = Math.round(maxVal * t);
+            return (
+              <g key={idx} opacity={0.35}>
+                <line x1={padLeft} y1={y} x2={padLeft + plotW} y2={y} stroke="currentColor" />
+                <text x={padLeft - 10} y={y + 3} fontSize="10" fill="#9ca3af" textAnchor="end">
+                  {formatCountTick(v)}
+                </text>
+              </g>
+            );
+          })}
+
+          {slice.map((p, i) => {
+            const x = padLeft + i * (barW + gap);
+            const barH = (Number(p.crcErrorCount || 0) / maxVal) * plotH;
+            const y = padTop + plotH - barH;
+            return (
+              <rect
+                key={p.ts}
+                x={x}
+                y={y}
+                width={barW}
+                height={Math.max(0, barH)}
+                rx={2}
+                fill="#f59e0b"
+                opacity={0.95}
+              />
+            );
+          })}
+
+          {slice.map((p, i) => {
+            const show = i % xLabelEvery === 0 || i === slice.length - 1;
+            if (!show) return null;
+            const x = padLeft + i * (barW + gap) + barW / 2;
+            const label = timeLabelShort(p.ts, windowMinutes);
+            return (
+              <text key={`xl-${p.ts}`} x={x} y={padTop + plotH + 18} fontSize="10" fill="#9ca3af" textAnchor="middle">
+                {label}
+              </text>
+            );
+          })}
+
+          {drag.active && selectionW > 2 ? (
+            <rect
+              x={selectionX}
+              y={padTop}
+              width={selectionW}
+              height={plotH}
+              fill="rgba(59,130,246,0.12)"
+              stroke="rgba(59,130,246,0.55)"
+              strokeWidth={1}
+              rx={6}
+            />
+          ) : null}
+        </svg>
+
+        <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
+          <div className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#f59e0b" }} />
+            <span>crc errors</span>
           </div>
         </div>
       </div>
@@ -790,7 +1353,6 @@ function LatencyTimeseriesLines({
 export default function Home() {
   const [mounted, setMounted] = useState(false);
 
-  // sticky partner
   const [partner, setPartner] = useState<PartnerOrMissing>("partner_01");
   function setPartnerSticky(p: string) {
     const v = String(p || "").trim();
@@ -801,15 +1363,12 @@ export default function Home() {
     }
   }
 
-  // UI state
   const [isTriageLoading, setIsTriageLoading] = useState(false);
   const isLoading = isTriageLoading;
 
-  // Filters UX: collapsible panel + staged selections
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filtersDirty, setFiltersDirty] = useState(false);
 
-  // Schema state (loaded once on mount) — SILENT
   const [schemaState, setSchemaState] = useState<SchemaState>({
     partners: [...CANON.partners],
     services: [...CANON.services],
@@ -819,33 +1378,27 @@ export default function Home() {
     uaFamilies: ["all", ...CANON.uaFamilies],
   });
 
-  // Chat
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const lastMsgIdRef = useRef<string | null>(null);
 
-  // typing indicator
   const [typing, setTyping] = useState(false);
 
-  // Run log (system messages) separated
-  const [runLogOpen, setRunLogOpen] = useState(false);
+  const [debugOpen, setDebugOpen] = useState(false);
   const [runLog, setRunLog] = useState<Array<{ ts: string; text: string }>>([]);
 
-  // current filters (applied)
-  const [service, setService] = useState<string>(""); // required
+  const [service, setService] = useState<string>("");
   const [region, setRegion] = useState<string>("all");
   const [pop, setPop] = useState<string>("all");
   const [windowMinutes, setWindowMinutes] = useState<number>(120);
   const [contentType, setContentType] = useState<string>("all");
   const [uaFamily, setUaFamily] = useState<string>("all");
 
-  // ✅ time mode + applied absolute range (UTC ISO)
   const [timeMode, setTimeMode] = useState<TimeMode>("relative");
   const [startTsUtc, setStartTsUtc] = useState<string | null>(null);
   const [endTsUtc, setEndTsUtc] = useState<string | null>(null);
 
-  // ✅ sticky service (persists even when TTL resets)
   function setServiceSticky(s: string) {
     const v = String(s || "").trim();
     if (!v) return;
@@ -855,7 +1408,6 @@ export default function Home() {
     }
   }
 
-  // staged filters (draft UI selections before Apply)
   const [draftService, setDraftService] = useState<string>("");
   const [draftRegion, setDraftRegion] = useState<string>("all");
   const [draftPop, setDraftPop] = useState<string>("all");
@@ -863,14 +1415,12 @@ export default function Home() {
   const [draftContentType, setDraftContentType] = useState<string>("all");
   const [draftUaFamily, setDraftUaFamily] = useState<string>("all");
 
-  // ✅ time picker draft state
   const [draftTimeMode, setDraftTimeMode] = useState<TimeMode>("relative");
-  const [draftStartUtcLocal, setDraftStartUtcLocal] = useState<string>(""); // datetime-local (UTC interpreted)
+  const [draftStartUtcLocal, setDraftStartUtcLocal] = useState<string>("");
   const [draftEndUtcLocal, setDraftEndUtcLocal] = useState<string>("");
 
   useEffect(() => setMounted(true), []);
 
-  // TTL helpers for filter persistence
   function loadFiltersEnvelope() {
     const raw = safeGetLS(FILTERS_KEY);
     if (!raw) return null;
@@ -933,23 +1483,19 @@ export default function Home() {
     ]);
   }
 
-  // ✅ TTL expiry handler: keep partner + service, reset the rest
   function resetNonStickyFiltersBecauseExpired() {
     safeDelLS(FILTERS_KEY);
 
-    // applied (keep partner + service)
     setRegion("all");
     setPop("all");
     setWindowMinutes(120);
     setContentType("all");
     setUaFamily("all");
 
-    // ✅ reset time (Level 2)
     setTimeMode("relative");
     setStartTsUtc(null);
     setEndTsUtc(null);
 
-    // drafts follow applied (keep draft service as current service)
     setDraftService(service || "");
     setDraftRegion("all");
     setDraftPop("all");
@@ -966,13 +1512,11 @@ export default function Home() {
     addText("assistant", "TTL expired (10m): reset non-sticky filters. Partner + service were kept.");
   }
 
-  // ✅ Hard reset: clears saved TTL + partner + service and resets UI
   function resetAllFilters() {
     safeDelLS(FILTERS_KEY);
     safeDelLS(PARTNER_KEY);
     safeDelLS(SERVICE_KEY);
 
-    // applied
     setPartner("partner_01");
     setService("");
     setRegion("all");
@@ -981,19 +1525,16 @@ export default function Home() {
     setContentType("all");
     setUaFamily("all");
 
-    // ✅ reset time (Level 2)
     setTimeMode("relative");
     setStartTsUtc(null);
     setEndTsUtc(null);
 
-    // drafts
     setDraftService("");
     setDraftRegion("all");
     setDraftPop("all");
     setDraftWindowMinutes(120);
     setDraftContentType("all");
     setDraftUaFamily("all");
-
     setDraftTimeMode("relative");
     setDraftStartUtcLocal("");
     setDraftEndUtcLocal("");
@@ -1003,7 +1544,6 @@ export default function Home() {
     addText("assistant", "Reset complete: cleared saved filters (10m TTL), partner, and service.");
   }
 
-  // Load sticky partner + sticky service + TTL filters on mount
   useEffect(() => {
     if (!mounted) return;
 
@@ -1043,7 +1583,6 @@ export default function Home() {
       setUaFamily(ua);
       setDraftUaFamily(ua);
 
-      // ✅ load time fields
       const tm: TimeMode = ttl.timeMode === "absolute" ? "absolute" : "relative";
       setTimeMode(tm);
       setDraftTimeMode(tm);
@@ -1059,21 +1598,17 @@ export default function Home() {
 
       pushRunLog("Loaded non-sticky filters from TTL (10m).");
     } else {
-      // defaults for non-sticky filters
       setDraftRegion("all");
       setDraftPop("all");
       setDraftWindowMinutes(120);
       setDraftContentType("all");
       setDraftUaFamily("all");
-
       setDraftTimeMode("relative");
       setDraftStartUtcLocal("");
       setDraftEndUtcLocal("");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted]);
 
-  // ✅ Enforce TTL expiry while page is open (prevents “stuck” filters)
   useEffect(() => {
     if (!mounted) return;
 
@@ -1089,10 +1624,8 @@ export default function Home() {
     tick();
     const id = window.setInterval(tick, 15_000);
     return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted, service]);
 
-  // ✅ Persist TTL whenever applied NON-STICKY filters change — but ONLY if service is set
   useEffect(() => {
     if (!mounted) return;
     if (!service) {
@@ -1110,10 +1643,8 @@ export default function Home() {
       startTsUtc,
       endTsUtc,
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted, service, region, pop, windowMinutes, contentType, uaFamily, timeMode, startTsUtc, endTsUtc]);
 
-  // Load schema once on mount (drives dropdowns) — SILENT
   useEffect(() => {
     if (!mounted) return;
     (async () => {
@@ -1136,13 +1667,10 @@ export default function Home() {
         if (!next.uaFamilies.includes("all")) next.uaFamilies = ["all", ...next.uaFamilies];
 
         setSchemaState(next);
-      } catch {
-        // keep CANON defaults
-      }
+      } catch {}
     })();
   }, [mounted]);
 
-  // welcome message once
   useEffect(() => {
     if (!mounted) return;
     if (chatMessages.length) return;
@@ -1154,17 +1682,13 @@ export default function Home() {
         role: "system",
         ts: nowIso(),
         text:
-          "Cachey 🤖 — deterministic triage.\n\n" +
-          "Pick a partner + service, then:\n" +
-          "- Apply filters\n" +
-          "- Run triage\n\n" +
-          "Send box is a shortcut: it logs what you typed and triggers Run using the applied filters.",
+          "Cachey 🤖 — deterministic triage assistant.\n\n" +
+          "Pick a service in Filters, then run triage.\n" +
+          "You can also ask about traffic, latency, or errors using the current scope.",
       },
     ]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mounted]);
+  }, [mounted, chatMessages.length]);
 
-  // autoscroll
   useEffect(() => {
     const last = chatMessages[chatMessages.length - 1];
     if (!last) return;
@@ -1175,7 +1699,6 @@ export default function Home() {
     }
   }, [chatMessages]);
 
-  // Dropdown options are schema-driven
   const availableRegions: string[] = useMemo(() => {
     const uniq = Array.from(new Set((schemaState.regions || []).map((x) => String(x || "").trim()).filter(Boolean))).sort(
       (a, b) => a.localeCompare(b)
@@ -1191,9 +1714,9 @@ export default function Home() {
   }, [schemaState.pops]);
 
   const availableContentTypes: string[] = useMemo(() => {
-    const uniq = Array.from(
-      new Set((schemaState.contentTypes || []).map((x) => String(x || "").trim()).filter(Boolean))
-    ).sort((a, b) => a.localeCompare(b));
+    const uniq = Array.from(new Set((schemaState.contentTypes || []).map((x) => String(x || "").trim()).filter(Boolean))).sort(
+      (a, b) => a.localeCompare(b)
+    );
     return uniq.includes("all") ? uniq : ["all", ...uniq];
   }, [schemaState.contentTypes]);
 
@@ -1204,7 +1727,6 @@ export default function Home() {
     return uniq.includes("all") ? uniq : ["all", ...uniq];
   }, [schemaState.uaFamilies]);
 
-  // Parse metricsJson.timeseries into TimeseriesData
   function parseTimeseries(metricsJson: any): TimeseriesData | null {
     const t = metricsJson?.timeseries;
     if (!t || !Array.isArray(t.points)) return null;
@@ -1217,11 +1739,32 @@ export default function Home() {
         errorRatePct: Number(p.errorRatePct) || 0,
         p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
         p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
+        cacheHitRate: p.cacheHitRate == null ? null : Number(p.cacheHitRate),
+        crcErrorCount: Number(p.crcErrorCount || 0),
         statusCountsByCode: p.statusCountsByCode || undefined,
-        hostCountsByHost: p.hostCountsByHost || undefined,
-        crcCountsByCrc: p.crcCountsByCrc || undefined,
       }))
-      .filter((pt: any) => Boolean(pt.ts));
+      .filter((pt) => Boolean(pt.ts));
+
+    const hostSeries: HostSeriesItem[] = Array.isArray(t.hostSeries)
+      ? t.hostSeries.map((h: any) => ({
+          host: String(h.host || ""),
+          totalRequests: Number(h.totalRequests || 0),
+          error5xxCount: Number(h.error5xxCount || 0),
+          crcErrorCount: Number(h.crcErrorCount || 0),
+          errorRatePct: Number(h.errorRatePct || 0),
+          p95TtmsMs: h.p95TtmsMs == null ? null : Number(h.p95TtmsMs),
+          p99TtmsMs: h.p99TtmsMs == null ? null : Number(h.p99TtmsMs),
+        }))
+      : [];
+
+    const crcSeries: CrcSeriesItem[] = Array.isArray(t.crcSeries)
+      ? t.crcSeries
+          .map((c: any) => ({
+            ts: String(c.ts || ""),
+            crcErrorCount: Number(c.crcErrorCount || 0),
+          }))
+          .filter((x: CrcSeriesItem) => Boolean(x.ts))
+      : [];
 
     return {
       bucketSeconds: t.bucketSeconds == null ? null : Number(t.bucketSeconds),
@@ -1229,8 +1772,8 @@ export default function Home() {
       endTs: t.endTs ? String(t.endTs) : null,
       points,
       statusCodeSeries: Array.isArray(t.statusCodeSeries) ? t.statusCodeSeries.map(String) : undefined,
-      hostSeries: Array.isArray(t.hostSeries) ? t.hostSeries.map(String) : undefined,
-      crcSeries: Array.isArray(t.crcSeries) ? t.crcSeries.map(String) : undefined,
+      hostSeries,
+      crcSeries,
     };
   }
 
@@ -1243,13 +1786,13 @@ export default function Home() {
   function applyDraftFilters() {
     const s = String(draftService || "").trim();
     if (!s) return { ok: false as const, error: "Pick a service before Apply." };
-    if (!(SERVICE_OPTIONS as readonly string[]).includes(s)) return { ok: false as const, error: "Invalid service selection." };
+    if (!(SERVICE_OPTIONS as readonly string[]).includes(s)) {
+      return { ok: false as const, error: "Invalid service selection." };
+    }
 
-    // ✅ apply + persist service (sticky)
     setServiceSticky(s);
     setDraftService(s);
 
-    // ✅ validate/apply time mode
     const tm: TimeMode = draftTimeMode === "absolute" ? "absolute" : "relative";
     if (tm === "absolute") {
       const sIso = parseDatetimeLocalAsUtcToIso(draftStartUtcLocal);
@@ -1269,7 +1812,6 @@ export default function Home() {
       setStartTsUtc(sIso);
       setEndTsUtc(eIso);
 
-      // also keep a sensible derived windowMinutes for charts/chips
       const derivedWin = windowMinutesFromRange(sIso, eIso, draftWindowMinutes || 120);
       setWindowMinutes(derivedWin);
       setDraftWindowMinutes(derivedWin);
@@ -1277,6 +1819,7 @@ export default function Home() {
       setTimeMode("relative");
       setStartTsUtc(null);
       setEndTsUtc(null);
+      setWindowMinutes(Number(draftWindowMinutes) || 120);
     }
 
     const ct = String(draftContentType || "all").trim() || "all";
@@ -1290,9 +1833,6 @@ export default function Home() {
 
     setRegion(String(draftRegion || "all"));
     setPop(String(draftPop || "all"));
-    if (tm === "relative") {
-      setWindowMinutes(Number(draftWindowMinutes) || 120);
-    }
     setContentType(ct);
     setUaFamily(ua);
 
@@ -1310,7 +1850,7 @@ export default function Home() {
 
     formData.append("dataSource", inputs.dataSource);
     formData.append("partner", inputs.partner || "");
-    formData.append("csvUrl", ""); // harmless legacy
+    formData.append("csvUrl", "");
     formData.append("service", inputs.service);
     formData.append("region", inputs.region);
     formData.append("pop", inputs.pop);
@@ -1318,13 +1858,8 @@ export default function Home() {
     formData.append("contentType", String(inputs.contentType || "all"));
     formData.append("uaFamily", String(inputs.uaFamily || "all"));
 
-    // ✅ absolute time range
     if (inputs.startTsUtc) formData.append("startTsUtc", inputs.startTsUtc);
     if (inputs.endTsUtc) formData.append("endTsUtc", inputs.endTsUtc);
-
-    if (process.env.NODE_ENV !== "production") {
-      formData.append("debug", "true");
-    }
 
     const response = await fetch("/api/triage", { method: "POST", body: formData });
     const data = (await response.json().catch(() => null)) as TriageResponse | null;
@@ -1339,7 +1874,6 @@ export default function Home() {
     return {
       summaryText: (data as any).summaryText ?? (data as any).summary ?? "",
       metricsJson: (data as any).metricsJson ?? null,
-      sql: (data as any).sql ?? null,
     };
   }
 
@@ -1351,7 +1885,7 @@ export default function Home() {
       return;
     }
     if (!service) {
-      addText("assistant", `Pick a service first. (Filters → Apply) (${SERVICE_OPTIONS.join(", ")})`);
+      addText("assistant", `Pick a service first. Open Filters, then Apply. (${SERVICE_OPTIONS.join(", ")})`);
       return;
     }
 
@@ -1401,7 +1935,6 @@ export default function Home() {
         },
         summaryText: data.summaryText || "",
         metricsJson: data.metricsJson || null,
-        sql: data.sql ?? null,
       });
     } catch (e: any) {
       addText("assistant", `Triage failed: ${e?.message || "unknown error"}`);
@@ -1479,9 +2012,7 @@ export default function Home() {
 
   function TriageCard({ run }: { run: ChatTriage["run"] }) {
     const ts = parseTimeseries(run.metricsJson);
-
     const effectiveWindowMinutes = windowMinutesFromRange(run.inputs.startTsUtc, run.inputs.endTsUtc, run.inputs.windowMinutes);
-
     const bucketSeconds = ts?.bucketSeconds ?? run.metricsJson?.timeseries?.bucketSeconds ?? null;
 
     const summary = String(run.summaryText || "").trim();
@@ -1489,11 +2020,14 @@ export default function Home() {
 
     const pointsCount = ts?.points?.length ?? 0;
     const debug = run.metricsJson?.debug ?? null;
-    const runnerVersion = debug?.__runnerVersion ? String(debug.__runnerVersion) : "unknown";
+    const runnerVersion = debug?.__runnerVersion
+      ? String(debug.__runnerVersion)
+      : debug?.proxyVersion
+      ? String(debug.proxyVersion)
+      : "unknown";
 
     const forcedLocal = Boolean(debug?.forcedLocal);
     const proxyEnabled = Boolean(debug?.hasProxyEnv);
-
     const tableUsed = debug?.tableUsed ? String(debug.tableUsed) : "unknown";
     const debugBucketSeconds = debug?.bucketSeconds != null ? Number(debug.bucketSeconds) : null;
     const anchorMode = debug?.anchorToMaxTs ? "max(ts)" : "now()";
@@ -1507,11 +2041,11 @@ export default function Home() {
           <div className="min-w-0">
             <div className="text-xs text-gray-400">Triage result</div>
             <div className="text-sm font-semibold text-gray-100 truncate">
-              partner={run.inputs.partner} • svc={run.inputs.service} • region={run.inputs.region} • pop={run.inputs.pop} •{" "}
+              {run.inputs.partner} • {run.inputs.service} • {run.inputs.region} • {run.inputs.pop} •{" "}
               {run.inputs.startTsUtc && run.inputs.endTsUtc
-                ? `range=${isoToUtcText(run.inputs.startTsUtc)}→${isoToUtcText(run.inputs.endTsUtc)} UTC`
-                : `win=${run.inputs.windowMinutes}m`}{" "}
-              • ct={run.inputs.contentType} • ua={run.inputs.uaFamily}
+                ? `${isoToUtcText(run.inputs.startTsUtc)} → ${isoToUtcText(run.inputs.endTsUtc)} UTC`
+                : `last ${run.inputs.windowMinutes}m`}{" "}
+              • {run.inputs.contentType} • {run.inputs.uaFamily}
             </div>
             {ts?.startTs && ts?.endTs ? (
               <div className="text-[11px] text-gray-500 mt-1">
@@ -1519,6 +2053,7 @@ export default function Home() {
               </div>
             ) : null}
           </div>
+
           <div className="flex flex-col items-end gap-1 text-[11px]">
             <div className="flex flex-wrap justify-end gap-1.5">
               <span
@@ -1529,28 +2064,27 @@ export default function Home() {
                     ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
                     : "border-white/10 bg-white/5 text-gray-200"
                 }`}
-                title="Answer source (demo trust)"
               >
                 <span className="text-gray-400 mr-1">source</span>
                 <span className="font-semibold">{answerSource}</span>
               </span>
 
-              <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200" title="Runner version">
+              <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
                 <span className="text-gray-400 mr-1">runner</span>
                 <span className="font-semibold">{runnerVersion}</span>
               </span>
 
-              <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200" title="Table used">
+              <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
                 <span className="text-gray-400 mr-1">table</span>
                 <span className="font-semibold">{tableUsed}</span>
               </span>
 
-              <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200" title="Bucket size">
+              <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
                 <span className="text-gray-400 mr-1">bucket</span>
                 <span className="font-semibold">{debugBucketSeconds != null ? `${debugBucketSeconds}s` : "n/a"}</span>
               </span>
 
-              <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200" title="Anchor mode">
+              <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
                 <span className="text-gray-400 mr-1">anchor</span>
                 <span className="font-semibold">{anchorMode}</span>
               </span>
@@ -1559,14 +2093,11 @@ export default function Home() {
                 className={`px-2 py-1 rounded-full border ${
                   debugOn ? "border-sky-400/30 bg-sky-400/10 text-sky-200" : "border-white/10 bg-white/5 text-gray-200"
                 }`}
-                title="Debug flag"
               >
                 <span className="text-gray-400 mr-1">debug</span>
                 <span className="font-semibold">{debugOn ? "on" : "off"}</span>
               </span>
             </div>
-
-            <div className="text-gray-500">/api/triage</div>
           </div>
         </div>
 
@@ -1578,71 +2109,85 @@ export default function Home() {
         </div>
 
         {ts && ts.points.length > 0 ? (
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <StackedBarTimeseries
-              title="Status code (stacked)"
-              subtitle="Traffic timeseries"
-              ts={ts}
-              bucketSeconds={bucketSeconds}
-              seriesKeys={ts.statusCodeSeries || []}
-              getMap={(p) => p.statusCountsByCode}
-              height={190}
-              windowMinutes={effectiveWindowMinutes}
-            />
-            <LatencyTimeseriesLines points={ts.points} bucketSeconds={bucketSeconds} height={190} windowMinutes={effectiveWindowMinutes} />
-            <StackedBarTimeseries
-              title="Host (stacked)"
-              subtitle="Traffic timeseries"
-              ts={ts}
-              bucketSeconds={bucketSeconds}
-              seriesKeys={ts.hostSeries || []}
-              getMap={(p) => p.hostCountsByHost}
-              height={190}
-              windowMinutes={effectiveWindowMinutes}
-            />
-            <StackedBarTimeseries
-              title="CRC (stacked)"
-              subtitle="Cache / response classification"
-              ts={ts}
-              bucketSeconds={bucketSeconds}
-              seriesKeys={ts.crcSeries || []}
-              getMap={(p) => p.crcCountsByCrc}
-              height={190}
-              windowMinutes={effectiveWindowMinutes}
-            />
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <RequestsErrorRateLines
+                points={ts.points}
+                bucketSeconds={bucketSeconds}
+                height={190}
+                windowMinutes={effectiveWindowMinutes}
+              />
+              <LatencyTimeseriesLines
+                points={ts.points}
+                bucketSeconds={bucketSeconds}
+                height={190}
+                windowMinutes={effectiveWindowMinutes}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <StackedBarTimeseries
+                title="Status code distribution"
+                subtitle="Diagnostic view"
+                ts={ts}
+                bucketSeconds={bucketSeconds}
+                seriesKeys={ts.statusCodeSeries || []}
+                getMap={(p) => p.statusCountsByCode}
+                height={190}
+                windowMinutes={effectiveWindowMinutes}
+                kind="status"
+              />
+              <HostSummaryCard hosts={ts.hostSeries || []} />
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <CrcTimeseriesBars
+                crcSeries={ts.crcSeries || []}
+                bucketSeconds={bucketSeconds}
+                height={190}
+                windowMinutes={effectiveWindowMinutes}
+              />
+              <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+                <div className="text-xs text-gray-400">Deterministic evidence</div>
+                <div className="text-sm font-semibold text-gray-100 mt-1">Run details</div>
+                <div className="mt-3 text-xs text-gray-300 space-y-2">
+                  <div>
+                    <span className="text-gray-400">Points:</span> <span className="font-semibold">{pointsCount}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Hosts:</span> <span className="font-semibold">{ts.hostSeries?.length || 0}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">CRC buckets:</span> <span className="font-semibold">{ts.crcSeries?.length || 0}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Actual window:</span>{" "}
+                    <span className="font-semibold">
+                      {ts.startTs && ts.endTs
+                        ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(ts.endTs)} UTC`
+                        : "n/a"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Bucket:</span>{" "}
+                    <span className="font-semibold">{bucketLabel(bucketSeconds)}</span>
+                  </div>
+                </div>
+
+                <details className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
+                  <summary className="cursor-pointer text-sm text-gray-200">Inputs</summary>
+                  <div className="mt-3">
+                    <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3">
+                      {JSON.stringify(run.inputs, null, 2)}
+                    </pre>
+                  </div>
+                </details>
+              </div>
+            </div>
           </div>
         ) : (
           <div className="text-sm text-gray-400">Timeseries: 0 points (aggregate-only).</div>
         )}
-
-        <details className="rounded-xl border border-white/10 bg-black/20 p-3">
-          <summary className="cursor-pointer text-sm text-gray-200">Deterministic Evidence</summary>
-          <div className="mt-3 space-y-3">
-            <div>
-              <div className="text-[11px] text-gray-400 mb-1">Inputs</div>
-              <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3">
-                {JSON.stringify(run.inputs, null, 2)}
-              </pre>
-            </div>
-
-            <div className="text-xs text-gray-300">
-              <span className="text-gray-400">Timeseries points:</span> <span className="font-semibold">{pointsCount}</span>
-            </div>
-          </div>
-        </details>
-
-        <details className="rounded-xl border border-white/10 bg-black/20 p-3">
-          <summary className="cursor-pointer text-sm text-gray-200">SQL Query</summary>
-          <div className="mt-3">
-            {run.sql ? (
-              <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3">
-                {typeof run.sql === "string" ? run.sql : JSON.stringify(run.sql, null, 2)}
-              </pre>
-            ) : (
-              <div className="text-xs text-gray-500">No SQL returned by API (will be added in v2).</div>
-            )}
-          </div>
-        </details>
 
         <style jsx>{`
           .triage-enter {
@@ -1663,26 +2208,13 @@ export default function Home() {
     );
   }
 
-  const partnerMissing = !partner;
-  const serviceMissing = !service;
-
-  const appliedChips = useMemo(() => {
-    const chips: Array<{ k: string; v: string }> = [];
-    chips.push({ k: "partner", v: partner || "—" });
-    chips.push({ k: "svc", v: service || "—" });
-    chips.push({ k: "region", v: region || "all" });
-    chips.push({ k: "pop", v: pop || "all" });
-
-    if (timeMode === "absolute" && startTsUtc && endTsUtc) {
-      chips.push({ k: "range", v: `${isoToUtcText(startTsUtc)} → ${isoToUtcText(endTsUtc)} UTC` });
-    } else {
-      chips.push({ k: "win", v: `${windowMinutes}m` });
-    }
-
-    chips.push({ k: "ct", v: contentType || "all" });
-    chips.push({ k: "ua", v: uaFamily || "all" });
-    return chips;
-  }, [partner, service, region, pop, windowMinutes, contentType, uaFamily, timeMode, startTsUtc, endTsUtc]);
+  const scopeSummary = useMemo(() => {
+    const timeText =
+      timeMode === "absolute" && startTsUtc && endTsUtc
+        ? `${isoToUtcText(startTsUtc)} → ${isoToUtcText(endTsUtc)} UTC`
+        : `last ${windowMinutes}m`;
+    return `Investigating: ${partner || "—"} • ${service || "service not set"} • ${region || "all regions"} • ${timeText}`;
+  }, [partner, service, region, timeMode, startTsUtc, endTsUtc, windowMinutes]);
 
   return (
     <main className="min-h-screen bg-black text-gray-100">
@@ -1694,7 +2226,7 @@ export default function Home() {
               <div className="font-semibold text-lg text-white leading-tight">
                 Cachey <span className="text-gray-400">🤖</span>
               </div>
-              <div className="text-xs text-gray-400">Deterministic triage • ClickHouse path</div>
+              <div className="text-xs text-gray-400">Deterministic triage assistant • ClickHouse path</div>
             </div>
 
             <div className="ml-auto flex items-center gap-2">
@@ -1710,11 +2242,9 @@ export default function Home() {
                       setDraftWindowMinutes(windowMinutes);
                       setDraftContentType(contentType);
                       setDraftUaFamily(uaFamily);
-
                       setDraftTimeMode(timeMode);
                       setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
                       setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
-
                       setFiltersDirty(false);
                     }
                     return next;
@@ -1723,37 +2253,8 @@ export default function Home() {
                 className={`rounded-full border border-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15 ${
                   filtersOpen ? "bg-white/15" : "bg-white/10"
                 }`}
-                title="Filters"
               >
                 Filters{filtersDirty ? <span className="ml-2 text-[11px] text-amber-300">(draft)</span> : null}
-              </button>
-
-              <a
-                href="/debug"
-                className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
-                title="Legacy /debug page"
-              >
-                Debug
-              </a>
-            </div>
-          </div>
-
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            {appliedChips.map((c) => (
-              <span key={c.k} className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
-                <span className="text-gray-500 mr-1">{c.k}</span>
-                <span className="font-semibold">{c.v}</span>
-              </span>
-            ))}
-
-            <div className="ml-auto flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setRunLogOpen((v) => !v)}
-                className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-200 hover:bg-white/10"
-                title="Run log"
-              >
-                Log
               </button>
 
               <button
@@ -1761,20 +2262,28 @@ export default function Home() {
                 onClick={handleRunFromFilters}
                 disabled={isLoading || !partner || !service}
                 className="rounded-xl px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Run triage using the applied filters"
               >
                 {isTriageLoading ? "Running..." : "Run"}
               </button>
+
+              <a
+                href="/debug"
+                className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
+              >
+                Debug
+              </a>
             </div>
           </div>
+
+          <div className="mt-3 text-sm text-gray-300">{scopeSummary}</div>
 
           {filtersOpen ? (
             <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-sm font-semibold text-white">Filters</div>
+                  <div className="text-sm font-semibold text-white">Advanced Scope Controls</div>
                   <div className="text-xs text-gray-400 mt-1">
-                    Select values, then hit <span className="text-gray-200">Apply</span>. Run executes triage.
+                    Apply updates the active scope. Run uses the applied scope.
                     <span className="ml-2 text-gray-500">(TTL: 10m; service persists)</span>
                   </div>
                 </div>
@@ -1788,11 +2297,9 @@ export default function Home() {
                       setDraftWindowMinutes(windowMinutes);
                       setDraftContentType(contentType);
                       setDraftUaFamily(uaFamily);
-
                       setDraftTimeMode(timeMode);
                       setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
                       setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
-
                       setFiltersDirty(false);
                     }}
                     className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
@@ -1804,7 +2311,6 @@ export default function Home() {
                     type="button"
                     onClick={resetAllFilters}
                     className="rounded-lg border border-white/10 bg-red-500/10 px-3 py-2 text-xs text-red-200 hover:bg-red-500/15"
-                    title="Clear saved TTL + reset applied filters"
                   >
                     Reset (clear saved)
                   </button>
@@ -1898,7 +2404,6 @@ export default function Home() {
                   </select>
                 </div>
 
-                {/* ✅ Grafana-style time picker (UTC) */}
                 <div className="min-w-0 md:col-span-2">
                   <div className="text-xs text-gray-400 mb-1">Time (UTC)</div>
 
@@ -1980,17 +2485,6 @@ export default function Home() {
                         <button
                           type="button"
                           onClick={() => {
-                            const now = new Date();
-                            setDraftEndUtcLocal(isoToDatetimeLocalUtc(now.toISOString()));
-                            setFiltersDirty(true);
-                          }}
-                          className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
-                        >
-                          Set End=Now
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
                             const end = new Date();
                             const start = new Date(end.getTime() - 60 * 60 * 1000);
                             setDraftStartUtcLocal(isoToDatetimeLocalUtc(start.toISOString()));
@@ -2000,6 +2494,17 @@ export default function Home() {
                           className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
                         >
                           Last 60m
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const now = new Date();
+                            setDraftEndUtcLocal(isoToDatetimeLocalUtc(now.toISOString()));
+                            setFiltersDirty(true);
+                          }}
+                          className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                        >
+                          Set End=Now
                         </button>
                       </div>
                     </div>
@@ -2046,7 +2551,7 @@ export default function Home() {
               </div>
 
               <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="text-xs text-gray-400">Apply updates the chips (top bar). Run executes triage using applied filters.</div>
+                <div className="text-xs text-gray-400">Apply updates the active scope. Run executes triage with the active scope.</div>
 
                 <div className="flex items-center gap-2">
                   <button
@@ -2079,55 +2584,15 @@ export default function Home() {
               </div>
             </div>
           ) : null}
-
-          {runLogOpen ? (
-            <div className="mt-4 rounded-2xl border border-white/10 bg-black/40 p-4">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-white">Run log</div>
-                <button
-                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
-                  onClick={() => setRunLog([])}
-                  type="button"
-                >
-                  Clear
-                </button>
-              </div>
-              <div className="mt-3 max-h-[200px] overflow-auto rounded-xl border border-white/10 bg-black/30 p-3">
-                {runLog.length ? (
-                  <div className="space-y-2">
-                    {runLog
-                      .slice()
-                      .reverse()
-                      .map((x, idx) => (
-                        <div key={`${x.ts}-${idx}`} className="text-xs text-gray-300">
-                          <span className="text-gray-500 mr-2">{formatUtcYmdHm(x.ts)} UTC</span>
-                          {x.text}
-                        </div>
-                      ))}
-                  </div>
-                ) : (
-                  <div className="text-xs text-gray-500">No runs yet.</div>
-                )}
-              </div>
-            </div>
-          ) : null}
         </div>
       </div>
 
       <div className="mx-auto max-w-6xl px-6 py-6">
-        {partnerMissing || serviceMissing ? (
-          <div className="mb-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4">
-            <div className="text-sm font-semibold text-amber-200">Required filters missing</div>
-            <div className="text-xs text-amber-100/80 mt-1">
-              {partnerMissing ? "Pick a partner" : null}
-              {partnerMissing && serviceMissing ? " and " : null}
-              {serviceMissing ? "pick a service (Filters → Apply)" : null} in the top bar to run triage.
-            </div>
-          </div>
-        ) : null}
-
         <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
-          <div ref={chatScrollRef} className="h-[66vh] min-h-[520px] overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-4">
+          <div
+            ref={chatScrollRef}
+            className="h-[66vh] min-h-[520px] overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-4"
+          >
             <div className="space-y-4">
               {chatMessages.map((m) => {
                 const isUser = m.role === "user";
@@ -2145,7 +2610,11 @@ export default function Home() {
                 return (
                   <div key={m.id} className={`flex ${rowAlign}`}>
                     <div className={`${bubbleMax} w-full`}>
-                      <div className={`text-[10px] text-gray-500 mb-1 ${isSystem ? "text-center" : isUser ? "text-right" : "text-left"}`}>
+                      <div
+                        className={`text-[10px] text-gray-500 mb-1 ${
+                          isSystem ? "text-center" : isUser ? "text-right" : "text-left"
+                        }`}
+                      >
                         {mounted ? `${formatUtcYmdHm(m.ts)} UTC` : m.ts}
                       </div>
 
@@ -2154,7 +2623,6 @@ export default function Home() {
                           <pre className="whitespace-pre-wrap text-sm leading-relaxed">{m.text}</pre>
                         </div>
                       ) : (
-                        // @ts-ignore
                         <TriageCard run={m.run} />
                       )}
                     </div>
@@ -2165,7 +2633,9 @@ export default function Home() {
               {typing ? (
                 <div className="flex justify-start">
                   <div className="max-w-[82%] w-full">
-                    <div className="text-[10px] text-gray-500 mb-1 text-left">{mounted ? `${formatUtcYmdHm(nowIso())} UTC` : nowIso()}</div>
+                    <div className="text-[10px] text-gray-500 mb-1 text-left">
+                      {mounted ? `${formatUtcYmdHm(nowIso())} UTC` : nowIso()}
+                    </div>
                     <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
                       <TypingDots />
                     </div>
@@ -2185,7 +2655,7 @@ export default function Home() {
                   handleSend();
                 }
               }}
-              placeholder="Type anything (logged) → runs triage using applied filters"
+              placeholder="Ask about traffic, latency, errors, or incidents…"
               className="flex-1 rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-blue-500/40"
               disabled={isLoading}
             />
@@ -2194,11 +2664,67 @@ export default function Home() {
               disabled={isLoading || !chatInput.trim()}
               className="rounded-2xl px-5 py-3 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isLoading ? "Running..." : "Run"}
+              {isLoading ? "Running..." : "Send"}
             </button>
           </div>
 
-          <div className="mt-2 text-xs text-gray-500">Send/Enter logs your message and runs deterministic triage using applied filters.</div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setFiltersOpen(true);
+                setDraftService(service);
+                setDraftRegion(region);
+                setDraftPop(pop);
+                setDraftWindowMinutes(windowMinutes);
+                setDraftContentType(contentType);
+                setDraftUaFamily(uaFamily);
+                setDraftTimeMode(timeMode);
+                setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
+                setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
+                setFiltersDirty(false);
+              }}
+              className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-200 hover:bg-white/10"
+            >
+              Open Filters
+            </button>
+
+            <button
+              type="button"
+              onClick={handleRunFromFilters}
+              disabled={isLoading || !partner || !service}
+              className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-200 hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Run Triage
+            </button>
+
+            {!service ? (
+              <span className="text-xs text-gray-500">Pick a service in Filters, then run triage.</span>
+            ) : (
+              <span className="text-xs text-gray-500">{scopeSummary}</span>
+            )}
+          </div>
+
+          <details className="mt-6 rounded-2xl border border-white/10 bg-black/30 p-4" open={debugOpen} onToggle={(e) => setDebugOpen((e.target as HTMLDetailsElement).open)}>
+            <summary className="cursor-pointer text-sm font-semibold text-gray-200">Debug</summary>
+            <div className="mt-3 max-h-[220px] overflow-auto rounded-xl border border-white/10 bg-black/30 p-3">
+              {runLog.length ? (
+                <div className="space-y-2">
+                  {runLog
+                    .slice()
+                    .reverse()
+                    .map((x, idx) => (
+                      <div key={`${x.ts}-${idx}`} className="text-xs text-gray-300">
+                        <span className="text-gray-500 mr-2">{formatUtcYmdHm(x.ts)} UTC</span>
+                        {x.text}
+                      </div>
+                    ))}
+                </div>
+              ) : (
+                <div className="text-xs text-gray-500">No runs yet.</div>
+              )}
+            </div>
+          </details>
         </div>
       </div>
     </main>

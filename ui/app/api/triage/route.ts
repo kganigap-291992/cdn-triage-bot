@@ -43,6 +43,12 @@ function clampInt(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, x));
 }
 
+function numOrNull(v: unknown): number | null {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function isCanonPartner(x: string) {
   return (CANON.partners as readonly string[]).includes(x);
 }
@@ -55,8 +61,8 @@ function isAllOrOneOf(x: string, allowed: readonly string[]) {
 
 /**
  * Generator is source of truth.
- * Route must NOT reshape metrics.
- * Only asserts + ensures debug/timeseries exist.
+ * Route must NOT reshape metrics when already canonical.
+ * But we DO support a legacy proxy payload by adapting it once here.
  */
 function assertCanonicalMetricsJson(metricsJson: any) {
   if (!metricsJson || typeof metricsJson !== "object") {
@@ -163,7 +169,9 @@ async function parseRequest(req: Request): Promise<Inputs> {
   if (ct.includes("multipart/form-data")) {
     const form = await req.formData();
     const obj: Record<string, any> = {};
-    for (const [k, v] of form.entries()) if (typeof v === "string") obj[k] = v;
+    for (const [k, v] of form.entries()) {
+      if (typeof v === "string") obj[k] = v;
+    }
     return normalize(obj);
   }
 
@@ -245,6 +253,10 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
 
   const result = await runClickhouseTriage(payload);
 
+  console.log("RUNLOCAL result keys", Object.keys(result || {}));
+  console.log("RUNLOCAL metricsJson keys", Object.keys(result?.metricsJson || {}));
+  console.log("RUNLOCAL metricsJson", result?.metricsJson);
+
   const metricsJson = assertCanonicalMetricsJson(result.metricsJson);
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
@@ -253,7 +265,6 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
     timeMode: tm.mode,
     startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
     endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
-    // if absolute, do NOT anchor to max(ts)
     anchorToMaxTs: tm.mode === "absolute" ? false : metricsJson.debug?.anchorToMaxTs ?? undefined,
   };
 
@@ -269,6 +280,40 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
   });
 }
 
+/**
+ * Accept either:
+ * 1) canonical proxy payload:
+ *    { ok:true, metricsJson:{ totalRequests, p95TtmsMs, error5xxCount, errorRatePct, ... } }
+ *
+ * or legacy proxy payload:
+ *    { ok:true, metrics:{ requests, p50_ms, p95_ms, p99_ms, errors_5xx } }
+ */
+function adaptLegacyProxyMetricsToCanonical(legacyMetrics: any) {
+  const totalRequests = numOrNull(legacyMetrics?.totalRequests) ?? numOrNull(legacyMetrics?.requests) ?? 0;
+  const p50 = numOrNull(legacyMetrics?.p50TtmsMs) ?? numOrNull(legacyMetrics?.p50_ms);
+  const p95 = numOrNull(legacyMetrics?.p95TtmsMs) ?? numOrNull(legacyMetrics?.p95_ms);
+  const p99 = numOrNull(legacyMetrics?.p99TtmsMs) ?? numOrNull(legacyMetrics?.p99_ms);
+  const error5xxCount =
+    numOrNull(legacyMetrics?.error5xxCount) ?? numOrNull(legacyMetrics?.errors_5xx) ?? 0;
+  const errorRatePct =
+    numOrNull(legacyMetrics?.errorRatePct) ??
+    (totalRequests > 0 ? (error5xxCount / totalRequests) * 100 : 0);
+
+  return {
+    totalRequests,
+    p50TtmsMs: p50,
+    p95TtmsMs: p95,
+    p99TtmsMs: p99,
+    error5xxCount,
+    errorRatePct,
+    timeseries:
+      legacyMetrics?.timeseries && Array.isArray(legacyMetrics.timeseries?.points)
+        ? legacyMetrics.timeseries
+        : { bucketSeconds: null, startTs: null, endTs: null, points: [] },
+    debug: legacyMetrics?.debug && typeof legacyMetrics.debug === "object" ? legacyMetrics.debug : {},
+  };
+}
+
 function safeAdaptProxyToUi(parsed: any, tm: TimeMode) {
   const ok = !!parsed?.ok;
   if (!ok) {
@@ -279,7 +324,29 @@ function safeAdaptProxyToUi(parsed: any, tm: TimeMode) {
     };
   }
 
-  const metricsJson = assertCanonicalMetricsJson(parsed?.metricsJson ?? parsed?.metrics);
+  const rawMetrics = parsed?.metricsJson ?? parsed?.metrics ?? null;
+
+  console.log("PROXY parsed keys", Object.keys(parsed || {}));
+  console.log("PROXY parsed metricsJson keys", Object.keys(rawMetrics || {}));
+  console.log("PROXY parsed sample", parsed);
+
+  let metricsJson: any;
+
+  // already canonical
+  if (
+    rawMetrics &&
+    typeof rawMetrics === "object" &&
+    "totalRequests" in rawMetrics &&
+    "p95TtmsMs" in rawMetrics &&
+    "error5xxCount" in rawMetrics &&
+    "errorRatePct" in rawMetrics
+  ) {
+    metricsJson = assertCanonicalMetricsJson(rawMetrics);
+  } else {
+    // legacy proxy metrics -> canonical adapter
+    metricsJson = assertCanonicalMetricsJson(adaptLegacyProxyMetricsToCanonical(rawMetrics || {}));
+  }
+
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
     hasProxyEnv: true,
@@ -306,11 +373,6 @@ function safeAdaptProxyToUi(parsed: any, tm: TimeMode) {
 export async function POST(req: Request) {
   try {
     const inputs = await parseRequest(req);
-
-    // Dev convenience: default debug=true locally
-    if (process.env.NODE_ENV !== "production" && inputs.debug === false) {
-      inputs.debug = true;
-    }
 
     // Guardrails
     if (!inputs.partner) return badRequest("partner is required", { allowedPartners: CANON.partners });
@@ -344,7 +406,6 @@ export async function POST(req: Request) {
       });
     }
 
-    // Validate time mode once (and canonicalize ISO)
     let tm: TimeMode;
     try {
       tm = computeTimeMode(inputs);
@@ -352,20 +413,11 @@ export async function POST(req: Request) {
       return badRequest(err?.message || "invalid time range");
     }
 
-    const wantsClickhouse = inputs.dataSource === "clickhouse";
-    const isDev = process.env.NODE_ENV !== "production";
-
-    // Dev override: always run local for clickhouse in dev (fast iteration)
-    if (wantsClickhouse && isDev) {
-      return await runLocal(inputs, tm);
-    }
-
-    // Use proxy if configured; else local fallback.
+    // Proxy-first if configured, otherwise local fallback
     if (!hasProxyEnv()) {
       return await runLocal(inputs, tm);
     }
 
-    // Proxy path
     const user = process.env.CACHEY_BASIC_USER!;
     const pass = process.env.CACHEY_BASIC_PASS!;
     const token = process.env.CACHEY_TOKEN!;
@@ -386,6 +438,14 @@ export async function POST(req: Request) {
       upstreamBody.startTsUtc = tm.startIso;
       upstreamBody.endTsUtc = tm.endIso;
     }
+
+    console.log("TRIAGE proxy request", {
+      triageUrl,
+      hasProxyEnv: hasProxyEnv(),
+      timeMode: tm.mode,
+      partner: inputs.partner,
+      service: inputs.service,
+    });
 
     const upstream = await fetch(triageUrl, {
       method: "POST",
@@ -457,6 +517,7 @@ export async function POST(req: Request) {
 
     return okJson(adapted);
   } catch (e: any) {
+    console.error("TRIAGE_ROUTE_FATAL", e);
     return NextResponse.json({ ok: false, error: e?.message || "triage failed" }, { status: 500 });
   }
 }
