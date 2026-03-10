@@ -66,6 +66,11 @@ type ChatTriage = {
       params?: Record<string, any>;
     } | null;
     scopeSource?: "filters" | "chat";
+    chatContext?: {
+      rawText: string;
+      parseMode: "filters-default" | "chat-overrides";
+      detected: Record<string, any>;
+    } | null;
   };
 };
 
@@ -306,6 +311,181 @@ function statusColorForCode(code: string) {
 function seriesColor(kind: "status" | "host" | "crc", key: string) {
   if (kind === "status") return statusColorForCode(key);
   return stableColorForKey(key);
+}
+
+// ------------------------------------------------------------
+// Conservative chat parsing helpers
+// ------------------------------------------------------------
+function findToken(text: string, allowed: readonly string[]): string | null {
+  const lower = text.toLowerCase();
+  for (const token of allowed) {
+    if (lower.includes(String(token).toLowerCase())) return String(token);
+  }
+  return null;
+}
+
+function extractIsoUtcStrings(text: string): string[] {
+  const matches =
+    text.match(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d{3})?Z\b/g) || [];
+  return matches;
+}
+
+function extractRelativeWindowMinutes(text: string): number | null {
+  const lower = text.toLowerCase();
+
+  const mMinutes = lower.match(/\blast\s+(\d+)\s*(m|min|mins|minute|minutes)\b/);
+  if (mMinutes) return clamp(Number(mMinutes[1]), 5, 1440);
+
+  const mHours = lower.match(/\blast\s+(\d+)\s*(h|hr|hrs|hour|hours)\b/);
+  if (mHours) return clamp(Number(mHours[1]) * 60, 5, 1440);
+
+  const mDays = lower.match(/\blast\s+(\d+)\s*(d|day|days)\b/);
+  if (mDays) return clamp(Number(mDays[1]) * 1440, 5, 10080);
+
+  return null;
+}
+
+function buildChatInputsFromText(args: {
+  text: string;
+  partner: PartnerOrMissing;
+  service: string;
+  region: string;
+  pop: string;
+  windowMinutes: number;
+  contentType: string;
+  uaFamily: string;
+}): {
+  ok: true;
+  inputs: TriageInputs;
+  chatContext: {
+    rawText: string;
+    parseMode: "filters-default" | "chat-overrides";
+    detected: Record<string, any>;
+  };
+} | {
+  ok: false;
+  error: string;
+} {
+  const rawText = args.text.trim();
+  const detected: Record<string, any> = {};
+  let parseMode: "filters-default" | "chat-overrides" = "filters-default";
+
+  const explicitPartner = findToken(rawText, PARTNER_OPTIONS);
+  const explicitService = findToken(rawText, SERVICE_OPTIONS);
+  const explicitRegion = findToken(rawText, CANON.regions);
+  const explicitPop = findToken(rawText, CANON.pops);
+  const explicitContentType = findToken(rawText, ["all", ...CANON.contentTypes]);
+  const explicitUaFamily = findToken(rawText, ["all", ...CANON.uaFamilies]);
+
+  const isoMatches = extractIsoUtcStrings(rawText);
+  const relativeWindow = extractRelativeWindowMinutes(rawText);
+
+  if (explicitPartner) {
+    detected.partner = explicitPartner;
+    parseMode = "chat-overrides";
+  }
+  if (explicitService) {
+    detected.service = explicitService;
+    parseMode = "chat-overrides";
+  }
+  if (explicitRegion) {
+    detected.region = explicitRegion;
+    parseMode = "chat-overrides";
+  }
+  if (explicitPop) {
+    detected.pop = explicitPop;
+    parseMode = "chat-overrides";
+  }
+  if (explicitContentType) {
+    detected.contentType = explicitContentType;
+    parseMode = "chat-overrides";
+  }
+  if (explicitUaFamily) {
+    detected.uaFamily = explicitUaFamily;
+    parseMode = "chat-overrides";
+  }
+
+  const partner = (explicitPartner || args.partner) as PartnerOrMissing;
+  const service = explicitService || args.service;
+  const region = explicitRegion || args.region || "all";
+  const pop = explicitPop || args.pop || "all";
+  const contentType = explicitContentType || args.contentType || "all";
+  const uaFamily = explicitUaFamily || args.uaFamily || "all";
+
+  if (!partner) {
+    return { ok: false, error: `Pick a partner first. (${PARTNER_OPTIONS.join(", ")})` };
+  }
+  if (!service) {
+    return { ok: false, error: `Pick a service first or mention one in chat. (${SERVICE_OPTIONS.join(", ")})` };
+  }
+
+  // Absolute UTC range: require 2 explicit ISO UTC timestamps in chat text.
+  if (isoMatches.length >= 2) {
+    const startTsUtc = new Date(isoMatches[0]).toISOString();
+    const endTsUtc = new Date(isoMatches[1]).toISOString();
+    const derivedWin = windowMinutesFromRange(startTsUtc, endTsUtc, args.windowMinutes);
+
+    detected.startTsUtc = startTsUtc;
+    detected.endTsUtc = endTsUtc;
+    parseMode = "chat-overrides";
+
+    return {
+      ok: true,
+      inputs: {
+        dataSource: "clickhouse",
+        partner,
+        service,
+        region,
+        pop,
+        windowMinutes: derivedWin,
+        startTsUtc,
+        endTsUtc,
+        contentType,
+        uaFamily,
+      },
+      chatContext: { rawText, parseMode, detected },
+    };
+  }
+
+  // Relative window override
+  if (relativeWindow != null) {
+    detected.windowMinutes = relativeWindow;
+    parseMode = "chat-overrides";
+    return {
+      ok: true,
+      inputs: {
+        dataSource: "clickhouse",
+        partner,
+        service,
+        region,
+        pop,
+        windowMinutes: relativeWindow,
+        startTsUtc: null,
+        endTsUtc: null,
+        contentType,
+        uaFamily,
+      },
+      chatContext: { rawText, parseMode, detected },
+    };
+  }
+
+  // Default to current applied scope if chat did not explicitly override time/scope.
+  return {
+    ok: true,
+    inputs: {
+      dataSource: "clickhouse",
+      partner,
+      service,
+      region,
+      pop,
+      windowMinutes: args.windowMinutes,
+      startTsUtc: null,
+      endTsUtc: null,
+      contentType,
+      uaFamily,
+    },
+    chatContext: { rawText, parseMode, detected },
+  };
 }
 
 // ------------------------------------------------------------
@@ -1482,7 +1662,6 @@ export default function Home() {
   }
 
   function addTriageCard(run: ChatTriage["run"]) {
-  
     setChatMessages((prev) => [
       ...prev,
       { id: `${Date.now()}-${Math.random()}`, type: "triage", role: "assistant", ts: nowIso(), run },
@@ -1690,7 +1869,8 @@ export default function Home() {
         text:
           "Cachey 🤖 — deterministic triage assistant.\n\n" +
           "Pick a service in Filters, then run triage.\n" +
-          "You can also ask about traffic, latency, or errors using the current scope.",
+          "You can also ask about traffic, latency, or errors using the current scope.\n" +
+          "UTC absolute time in chat is supported when you provide ISO timestamps like 2026-03-09T21:59:00Z.",
       },
     ]);
   }, [mounted, chatMessages.length]);
@@ -1891,9 +2071,47 @@ export default function Home() {
     };
   }
 
-  async function handleRunFromFilters() {
+  async function executeTriageRun(
+    inputs: TriageInputs,
+    scopeSource: "filters" | "chat",
+    extra?: {
+      chatContext?: ChatTriage["run"]["chatContext"];
+    }
+  ) {
     if (isLoading) return;
 
+    setIsTriageLoading(true);
+    setTyping(true);
+
+    try {
+      const timeLabel =
+        inputs.startTsUtc && inputs.endTsUtc
+          ? `abs=${isoToUtcText(inputs.startTsUtc)}→${isoToUtcText(inputs.endTsUtc)} UTC`
+          : `win=${inputs.windowMinutes}m`;
+
+      pushRunLog(
+        `Running triage [${scopeSource}]: partner=${inputs.partner} svc=${inputs.service} region=${inputs.region} pop=${inputs.pop} ${timeLabel} ct=${inputs.contentType} ua=${inputs.uaFamily}`
+      );
+
+      const data = await runTriage(inputs);
+
+      addTriageCard({
+        inputs,
+        summaryText: data.summaryText || "",
+        metricsJson: data.metricsJson || null,
+        sql: data.sql || null,
+        scopeSource,
+        chatContext: extra?.chatContext ?? null,
+      });
+    } catch (e: any) {
+      addText("assistant", `Triage failed: ${e?.message || "unknown error"}`);
+    } finally {
+      setTyping(false);
+      setIsTriageLoading(false);
+    }
+  }
+
+  async function handleRunFromFilters() {
     if (!partner) {
       addText("assistant", `Pick a partner first. (${PARTNER_OPTIONS.join(", ")})`);
       return;
@@ -1903,25 +2121,13 @@ export default function Home() {
       return;
     }
 
-    setIsTriageLoading(true);
-    setTyping(true);
+    const effectiveWin =
+      timeMode === "absolute" && startTsUtc && endTsUtc
+        ? windowMinutesFromRange(startTsUtc, endTsUtc, windowMinutes)
+        : windowMinutes;
 
-    try {
-      const effectiveWin =
-        timeMode === "absolute" && startTsUtc && endTsUtc
-          ? windowMinutesFromRange(startTsUtc, endTsUtc, windowMinutes)
-          : windowMinutes;
-
-      const timeLabel =
-        timeMode === "absolute" && startTsUtc && endTsUtc
-          ? `abs=${isoToUtcText(startTsUtc)}→${isoToUtcText(endTsUtc)} UTC`
-          : `win=${effectiveWin}m`;
-
-      pushRunLog(
-        `Running triage: partner=${partner} svc=${service} region=${region} pop=${pop} ${timeLabel} ct=${contentType} ua=${uaFamily}`
-      );
-
-      const data = await runTriage({
+    await executeTriageRun(
+      {
         dataSource: "clickhouse",
         partner,
         service,
@@ -1932,41 +2138,35 @@ export default function Home() {
         endTsUtc: timeMode === "absolute" ? endTsUtc : null,
         contentType,
         uaFamily,
-      });
-
-      addTriageCard({
-            inputs: {
-              dataSource: "clickhouse",
-              partner,
-              service,
-              region,
-              pop,
-              windowMinutes: effectiveWin,
-              startTsUtc: timeMode === "absolute" ? startTsUtc : null,
-              endTsUtc: timeMode === "absolute" ? endTsUtc : null,
-              contentType,
-              uaFamily,
-            },
-            summaryText: data.summaryText || "",
-            metricsJson: data.metricsJson || null,
-            sql: data.sql || null,
-            scopeSource: "filters",
-          });
-        } catch (e: any) {
-          addText("assistant", `Triage failed: ${e?.message || "unknown error"}`);
-        } finally {
-          setTyping(false);
-          setIsTriageLoading(false);
-        }
-      }
+      },
+      "filters"
+    );
+  }
 
   async function handleSend() {
     const text = chatInput.trim();
     if (!text || isLoading) return;
-    setChatInput("");
 
+    setChatInput("");
     addText("user", text);
-    await handleRunFromFilters();
+
+    const built = buildChatInputsFromText({
+      text,
+      partner,
+      service,
+      region,
+      pop,
+      windowMinutes,
+      contentType,
+      uaFamily,
+    });
+
+    if (!built.ok) {
+      addText("assistant", built.error);
+      return;
+    }
+
+    await executeTriageRun(built.inputs, "chat", { chatContext: built.chatContext });
   }
 
   function MetricChips({ metricsJson }: { metricsJson: any }) {
@@ -2027,28 +2227,36 @@ export default function Home() {
   }
 
   function TriageCard({ run }: { run: ChatTriage["run"] }) {
-  const ts = parseTimeseries(run.metricsJson);
-  const effectiveWindowMinutes = windowMinutesFromRange(run.inputs.startTsUtc, run.inputs.endTsUtc, run.inputs.windowMinutes);
-  const bucketSeconds = ts?.bucketSeconds ?? run.metricsJson?.timeseries?.bucketSeconds ?? null;
+    const ts = parseTimeseries(run.metricsJson);
+    const effectiveWindowMinutes = windowMinutesFromRange(
+      run.inputs.startTsUtc,
+      run.inputs.endTsUtc,
+      run.inputs.windowMinutes
+    );
+    const bucketSeconds = ts?.bucketSeconds ?? run.metricsJson?.timeseries?.bucketSeconds ?? null;
 
-  const summary = String(run.summaryText || "").trim();
-  const summaryText = summary ? summary : buildSummaryFallback(run);
+    const summary = String(run.summaryText || "").trim();
+    const summaryText = summary ? summary : buildSummaryFallback(run);
 
-  const pointsCount = ts?.points?.length ?? 0;
-  const debug = run.metricsJson?.debug ?? null;
-  const runnerVersion = debug?.__runnerVersion
-    ? String(debug.__runnerVersion)
-    : debug?.proxyVersion
-    ? String(debug.proxyVersion)
-    : "unknown";
+    const pointsCount = ts?.points?.length ?? 0;
+    const debug = run.metricsJson?.debug ?? null;
+    const runnerVersion = debug?.__runnerVersion
+      ? String(debug.__runnerVersion)
+      : debug?.proxyVersion
+      ? String(debug.proxyVersion)
+      : "unknown";
 
-  const scopeSource = run.scopeSource || "filters";
-
+    const scopeSource = run.scopeSource || "filters";
     const forcedLocal = Boolean(debug?.forcedLocal);
     const proxyEnabled = Boolean(debug?.hasProxyEnv);
     const tableUsed = debug?.tableUsed ? String(debug.tableUsed) : "unknown";
     const debugBucketSeconds = debug?.bucketSeconds != null ? Number(debug.bucketSeconds) : null;
-    const anchorMode = debug?.anchorToMaxTs ? "max(ts)" : "now()";
+    const anchorMode =
+      run.inputs.startTsUtc && run.inputs.endTsUtc
+        ? "absolute"
+        : debug?.anchorToMaxTs
+        ? "max(ts)"
+        : "now()";
 
     const answerSource = forcedLocal ? "Forced Local" : proxyEnabled ? "Proxy enabled" : "Local";
     const debugOn = process.env.NODE_ENV !== "production";
@@ -2078,6 +2286,7 @@ export default function Home() {
                 <span className="text-gray-400 mr-1">scope</span>
                 <span className="font-semibold">{scopeSource}</span>
               </span>
+
               <span
                 className={`px-2 py-1 rounded-full border ${
                   forcedLocal
@@ -2169,7 +2378,8 @@ export default function Home() {
                 height={190}
                 windowMinutes={effectiveWindowMinutes}
               />
-                            <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+
+              <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
                 <div className="text-xs text-gray-400">Deterministic evidence</div>
                 <div className="text-sm font-semibold text-gray-100 mt-1">Run details</div>
 
@@ -2212,6 +2422,17 @@ export default function Home() {
                     </pre>
                   </div>
                 </details>
+
+                {run.chatContext ? (
+                  <details className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
+                    <summary className="cursor-pointer text-sm text-gray-200">Chat parse context</summary>
+                    <div className="mt-3">
+                      <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                        {JSON.stringify(run.chatContext, null, 2)}
+                      </pre>
+                    </div>
+                  </details>
+                ) : null}
 
                 {run.sql?.queries?.length ? (
                   <details className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
@@ -2760,7 +2981,11 @@ export default function Home() {
             )}
           </div>
 
-          <details className="mt-6 rounded-2xl border border-white/10 bg-black/30 p-4" open={debugOpen} onToggle={(e) => setDebugOpen((e.target as HTMLDetailsElement).open)}>
+          <details
+            className="mt-6 rounded-2xl border border-white/10 bg-black/30 p-4"
+            open={debugOpen}
+            onToggle={(e) => setDebugOpen((e.target as HTMLDetailsElement).open)}
+          >
             <summary className="cursor-pointer text-sm font-semibold text-gray-200">Debug</summary>
             <div className="mt-3 max-h-[220px] overflow-auto rounded-xl border border-white/10 bg-black/30 p-3">
               {runLog.length ? (
