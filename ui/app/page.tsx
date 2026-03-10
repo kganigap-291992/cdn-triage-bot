@@ -61,6 +61,10 @@ type ChatTriage = {
     inputs: TriageInputs;
     summaryText: string;
     metricsJson: any;
+    sql?: {
+      queries: string[];
+      params?: Record<string, any>;
+    } | null;
   };
 };
 
@@ -1845,7 +1849,14 @@ export default function Home() {
     return { ok: true as const };
   }
 
-  async function runTriage(inputs: TriageInputs) {
+  async function runTriage(inputs: TriageInputs): Promise<{
+    summaryText: string;
+    metricsJson: any;
+    sql?: {
+      queries: string[];
+      params?: Record<string, any>;
+    } | null;
+  }> {
     const formData = new FormData();
 
     formData.append("dataSource", inputs.dataSource);
@@ -1874,6 +1885,7 @@ export default function Home() {
     return {
       summaryText: (data as any).summaryText ?? (data as any).summary ?? "",
       metricsJson: (data as any).metricsJson ?? null,
+      sql: (data as any).sql ?? null,
     };
   }
 
@@ -1921,28 +1933,29 @@ export default function Home() {
       });
 
       addTriageCard({
-        inputs: {
-          dataSource: "clickhouse",
-          partner,
-          service,
-          region,
-          pop,
-          windowMinutes: effectiveWin,
-          startTsUtc: timeMode === "absolute" ? startTsUtc : null,
-          endTsUtc: timeMode === "absolute" ? endTsUtc : null,
-          contentType,
-          uaFamily,
-        },
-        summaryText: data.summaryText || "",
-        metricsJson: data.metricsJson || null,
-      });
-    } catch (e: any) {
-      addText("assistant", `Triage failed: ${e?.message || "unknown error"}`);
-    } finally {
-      setTyping(false);
-      setIsTriageLoading(false);
-    }
-  }
+            inputs: {
+              dataSource: "clickhouse",
+              partner,
+              service,
+              region,
+              pop,
+              windowMinutes: effectiveWin,
+              startTsUtc: timeMode === "absolute" ? startTsUtc : null,
+              endTsUtc: timeMode === "absolute" ? endTsUtc : null,
+              contentType,
+              uaFamily,
+            },
+            summaryText: data.summaryText || "",
+            metricsJson: data.metricsJson || null,
+            sql: data.sql || null,
+          });
+        } catch (e: any) {
+          addText("assistant", `Triage failed: ${e?.message || "unknown error"}`);
+        } finally {
+          setTyping(false);
+          setIsTriageLoading(false);
+        }
+      }
 
   async function handleSend() {
     const text = chatInput.trim();
@@ -2147,18 +2160,22 @@ export default function Home() {
                 height={190}
                 windowMinutes={effectiveWindowMinutes}
               />
-              <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+                            <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
                 <div className="text-xs text-gray-400">Deterministic evidence</div>
                 <div className="text-sm font-semibold text-gray-100 mt-1">Run details</div>
+
                 <div className="mt-3 text-xs text-gray-300 space-y-2">
                   <div>
-                    <span className="text-gray-400">Points:</span> <span className="font-semibold">{pointsCount}</span>
+                    <span className="text-gray-400">Points:</span>{" "}
+                    <span className="font-semibold">{pointsCount}</span>
                   </div>
                   <div>
-                    <span className="text-gray-400">Hosts:</span> <span className="font-semibold">{ts.hostSeries?.length || 0}</span>
+                    <span className="text-gray-400">Hosts:</span>{" "}
+                    <span className="font-semibold">{ts.hostSeries?.length || 0}</span>
                   </div>
                   <div>
-                    <span className="text-gray-400">CRC buckets:</span> <span className="font-semibold">{ts.crcSeries?.length || 0}</span>
+                    <span className="text-gray-400">CRC buckets:</span>{" "}
+                    <span className="font-semibold">{ts.crcSeries?.length || 0}</span>
                   </div>
                   <div>
                     <span className="text-gray-400">Actual window:</span>{" "}
@@ -2172,16 +2189,45 @@ export default function Home() {
                     <span className="text-gray-400">Bucket:</span>{" "}
                     <span className="font-semibold">{bucketLabel(bucketSeconds)}</span>
                   </div>
+                  <div>
+                    <span className="text-gray-400">SQL queries:</span>{" "}
+                    <span className="font-semibold">{run.sql?.queries?.length || 0}</span>
+                  </div>
                 </div>
 
                 <details className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
                   <summary className="cursor-pointer text-sm text-gray-200">Inputs</summary>
                   <div className="mt-3">
-                    <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3">
+                    <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
                       {JSON.stringify(run.inputs, null, 2)}
                     </pre>
                   </div>
                 </details>
+
+                {run.sql?.queries?.length ? (
+                  <details className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
+                    <summary className="cursor-pointer text-sm text-gray-200">SQL Evidence</summary>
+                    <div className="mt-3 space-y-3">
+                      {run.sql.queries.map((query, idx) => (
+                        <div key={idx}>
+                          <div className="text-xs text-gray-400 mb-1">Query {idx + 1}</div>
+                          <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                            {query}
+                          </pre>
+                        </div>
+                      ))}
+
+                      {run.sql.params ? (
+                        <div>
+                          <div className="text-xs text-gray-400 mb-1">Params</div>
+                          <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                            {JSON.stringify(run.sql.params, null, 2)}
+                          </pre>
+                        </div>
+                      ) : null}
+                    </div>
+                  </details>
+                ) : null}
               </div>
             </div>
           </div>
