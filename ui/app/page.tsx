@@ -65,6 +65,7 @@ type ChatTriage = {
       queries: string[];
       params?: Record<string, any>;
     } | null;
+    scopeSource?: "filters" | "chat";
   };
 };
 
@@ -1481,6 +1482,7 @@ export default function Home() {
   }
 
   function addTriageCard(run: ChatTriage["run"]) {
+  
     setChatMessages((prev) => [
       ...prev,
       { id: `${Date.now()}-${Math.random()}`, type: "triage", role: "assistant", ts: nowIso(), run },
@@ -1948,6 +1950,7 @@ export default function Home() {
             summaryText: data.summaryText || "",
             metricsJson: data.metricsJson || null,
             sql: data.sql || null,
+            scopeSource: "filters",
           });
         } catch (e: any) {
           addText("assistant", `Triage failed: ${e?.message || "unknown error"}`);
@@ -2024,20 +2027,22 @@ export default function Home() {
   }
 
   function TriageCard({ run }: { run: ChatTriage["run"] }) {
-    const ts = parseTimeseries(run.metricsJson);
-    const effectiveWindowMinutes = windowMinutesFromRange(run.inputs.startTsUtc, run.inputs.endTsUtc, run.inputs.windowMinutes);
-    const bucketSeconds = ts?.bucketSeconds ?? run.metricsJson?.timeseries?.bucketSeconds ?? null;
+  const ts = parseTimeseries(run.metricsJson);
+  const effectiveWindowMinutes = windowMinutesFromRange(run.inputs.startTsUtc, run.inputs.endTsUtc, run.inputs.windowMinutes);
+  const bucketSeconds = ts?.bucketSeconds ?? run.metricsJson?.timeseries?.bucketSeconds ?? null;
 
-    const summary = String(run.summaryText || "").trim();
-    const summaryText = summary ? summary : buildSummaryFallback(run);
+  const summary = String(run.summaryText || "").trim();
+  const summaryText = summary ? summary : buildSummaryFallback(run);
 
-    const pointsCount = ts?.points?.length ?? 0;
-    const debug = run.metricsJson?.debug ?? null;
-    const runnerVersion = debug?.__runnerVersion
-      ? String(debug.__runnerVersion)
-      : debug?.proxyVersion
-      ? String(debug.proxyVersion)
-      : "unknown";
+  const pointsCount = ts?.points?.length ?? 0;
+  const debug = run.metricsJson?.debug ?? null;
+  const runnerVersion = debug?.__runnerVersion
+    ? String(debug.__runnerVersion)
+    : debug?.proxyVersion
+    ? String(debug.proxyVersion)
+    : "unknown";
+
+  const scopeSource = run.scopeSource || "filters";
 
     const forcedLocal = Boolean(debug?.forcedLocal);
     const proxyEnabled = Boolean(debug?.hasProxyEnv);
@@ -2069,6 +2074,10 @@ export default function Home() {
 
           <div className="flex flex-col items-end gap-1 text-[11px]">
             <div className="flex flex-wrap justify-end gap-1.5">
+              <span className="px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
+                <span className="text-gray-400 mr-1">scope</span>
+                <span className="font-semibold">{scopeSource}</span>
+              </span>
               <span
                 className={`px-2 py-1 rounded-full border ${
                   forcedLocal
