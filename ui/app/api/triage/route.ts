@@ -3,24 +3,25 @@ import { NextResponse } from "next/server";
 import { Buffer } from "node:buffer";
 import { CANON } from "@/lib/schema/canonical";
 import { runClickhouseTriage } from "@/lib/clickhouse/runClickhouseTriage";
+import { buildClickhouseSql } from "@/lib/clickhouse/sqlBuilder";
+import { toEvidenceBundle } from "@/lib/triage/toEvidenceBundle";
+import { runAgents } from "@/lib/triage/runAgents";
+import { buildAssessment } from "@/lib/triage/buildAssessment";
 
 export const runtime = "nodejs";
 
 type Inputs = {
-  dataSource: string; // csv|clickhouse (we care about clickhouse)
+  dataSource: string;
   partner: string;
   service: string;
-  region: string; // all|<canon>
-  pop: string; // all|<canon>
+  region: string;
+  pop: string;
   windowMinutes: number;
-
-  // Absolute range (UTC ISO) — optional, but must be BOTH if present
   startTsUtc: string | null;
   endTsUtc: string | null;
-
   debug: boolean;
-  contentType: string; // all|manifest|segment|api
-  uaFamily: string; // all|stb|mobile|web|smart_tv|console
+  contentType: string;
+  uaFamily: string;
 };
 
 type TimeMode =
@@ -33,7 +34,6 @@ function boolish(v: unknown) {
   return ["1", "true", "yes", "on"].includes(s);
 }
 
-// IMPORTANT: do NOT lowercase canonical tokens.
 function tok(v: unknown) {
   return String(v ?? "").trim();
 }
@@ -52,18 +52,15 @@ function numOrNull(v: unknown): number | null {
 function isCanonPartner(x: string) {
   return (CANON.partners as readonly string[]).includes(x);
 }
+
 function isCanonService(x: string) {
   return (CANON.services as readonly string[]).includes(x);
 }
+
 function isAllOrOneOf(x: string, allowed: readonly string[]) {
   return x === "all" || allowed.includes(x);
 }
 
-/**
- * Generator is source of truth.
- * Route must NOT reshape metrics when already canonical.
- * But we DO support a legacy proxy payload by adapting it once here.
- */
 function assertCanonicalMetricsJson(metricsJson: any) {
   if (!metricsJson || typeof metricsJson !== "object") {
     throw new Error("route: metricsJson missing");
@@ -103,14 +100,53 @@ function normalizeSqlForUi(sql: any) {
   if (!sql) return undefined;
 
   if (Array.isArray(sql.queries)) {
-    return { queries: sql.queries.map((q: any) => String(q)), params: sql.params ?? undefined };
+    return {
+      queries: sql.queries.map((q: any) => String(q)),
+      params: sql.params ?? undefined,
+    };
   }
 
   if (typeof sql.query === "string" && sql.query.trim()) {
-    return { queries: [sql.query.trim()], params: sql.params ?? undefined };
+    return {
+      queries: [sql.query.trim()],
+      params: sql.params ?? undefined,
+    };
   }
 
   return undefined;
+}
+
+function buildPlannerSqlFallback(
+  inputs: {
+    partner: string;
+    service: string;
+    region: string;
+    pop: string;
+    contentType: string;
+    uaFamily: string;
+    windowMinutes: number;
+    startTsUtc?: string | null;
+    endTsUtc?: string | null;
+  },
+  tm: TimeMode
+) {
+  const built = buildClickhouseSql({
+    partner: inputs.partner,
+    service: inputs.service,
+    region: inputs.region,
+    pop: inputs.pop,
+    contentType: inputs.contentType,
+    uaFamily: inputs.uaFamily,
+    windowMinutes: inputs.windowMinutes,
+    startTsUtc: tm.mode === "absolute" ? tm.startIso : undefined,
+    endTsUtc: tm.mode === "absolute" ? tm.endIso : undefined,
+    anchorToMaxTs: tm.mode === "relative",
+  } as any);
+
+  return {
+    queries: built.queries.map((q: any) => String(q)),
+    params: built.params ?? undefined,
+  };
 }
 
 function normalize(x: Record<string, any>): Inputs {
@@ -120,10 +156,8 @@ function normalize(x: Record<string, any>): Inputs {
 
   const partner = tok(x.partner);
   const service = tok(x.service ?? x.svc);
-
   const region = tok(x.region) || "all";
   const pop = tok(x.pop) || "all";
-
   const ctRaw = tok(x.contentType ?? x.content_type ?? x.ct) || "all";
   const uaRaw = tok(x.uaFamily ?? x.ua_family ?? x.ua) || "all";
 
@@ -175,13 +209,15 @@ async function parseRequest(req: Request): Promise<Inputs> {
     return normalize(obj);
   }
 
-  // last resort
   const body = (await req.json().catch(() => ({}))) as any;
   return normalize(body);
 }
 
 function badRequest(error: string, extra?: Record<string, any>) {
-  return NextResponse.json({ ok: false, error, ...(extra ? { details: extra } : {}) }, { status: 400 });
+  return NextResponse.json(
+    { ok: false, error, ...(extra ? { details: extra } : {}) },
+    { status: 400 }
+  );
 }
 
 function okJson(payload: any) {
@@ -253,10 +289,6 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
 
   const result = await runClickhouseTriage(payload);
 
-  console.log("RUNLOCAL result keys", Object.keys(result || {}));
-  console.log("RUNLOCAL metricsJson keys", Object.keys(result?.metricsJson || {}));
-  console.log("RUNLOCAL metricsJson", result?.metricsJson);
-
   const metricsJson = assertCanonicalMetricsJson(result.metricsJson);
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
@@ -266,9 +298,19 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
     startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
     endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
     anchorToMaxTs: tm.mode === "absolute" ? false : metricsJson.debug?.anchorToMaxTs ?? undefined,
+    sqlSource: "runner",
   };
 
   const sql = normalizeSqlForUi(result.sql ?? undefined);
+
+  const evidenceBundle = toEvidenceBundle(payload, {
+    ...result,
+    metricsJson,
+    sql,
+  });
+
+  const agents = runAgents(evidenceBundle);
+  const assessment = buildAssessment(evidenceBundle, agents);
 
   return okJson({
     ok: true,
@@ -276,17 +318,18 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
     summary: result.summary ?? result.summaryText ?? "",
     metricsJson,
     sql,
+    swarm: {
+      assessment,
+      agents,
+    },
     _mode: "local",
   });
 }
 
 /**
  * Accept either:
- * 1) canonical proxy payload:
- *    { ok:true, metricsJson:{ totalRequests, p95TtmsMs, error5xxCount, errorRatePct, ... } }
- *
- * or legacy proxy payload:
- *    { ok:true, metrics:{ requests, p50_ms, p95_ms, p99_ms, errors_5xx } }
+ * 1) canonical proxy payload
+ * 2) legacy proxy payload
  */
 function adaptLegacyProxyMetricsToCanonical(legacyMetrics: any) {
   const totalRequests = numOrNull(legacyMetrics?.totalRequests) ?? numOrNull(legacyMetrics?.requests) ?? 0;
@@ -326,13 +369,7 @@ function safeAdaptProxyToUi(parsed: any, tm: TimeMode) {
 
   const rawMetrics = parsed?.metricsJson ?? parsed?.metrics ?? null;
 
-  console.log("PROXY parsed keys", Object.keys(parsed || {}));
-  console.log("PROXY parsed metricsJson keys", Object.keys(rawMetrics || {}));
-  console.log("PROXY parsed sample", parsed);
-
   let metricsJson: any;
-
-  // already canonical
   if (
     rawMetrics &&
     typeof rawMetrics === "object" &&
@@ -343,7 +380,6 @@ function safeAdaptProxyToUi(parsed: any, tm: TimeMode) {
   ) {
     metricsJson = assertCanonicalMetricsJson(rawMetrics);
   } else {
-    // legacy proxy metrics -> canonical adapter
     metricsJson = assertCanonicalMetricsJson(adaptLegacyProxyMetricsToCanonical(rawMetrics || {}));
   }
 
@@ -357,7 +393,42 @@ function safeAdaptProxyToUi(parsed: any, tm: TimeMode) {
     anchorToMaxTs: tm.mode === "absolute" ? false : metricsJson.debug?.anchorToMaxTs ?? undefined,
   };
 
-  const sql = normalizeSqlForUi(parsed?.sql ?? undefined);
+  const syntheticInputs = {
+    partner: String(metricsJson?.debug?.partner ?? ""),
+    service: String(metricsJson?.debug?.service ?? ""),
+    region: String(metricsJson?.debug?.region ?? "all"),
+    pop: String(metricsJson?.debug?.pop ?? "all"),
+    contentType: String(metricsJson?.debug?.contentType ?? "all"),
+    uaFamily: String(metricsJson?.debug?.uaFamily ?? "all"),
+    windowMinutes: Number(metricsJson?.debug?.windowMinutes ?? 0) || 0,
+    startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
+    endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
+  };
+
+  const sql =
+    normalizeSqlForUi(parsed?.sql ?? undefined) ??
+    buildPlannerSqlFallback(syntheticInputs, tm);
+
+  metricsJson.debug = {
+    ...(metricsJson.debug || {}),
+    sqlSource: parsed?.sql ? "proxy" : "planner-fallback",
+  };
+
+  const evidenceBundle = toEvidenceBundle(
+    {
+      ...syntheticInputs,
+      debug: false,
+    } as any,
+    {
+      summary: parsed?.summary ?? parsed?.summaryText ?? "",
+      summaryText: parsed?.summaryText ?? parsed?.summary ?? "",
+      metricsJson,
+      sql,
+    }
+  );
+
+  const agents = runAgents(evidenceBundle);
+  const assessment = buildAssessment(evidenceBundle, agents);
 
   return {
     ok: true,
@@ -365,6 +436,10 @@ function safeAdaptProxyToUi(parsed: any, tm: TimeMode) {
     summary: parsed?.summary ?? parsed?.summaryText ?? "",
     metricsJson,
     sql,
+    swarm: {
+      assessment,
+      agents,
+    },
     inputs: parsed?.inputs ?? undefined,
     _mode: "proxy",
   };
@@ -374,14 +449,19 @@ export async function POST(req: Request) {
   try {
     const inputs = await parseRequest(req);
 
-    // Guardrails
-    if (!inputs.partner) return badRequest("partner is required", { allowedPartners: CANON.partners });
+    if (!inputs.partner) {
+      return badRequest("partner is required", { allowedPartners: CANON.partners });
+    }
     if (!isCanonPartner(inputs.partner)) {
       return badRequest(`invalid partner: ${inputs.partner}`, { allowedPartners: CANON.partners });
     }
 
-    if (!inputs.service) return badRequest("service is required", { allowedServices: CANON.services });
-    if (inputs.service === "all") return badRequest(`service cannot be "all"`, { allowedServices: CANON.services });
+    if (!inputs.service) {
+      return badRequest("service is required", { allowedServices: CANON.services });
+    }
+    if (inputs.service === "all") {
+      return badRequest(`service cannot be "all"`, { allowedServices: CANON.services });
+    }
     if (!isCanonService(inputs.service)) {
       return badRequest(`invalid service: ${inputs.service}`, { allowedServices: CANON.services });
     }
@@ -413,7 +493,6 @@ export async function POST(req: Request) {
       return badRequest(err?.message || "invalid time range");
     }
 
-    // Proxy-first if configured, otherwise local fallback
     if (!hasProxyEnv()) {
       return await runLocal(inputs, tm);
     }
@@ -438,14 +517,6 @@ export async function POST(req: Request) {
       upstreamBody.startTsUtc = tm.startIso;
       upstreamBody.endTsUtc = tm.endIso;
     }
-
-    console.log("TRIAGE proxy request", {
-      triageUrl,
-      hasProxyEnv: hasProxyEnv(),
-      timeMode: tm.mode,
-      partner: inputs.partner,
-      service: inputs.service,
-    });
 
     const upstream = await fetch(triageUrl, {
       method: "POST",
@@ -486,6 +557,7 @@ export async function POST(req: Request) {
             startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
             endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
             anchorToMaxTs: tm.mode === "absolute" ? false : undefined,
+            sqlSource: "none",
           }),
           _mode: "proxy",
         },
@@ -508,6 +580,7 @@ export async function POST(req: Request) {
             startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
             endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
             anchorToMaxTs: tm.mode === "absolute" ? false : undefined,
+            sqlSource: "none",
           }),
           _mode: "proxy",
         },

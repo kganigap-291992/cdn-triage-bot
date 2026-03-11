@@ -65,6 +65,29 @@ type ChatTriage = {
       queries: string[];
       params?: Record<string, any>;
     } | null;
+    swarm?: {
+      assessment?: {
+        overallStatus?: "ok" | "warn" | "critical";
+        primarySignal?: "traffic" | "latency" | "errors" | "cache" | "mixed";
+        summary?: string;
+        keyFindings?: string[];
+        metadata?: {
+          table?: string;
+          bucketSeconds?: number;
+          timeMode?: "relative" | "absolute";
+          startTs?: string;
+          endTs?: string;
+          compareStartTs?: string;
+          compareEndTs?: string;
+        };
+      };
+      agents?: Array<{
+        agentId: "scope" | "traffic" | "latency" | "errors" | "cache";
+        title: string;
+        status: "ok" | "warn" | "critical";
+        summary: string;
+      }>;
+    } | null;
     scopeSource?: "filters" | "chat";
     chatContext?: {
       rawText: string;
@@ -1929,7 +1952,7 @@ export default function Home() {
         crcErrorCount: Number(p.crcErrorCount || 0),
         statusCountsByCode: p.statusCountsByCode || undefined,
       }))
-      .filter((pt) => Boolean(pt.ts));
+      .filter((pt: TimeseriesPoint) => Boolean(pt.ts));
 
     const hostSeries: HostSeriesItem[] = Array.isArray(t.hostSeries)
       ? t.hostSeries.map((h: any) => ({
@@ -2038,6 +2061,7 @@ export default function Home() {
       queries: string[];
       params?: Record<string, any>;
     } | null;
+    swarm?: any;
   }> {
     const formData = new FormData();
 
@@ -2068,6 +2092,7 @@ export default function Home() {
       summaryText: (data as any).summaryText ?? (data as any).summary ?? "",
       metricsJson: (data as any).metricsJson ?? null,
       sql: (data as any).sql ?? null,
+      swarm: (data as any).swarm ?? null,
     };
   }
 
@@ -2100,6 +2125,7 @@ export default function Home() {
         summaryText: data.summaryText || "",
         metricsJson: data.metricsJson || null,
         sql: data.sql || null,
+        swarm: data.swarm || null,
         scopeSource,
         chatContext: extra?.chatContext ?? null,
       });
@@ -2234,9 +2260,10 @@ export default function Home() {
       run.inputs.windowMinutes
     );
     const bucketSeconds = ts?.bucketSeconds ?? run.metricsJson?.timeseries?.bucketSeconds ?? null;
-
-    const summary = String(run.summaryText || "").trim();
-    const summaryText = summary ? summary : buildSummaryFallback(run);
+     
+    const swarmSummary = String(run.swarm?.assessment?.summary || "").trim();
+    const classicSummary = String(run.summaryText || "").trim();
+    const summaryText = swarmSummary || classicSummary || buildSummaryFallback(run);
 
     const pointsCount = ts?.points?.length ?? 0;
     const debug = run.metricsJson?.debug ?? null;
@@ -2333,6 +2360,19 @@ export default function Home() {
         </div>
 
         <MetricChips metricsJson={run.metricsJson} />
+
+        {run.swarm?.assessment ? (
+          <div className="flex flex-wrap gap-2">
+            <span className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
+              <span className="text-gray-400 mr-1">overall</span>
+              <span className="font-semibold">{run.swarm.assessment.overallStatus || "n/a"}</span>
+            </span>
+            <span className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
+              <span className="text-gray-400 mr-1">primary</span>
+              <span className="font-semibold">{run.swarm.assessment.primarySignal || "n/a"}</span>
+            </span>
+          </div>
+        ) : null}
 
         <div className="rounded-xl border border-white/10 bg-black/30 p-3">
           <div className="text-xs text-gray-400 mb-2">Summary</div>
