@@ -1,6 +1,5 @@
 // ui/app/api/triage/route.ts
 import { NextResponse } from "next/server";
-import { Buffer } from "node:buffer";
 import { CANON } from "@/lib/schema/canonical";
 import { runClickhouseTriage } from "@/lib/clickhouse/runClickhouseTriage";
 import { buildClickhouseSql } from "@/lib/clickhouse/sqlBuilder";
@@ -225,11 +224,7 @@ function okJson(payload: any) {
 }
 
 function hasProxyEnv() {
-  const url = process.env.CACHEY_PROXY_URL;
-  const user = process.env.CACHEY_BASIC_USER;
-  const pass = process.env.CACHEY_BASIC_PASS;
-  const token = process.env.CACHEY_TOKEN;
-  return !!(url && user && pass && token);
+  return !!process.env.CACHEY_PROXY_URL;
 }
 
 function proxyTriageUrl() {
@@ -497,9 +492,6 @@ export async function POST(req: Request) {
       return await runLocal(inputs, tm);
     }
 
-    const user = process.env.CACHEY_BASIC_USER!;
-    const pass = process.env.CACHEY_BASIC_PASS!;
-    const token = process.env.CACHEY_TOKEN!;
     const triageUrl = proxyTriageUrl();
 
     const upstreamBody: any = {
@@ -522,8 +514,6 @@ export async function POST(req: Request) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`,
-        "X-Cachey-Token": token,
       },
       body: JSON.stringify(upstreamBody),
     });
