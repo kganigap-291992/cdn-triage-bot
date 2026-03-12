@@ -1610,7 +1610,7 @@ function SwarmAgentCards({
       <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
         {agents.map((agent) => (
           <div
-            key={agent.agent}
+            key={agent.agentId}
             className="rounded-xl border border-white/10 bg-black/30 p-3"
           >
             <div className="flex items-start justify-between gap-3">

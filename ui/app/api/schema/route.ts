@@ -31,12 +31,8 @@ type NormalizedSchema = {
   uaFamilies: string[];
 };
 
-// Upstream may be:
-// A) top-level lists (your current VPS format)
-// B) { ok:true, schema:{...} } (nested)
 type UpstreamSchemaResponse = {
   ok: boolean;
-
   schema?: SchemaShape;
 
   partners?: string[];
@@ -63,7 +59,6 @@ function canonSchema(): NormalizedSchema {
     services: [...CANON.services],
     regions: [...CANON.regions],
     pops: [...CANON.pops],
-    // UI expects "all" in these dropdowns
     contentTypes: ["all", ...CANON.contentTypes],
     uaFamilies: ["all", ...CANON.uaFamilies],
   };
@@ -90,7 +85,7 @@ function normalizeCanonicalList<T extends string>(
     return [...fallback];
   }
 
-  const filtered = input.map(String).filter(guard);
+  const filtered = input.map((x) => String(x).trim()).filter(guard);
   return filtered.length > 0 ? filtered : [...fallback];
 }
 
@@ -99,26 +94,27 @@ function normalizeStringList(input: string[] | undefined, fallback: string[]): s
     return [...fallback];
   }
 
-  const normalized = input.map(String).map((s) => s.trim()).filter(Boolean);
+  const normalized = input.map((x) => String(x).trim()).filter(Boolean);
   return normalized.length > 0 ? normalized : [...fallback];
 }
 
 function normalizeSchemaShape(s: SchemaShape | null | undefined): NormalizedSchema {
   const fallback = canonSchema();
 
-  const next: NormalizedSchema = {
+  return {
     partners: normalizeCanonicalList(s?.partners, CANON.partners, isCanonPartner),
     services: normalizeCanonicalList(s?.services, CANON.services, isCanonService),
     regions: normalizeCanonicalList(s?.regions, CANON.regions, isCanonRegion),
     pops: normalizeStringList(s?.pops, fallback.pops),
-    contentTypes: normalizeStringList(s?.contentTypes, fallback.contentTypes),
-    uaFamilies: normalizeStringList(s?.uaFamilies, fallback.uaFamilies),
+    contentTypes: (() => {
+      const list = normalizeStringList(s?.contentTypes, fallback.contentTypes);
+      return list.includes("all") ? list : ["all", ...list];
+    })(),
+    uaFamilies: (() => {
+      const list = normalizeStringList(s?.uaFamilies, fallback.uaFamilies);
+      return list.includes("all") ? list : ["all", ...list];
+    })(),
   };
-
-  if (!next.contentTypes.includes("all")) next.contentTypes = ["all", ...next.contentTypes];
-  if (!next.uaFamilies.includes("all")) next.uaFamilies = ["all", ...next.uaFamilies];
-
-  return next;
 }
 
 function bestEffortOk(payload: {
@@ -146,11 +142,10 @@ function bestEffortOk(payload: {
 }
 
 export async function GET(req: Request) {
-  const base = env("CACHEY_PROXY_URL"); // e.g. https://cachey.cloud/api  (or .../triage in some setups)
+  const base = env("CACHEY_PROXY_URL");
   const user = env("CACHEY_BASIC_USER");
   const pass = env("CACHEY_BASIC_PASS");
 
-  // If not configured, fallback to CANON (ok:true so UI always has options)
   if (!base || !user || !pass) {
     return bestEffortOk({
       source: "canon-fallback",
@@ -159,16 +154,11 @@ export async function GET(req: Request) {
     });
   }
 
-  // Forward query params for future dependent schema:
-  // /api/schema?partner=...&service=...&region=...
   const inUrl = new URL(req.url);
   const qs = inUrl.searchParams.toString();
 
-  // Be resilient if CACHEY_PROXY_URL accidentally points at /triage.
-  // We want the API base, then /schema.
   const cleaned = base.replace(/\/+$/, "");
   const apiBase = cleaned.endsWith("/triage") ? cleaned.replace(/\/triage$/, "") : cleaned;
-
   const upstreamUrl = `${apiBase}/schema${qs ? `?${qs}` : ""}`;
 
   try {
@@ -196,7 +186,6 @@ export async function GET(req: Request) {
       });
     }
 
-    // Accept either {schema:{...}} or top-level lists
     const shape: SchemaShape = data.schema ?? {
       partners: data.partners,
       services: data.services,
@@ -206,7 +195,7 @@ export async function GET(req: Request) {
       uaFamilies: data.uaFamilies,
     };
 
-    const schema = normalizeSchemaShape(shape);
+    const schema: NormalizedSchema = normalizeSchemaShape(shape);
 
     return bestEffortOk({
       source: "proxy",
