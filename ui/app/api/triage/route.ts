@@ -321,11 +321,6 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
   });
 }
 
-/**
- * Accept either:
- * 1) canonical proxy payload
- * 2) legacy proxy payload
- */
 function adaptLegacyProxyMetricsToCanonical(legacyMetrics: any) {
   const totalRequests = numOrNull(legacyMetrics?.totalRequests) ?? numOrNull(legacyMetrics?.requests) ?? 0;
   const p50 = numOrNull(legacyMetrics?.p50TtmsMs) ?? numOrNull(legacyMetrics?.p50_ms);
@@ -539,6 +534,7 @@ export async function POST(req: Request) {
         {
           ok: false,
           error: msg,
+          upstreamUrl: triageUrl,
           metricsJson: canonicalStubMetricsJson({
             hasProxyEnv: true,
             forcedLocal: false,
@@ -562,6 +558,8 @@ export async function POST(req: Request) {
         {
           ok: false,
           error: (adapted as any).error || "proxy returned ok=false",
+          upstreamUrl: triageUrl,
+          upstreamParsed: parsed,
           metricsJson: canonicalStubMetricsJson({
             hasProxyEnv: true,
             forcedLocal: false,
