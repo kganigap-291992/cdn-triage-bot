@@ -41,6 +41,10 @@ ClickHouse Query Layer
 (shared metrics + breakdown queries)
       │
       ▼
+EvidenceBundle
+(all telemetry evidence)
+      │
+      ▼
 Deterministic Agents
 (scope / traffic / latency / errors / cache)
       │
@@ -87,26 +91,10 @@ else:
     bucketSeconds = 900
 ```
 
-### Verified Proxy Output
-
-Relative window example:
+Minimum investigation window:
 
 ```
-{
-  "table": "cachey.raw_minute",
-  "bucket": 60,
-  "timeMode": "relative"
-}
-```
-
-Absolute long range:
-
-```
-{
-  "table": "cachey.agg_15m",
-  "bucket": 900,
-  "timeMode": "absolute"
-}
+minWindow = 30 minutes
 ```
 
 ---
@@ -135,6 +123,19 @@ The same query runs for:
 
 - **current window**
 - **previous comparison window**
+
+Comparison rule:
+
+```
+comparisonWindow = investigationWindow
+```
+
+Example:
+
+```
+current window : 2h
+previous window: previous 2h
+```
 
 ---
 
@@ -238,6 +239,113 @@ Fields:
 
 ---
 
+# Evidence Bundle
+
+The **EvidenceBundle** is the structured dataset produced by the query runner.
+
+It contains all telemetry evidence required by deterministic agents.
+
+Instead of each agent querying ClickHouse independently, the system retrieves all necessary data once and packages it into a shared bundle.
+
+Agents then analyze the same evidence set to produce findings.
+
+Architecture flow:
+
+```
+Normalization
+      ↓
+Query Runner
+      ↓
+EvidenceBundle
+      ↓
+Deterministic Agents
+```
+
+---
+
+# EvidenceBundle Contract
+
+```
+type EvidenceBundle = {
+
+  normalizedScope: NormalizedScope
+
+  windowInfo: {
+    windowMinutes: number
+    bucketSeconds: number
+    sampleCount: number
+  }
+
+  currentMetrics: TimeSeriesPoint[]
+  previousMetrics?: TimeSeriesPoint[]
+
+  derivedMetrics: {
+    requestsTotal: number
+    p95Avg: number
+    p95Max: number
+    p99Max: number
+    errorRateAvg: number
+    cacheHitAvg: number
+  }
+
+  derivedMetricsPrevious?: {
+    requestsTotal: number
+    p95Avg: number
+    errorRateAvg: number
+    cacheHitAvg: number
+  }
+
+  regionBreakdown: Array<{
+    region: string
+    requests: number
+  }>
+
+  popBreakdown: Array<{
+    pop: string
+    requests: number
+  }>
+
+  worstLatency: Array<{
+    pop: string
+    p95: number
+    p99: number
+  }>
+
+  worstErrors: Array<{
+    pop: string
+    errorRate: number
+  }>
+
+  worstCache: Array<{
+    pop: string
+    hitRate: number
+  }>
+
+  diagnostics: {
+    runId: string
+    source: "clickhouse-proxy" | "local-mock"
+    runnerVersion: string
+    tableUsed: string
+    comparisonAvailable: boolean
+    dataCompleteness: "full" | "partial" | "sparse"
+    notes: string[]
+  }
+
+  sql: {
+    currentMetrics: string
+    previousMetrics?: string
+    regionBreakdown: string
+    popBreakdown: string
+    worstLatency: string
+    worstErrors: string
+    worstCache: string
+  }
+
+}
+```
+
+---
+
 # Deterministic Agents
 
 Five agents analyze telemetry.
@@ -250,7 +358,9 @@ Five agents analyze telemetry.
 | Errors Agent | detect error spikes |
 | Cache Agent | detect cache efficiency drops |
 
-Agents consume shared datasets and produce structured findings.
+Agents consume the **EvidenceBundle** and produce structured findings.
+
+Agents **never query the database directly**.
 
 ---
 
@@ -262,14 +372,10 @@ type AgentResult = {
   title: string
   status: "ok" | "warn" | "critical"
   summary: string
-
   metrics?: Record<string, number | string>
-
   graphs?: AgentGraph[]
-
   evidence?: string[]
-
-  sql?: AgentSQL[]
+  sql?: string[]
 }
 ```
 
@@ -305,8 +411,6 @@ time      p95
 Every agent exposes the SQL queries used for its findings.
 
 Example:
-
-Latency Agent evidence
 
 ```
 1) Shared metrics query
@@ -353,40 +457,6 @@ type IncidentAssessment = {
     compareStartTs?: string
     compareEndTs?: string
   }
-}
-```
-
----
-
-# Example IncidentAssessment
-
-```
-{
- "overallStatus": "critical",
- "primarySignal": "latency",
-
- "blastRadius": {
-  "regionCount": 3,
-  "popCount": 7,
-  "topRegions": ["us-east"],
-  "topPops": ["pop_003"]
- },
-
- "keyFindings": [
-  "Cache hit rate dropped from 94% to 79%",
-  "p95 latency increased from 430ms to 910ms",
-  "p99 latency exceeded 1.3s",
-  "Error rate rose from 0.4% to 2.8%"
- ],
-
- "summary":
- "Partner_01 live degradation driven by cache efficiency loss aligned with latency and error spikes.",
-
- "metadata": {
-  "table": "cachey.raw_minute",
-  "bucketSeconds": 60,
-  "timeMode": "relative"
- }
 }
 ```
 
@@ -446,14 +516,3 @@ Retrieval
 ```
 
 ---
-
-# Summary
-
-Cachey is designed as a **telemetry-to-assessment engine**.
-
-Instead of dashboards alone, it produces structured service health evaluations using:
-
-- ClickHouse telemetry
-- deterministic analysis agents
-- evidence-backed findings
-- structured incident assessments
