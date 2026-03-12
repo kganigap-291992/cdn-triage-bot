@@ -1,5 +1,6 @@
 // ui/app/api/schema/route.ts
 import { NextResponse } from "next/server";
+import { Buffer } from "node:buffer";
 import { CANON } from "@/lib/schema/canonical";
 
 export const runtime = "nodejs";
@@ -8,6 +9,10 @@ function env(name: string): string {
   return String(process.env[name] ?? "").trim();
 }
 
+type CanonPartner = (typeof CANON.partners)[number];
+type CanonService = (typeof CANON.services)[number];
+type CanonRegion = (typeof CANON.regions)[number];
+
 type SchemaShape = {
   partners?: string[];
   services?: string[];
@@ -15,6 +20,15 @@ type SchemaShape = {
   pops?: string[];
   contentTypes?: string[];
   uaFamilies?: string[];
+};
+
+type NormalizedSchema = {
+  partners: CanonPartner[];
+  services: CanonService[];
+  regions: CanonRegion[];
+  pops: string[];
+  contentTypes: string[];
+  uaFamilies: string[];
 };
 
 // Upstream may be:
@@ -43,7 +57,7 @@ type UpstreamSchemaResponse = {
   error?: string;
 };
 
-function canonSchema() {
+function canonSchema(): NormalizedSchema {
   return {
     partners: [...CANON.partners],
     services: [...CANON.services],
@@ -55,16 +69,50 @@ function canonSchema() {
   };
 }
 
-function normalizeSchemaShape(s: SchemaShape | null | undefined) {
+function isCanonPartner(x: string): x is CanonPartner {
+  return (CANON.partners as readonly string[]).includes(x);
+}
+
+function isCanonService(x: string): x is CanonService {
+  return (CANON.services as readonly string[]).includes(x);
+}
+
+function isCanonRegion(x: string): x is CanonRegion {
+  return (CANON.regions as readonly string[]).includes(x);
+}
+
+function normalizeCanonicalList<T extends string>(
+  input: string[] | undefined,
+  fallback: readonly T[],
+  guard: (x: string) => x is T
+): T[] {
+  if (!Array.isArray(input) || input.length === 0) {
+    return [...fallback];
+  }
+
+  const filtered = input.map(String).filter(guard);
+  return filtered.length > 0 ? filtered : [...fallback];
+}
+
+function normalizeStringList(input: string[] | undefined, fallback: string[]): string[] {
+  if (!Array.isArray(input) || input.length === 0) {
+    return [...fallback];
+  }
+
+  const normalized = input.map(String).map((s) => s.trim()).filter(Boolean);
+  return normalized.length > 0 ? normalized : [...fallback];
+}
+
+function normalizeSchemaShape(s: SchemaShape | null | undefined): NormalizedSchema {
   const fallback = canonSchema();
 
-  const next = {
-    partners: Array.isArray(s?.partners) ? s!.partners.map(String) : fallback.partners,
-    services: Array.isArray(s?.services) ? s!.services.map(String) : fallback.services,
-    regions: Array.isArray(s?.regions) ? s!.regions.map(String) : fallback.regions,
-    pops: Array.isArray(s?.pops) ? s!.pops.map(String) : fallback.pops,
-    contentTypes: Array.isArray(s?.contentTypes) ? s!.contentTypes.map(String) : fallback.contentTypes,
-    uaFamilies: Array.isArray(s?.uaFamilies) ? s!.uaFamilies.map(String) : fallback.uaFamilies,
+  const next: NormalizedSchema = {
+    partners: normalizeCanonicalList(s?.partners, CANON.partners, isCanonPartner),
+    services: normalizeCanonicalList(s?.services, CANON.services, isCanonService),
+    regions: normalizeCanonicalList(s?.regions, CANON.regions, isCanonRegion),
+    pops: normalizeStringList(s?.pops, fallback.pops),
+    contentTypes: normalizeStringList(s?.contentTypes, fallback.contentTypes),
+    uaFamilies: normalizeStringList(s?.uaFamilies, fallback.uaFamilies),
   };
 
   if (!next.contentTypes.includes("all")) next.contentTypes = ["all", ...next.contentTypes];
@@ -75,7 +123,7 @@ function normalizeSchemaShape(s: SchemaShape | null | undefined) {
 
 function bestEffortOk(payload: {
   source: "canon-fallback" | "proxy" | "proxy-fallback";
-  schema: ReturnType<typeof canonSchema>;
+  schema: NormalizedSchema;
   warning?: string;
   context?: UpstreamSchemaResponse["context"];
   availableRegions?: string[];
@@ -130,7 +178,6 @@ export async function GET(req: Request) {
         Accept: "application/json",
         Authorization: `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`,
       },
-      // Prevent long hangs from freezing UI boot:
       cache: "no-store",
     });
 
@@ -141,7 +188,6 @@ export async function GET(req: Request) {
         (data && typeof data === "object" && data.error && String(data.error)) ||
         `schema upstream failed (HTTP ${resp.status})`;
 
-      // IMPORTANT: schema is best-effort; keep UI usable.
       return bestEffortOk({
         source: "proxy-fallback",
         schema: canonSchema(),
@@ -171,7 +217,6 @@ export async function GET(req: Request) {
       upstreamUrl,
     });
   } catch (err: any) {
-    // IMPORTANT: schema is best-effort; keep UI usable.
     return bestEffortOk({
       source: "proxy-fallback",
       schema: canonSchema(),

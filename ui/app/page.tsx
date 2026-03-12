@@ -13,6 +13,7 @@ import { CANON } from "@/lib/schema/canonical";
 // - Hero graphs: Requests, Error Rate, Latency
 // - Diagnostic graphs: Status, Host, CRC
 // - Local focus mode for stacked charts (no DB re-query)
+// - Swarm assessment + findings + agent cards
 // ------------------------------------------------------------
 
 const LOGO_SRC = "/cachey-logo.png";
@@ -336,6 +337,43 @@ function seriesColor(kind: "status" | "host" | "crc", key: string) {
   return stableColorForKey(key);
 }
 
+function severityPillClass(status?: "ok" | "warn" | "critical") {
+  switch (status) {
+    case "ok":
+      return "border-emerald-400/30 bg-emerald-400/10 text-emerald-200";
+    case "warn":
+      return "border-amber-400/30 bg-amber-400/10 text-amber-200";
+    case "critical":
+      return "border-red-400/30 bg-red-400/10 text-red-200";
+    default:
+      return "border-white/10 bg-white/10 text-gray-200";
+  }
+}
+
+const STATUS_STYLE: Record<string, string> = {
+  ok: "text-emerald-400 border-emerald-400/40 bg-emerald-400/10",
+  warn: "text-amber-400 border-amber-400/40 bg-amber-400/10",
+  critical: "text-red-400 border-red-400/40 bg-red-400/10",
+};
+
+function signalLabel(signal?: "traffic" | "latency" | "errors" | "cache" | "mixed") {
+  if (!signal) return "n/a";
+  switch (signal) {
+    case "traffic":
+      return "traffic";
+    case "latency":
+      return "latency";
+    case "errors":
+      return "errors";
+    case "cache":
+      return "cache";
+    case "mixed":
+      return "mixed";
+    default:
+      return String(signal);
+  }
+}
+
 // ------------------------------------------------------------
 // Conservative chat parsing helpers
 // ------------------------------------------------------------
@@ -442,7 +480,6 @@ function buildChatInputsFromText(args: {
     return { ok: false, error: `Pick a service first or mention one in chat. (${SERVICE_OPTIONS.join(", ")})` };
   }
 
-  // Absolute UTC range: require 2 explicit ISO UTC timestamps in chat text.
   if (isoMatches.length >= 2) {
     const startTsUtc = new Date(isoMatches[0]).toISOString();
     const endTsUtc = new Date(isoMatches[1]).toISOString();
@@ -470,7 +507,6 @@ function buildChatInputsFromText(args: {
     };
   }
 
-  // Relative window override
   if (relativeWindow != null) {
     detected.windowMinutes = relativeWindow;
     parseMode = "chat-overrides";
@@ -492,7 +528,6 @@ function buildChatInputsFromText(args: {
     };
   }
 
-  // Default to current applied scope if chat did not explicitly override time/scope.
   return {
     ok: true,
     inputs: {
@@ -1555,6 +1590,52 @@ function CrcTimeseriesBars({
   );
 }
 
+function SwarmAgentCards({
+  agents,
+}: {
+  agents?: Array<{
+    agentId: "scope" | "traffic" | "latency" | "errors" | "cache";
+    title: string;
+    status: "ok" | "warn" | "critical";
+    summary: string;
+  }> | null;
+}) {
+  if (!agents?.length) return null;
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+      <div className="text-xs text-gray-400">Deterministic swarm</div>
+      <div className="text-sm font-semibold text-gray-100 mt-1">Agent findings</div>
+
+      <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        {agents.map((agent) => (
+          <div
+            key={agent.agent}
+            className="rounded-xl border border-white/10 bg-black/30 p-3"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400">{agent.agentId}</div>
+                <div className="text-sm font-semibold text-gray-100 truncate">
+                  {agent.title || agent.agentId}
+                </div>
+              </div>
+
+              <span className={`shrink-0 rounded-full border px-2 py-1 text-[11px] font-semibold ${severityPillClass(agent.status)}`}>
+                {agent.status}
+              </span>
+            </div>
+
+            <div className="mt-3 text-xs leading-relaxed text-gray-300 whitespace-pre-wrap">
+              {agent.summary || "No summary."}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ------------------------------------------------------------
 // Main Home component
 // ------------------------------------------------------------
@@ -2260,10 +2341,17 @@ export default function Home() {
       run.inputs.windowMinutes
     );
     const bucketSeconds = ts?.bucketSeconds ?? run.metricsJson?.timeseries?.bucketSeconds ?? null;
-     
-    const swarmSummary = String(run.swarm?.assessment?.summary || "").trim();
+
+    const assessment = run.swarm?.assessment ?? null;
+    const agents = run.swarm?.agents ?? null;
+
+    const swarmSummary = String(assessment?.summary || "").trim();
     const classicSummary = String(run.summaryText || "").trim();
     const summaryText = swarmSummary || classicSummary || buildSummaryFallback(run);
+
+    const keyFindings = Array.isArray(assessment?.keyFindings)
+      ? assessment!.keyFindings!.map((x) => String(x || "").trim()).filter(Boolean)
+      : [];
 
     const pointsCount = ts?.points?.length ?? 0;
     const debug = run.metricsJson?.debug ?? null;
@@ -2361,16 +2449,24 @@ export default function Home() {
 
         <MetricChips metricsJson={run.metricsJson} />
 
-        {run.swarm?.assessment ? (
+        {assessment ? (
           <div className="flex flex-wrap gap-2">
-            <span className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
-              <span className="text-gray-400 mr-1">overall</span>
-              <span className="font-semibold">{run.swarm.assessment.overallStatus || "n/a"}</span>
+            <span className={`text-xs px-2.5 py-1 rounded-full border font-semibold ${severityPillClass(assessment.overallStatus)}`}>
+              <span className="mr-1 opacity-80">overall</span>
+              {assessment.overallStatus || "n/a"}
             </span>
+
             <span className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
               <span className="text-gray-400 mr-1">primary</span>
-              <span className="font-semibold">{run.swarm.assessment.primarySignal || "n/a"}</span>
+              <span className="font-semibold">{signalLabel(assessment.primarySignal)}</span>
             </span>
+
+            {assessment.metadata?.timeMode ? (
+              <span className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
+                <span className="text-gray-400 mr-1">timeMode</span>
+                <span className="font-semibold">{assessment.metadata.timeMode}</span>
+              </span>
+            ) : null}
           </div>
         ) : null}
 
@@ -2378,6 +2474,22 @@ export default function Home() {
           <div className="text-xs text-gray-400 mb-2">Summary</div>
           <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">{summaryText}</pre>
         </div>
+
+        {keyFindings.length ? (
+          <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+            <div className="text-xs text-gray-400 mb-2">Key findings</div>
+            <div className="space-y-2">
+              {keyFindings.map((finding, idx) => (
+                <div key={`${finding}-${idx}`} className="flex items-start gap-2 text-sm text-gray-200/90">
+                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-blue-400 shrink-0" />
+                  <span>{finding}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        <SwarmAgentCards agents={agents} />
 
         {ts && ts.points.length > 0 ? (
           <div className="space-y-4">
@@ -2452,6 +2564,15 @@ export default function Home() {
                     <span className="text-gray-400">SQL queries:</span>{" "}
                     <span className="font-semibold">{run.sql?.queries?.length || 0}</span>
                   </div>
+                  {assessment?.metadata?.compareStartTs && assessment?.metadata?.compareEndTs ? (
+                    <div>
+                      <span className="text-gray-400">Compare window:</span>{" "}
+                      <span className="font-semibold">
+                        {formatUtcYmdHm(assessment.metadata.compareStartTs)} →{" "}
+                        {formatUtcYmdHm(assessment.metadata.compareEndTs)} UTC
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
 
                 <details className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
@@ -2469,6 +2590,17 @@ export default function Home() {
                     <div className="mt-3">
                       <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
                         {JSON.stringify(run.chatContext, null, 2)}
+                      </pre>
+                    </div>
+                  </details>
+                ) : null}
+
+                {run.swarm ? (
+                  <details className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
+                    <summary className="cursor-pointer text-sm text-gray-200">Swarm payload</summary>
+                    <div className="mt-3">
+                      <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                        {JSON.stringify(run.swarm, null, 2)}
                       </pre>
                     </div>
                   </details>
