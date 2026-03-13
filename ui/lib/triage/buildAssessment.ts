@@ -33,12 +33,55 @@ function getOverallStatus(agents: AgentResult[]): IncidentAssessment["overallSta
   return "ok";
 }
 
+function getScopeAgent(agents: AgentResult[]): AgentResult | undefined {
+  return agents.find((a) => a.agent === "scope");
+}
+
+function getNonScopeAgents(agents: AgentResult[]): AgentResult[] {
+  return agents.filter((a) => a.agent !== "scope");
+}
+
 function getKeyFindings(agents: AgentResult[]): string[] {
-  return agents
-    .filter((a) => a.agent !== "scope")
+  const scope = getScopeAgent(agents);
+  const nonScope = getNonScopeAgents(agents)
     .map((a) => a.summary)
-    .filter(Boolean)
-    .slice(0, 5);
+    .filter(Boolean);
+
+  if (scope?.status === "critical" && scope.summary) {
+    return [scope.summary, ...nonScope].slice(0, 5);
+  }
+
+  return nonScope.slice(0, 5);
+}
+
+function pickHeadlineSummary(
+  bundle: EvidenceBundle,
+  agents: AgentResult[],
+  overallStatus: IncidentAssessment["overallStatus"],
+  keyFindings: string[]
+): string {
+  const scope = getScopeAgent(agents);
+  if (scope?.status === "critical" && scope.summary) {
+    return scope.summary;
+  }
+
+  const nonScope = getNonScopeAgents(agents);
+
+  const critical = nonScope.find((a) => a.status === "critical" && a.summary);
+  if (critical?.summary) {
+    return critical.summary;
+  }
+
+  const warn = nonScope.find((a) => a.status === "warn" && a.summary);
+  if (warn?.summary) {
+    return warn.summary;
+  }
+
+  if (keyFindings[0]) {
+    return keyFindings[0];
+  }
+
+  return `Service ${bundle.normalizedScope.service} for ${bundle.normalizedScope.partner} appears ${overallStatus}.`;
 }
 
 export function buildAssessment(
@@ -48,10 +91,7 @@ export function buildAssessment(
   const overallStatus = getOverallStatus(agents);
   const primarySignal = getPrimarySignal(agents);
   const keyFindings = getKeyFindings(agents);
-
-  const summary =
-    keyFindings[0] ||
-    `Service ${bundle.normalizedScope.service} for ${bundle.normalizedScope.partner} appears ${overallStatus}.`;
+  const summary = pickHeadlineSummary(bundle, agents, overallStatus, keyFindings);
 
   return {
     overallStatus,

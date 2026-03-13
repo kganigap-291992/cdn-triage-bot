@@ -23,6 +23,18 @@ type Inputs = {
   uaFamily: string;
 };
 
+type EvidenceScope = {
+  partner: string;
+  service: string;
+  region: string;
+  pop: string;
+  contentType: string;
+  uaFamily: string;
+  windowMinutes: number;
+  startTsUtc: string | null;
+  endTsUtc: string | null;
+};
+
 type TimeMode =
   | { mode: "relative" }
   | { mode: "absolute"; startIso: string; endIso: string };
@@ -58,6 +70,20 @@ function isCanonService(x: string) {
 
 function isAllOrOneOf(x: string, allowed: readonly string[]) {
   return x === "all" || allowed.includes(x);
+}
+
+function buildEvidenceScope(inputs: Inputs, tm: TimeMode): EvidenceScope {
+  return {
+    partner: inputs.partner,
+    service: inputs.service,
+    region: inputs.region,
+    pop: inputs.pop,
+    contentType: inputs.contentType,
+    uaFamily: inputs.uaFamily,
+    windowMinutes: inputs.windowMinutes,
+    startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
+    endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
+  };
 }
 
 function assertCanonicalMetricsJson(metricsJson: any) {
@@ -115,28 +141,15 @@ function normalizeSqlForUi(sql: any) {
   return undefined;
 }
 
-function buildPlannerSqlFallback(
-  inputs: {
-    partner: string;
-    service: string;
-    region: string;
-    pop: string;
-    contentType: string;
-    uaFamily: string;
-    windowMinutes: number;
-    startTsUtc?: string | null;
-    endTsUtc?: string | null;
-  },
-  tm: TimeMode
-) {
+function buildPlannerSqlFallback(scope: EvidenceScope, tm: TimeMode) {
   const built = buildClickhouseSql({
-    partner: inputs.partner,
-    service: inputs.service,
-    region: inputs.region,
-    pop: inputs.pop,
-    contentType: inputs.contentType,
-    uaFamily: inputs.uaFamily,
-    windowMinutes: inputs.windowMinutes,
+    partner: scope.partner,
+    service: scope.service,
+    region: scope.region,
+    pop: scope.pop,
+    contentType: scope.contentType,
+    uaFamily: scope.uaFamily,
+    windowMinutes: scope.windowMinutes,
     startTsUtc: tm.mode === "absolute" ? tm.startIso : undefined,
     endTsUtc: tm.mode === "absolute" ? tm.endIso : undefined,
     anchorToMaxTs: tm.mode === "relative",
@@ -294,15 +307,29 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
     endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
     anchorToMaxTs: tm.mode === "absolute" ? false : metricsJson.debug?.anchorToMaxTs ?? undefined,
     sqlSource: "runner",
+    partner: inputs.partner,
+    service: inputs.service,
+    region: inputs.region,
+    pop: inputs.pop,
+    contentType: inputs.contentType,
+    uaFamily: inputs.uaFamily,
+    windowMinutes: inputs.windowMinutes,
   };
 
   const sql = normalizeSqlForUi(result.sql ?? undefined);
+  const scope = buildEvidenceScope(inputs, tm);
 
-  const evidenceBundle = toEvidenceBundle(payload, {
-    ...result,
-    metricsJson,
-    sql,
-  });
+  const evidenceBundle = toEvidenceBundle(
+    {
+      ...scope,
+      debug: inputs.debug,
+    } as any,
+    {
+      ...result,
+      metricsJson,
+      sql,
+    }
+  );
 
   const agents = runAgents(evidenceBundle);
   const assessment = buildAssessment(evidenceBundle, agents);
@@ -347,7 +374,7 @@ function adaptLegacyProxyMetricsToCanonical(legacyMetrics: any) {
   };
 }
 
-function safeAdaptProxyToUi(parsed: any, tm: TimeMode) {
+function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScope) {
   const ok = !!parsed?.ok;
   if (!ok) {
     return {
@@ -381,23 +408,18 @@ function safeAdaptProxyToUi(parsed: any, tm: TimeMode) {
     startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
     endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
     anchorToMaxTs: tm.mode === "absolute" ? false : metricsJson.debug?.anchorToMaxTs ?? undefined,
-  };
-
-  const syntheticInputs = {
-    partner: String(metricsJson?.debug?.partner ?? ""),
-    service: String(metricsJson?.debug?.service ?? ""),
-    region: String(metricsJson?.debug?.region ?? "all"),
-    pop: String(metricsJson?.debug?.pop ?? "all"),
-    contentType: String(metricsJson?.debug?.contentType ?? "all"),
-    uaFamily: String(metricsJson?.debug?.uaFamily ?? "all"),
-    windowMinutes: Number(metricsJson?.debug?.windowMinutes ?? 0) || 0,
-    startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
-    endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
+    partner: scope.partner,
+    service: scope.service,
+    region: scope.region,
+    pop: scope.pop,
+    contentType: scope.contentType,
+    uaFamily: scope.uaFamily,
+    windowMinutes: scope.windowMinutes,
   };
 
   const sql =
     normalizeSqlForUi(parsed?.sql ?? undefined) ??
-    buildPlannerSqlFallback(syntheticInputs, tm);
+    buildPlannerSqlFallback(scope, tm);
 
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
@@ -406,7 +428,7 @@ function safeAdaptProxyToUi(parsed: any, tm: TimeMode) {
 
   const evidenceBundle = toEvidenceBundle(
     {
-      ...syntheticInputs,
+      ...scope,
       debug: false,
     } as any,
     {
@@ -483,6 +505,8 @@ export async function POST(req: Request) {
       return badRequest(err?.message || "invalid time range");
     }
 
+    const scope = buildEvidenceScope(inputs, tm);
+
     if (!hasProxyEnv()) {
       return await runLocal(inputs, tm);
     }
@@ -544,6 +568,13 @@ export async function POST(req: Request) {
             endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
             anchorToMaxTs: tm.mode === "absolute" ? false : undefined,
             sqlSource: "none",
+            partner: scope.partner,
+            service: scope.service,
+            region: scope.region,
+            pop: scope.pop,
+            contentType: scope.contentType,
+            uaFamily: scope.uaFamily,
+            windowMinutes: scope.windowMinutes,
           }),
           _mode: "proxy",
         },
@@ -551,7 +582,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const adapted = safeAdaptProxyToUi(parsed, tm);
+    const adapted = safeAdaptProxyToUi(parsed, tm, scope);
 
     if (!adapted.ok) {
       return NextResponse.json(
@@ -569,6 +600,13 @@ export async function POST(req: Request) {
             endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
             anchorToMaxTs: tm.mode === "absolute" ? false : undefined,
             sqlSource: "none",
+            partner: scope.partner,
+            service: scope.service,
+            region: scope.region,
+            pop: scope.pop,
+            contentType: scope.contentType,
+            uaFamily: scope.uaFamily,
+            windowMinutes: scope.windowMinutes,
           }),
           _mode: "proxy",
         },

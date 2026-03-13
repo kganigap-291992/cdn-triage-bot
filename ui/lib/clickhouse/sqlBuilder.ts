@@ -2,35 +2,46 @@
 
 export type ClickhouseFilters = {
   partner: string; // required
-  service: string; // required (canon; never "all" in our app, but keep addEq safe)
+  service: string; // required (canon; never "all" in our app)
   region: string; // all|...
   pop: string; // all|...
   contentType: string; // all|manifest|segment|api
   uaFamily: string; // all|stb|mobile|web|smart_tv|console
   windowMinutes: number; // e.g. 60
 
-  // ✅ Absolute UTC range override (ISO strings)
-  // If both present: ignore windowMinutes for time bounds (but may still be used for chips/UI).
+  // Absolute UTC range override (ISO strings)
   startTsUtc?: string;
   endTsUtc?: string;
 
   // dataset-clock anchoring (max(ts)) vs realtime-clock (now())
   anchorToMaxTs?: boolean;
 
-  // OPTIONAL override (future): force a table explicitly
+  // optional override (future): force a table explicitly
   tableHint?: "raw_minute" | "agg_15m";
 };
 
 export type BuiltSql = {
   queries: string[];
   params: Record<string, any>;
-
   meta: {
     tableUsed: "cachey.raw_minute" | "cachey.agg_15m";
     bucketSeconds: 60 | 900;
     anchorToMaxTs: boolean;
   };
 };
+
+function normalizeRequiredToken(v: unknown, field: string): string {
+  const s = String(v ?? "").trim();
+  if (!s) {
+    throw new Error(`sqlBuilder: ${field} is required`);
+  }
+  return s;
+}
+
+function normalizeOptionalToken(v: unknown, fallback = "all"): string {
+  const s = String(v ?? "").trim();
+  return s || fallback;
+}
 
 function addEq(where: string[], params: Record<string, any>, col: string, key: string, val: string) {
   if (!val || val === "all") return;
@@ -60,11 +71,17 @@ function minutesBetweenIso(startIso: string, endIso: string): number {
 
 // Rule: duration ≤ 6h → raw_minute; > 6h → agg_15m
 function pickTable(windowMinutes: number, hint?: "raw_minute" | "agg_15m") {
-  if (hint === "raw_minute") return { table: "cachey.raw_minute" as const, bucketSeconds: 60 as const };
-  if (hint === "agg_15m") return { table: "cachey.agg_15m" as const, bucketSeconds: 900 as const };
+  if (hint === "raw_minute") {
+    return { table: "cachey.raw_minute" as const, bucketSeconds: 60 as const };
+  }
+  if (hint === "agg_15m") {
+    return { table: "cachey.agg_15m" as const, bucketSeconds: 900 as const };
+  }
 
   const wm = Number(windowMinutes);
-  if (Number.isFinite(wm) && wm > 360) return { table: "cachey.agg_15m" as const, bucketSeconds: 900 as const };
+  if (Number.isFinite(wm) && wm > 360) {
+    return { table: "cachey.agg_15m" as const, bucketSeconds: 900 as const };
+  }
   return { table: "cachey.raw_minute" as const, bucketSeconds: 60 as const };
 }
 
@@ -72,11 +89,21 @@ export function buildClickhouseSql(f: ClickhouseFilters): BuiltSql {
   const params: Record<string, any> = {};
   const where: string[] = [];
 
+  // Normalize required scope first. Fail closed if missing.
+  const partner = normalizeRequiredToken(f.partner, "partner");
+  const service = normalizeRequiredToken(f.service, "service");
+
+  // Normalize optional scope.
+  const region = normalizeOptionalToken(f.region, "all");
+  const pop = normalizeOptionalToken(f.pop, "all");
+  const contentType = normalizeOptionalToken(f.contentType, "all");
+  const uaFamily = normalizeOptionalToken(f.uaFamily, "all");
+
   // Normalize windowMinutes for relative mode + fallback
   const windowMinutes = clampInt(Number(f.windowMinutes || 60), 1, 60 * 24 * 31);
   params.windowMinutes = windowMinutes;
 
-  // ✅ Absolute range detection
+  // Absolute range detection
   const startIso = toIsoOrNull(f.startTsUtc);
   const endIso = toIsoOrNull(f.endTsUtc);
   const hasAbsolute = !!(startIso && endIso);
@@ -84,6 +111,7 @@ export function buildClickhouseSql(f: ClickhouseFilters): BuiltSql {
   if ((startIso && !endIso) || (!startIso && endIso)) {
     throw new Error("sqlBuilder: startTsUtc and endTsUtc must both be provided for absolute range");
   }
+
   if (hasAbsolute) {
     const sMs = new Date(startIso!).getTime();
     const eMs = new Date(endIso!).getTime();
@@ -92,31 +120,32 @@ export function buildClickhouseSql(f: ClickhouseFilters): BuiltSql {
     }
   }
 
-  // ✅ Choose table based on *actual* duration for absolute mode, else windowMinutes.
+  // Choose table based on actual duration for absolute mode, else windowMinutes.
   const durationMinutes = hasAbsolute ? minutesBetweenIso(startIso!, endIso!) : windowMinutes;
   const { table, bucketSeconds } = pickTable(durationMinutes, f.tableHint);
 
-  // ✅ expose bucketSeconds to SQL (for q3)
+  // Expose bucketSeconds to SQL (for timeseries bucketing).
   params.bucketSeconds = bucketSeconds;
 
-  // required
+  // Required scope
   where.push(`partner = {partner:String}`);
-  params.partner = f.partner;
+  params.partner = partner;
 
-  // optional dims
-  addEq(where, params, "service", "service", f.service);
-  addEq(where, params, "region", "region", f.region);
-  addEq(where, params, "pop", "pop", f.pop);
-  addEq(where, params, "content_type", "contentType", f.contentType);
-  addEq(where, params, "ua_family", "uaFamily", f.uaFamily);
+  where.push(`service = {service:String}`);
+  params.service = service;
 
-  // ✅ Anchoring rules:
+  // Optional dims
+  addEq(where, params, "region", "region", region);
+  addEq(where, params, "pop", "pop", pop);
+  addEq(where, params, "content_type", "contentType", contentType);
+  addEq(where, params, "ua_family", "uaFamily", uaFamily);
+
+  // Anchoring rules:
   // - absolute: NEVER anchor to max(ts) / now()
   // - relative: respect anchorToMaxTs flag
   const anchorToMaxTs = hasAbsolute ? false : !!f.anchorToMaxTs;
 
-  // ✅ Time bounds: absolute vs relative
-  // Use parseDateTime64BestEffort for ISO strings (UTC Z included)
+  // Time bounds: absolute vs relative
   if (hasAbsolute) {
     params.startTsUtc = startIso!;
     params.endTsUtc = endIso!;
@@ -140,12 +169,11 @@ WITH
   (t_end - toIntervalMinute({windowMinutes:Int32})) AS t_start
 `.trim();
 
-  // ✅ ALWAYS include both bounds
   // Level-2 rule: end is exclusive for clean bucket boundaries.
   where.push(`ts >= t_start AND ts < t_end`);
   const whereSql = `WHERE ${where.join(" AND ")}`;
 
-  // ---- Query 0: headline totals ----
+  // Query 0: headline totals
   const q0 = `
 ${timeWith}
 SELECT
@@ -167,7 +195,7 @@ FROM ${table}
 ${whereSql}
 `.trim();
 
-  // ---- Query 1: status breakdown ----
+  // Query 1: status breakdown
   const q1 = `
 ${timeWith}
 SELECT status, c
@@ -187,7 +215,7 @@ FROM
 ORDER BY c DESC
 `.trim();
 
-  // ---- Query 2: top pops by 5xx ----
+  // Query 2: top pops by 5xx
   const q2 = `
 ${timeWith}
 SELECT
@@ -202,7 +230,7 @@ ORDER BY http_5xx DESC
 LIMIT 20
 `.trim();
 
-  // ---- Query 3: timeseries buckets (for UI graphs) ----
+  // Query 3: timeseries buckets (for UI graphs)
   const q3 = `
 ${timeWith}
 SELECT

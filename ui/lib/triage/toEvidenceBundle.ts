@@ -19,17 +19,22 @@ function safeNumber(v: unknown): number | undefined {
 }
 
 function asString(v: unknown): string | null {
-  return typeof v === "string" && v.trim() ? v : null;
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+function normalizeAllToken(v: unknown, fallback = "all"): string {
+  const s = String(v ?? "").trim();
+  return s || fallback;
 }
 
 function buildNormalizedScope(inputs: ClickhouseTriageInputs): NormalizedScope {
   return {
-    partner: String(inputs.partner || "").trim(),
-    service: String(inputs.service || "").trim(),
-    region: String(inputs.region || "all").trim(),
-    pop: String(inputs.pop || "all").trim(),
-    contentType: String(inputs.contentType || "all").trim(),
-    uaFamily: String(inputs.uaFamily || "all").trim(),
+    partner: String(inputs.partner ?? "").trim(),
+    service: String(inputs.service ?? "").trim(),
+    region: normalizeAllToken(inputs.region, "all"),
+    pop: normalizeAllToken(inputs.pop, "all"),
+    contentType: normalizeAllToken(inputs.contentType, "all"),
+    uaFamily: normalizeAllToken(inputs.uaFamily, "all"),
   };
 }
 
@@ -39,11 +44,13 @@ function buildWindowInfo(
 ): WindowInfo {
   const debug = result?.metricsJson?.debug || {};
   const tr = result?.metricsJson?.timeRangeUTC || {};
+
   const startTs =
     asString(tr.start) ||
     asString(result?.metricsJson?.timeseries?.startTs) ||
     asString(debug.startTsUtc) ||
     "";
+
   const endTs =
     asString(tr.end) ||
     asString(result?.metricsJson?.timeseries?.endTs) ||
@@ -72,9 +79,7 @@ function buildCurrentMetrics(result: ClickhouseTriageResult) {
     p95TtmsMs: safeNumber(m.p95TtmsMs),
     error5xxCount: safeNumber(m.error5xxCount),
     errorRatePct: safeNumber(m.errorRatePct),
-    cacheHitRate:
-      safeNumber(m.cacheHitRate) ??
-      safeNumber(m.cacheHitPct),
+    cacheHitRate: safeNumber(m.cacheHitRate) ?? safeNumber(m.cacheHitPct),
   };
 }
 
@@ -85,14 +90,10 @@ function buildTimeseries(result: ClickhouseTriageResult): TimeSeriesPoint[] {
   return points
     .map((p: any): TimeSeriesPoint => ({
       ts: String(p?.ts || ""),
-      requests:
-        safeNumber(p?.requests) ??
-        safeNumber(p?.totalRequests),
+      requests: safeNumber(p?.requests) ?? safeNumber(p?.totalRequests),
       p95TtmsMs: safeNumber(p?.p95TtmsMs),
       errorRatePct: safeNumber(p?.errorRatePct),
-      cacheHitRate:
-        safeNumber(p?.cacheHitRate) ??
-        safeNumber(p?.cacheHitPct),
+      cacheHitRate: safeNumber(p?.cacheHitRate) ?? safeNumber(p?.cacheHitPct),
     }))
     .filter((pt: TimeSeriesPoint) => Boolean(pt.ts));
 }
@@ -101,14 +102,17 @@ function buildDerivedMetrics(result: ClickhouseTriageResult): DerivedMetrics {
   const m = result?.metricsJson || {};
   return {
     errorRatePct: safeNumber(m.errorRatePct),
-    cacheHitRate:
-      safeNumber(m.cacheHitRate) ??
-      safeNumber(m.cacheHitPct),
+    cacheHitRate: safeNumber(m.cacheHitRate) ?? safeNumber(m.cacheHitPct),
   };
 }
 
 function buildDiagnostics(result: ClickhouseTriageResult): Diagnostics {
   const debug = result?.metricsJson?.debug || {};
+
+  let source: Diagnostics["source"] = "proxy";
+  if (debug.forcedLocal === true) source = "local";
+  else if (debug.forcedLocal === false) source = "proxy";
+
   return {
     tableUsed: asString(debug.tableUsed) || undefined,
     bucketSeconds: safeNumber(debug.bucketSeconds),
@@ -120,7 +124,31 @@ function buildDiagnostics(result: ClickhouseTriageResult): Diagnostics {
       typeof debug.anchorToMaxTs === "boolean"
         ? debug.anchorToMaxTs
         : undefined,
-    source: debug.forcedLocal ? "local" : "proxy",
+    source,
+  };
+}
+
+function normalizeSql(result: ClickhouseTriageResult) {
+  const sql = result?.sql;
+  if (!sql) return undefined;
+
+  if (Array.isArray(sql.queries)) {
+    return {
+      queries: sql.queries.map(String),
+      params: sql.params ?? undefined,
+    };
+  }
+
+  if (typeof (sql as any).query === "string" && (sql as any).query.trim()) {
+    return {
+      queries: [String((sql as any).query).trim()],
+      params: (sql as any).params ?? undefined,
+    };
+  }
+
+  return {
+    queries: [],
+    params: (sql as any).params ?? undefined,
   };
 }
 
@@ -134,6 +162,7 @@ export function toEvidenceBundle(
   const currentPoints = buildTimeseries(result);
   const derivedMetrics = buildDerivedMetrics(result);
   const diagnostics = buildDiagnostics(result);
+  const sql = normalizeSql(result);
 
   return {
     normalizedScope,
@@ -156,13 +185,6 @@ export function toEvidenceBundle(
     worstErrors: [],
     worstCache: [],
     diagnostics,
-    sql: result?.sql
-      ? {
-          queries: Array.isArray(result.sql.queries)
-            ? result.sql.queries.map(String)
-            : [],
-          params: result.sql.params ?? undefined,
-        }
-      : undefined,
+    sql,
   };
 }
