@@ -27,6 +27,8 @@ const FILTERS_TTL_MS = 10 * 60 * 1000;
 const PARTNER_OPTIONS = CANON.partners;
 const SERVICE_OPTIONS = CANON.services;
 
+const GRID_STROKE = "rgba(255,255,255,0.06)";
+
 type Partner = (typeof CANON.partners)[number];
 type PartnerOrMissing = Partner | "";
 type DataSource = "clickhouse";
@@ -83,8 +85,9 @@ type ChatTriage = {
         };
       };
       agents?: Array<{
-        agentId: "scope" | "traffic" | "latency" | "errors" | "cache";
-        title: string;
+        agentId?: "scope" | "traffic" | "latency" | "errors" | "cache";
+        agent?: "scope" | "traffic" | "latency" | "errors" | "cache";
+        title?: string;
         status: "ok" | "warn" | "critical";
         summary: string;
       }>;
@@ -350,12 +353,6 @@ function severityPillClass(status?: "ok" | "warn" | "critical") {
   }
 }
 
-const STATUS_STYLE: Record<string, string> = {
-  ok: "text-emerald-400 border-emerald-400/40 bg-emerald-400/10",
-  warn: "text-amber-400 border-amber-400/40 bg-amber-400/10",
-  critical: "text-red-400 border-red-400/40 bg-red-400/10",
-};
-
 function signalLabel(signal?: "traffic" | "latency" | "errors" | "cache" | "mixed") {
   if (!signal) return "n/a";
   switch (signal) {
@@ -371,6 +368,34 @@ function signalLabel(signal?: "traffic" | "latency" | "errors" | "cache" | "mixe
       return "mixed";
     default:
       return String(signal);
+  }
+}
+
+function uiStatusLabel(status?: "ok" | "warn" | "critical", isLoading?: boolean) {
+  if (isLoading) return "Investigating";
+  switch (status) {
+    case "ok":
+      return "Healthy";
+    case "warn":
+      return "Investigating";
+    case "critical":
+      return "Critical";
+    default:
+      return "Ready";
+  }
+}
+
+function uiStatusClass(status?: "ok" | "warn" | "critical", isLoading?: boolean) {
+  if (isLoading) return "text-amber-300";
+  switch (status) {
+    case "ok":
+      return "text-emerald-300";
+    case "warn":
+      return "text-amber-300";
+    case "critical":
+      return "text-red-300";
+    default:
+      return "text-gray-300";
   }
 }
 
@@ -670,7 +695,7 @@ function StackedBarTimeseries({
   const selectionW = Math.abs(drag.x1 - drag.x0);
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] min-w-0">
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs text-gray-400">{subtitle}</div>
@@ -706,7 +731,7 @@ function StackedBarTimeseries({
         </div>
       </div>
 
-      <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
+      <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
         <svg
           viewBox={`0 0 ${w} ${h}`}
           className="w-full"
@@ -752,8 +777,8 @@ function StackedBarTimeseries({
             const t = v / maxTotal;
             const y = padTop + (1 - t) * plotH;
             return (
-              <g key={idx} opacity={0.35}>
-                <line x1={padLeft} y1={y} x2={padLeft + plotW} y2={y} stroke="currentColor" />
+              <g key={idx}>
+                <line x1={padLeft} y1={y} x2={padLeft + plotW} y2={y} stroke={GRID_STROKE} />
                 <text x={padLeft - 10} y={y + 3} fontSize="10" fill="#9ca3af" textAnchor="end" opacity={0.95}>
                   {formatCountTick(v)}
                 </text>
@@ -782,7 +807,7 @@ function StackedBarTimeseries({
                       height={Math.max(0, segH)}
                       rx={2}
                       fill={seriesColor(kind, k)}
-                      opacity={0.95}
+                      opacity={0.9}
                     />
                   );
                 })}
@@ -953,7 +978,7 @@ function RequestsErrorRateLines({
   const selectionW = Math.abs(drag.x1 - drag.x0);
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] min-w-0">
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs text-gray-400">Traffic + incident signal</div>
@@ -979,7 +1004,7 @@ function RequestsErrorRateLines({
         </div>
       </div>
 
-      <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
+      <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
         <svg
           ref={svgRef}
           viewBox={`0 0 ${w} ${h}`}
@@ -1032,8 +1057,8 @@ function RequestsErrorRateLines({
             const reqTick = Math.round(reqMax * t);
             const errTick = errMax * t;
             return (
-              <g key={idx} opacity={0.35}>
-                <line x1={padLeft} y1={yy} x2={padLeft + plotW} y2={yy} stroke="currentColor" />
+              <g key={idx}>
+                <line x1={padLeft} y1={yy} x2={padLeft + plotW} y2={yy} stroke={GRID_STROKE} />
                 <text x={padLeft - 10} y={yy + 3} fontSize="10" fill="#9ca3af" textAnchor="end">
                   {formatCountTick(reqTick)}
                 </text>
@@ -1046,7 +1071,7 @@ function RequestsErrorRateLines({
 
           <polyline
             fill="none"
-            stroke="rgba(59,130,246,0.92)"
+            stroke="rgba(59,130,246,0.88)"
             strokeWidth="2.75"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -1054,7 +1079,7 @@ function RequestsErrorRateLines({
           />
           <polyline
             fill="none"
-            stroke="rgba(239,68,68,0.92)"
+            stroke="rgba(239,68,68,0.88)"
             strokeWidth="2.5"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -1089,11 +1114,11 @@ function RequestsErrorRateLines({
 
         <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
           <div className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(59,130,246,0.92)" }} />
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(59,130,246,0.88)" }} />
             <span>requests</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(239,68,68,0.92)" }} />
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(239,68,68,0.88)" }} />
             <span>error rate</span>
           </div>
         </div>
@@ -1202,7 +1227,7 @@ function LatencyTimeseriesLines({
   const selectionW = Math.abs(drag.x1 - drag.x0);
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] min-w-0">
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs text-gray-400">Latency trend</div>
@@ -1228,7 +1253,7 @@ function LatencyTimeseriesLines({
         </div>
       </div>
 
-      <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
+      <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
         <svg
           ref={svgRef}
           viewBox={`0 0 ${w} ${h}`}
@@ -1274,8 +1299,8 @@ function LatencyTimeseriesLines({
             const t = (v - minV) / span;
             const yy = padTop + (1 - t) * plotH;
             return (
-              <g key={idx} opacity={0.35}>
-                <line x1={padLeft} y1={yy} x2={padLeft + plotW} y2={yy} stroke="currentColor" />
+              <g key={idx}>
+                <line x1={padLeft} y1={yy} x2={padLeft + plotW} y2={yy} stroke={GRID_STROKE} />
                 <text x={padLeft - 10} y={yy + 3} fontSize="10" fill="#9ca3af" textAnchor="end">
                   {v}
                 </text>
@@ -1285,7 +1310,7 @@ function LatencyTimeseriesLines({
 
           <polyline
             fill="none"
-            stroke="rgba(59,130,246,0.92)"
+            stroke="rgba(59,130,246,0.88)"
             strokeWidth="2.75"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -1293,7 +1318,7 @@ function LatencyTimeseriesLines({
           />
           <polyline
             fill="none"
-            stroke="rgba(139,92,246,0.92)"
+            stroke="rgba(139,92,246,0.88)"
             strokeWidth="2.75"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -1328,11 +1353,11 @@ function LatencyTimeseriesLines({
 
         <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
           <div className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(59,130,246,0.92)" }} />
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(59,130,246,0.88)" }} />
             <span>p95</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(139,92,246,0.92)" }} />
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(139,92,246,0.88)" }} />
             <span>p99</span>
           </div>
         </div>
@@ -1348,7 +1373,7 @@ function HostSummaryCard({ hosts }: { hosts: HostSeriesItem[] }) {
   const maxReq = Math.max(1, ...rows.map((r) => Number(r.totalRequests || 0)));
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] min-w-0">
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs text-gray-400">Diagnostic view</div>
@@ -1361,7 +1386,7 @@ function HostSummaryCard({ hosts }: { hosts: HostSeriesItem[] }) {
         </div>
       </div>
 
-      <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
+      <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
         <div className="space-y-3">
           {rows.map((row) => {
             const widthPct = Math.max(4, (Number(row.totalRequests || 0) / maxReq) * 100);
@@ -1458,7 +1483,7 @@ function CrcTimeseriesBars({
   const selectionW = Math.abs(drag.x1 - drag.x0);
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] min-w-0">
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs text-gray-400">Diagnostic view</div>
@@ -1480,7 +1505,7 @@ function CrcTimeseriesBars({
         </div>
       </div>
 
-      <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
+      <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
         <svg
           viewBox={`0 0 ${w} ${h}`}
           className="w-full"
@@ -1526,8 +1551,8 @@ function CrcTimeseriesBars({
             const y = padTop + (1 - t) * plotH;
             const v = Math.round(maxVal * t);
             return (
-              <g key={idx} opacity={0.35}>
-                <line x1={padLeft} y1={y} x2={padLeft + plotW} y2={y} stroke="currentColor" />
+              <g key={idx}>
+                <line x1={padLeft} y1={y} x2={padLeft + plotW} y2={y} stroke={GRID_STROKE} />
                 <text x={padLeft - 10} y={y + 3} fontSize="10" fill="#9ca3af" textAnchor="end">
                   {formatCountTick(v)}
                 </text>
@@ -1547,8 +1572,8 @@ function CrcTimeseriesBars({
                 width={barW}
                 height={Math.max(0, barH)}
                 rx={2}
-                fill="#f59e0b"
-                opacity={0.95}
+                fill="rgba(245,158,11,0.88)"
+                opacity={0.92}
               />
             );
           })}
@@ -1581,7 +1606,7 @@ function CrcTimeseriesBars({
 
         <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
           <div className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#f59e0b" }} />
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgba(245,158,11,0.88)" }} />
             <span>crc errors</span>
           </div>
         </div>
@@ -1594,8 +1619,9 @@ function SwarmAgentCards({
   agents,
 }: {
   agents?: Array<{
-    agentId: "scope" | "traffic" | "latency" | "errors" | "cache";
-    title: string;
+    agentId?: "scope" | "traffic" | "latency" | "errors" | "cache";
+    agent?: "scope" | "traffic" | "latency" | "errors" | "cache";
+    title?: string;
     status: "ok" | "warn" | "critical";
     summary: string;
   }> | null;
@@ -1603,34 +1629,39 @@ function SwarmAgentCards({
   if (!agents?.length) return null;
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4">
       <div className="text-xs text-gray-400">Deterministic swarm</div>
       <div className="text-sm font-semibold text-gray-100 mt-1">Agent findings</div>
 
       <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        {agents.map((agent) => (
-          <div
-            key={agent.agentId}
-            className="rounded-xl border border-white/10 bg-black/30 p-3"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-xs text-gray-400">{agent.agentId}</div>
-                <div className="text-sm font-semibold text-gray-100 truncate">
-                  {agent.title || agent.agentId}
+        {agents.map((agent, idx) => {
+          const agentKey = agent.agentId || agent.agent || `agent-${idx}`;
+          const agentTitle = agent.title || agent.agentId || agent.agent || "agent";
+
+          return (
+            <div
+              key={agentKey}
+              className="rounded-xl border border-white/10 bg-black/25 p-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-400">{agentKey}</div>
+                  <div className="text-sm font-semibold text-gray-100 truncate">
+                    {agentTitle}
+                  </div>
                 </div>
+
+                <span className={`shrink-0 rounded-full border px-2 py-1 text-[11px] font-semibold ${severityPillClass(agent.status)}`}>
+                  {agent.status}
+                </span>
               </div>
 
-              <span className={`shrink-0 rounded-full border px-2 py-1 text-[11px] font-semibold ${severityPillClass(agent.status)}`}>
-                {agent.status}
-              </span>
+              <div className="mt-3 text-xs leading-relaxed text-gray-300 whitespace-pre-wrap">
+                {agent.summary || "No summary."}
+              </div>
             </div>
-
-            <div className="mt-3 text-xs leading-relaxed text-gray-300 whitespace-pre-wrap">
-              {agent.summary || "No summary."}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -1642,10 +1673,14 @@ function SwarmAgentCards({
 export default function Home() {
   const [mounted, setMounted] = useState(false);
 
-  const [partner, setPartner] = useState<PartnerOrMissing>("partner_01");
+  const [partner, setPartner] = useState<PartnerOrMissing>("");
   function setPartnerSticky(p: string) {
     const v = String(p || "").trim();
-    if (!v) return;
+    if (!v) {
+      setPartner("");
+      safeDelLS(PARTNER_KEY);
+      return;
+    }
     if ((PARTNER_OPTIONS as readonly string[]).includes(v)) {
       setPartner(v as Partner);
       safeSetLS(PARTNER_KEY, v);
@@ -1690,7 +1725,11 @@ export default function Home() {
 
   function setServiceSticky(s: string) {
     const v = String(s || "").trim();
-    if (!v) return;
+    if (!v) {
+      setService("");
+      safeDelLS(SERVICE_KEY);
+      return;
+    }
     if ((SERVICE_OPTIONS as readonly string[]).includes(v)) {
       setService(v);
       safeSetLS(SERVICE_KEY, v);
@@ -1798,7 +1837,6 @@ export default function Home() {
 
     setFiltersDirty(false);
     pushRunLog("TTL expired: reset non-sticky filters (kept partner + service).");
-    addText("assistant", "TTL expired (10m): reset non-sticky filters. Partner + service were kept.");
   }
 
   function resetAllFilters() {
@@ -1806,7 +1844,7 @@ export default function Home() {
     safeDelLS(PARTNER_KEY);
     safeDelLS(SERVICE_KEY);
 
-    setPartner("partner_01");
+    setPartner("");
     setService("");
     setRegion("all");
     setPop("all");
@@ -1830,7 +1868,6 @@ export default function Home() {
 
     setFiltersDirty(false);
     pushRunLog("Reset: cleared saved filters + partner + service");
-    addText("assistant", "Reset complete: cleared saved filters (10m TTL), partner, and service.");
   }
 
   useEffect(() => {
@@ -1972,7 +2009,7 @@ export default function Home() {
         ts: nowIso(),
         text:
           "Cachey 🤖 — deterministic triage assistant.\n\n" +
-          "Pick a service in Filters, then run triage.\n" +
+          "Select partner and service in Filters, then run triage.\n" +
           "You can also ask about traffic, latency, or errors using the current scope.\n" +
           "UTC absolute time in chat is supported when you provide ISO timestamps like 2026-03-09T21:59:00Z.",
       },
@@ -2016,6 +2053,14 @@ export default function Home() {
     );
     return uniq.includes("all") ? uniq : ["all", ...uniq];
   }, [schemaState.uaFamilies]);
+
+  const latestTriageRun = useMemo<ChatTriage["run"] | null>(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      const m = chatMessages[i];
+      if (m.type === "triage") return m.run;
+    }
+    return null;
+  }, [chatMessages]);
 
   function parseTimeseries(metricsJson: any): TimeseriesData | null {
     const t = metricsJson?.timeseries;
@@ -2283,6 +2328,19 @@ export default function Home() {
     const p99 = metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs);
     const err5xx = metricsJson.error5xxCount == null ? null : Number(metricsJson.error5xxCount);
     const errPct = metricsJson.errorRatePct == null ? null : Number(metricsJson.errorRatePct);
+    const rawCache =
+      metricsJson.cacheHitRate != null
+        ? Number(metricsJson.cacheHitRate)
+        : metricsJson.cacheHitPct != null
+        ? Number(metricsJson.cacheHitPct)
+        : null;
+
+    const cachePct =
+      rawCache == null
+        ? null
+        : rawCache <= 1
+        ? rawCache * 100
+        : rawCache;
 
     const chips = [
       { k: "requests", v: formatIntOrNA(totalRequests) },
@@ -2290,6 +2348,7 @@ export default function Home() {
       { k: "p99", v: formatMsOrNA(p99) },
       { k: "5xx", v: err5xx == null ? "n/a" : formatIntOrNA(err5xx) },
       { k: "5xx%", v: formatPctOrNA(errPct) },
+      { k: "cache", v: formatPctOrNA(cachePct) },
     ];
 
     return (
@@ -2377,12 +2436,12 @@ export default function Home() {
     const debugOn = process.env.NODE_ENV !== "production";
 
     return (
-      <div className="triage-enter rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] space-y-3">
+      <div className="triage-enter rounded-2xl border border-white/10 bg-white/[0.05] backdrop-blur p-4 shadow-lg shadow-black/10 space-y-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-xs text-gray-400">Triage result</div>
             <div className="text-sm font-semibold text-gray-100 truncate">
-              {run.inputs.partner} • {run.inputs.service} • {run.inputs.region} • {run.inputs.pop} •{" "}
+              {run.inputs.partner || "—"} • {run.inputs.service || "—"} • {run.inputs.region} • {run.inputs.pop} •{" "}
               {run.inputs.startTsUtc && run.inputs.endTsUtc
                 ? `${isoToUtcText(run.inputs.startTsUtc)} → ${isoToUtcText(run.inputs.endTsUtc)} UTC`
                 : `last ${run.inputs.windowMinutes}m`}{" "}
@@ -2470,13 +2529,13 @@ export default function Home() {
           </div>
         ) : null}
 
-        <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
           <div className="text-xs text-gray-400 mb-2">Summary</div>
           <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">{summaryText}</pre>
         </div>
 
         {keyFindings.length ? (
-          <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+          <div className="rounded-xl border border-white/10 bg-black/25 p-3">
             <div className="text-xs text-gray-400 mb-2">Key findings</div>
             <div className="space-y-2">
               {keyFindings.map((finding, idx) => (
@@ -2531,7 +2590,7 @@ export default function Home() {
                 windowMinutes={effectiveWindowMinutes}
               />
 
-              <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4">
                 <div className="text-xs text-gray-400">Deterministic evidence</div>
                 <div className="text-sm font-semibold text-gray-100 mt-1">Run details</div>
 
@@ -2656,13 +2715,22 @@ export default function Home() {
     );
   }
 
+  const latestAssessment = latestTriageRun?.swarm?.assessment ?? null;
+  const headerStatusLabel = uiStatusLabel(latestAssessment?.overallStatus, isLoading);
+  const headerStatusClass = uiStatusClass(latestAssessment?.overallStatus, isLoading);
+
   const scopeSummary = useMemo(() => {
+    if (!partner || !service) {
+      return "Select partner and service to run triage.";
+    }
+
     const timeText =
       timeMode === "absolute" && startTsUtc && endTsUtc
         ? `${isoToUtcText(startTsUtc)} → ${isoToUtcText(endTsUtc)} UTC`
         : `last ${windowMinutes}m`;
-    return `Investigating: ${partner || "—"} • ${service || "service not set"} • ${region || "all regions"} • ${timeText}`;
-  }, [partner, service, region, timeMode, startTsUtc, endTsUtc, windowMinutes]);
+
+    return `${headerStatusLabel}: ${partner} • ${service} • ${region || "all regions"} • ${timeText}`;
+  }, [partner, service, region, timeMode, startTsUtc, endTsUtc, windowMinutes, headerStatusLabel]);
 
   return (
     <main className="min-h-screen bg-black text-gray-100">
@@ -2674,46 +2742,9 @@ export default function Home() {
               <div className="font-semibold text-lg text-white leading-tight">
                 Cachey <span className="text-gray-400">🤖</span>
               </div>
-              <div className="text-xs text-gray-400">Deterministic triage assistant • ClickHouse path</div>
             </div>
 
             <div className="ml-auto flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setFiltersOpen((v) => {
-                    const next = !v;
-                    if (next) {
-                      setDraftService(service);
-                      setDraftRegion(region);
-                      setDraftPop(pop);
-                      setDraftWindowMinutes(windowMinutes);
-                      setDraftContentType(contentType);
-                      setDraftUaFamily(uaFamily);
-                      setDraftTimeMode(timeMode);
-                      setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
-                      setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
-                      setFiltersDirty(false);
-                    }
-                    return next;
-                  });
-                }}
-                className={`rounded-full border border-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15 ${
-                  filtersOpen ? "bg-white/15" : "bg-white/10"
-                }`}
-              >
-                Filters{filtersDirty ? <span className="ml-2 text-[11px] text-amber-300">(draft)</span> : null}
-              </button>
-
-              <button
-                type="button"
-                onClick={handleRunFromFilters}
-                disabled={isLoading || !partner || !service}
-                className="rounded-xl px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isTriageLoading ? "Running..." : "Run"}
-              </button>
-
               <a
                 href="/debug"
                 className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
@@ -2723,323 +2754,328 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="mt-3 text-sm text-gray-300">{scopeSummary}</div>
-
-          {filtersOpen ? (
-            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-white">Advanced Scope Controls</div>
-                  <div className="text-xs text-gray-400 mt-1">
-                    Apply updates the active scope. Run uses the applied scope.
-                    <span className="ml-2 text-gray-500">(TTL: 10m; service persists)</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDraftService(service);
-                      setDraftRegion(region);
-                      setDraftPop(pop);
-                      setDraftWindowMinutes(windowMinutes);
-                      setDraftContentType(contentType);
-                      setDraftUaFamily(uaFamily);
-                      setDraftTimeMode(timeMode);
-                      setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
-                      setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
-                      setFiltersDirty(false);
-                    }}
-                    className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
-                  >
-                    Reset draft
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={resetAllFilters}
-                    className="rounded-lg border border-white/10 bg-red-500/10 px-3 py-2 text-xs text-red-200 hover:bg-red-500/15"
-                  >
-                    Reset (clear saved)
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setFiltersOpen(false)}
-                    className="rounded-lg border border-white/10 bg-white/10 px-3 py-2 text-xs hover:bg-white/15"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-4 grid grid-cols-1 md:grid-cols-7 gap-3">
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-400 mb-1">Partner</div>
-                  <select
-                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                    value={partner}
-                    onChange={(e) => setPartnerSticky(e.target.value)}
-                    disabled={!mounted}
-                  >
-                    {PARTNER_OPTIONS.map((p) => (
-                      <option key={p} value={p} className="bg-black">
-                        {p}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-400 mb-1">
-                    Service <span className="text-amber-300">*</span>
-                  </div>
-                  <select
-                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                    value={draftService}
-                    onChange={(e) => {
-                      setDraftService(String(e.target.value || ""));
-                      setFiltersDirty(true);
-                    }}
-                    disabled={!mounted}
-                  >
-                    <option value="" className="bg-black">
-                      Select…
-                    </option>
-                    {SERVICE_OPTIONS.map((s) => (
-                      <option key={s} value={s} className="bg-black">
-                        {s}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-400 mb-1">Region</div>
-                  <select
-                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                    value={draftRegion}
-                    onChange={(e) => {
-                      setDraftRegion(String(e.target.value || "all"));
-                      setFiltersDirty(true);
-                    }}
-                    disabled={!mounted}
-                  >
-                    {availableRegions.map((r) => (
-                      <option key={r} value={r} className="bg-black">
-                        {r}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-400 mb-1">POP</div>
-                  <select
-                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                    value={draftPop}
-                    onChange={(e) => {
-                      setDraftPop(String(e.target.value || "all"));
-                      setFiltersDirty(true);
-                    }}
-                    disabled={!mounted}
-                  >
-                    {availablePops.map((p) => (
-                      <option key={p} value={p} className="bg-black">
-                        {p}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="min-w-0 md:col-span-2">
-                  <div className="text-xs text-gray-400 mb-1">Time (UTC)</div>
-
-                  <div className="flex items-center gap-2 mb-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDraftTimeMode("relative");
-                        setFiltersDirty(true);
-                      }}
-                      className={`px-3 py-1.5 rounded-full border text-xs ${
-                        draftTimeMode === "relative"
-                          ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
-                          : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
-                      }`}
-                    >
-                      Relative
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDraftTimeMode("absolute");
-                        setFiltersDirty(true);
-                      }}
-                      className={`px-3 py-1.5 rounded-full border text-xs ${
-                        draftTimeMode === "absolute"
-                          ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
-                          : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
-                      }`}
-                    >
-                      Absolute
-                    </button>
-                  </div>
-
-                  {draftTimeMode === "relative" ? (
-                    <select
-                      className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                      value={String(draftWindowMinutes)}
-                      onChange={(e) => {
-                        setDraftWindowMinutes(Number(e.target.value));
-                        setFiltersDirty(true);
-                      }}
-                      disabled={!mounted}
-                    >
-                      {[30, 60, 120, 360, 720, 1440].map((m) => (
-                        <option key={m} value={String(m)} className="bg-black">
-                          Last {m}m
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <div>
-                        <div className="text-[11px] text-gray-400 mb-1">Start (UTC)</div>
-                        <input
-                          type="datetime-local"
-                          value={draftStartUtcLocal}
-                          onChange={(e) => {
-                            setDraftStartUtcLocal(e.target.value);
-                            setFiltersDirty(true);
-                          }}
-                          className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                        />
-                      </div>
-                      <div>
-                        <div className="text-[11px] text-gray-400 mb-1">End (UTC)</div>
-                        <input
-                          type="datetime-local"
-                          value={draftEndUtcLocal}
-                          onChange={(e) => {
-                            setDraftEndUtcLocal(e.target.value);
-                            setFiltersDirty(true);
-                          }}
-                          className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                        />
-                      </div>
-
-                      <div className="sm:col-span-2 flex flex-wrap gap-2 mt-1">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const end = new Date();
-                            const start = new Date(end.getTime() - 60 * 60 * 1000);
-                            setDraftStartUtcLocal(isoToDatetimeLocalUtc(start.toISOString()));
-                            setDraftEndUtcLocal(isoToDatetimeLocalUtc(end.toISOString()));
-                            setFiltersDirty(true);
-                          }}
-                          className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
-                        >
-                          Last 60m
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const now = new Date();
-                            setDraftEndUtcLocal(isoToDatetimeLocalUtc(now.toISOString()));
-                            setFiltersDirty(true);
-                          }}
-                          className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
-                        >
-                          Set End=Now
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-400 mb-1">ContentType</div>
-                  <select
-                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                    value={draftContentType}
-                    onChange={(e) => {
-                      setDraftContentType(String(e.target.value || "all"));
-                      setFiltersDirty(true);
-                    }}
-                    disabled={!mounted}
-                  >
-                    {availableContentTypes.map((ct) => (
-                      <option key={ct} value={ct} className="bg-black">
-                        {ct}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-400 mb-1">UA Family</div>
-                  <select
-                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                    value={draftUaFamily}
-                    onChange={(e) => {
-                      setDraftUaFamily(String(e.target.value || "all"));
-                      setFiltersDirty(true);
-                    }}
-                    disabled={!mounted}
-                  >
-                    {availableUaFamilies.map((ua) => (
-                      <option key={ua} value={ua} className="bg-black">
-                        {ua}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="text-xs text-gray-400">Apply updates the active scope. Run executes triage with the active scope.</div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const res = applyDraftFilters();
-                      if (!res.ok) addText("assistant", res.error);
-                    }}
-                    className="rounded-xl px-4 py-2 text-sm font-semibold bg-white/10 hover:bg-white/15 border border-white/10"
-                  >
-                    Apply
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const res = applyDraftFilters();
-                      if (!res.ok) {
-                        addText("assistant", res.error);
-                        return;
-                      }
-                      await handleRunFromFilters();
-                    }}
-                    disabled={isLoading}
-                    className="rounded-xl px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Apply & Run
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : null}
+          <div className={`mt-3 text-sm ${headerStatusClass}`}>{scopeSummary}</div>
         </div>
       </div>
 
       <div className="mx-auto max-w-6xl px-6 py-6">
-        <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+        {filtersOpen ? (
+          <div className="mb-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-white">Advanced Scope Controls</div>
+                <div className="text-xs text-gray-400 mt-1">
+                  Apply updates the active scope. Run uses the applied scope.
+                  <span className="ml-2 text-gray-500">(TTL: 10m; service persists)</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraftService(service);
+                    setDraftRegion(region);
+                    setDraftPop(pop);
+                    setDraftWindowMinutes(windowMinutes);
+                    setDraftContentType(contentType);
+                    setDraftUaFamily(uaFamily);
+                    setDraftTimeMode(timeMode);
+                    setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
+                    setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
+                    setFiltersDirty(false);
+                  }}
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
+                >
+                  Reset draft
+                </button>
+
+                <button
+                  type="button"
+                  onClick={resetAllFilters}
+                  className="rounded-lg border border-white/10 bg-red-500/10 px-3 py-2 text-xs text-red-200 hover:bg-red-500/15"
+                >
+                  Reset (clear saved)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setFiltersOpen(false)}
+                  className="rounded-lg border border-white/10 bg-white/10 px-3 py-2 text-xs hover:bg-white/15"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-7 gap-3">
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400 mb-1">
+                  Partner <span className="text-amber-300">*</span>
+                </div>
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                  value={partner}
+                  onChange={(e) => setPartnerSticky(e.target.value)}
+                  disabled={!mounted}
+                >
+                  <option value="" className="bg-black">
+                    Select…
+                  </option>
+                  {PARTNER_OPTIONS.map((p) => (
+                    <option key={p} value={p} className="bg-black">
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400 mb-1">
+                  Service <span className="text-amber-300">*</span>
+                </div>
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                  value={draftService}
+                  onChange={(e) => {
+                    setDraftService(String(e.target.value || ""));
+                    setFiltersDirty(true);
+                  }}
+                  disabled={!mounted}
+                >
+                  <option value="" className="bg-black">
+                    Select…
+                  </option>
+                  {SERVICE_OPTIONS.map((s) => (
+                    <option key={s} value={s} className="bg-black">
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400 mb-1">Region</div>
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                  value={draftRegion}
+                  onChange={(e) => {
+                    setDraftRegion(String(e.target.value || "all"));
+                    setFiltersDirty(true);
+                  }}
+                  disabled={!mounted}
+                >
+                  {availableRegions.map((r) => (
+                    <option key={r} value={r} className="bg-black">
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400 mb-1">POP</div>
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                  value={draftPop}
+                  onChange={(e) => {
+                    setDraftPop(String(e.target.value || "all"));
+                    setFiltersDirty(true);
+                  }}
+                  disabled={!mounted}
+                >
+                  {availablePops.map((p) => (
+                    <option key={p} value={p} className="bg-black">
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="min-w-0 md:col-span-2">
+                <div className="text-xs text-gray-400 mb-1">Time (UTC)</div>
+
+                <div className="flex items-center gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftTimeMode("relative");
+                      setFiltersDirty(true);
+                    }}
+                    className={`px-3 py-1.5 rounded-full border text-xs ${
+                      draftTimeMode === "relative"
+                        ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
+                        : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+                    }`}
+                  >
+                    Relative
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftTimeMode("absolute");
+                      setFiltersDirty(true);
+                    }}
+                    className={`px-3 py-1.5 rounded-full border text-xs ${
+                      draftTimeMode === "absolute"
+                        ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
+                        : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+                    }`}
+                  >
+                    Absolute
+                  </button>
+                </div>
+
+                {draftTimeMode === "relative" ? (
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                    value={String(draftWindowMinutes)}
+                    onChange={(e) => {
+                      setDraftWindowMinutes(Number(e.target.value));
+                      setFiltersDirty(true);
+                    }}
+                    disabled={!mounted}
+                  >
+                    {[30, 60, 120, 360, 720, 1440].map((m) => (
+                      <option key={m} value={String(m)} className="bg-black">
+                        Last {m}m
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div>
+                      <div className="text-[11px] text-gray-400 mb-1">Start (UTC)</div>
+                      <input
+                        type="datetime-local"
+                        value={draftStartUtcLocal}
+                        onChange={(e) => {
+                          setDraftStartUtcLocal(e.target.value);
+                          setFiltersDirty(true);
+                        }}
+                        className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                      />
+                    </div>
+                    <div>
+                      <div className="text-[11px] text-gray-400 mb-1">End (UTC)</div>
+                      <input
+                        type="datetime-local"
+                        value={draftEndUtcLocal}
+                        onChange={(e) => {
+                          setDraftEndUtcLocal(e.target.value);
+                          setFiltersDirty(true);
+                        }}
+                        className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-2 flex flex-wrap gap-2 mt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const end = new Date();
+                          const start = new Date(end.getTime() - 60 * 60 * 1000);
+                          setDraftStartUtcLocal(isoToDatetimeLocalUtc(start.toISOString()));
+                          setDraftEndUtcLocal(isoToDatetimeLocalUtc(end.toISOString()));
+                          setFiltersDirty(true);
+                        }}
+                        className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                      >
+                        Last 60m
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const now = new Date();
+                          setDraftEndUtcLocal(isoToDatetimeLocalUtc(now.toISOString()));
+                          setFiltersDirty(true);
+                        }}
+                        className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                      >
+                        Set End=Now
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400 mb-1">ContentType</div>
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                  value={draftContentType}
+                  onChange={(e) => {
+                    setDraftContentType(String(e.target.value || "all"));
+                    setFiltersDirty(true);
+                  }}
+                  disabled={!mounted}
+                >
+                  {availableContentTypes.map((ct) => (
+                    <option key={ct} value={ct} className="bg-black">
+                      {ct}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400 mb-1">UA Family</div>
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                  value={draftUaFamily}
+                  onChange={(e) => {
+                    setDraftUaFamily(String(e.target.value || "all"));
+                    setFiltersDirty(true);
+                  }}
+                  disabled={!mounted}
+                >
+                  {availableUaFamilies.map((ua) => (
+                    <option key={ua} value={ua} className="bg-black">
+                      {ua}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="text-xs text-gray-400">Apply updates the active scope. Run executes triage with the active scope.</div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const res = applyDraftFilters();
+                    if (!res.ok) addText("assistant", res.error);
+                  }}
+                  className="rounded-xl px-4 py-2 text-sm font-semibold bg-white/10 hover:bg-white/15 border border-white/10"
+                >
+                  Apply
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const res = applyDraftFilters();
+                    if (!res.ok) {
+                      addText("assistant", res.error);
+                      return;
+                    }
+                    await handleRunFromFilters();
+                  }}
+                  disabled={isLoading || !partner || !draftService}
+                  className="rounded-xl px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Apply & Run
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="rounded-3xl border border-white/10 bg-white/[0.05] backdrop-blur p-4 shadow-lg shadow-black/10">
           <div
             ref={chatScrollRef}
-            className="h-[66vh] min-h-[520px] overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-4"
+            className="h-[66vh] min-h-[520px] overflow-y-auto rounded-2xl border border-white/10 bg-black/25 p-4"
           >
             <div className="space-y-4">
               {chatMessages.map((m) => {
@@ -3103,7 +3139,7 @@ export default function Home() {
                   handleSend();
                 }
               }}
-              placeholder="Ask about traffic, latency, errors, or incidents…"
+              placeholder="Ask about traffic, latency, errors, cache, or incidents…"
               className="flex-1 rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-blue-500/40"
               disabled={isLoading}
             />
@@ -3146,15 +3182,15 @@ export default function Home() {
               Run Triage
             </button>
 
-            {!service ? (
-              <span className="text-xs text-gray-500">Pick a service in Filters, then run triage.</span>
+            {!partner || !service ? (
+              <span className="text-xs text-gray-500">Select partner and service to run triage.</span>
             ) : (
               <span className="text-xs text-gray-500">{scopeSummary}</span>
             )}
           </div>
 
           <details
-            className="mt-6 rounded-2xl border border-white/10 bg-black/30 p-4"
+            className="mt-6 rounded-2xl border border-white/10 bg-black/25 p-4"
             open={debugOpen}
             onToggle={(e) => setDebugOpen((e.target as HTMLDetailsElement).open)}
           >
@@ -3177,6 +3213,10 @@ export default function Home() {
               )}
             </div>
           </details>
+
+          <div className="mt-6 border-t border-white/10 pt-4 text-[11px] text-gray-500">
+            Cachey • Deterministic triage assistant • ClickHouse path
+          </div>
         </div>
       </div>
     </main>
