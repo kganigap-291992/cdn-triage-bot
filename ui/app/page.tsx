@@ -663,6 +663,119 @@ function TypingDots() {
   );
 }
 
+function StarterPanel({
+  partner,
+  service,
+  timeMode,
+  windowMinutes,
+  startTsUtc,
+  endTsUtc,
+  onOpenFilters,
+  onRunTriage,
+  onUseExample,
+  canRun,
+  isLoading,
+}: {
+  partner: PartnerOrMissing;
+  service: string;
+  timeMode: TimeMode;
+  windowMinutes: number;
+  startTsUtc: string | null;
+  endTsUtc: string | null;
+  onOpenFilters: () => void;
+  onRunTriage: () => void;
+  onUseExample: (text: string) => void;
+  canRun: boolean;
+  isLoading: boolean;
+}) {
+  const scopeReady = Boolean(partner && service);
+  const timeLabel =
+    timeMode === "absolute" && startTsUtc && endTsUtc
+      ? `${isoToUtcText(startTsUtc)} → ${isoToUtcText(endTsUtc)} UTC`
+      : `last ${windowMinutes}m`;
+
+  const examples = [
+    "check errors",
+    "investigate latency last 2 hours",
+    "run triage",
+  ];
+
+  return (
+    <div className="flex min-h-full items-center justify-center">
+      <div className="mx-auto w-full max-w-3xl rounded-3xl border border-white/10 bg-gradient-to-b from-white/[0.08] to-white/[0.03] p-6 shadow-lg shadow-black/10">
+        <div className="flex flex-col gap-5">
+          <div className="text-center">
+            <div className="text-xs uppercase tracking-[0.2em] text-gray-500">Cachey deterministic triage</div>
+            <div className="mt-2 text-2xl font-semibold text-white">Ready for your first investigation</div>
+            <div className="mt-2 text-sm leading-relaxed text-gray-400 max-w-2xl mx-auto">
+              Start with Filters to set partner and service, or ask about traffic, latency, errors, cache,
+              or incidents using the current scope.
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <div className="text-[11px] uppercase tracking-wide text-gray-500">Current partner</div>
+              <div className="mt-2 text-sm font-medium text-gray-100">{partner || "Not selected"}</div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <div className="text-[11px] uppercase tracking-wide text-gray-500">Current service</div>
+              <div className="mt-2 text-sm font-medium text-gray-100">{service || "Not selected"}</div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <div className="text-[11px] uppercase tracking-wide text-gray-500">Time scope</div>
+              <div className="mt-2 text-sm font-medium text-gray-100">{timeLabel}</div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+            <div className="text-xs text-gray-400">Suggested prompts</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {examples.map((example) => (
+                <button
+                  key={example}
+                  type="button"
+                  onClick={() => onUseExample(example)}
+                  className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-200 hover:bg-white/10"
+                >
+                  {example}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={onOpenFilters}
+              className="rounded-2xl border border-white/10 bg-white/10 px-4 py-2.5 text-sm font-semibold text-gray-100 hover:bg-white/15"
+            >
+              Open Filters
+            </button>
+
+            <button
+              type="button"
+              onClick={onRunTriage}
+              disabled={!canRun || isLoading}
+              className="rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isLoading ? "Running..." : "Run Triage"}
+            </button>
+          </div>
+
+          <div className="text-center text-xs text-gray-500">
+            {scopeReady
+              ? "Partner and service are set. You can run immediately or refine filters first."
+              : "Pick partner and service first. Non-sticky filters keep their TTL behavior; sticky scope remains unchanged."}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ------------------------------------------------------------
 // Generic stacked chart with local focus mode
 // ------------------------------------------------------------
@@ -2091,10 +2204,9 @@ export default function Home() {
         role: "system",
         ts: nowIso(),
         text:
-          "Cachey 🤖 — deterministic triage assistant.\n\n" +
-          "Select partner and service in Filters, then run triage.\n" +
-          "You can also ask about traffic, latency, or errors using the current scope.\n" +
-          "UTC absolute time in chat is supported when you provide ISO timestamps like 2026-03-09T21:59:00Z.",
+          "Cachey is ready.\n\n" +
+          "Select partner and service in Filters, or ask a triage question using the current scope.\n" +
+          "UTC absolute time in chat is supported with ISO timestamps like 2026-03-09T21:59:00Z.",
       },
     ]);
   }, [mounted, chatMessages.length]);
@@ -2144,6 +2256,16 @@ export default function Home() {
     }
     return null;
   }, [chatMessages]);
+
+  const hasAnyTriageRun = useMemo(() => chatMessages.some((m) => m.type === "triage"), [chatMessages]);
+
+  const showStarterPanel = useMemo(() => {
+    if (hasAnyTriageRun) return false;
+    if (typing) return false;
+    if (chatMessages.length !== 1) return false;
+    const first = chatMessages[0];
+    return first?.type === "text" && first.role === "system" && first.id === "welcome";
+  }, [chatMessages, hasAnyTriageRun, typing]);
 
   function parseTimeseries(metricsJson: any): TimeseriesData | null {
     const t = metricsJson?.timeseries;
@@ -2199,6 +2321,20 @@ export default function Home() {
     const v = String(val ?? "").trim();
     if (!v) return false;
     return allowed.includes(v);
+  }
+
+  function openFiltersFromUi() {
+    setFiltersOpen(true);
+    setDraftService(service);
+    setDraftRegion(region);
+    setDraftPop(pop);
+    setDraftWindowMinutes(windowMinutes);
+    setDraftContentType(contentType);
+    setDraftUaFamily(uaFamily);
+    setDraftTimeMode(timeMode);
+    setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
+    setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
+    setFiltersDirty(false);
   }
 
   function applyDraftFilters() {
@@ -3134,7 +3270,7 @@ export default function Home() {
             </div>
 
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="text-xs text-gray-400">Apply updates the active scope. Run executes triage with the active scope.</div>
+              <div className="text-xs text-gray-400">Apply updates the active scope. Run Triage below uses the applied scope.</div>
 
               <div className="flex items-center gap-2">
                 <button
@@ -3155,58 +3291,78 @@ export default function Home() {
         <div className="rounded-3xl border border-white/10 bg-white/[0.05] backdrop-blur p-4 shadow-lg shadow-black/10">
           <div
             ref={chatScrollRef}
-            className="h-[66vh] min-h-[520px] overflow-y-auto rounded-2xl border border-white/10 bg-black/25 p-4"
+            className={`overflow-y-auto rounded-2xl border border-white/10 p-4 ${
+              showStarterPanel
+                ? "h-[66vh] min-h-[520px] bg-black/15"
+                : "h-[66vh] min-h-[520px] bg-black/25"
+            }`}
           >
-            <div className="space-y-4">
-              {chatMessages.map((m) => {
-                const isUser = m.role === "user";
-                const isSystem = m.role === "system";
+            {showStarterPanel ? (
+              <StarterPanel
+                partner={partner}
+                service={service}
+                timeMode={timeMode}
+                windowMinutes={windowMinutes}
+                startTsUtc={startTsUtc}
+                endTsUtc={endTsUtc}
+                onOpenFilters={openFiltersFromUi}
+                onRunTriage={handleRunFromFilters}
+                onUseExample={(text) => setChatInput(text)}
+                canRun={Boolean(partner && service)}
+                isLoading={isLoading}
+              />
+            ) : (
+              <div className="space-y-4">
+                {chatMessages.map((m) => {
+                  const isUser = m.role === "user";
+                  const isSystem = m.role === "system";
 
-                const bubbleMax = isUser ? "max-w-[70%]" : "max-w-[82%]";
-                const rowAlign = isSystem ? "justify-center" : isUser ? "justify-end" : "justify-start";
+                  const bubbleMax = isUser ? "max-w-[70%]" : "max-w-[82%]";
+                  const rowAlign = isSystem ? "justify-center" : isUser ? "justify-end" : "justify-start";
 
-                const bubbleStyle = isSystem
-                  ? "border-white/10 bg-white/5 text-gray-300"
-                  : isUser
-                  ? "border-white/10 bg-white/10 text-gray-100"
-                  : "border-white/10 bg-white/5 text-gray-100";
+                  const bubbleStyle = isSystem
+                    ? "border-white/10 bg-white/5 text-gray-300"
+                    : isUser
+                    ? "border-white/10 bg-white/10 text-gray-100"
+                    : "border-white/10 bg-white/5 text-gray-100";
 
-                return (
-                  <div key={m.id} className={`flex ${rowAlign}`}>
-                    <div className={`${bubbleMax} w-full`}>
-                      <div
-                        className={`text-[10px] text-gray-500 mb-1 ${
-                          isSystem ? "text-center" : isUser ? "text-right" : "text-left"
-                        }`}
-                      >
-                        {mounted ? `${formatUtcYmdHm(m.ts)} UTC` : m.ts}
-                      </div>
-
-                      {m.type === "text" ? (
-                        <div className={`rounded-2xl border ${bubbleStyle} px-4 py-3`}>
-                          <pre className="whitespace-pre-wrap text-sm leading-relaxed">{m.text}</pre>
+                  return (
+                    <div key={m.id} className={`flex ${rowAlign}`}>
+                      <div className={`${bubbleMax} w-full`}>
+                        <div
+                          className={`text-[10px] text-gray-500 mb-1 ${
+                            isSystem ? "text-center" : isUser ? "text-right" : "text-left"
+                          }`}
+                        >
+                          {mounted ? `${formatUtcYmdHm(m.ts)} UTC` : m.ts}
                         </div>
-                      ) : (
-                        <TriageCard run={m.run} />
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
 
-              {typing ? (
-                <div className="flex justify-start">
-                  <div className="max-w-[82%] w-full">
-                    <div className="text-[10px] text-gray-500 mb-1 text-left">
-                      {mounted ? `${formatUtcYmdHm(nowIso())} UTC` : nowIso()}
+                        {m.type === "text" ? (
+                          <div className={`rounded-2xl border ${bubbleStyle} px-4 py-3`}>
+                            <pre className="whitespace-pre-wrap text-sm leading-relaxed">{m.text}</pre>
+                          </div>
+                        ) : (
+                          <TriageCard run={m.run} />
+                        )}
+                      </div>
                     </div>
-                    <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-                      <TypingDots />
+                  );
+                })}
+
+                {typing ? (
+                  <div className="flex justify-start">
+                    <div className="max-w-[82%] w-full">
+                      <div className="text-[10px] text-gray-500 mb-1 text-left">
+                        {mounted ? `${formatUtcYmdHm(nowIso())} UTC` : nowIso()}
+                      </div>
+                      <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                        <TypingDots />
+                      </div>
                     </div>
                   </div>
-                </div>
-              ) : null}
-            </div>
+                ) : null}
+              </div>
+            )}
           </div>
 
           <div className="mt-4 flex gap-3">
@@ -3234,25 +3390,13 @@ export default function Home() {
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {filtersOpen ? (
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-500">
+              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-gray-400">
                 Filters open above
               </span>
             ) : (
               <button
                 type="button"
-                onClick={() => {
-                  setFiltersOpen(true);
-                  setDraftService(service);
-                  setDraftRegion(region);
-                  setDraftPop(pop);
-                  setDraftWindowMinutes(windowMinutes);
-                  setDraftContentType(contentType);
-                  setDraftUaFamily(uaFamily);
-                  setDraftTimeMode(timeMode);
-                  setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
-                  setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
-                  setFiltersDirty(false);
-                }}
+                onClick={openFiltersFromUi}
                 className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-200 hover:bg-white/10"
               >
                 Open Filters
