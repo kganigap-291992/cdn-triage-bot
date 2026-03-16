@@ -372,21 +372,21 @@ function signalLabel(signal?: "traffic" | "latency" | "errors" | "cache" | "mixe
 }
 
 function uiStatusLabel(status?: "ok" | "warn" | "critical", isLoading?: boolean) {
-  if (isLoading) return "Investigating";
+  if (isLoading) return "Running triage…";
   switch (status) {
     case "ok":
-      return "Healthy";
+      return "OK";
     case "warn":
-      return "Investigating";
+      return "WARN";
     case "critical":
-      return "Critical";
+      return "CRITICAL";
     default:
-      return "Ready";
+      return "Idle";
   }
 }
 
 function uiStatusClass(status?: "ok" | "warn" | "critical", isLoading?: boolean) {
-  if (isLoading) return "text-amber-300";
+  if (isLoading) return "text-blue-300";
   switch (status) {
     case "ok":
       return "text-emerald-300";
@@ -429,6 +429,85 @@ function extractRelativeWindowMinutes(text: string): number | null {
   if (mDays) return clamp(Number(mDays[1]) * 1440, 5, 10080);
 
   return null;
+}
+
+function looksLikeTriageIntent(text: string): boolean {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+
+  const lower = raw.toLowerCase();
+
+  const exactSmallTalk = new Set([
+    "hi",
+    "hello",
+    "hey",
+    "yo",
+    "sup",
+    "thanks",
+    "thank you",
+    "ok",
+    "okay",
+    "cool",
+    "nice",
+    "test",
+    "testing",
+  ]);
+  if (exactSmallTalk.has(lower)) return false;
+
+  const intentKeywords = [
+    "triage",
+    "run",
+    "check",
+    "investigate",
+    "investigation",
+    "analyze",
+    "analyse",
+    "look at",
+    "look into",
+    "show",
+    "status",
+    "health",
+    "traffic",
+    "latency",
+    "error",
+    "errors",
+    "5xx",
+    "cache",
+    "incident",
+    "incidents",
+    "outage",
+    "slow",
+    "spike",
+    "drop",
+    "degradation",
+  ];
+
+  const hasIntentKeyword = intentKeywords.some((kw) => lower.includes(kw));
+  if (hasIntentKeyword) return true;
+
+  const isoMatches = extractIsoUtcStrings(raw);
+  if (isoMatches.length >= 2) return true;
+
+  const relativeWindow = extractRelativeWindowMinutes(raw);
+  const explicitPartner = findToken(raw, PARTNER_OPTIONS);
+  const explicitService = findToken(raw, SERVICE_OPTIONS);
+  const explicitRegion = findToken(raw, CANON.regions);
+  const explicitPop = findToken(raw, CANON.pops);
+  const explicitContentType = findToken(raw, ["all", ...CANON.contentTypes]);
+  const explicitUaFamily = findToken(raw, ["all", ...CANON.uaFamilies]);
+
+  const hasScopeSignal = Boolean(
+    explicitPartner ||
+      explicitService ||
+      explicitRegion ||
+      explicitPop ||
+      explicitContentType ||
+      explicitUaFamily
+  );
+
+  if (relativeWindow != null && hasScopeSignal) return true;
+
+  return false;
 }
 
 function buildChatInputsFromText(args: {
@@ -2302,6 +2381,14 @@ export default function Home() {
     setChatInput("");
     addText("user", text);
 
+    if (!looksLikeTriageIntent(text)) {
+      addText(
+        "assistant",
+        "That didn’t look like a triage request. Ask about traffic, latency, errors, cache, incidents, or click Run Triage with the current scope."
+      );
+      return;
+    }
+
     const built = buildChatInputsFromText({
       text,
       partner,
@@ -2720,17 +2807,22 @@ export default function Home() {
   const headerStatusClass = uiStatusClass(latestAssessment?.overallStatus, isLoading);
 
   const scopeSummary = useMemo(() => {
-    if (!partner || !service) {
-      return "Select partner and service to run triage.";
+    if (isLoading) {
+      return `Status: ${headerStatusLabel}`;
     }
 
-    const timeText =
-      timeMode === "absolute" && startTsUtc && endTsUtc
-        ? `${isoToUtcText(startTsUtc)} → ${isoToUtcText(endTsUtc)} UTC`
-        : `last ${windowMinutes}m`;
+    if (!latestTriageRun || !latestAssessment?.overallStatus) {
+      return "Status: Idle";
+    }
 
-    return `${headerStatusLabel}: ${partner} • ${service} • ${region || "all regions"} • ${timeText}`;
-  }, [partner, service, region, timeMode, startTsUtc, endTsUtc, windowMinutes, headerStatusLabel]);
+    const run = latestTriageRun.inputs;
+    const timeText =
+      run.startTsUtc && run.endTsUtc
+        ? `${isoToUtcText(run.startTsUtc)} → ${isoToUtcText(run.endTsUtc)} UTC`
+        : `last ${run.windowMinutes}m`;
+
+    return `Status: ${headerStatusLabel} • ${run.partner || "—"} • ${run.service || "—"} • ${run.region || "all"} • ${timeText}`;
+  }, [isLoading, latestTriageRun, latestAssessment?.overallStatus, headerStatusLabel]);
 
   return (
     <main className="min-h-screen bg-black text-gray-100">
