@@ -1915,6 +1915,10 @@ export default function Home() {
     setDraftEndUtcLocal("");
 
     setFiltersDirty(false);
+
+    // Step 3:
+    // TTL expiry is silent in chat.
+    // Keep only debug/internal logging here.
     pushRunLog("TTL expired: reset non-sticky filters (kept partner + service).");
   }
 
