@@ -3143,22 +3143,6 @@ export default function Home() {
                 >
                   Apply
                 </button>
-
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const res = applyDraftFilters();
-                    if (!res.ok) {
-                      addText("assistant", res.error);
-                      return;
-                    }
-                    await handleRunFromFilters();
-                  }}
-                  disabled={isLoading || !partner || !draftService}
-                  className="rounded-xl px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Apply & Run
-                </button>
               </div>
             </div>
           </div>
@@ -3245,25 +3229,31 @@ export default function Home() {
           </div>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setFiltersOpen(true);
-                setDraftService(service);
-                setDraftRegion(region);
-                setDraftPop(pop);
-                setDraftWindowMinutes(windowMinutes);
-                setDraftContentType(contentType);
-                setDraftUaFamily(uaFamily);
-                setDraftTimeMode(timeMode);
-                setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
-                setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
-                setFiltersDirty(false);
-              }}
-              className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-200 hover:bg-white/10"
-            >
-              Open Filters
-            </button>
+            {filtersOpen ? (
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-500">
+                Filters open above
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setFiltersOpen(true);
+                  setDraftService(service);
+                  setDraftRegion(region);
+                  setDraftPop(pop);
+                  setDraftWindowMinutes(windowMinutes);
+                  setDraftContentType(contentType);
+                  setDraftUaFamily(uaFamily);
+                  setDraftTimeMode(timeMode);
+                  setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
+                  setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
+                  setFiltersDirty(false);
+                }}
+                className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-200 hover:bg-white/10"
+              >
+                Open Filters
+              </button>
+            )}
 
             <button
               type="button"
