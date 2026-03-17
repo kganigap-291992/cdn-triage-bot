@@ -265,8 +265,13 @@ function extractIsoRange(text: string): TimeMeta | null {
     text.match(/\b\d{4}-\d{2}-\d{2}t\d{2}:\d{2}(?::\d{2})?(?:\.\d{3})?z\b/gi) || [];
   if (matches.length < 2) return null;
 
-  const start = new Date(matches[0]);
-  const end = new Date(matches[1]);
+  const startRaw = matches[0];
+  const endRaw = matches[1];
+
+  if (!startRaw || !endRaw) return null;
+
+  const start = new Date(startRaw);
+  const end = new Date(endRaw);
 
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
   if (end.getTime() <= start.getTime()) return null;
@@ -275,7 +280,7 @@ function extractIsoRange(text: string): TimeMeta | null {
     kind: "absolute",
     startTsUtc: start.toISOString(),
     endTsUtc: end.toISOString(),
-    sourceText: `${matches[0]} → ${matches[1]}`,
+    sourceText: `${startRaw} → ${endRaw}`,
   };
 }
 
