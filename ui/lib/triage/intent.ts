@@ -6,6 +6,10 @@ import {
   type ServiceResolveResult,
 } from "@/lib/schema/normalize";
 import type { CanonPartner, CanonService } from "@/lib/schema/canonical";
+import {
+  parseNamedTimePhrase,
+  type NamedTimeKey,
+} from "@/lib/triage/resolveNamedTimeWindow";
 
 export type IntentKind = "must_trigger" | "conditional" | "reject";
 
@@ -23,6 +27,7 @@ export type TimeMeta =
     }
   | {
       kind: "named";
+      key: NamedTimeKey;
       label:
         | "now"
         | "right now"
@@ -179,31 +184,6 @@ const METRIC_TERMS: Array<{ term: string; hint: MetricHint }> = [
   { term: "degradation", hint: "incident" },
 ];
 
-const NAMED_TIME_PHRASES: Array<TimeMeta["kind"] extends "named" ? never : never> = [];
-const NAMED_TIME_LABELS: Array<
-  | "now"
-  | "right now"
-  | "today"
-  | "this morning"
-  | "this afternoon"
-  | "tonight"
-  | "last night"
-  | "overnight"
-  | "yesterday"
-  | "yesterday evening"
-> = [
-  "right now",
-  "this morning",
-  "this afternoon",
-  "yesterday evening",
-  "last night",
-  "overnight",
-  "yesterday",
-  "tonight",
-  "today",
-  "now",
-];
-
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
@@ -285,16 +265,15 @@ function extractIsoRange(text: string): TimeMeta | null {
 }
 
 function extractNamedTime(text: string): TimeMeta | null {
-  for (const label of NAMED_TIME_LABELS) {
-    if (hasBoundaryPhrase(text, label)) {
-      return {
-        kind: "named",
-        label,
-        sourceText: label,
-      };
-    }
-  }
-  return null;
+  const match = parseNamedTimePhrase(text);
+  if (!match) return null;
+
+  return {
+    kind: "named",
+    key: match.key,
+    label: match.label as TimeMeta & { kind: "named" }["label"],
+    sourceText: match.matchedText,
+  };
 }
 
 function extractTimeMeta(text: string): TimeMeta | null {
@@ -336,10 +315,7 @@ export function parseTriageIntent(args: {
     };
   }
 
-  if (
-    NEVER_EXACT.has(normalizedText) ||
-    firstMatchingPhrase(normalizedText, NEVER_PHRASES)
-  ) {
+  if (NEVER_EXACT.has(normalizedText) || firstMatchingPhrase(normalizedText, NEVER_PHRASES)) {
     reasons.push("small_talk_or_never_trigger");
     return {
       intentKind: "reject",
@@ -386,21 +362,28 @@ export function parseTriageIntent(args: {
 
   const hasRegionLikeFollowUp = Boolean(
     /\b(?:us[\s-]*east|us[\s-]*west|us[\s-]*central|eu[\s-]*west|eu[\s-]*central|ap[\s-]*south|ap[\s-]*northeast|sa[\s-]*east)\b/i.test(
-        normalizedText
+      normalizedText
     )
-    );
+  );
 
-    const hasPopLikeFollowUp = Boolean(/\b(?:east|west|central|south|northeast)\s+\d{1,2}\b/i.test(normalizedText));
+  const hasPopLikeFollowUp = Boolean(
+    /\b(?:east|west|central|south|northeast)\s+\d{1,2}\b/i.test(normalizedText)
+  );
 
-    const hasScopeOnlyFollowUp = Boolean(
+  const hasScopeOnlyFollowUp = Boolean(
     partnerCanonical || serviceCanonical || hasRegionLikeFollowUp || hasPopLikeFollowUp
-    );
+  );
 
   const missingPartner = !partnerCanonical;
   const missingService = !serviceCanonical;
 
   if (hasStrongIntentSignal) {
     reasons.push("strong_intent_signal");
+
+    if (timeMeta?.kind === "named") {
+      reasons.push(`named_time:${timeMeta.key}`);
+    }
+
     return {
       intentKind: "must_trigger",
       shouldTrigger: true,
@@ -424,6 +407,11 @@ export function parseTriageIntent(args: {
 
   if (matchedConditional) {
     reasons.push("conditional_phrase");
+
+    if (timeMeta?.kind === "named") {
+      reasons.push(`named_time:${timeMeta.key}`);
+    }
+
     if (hasPriorContext) {
       reasons.push("prior_context_present");
       return {
@@ -462,8 +450,7 @@ export function parseTriageIntent(args: {
       partnerMeta,
       serviceMeta,
       rawText,
-      replyText:
-        "That follow-up needs prior context. Run a triage first, then refine it.",
+      replyText: "That follow-up needs prior context. Run a triage first, then refine it.",
       debug: {
         normalizedText,
         reasons,
@@ -473,6 +460,11 @@ export function parseTriageIntent(args: {
 
   if (hasScopeOnlyFollowUp) {
     reasons.push("scope_only_followup");
+
+    if (timeMeta?.kind === "named") {
+      reasons.push(`named_time:${timeMeta.key}`);
+    }
+
     return {
       intentKind: "must_trigger",
       shouldTrigger: true,
