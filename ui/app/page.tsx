@@ -5,6 +5,7 @@ import Image from "next/image";
 import type { TriageResponse } from "@/lib/triage/contracts";
 import { CANON } from "@/lib/schema/canonical";
 import { parseTriageIntent } from "@/lib/triage/intent";
+import { resolveNamedTimeWindow } from "@/lib/triage/resolveNamedTimeWindow";
 
 // ── constants ──────────────────────────────────────────────────────────────
 const LOGO_SRC = "/cachey-logo.png";
@@ -277,53 +278,209 @@ function computeWindowPreview(startLocal: string, endLocal: string): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m window`;
 }
 
-function extractRegionOverrideFromText(
-  text: string,
-  allowedRegions: string[]
-): string | null {
+function detectRegionOverrideFromText(text: string): {
+  mentioned: boolean;
+  value: string | null;
+  sourceText: string | null;
+} {
   const raw = String(text || "").toLowerCase().trim();
-  if (!raw) return null;
+  if (!raw) {
+    return { mentioned: false, value: null, sourceText: null };
+  }
 
-  const patterns: Array<{ re: RegExp; value: string }> = [
-    { re: /\bus[\s-]*east\b/, value: "us-east" },
-    { re: /\bus[\s-]*west\b/, value: "us-west" },
-    { re: /\bus[\s-]*central\b/, value: "us-central" },
-    { re: /\beu[\s-]*west\b/, value: "eu-west" },
-    { re: /\beu[\s-]*central\b/, value: "eu-central" },
-    { re: /\bap[\s-]*south\b/, value: "ap-south" },
-    { re: /\bap[\s-]*northeast\b/, value: "ap-northeast" },
-    { re: /\bsa[\s-]*east\b/, value: "sa-east" },
+  const patterns: Array<{ re: RegExp; value: string; sourceText: string }> = [
+    { re: /\bus[\s-]*east\b/, value: "us-east", sourceText: "us east" },
+    { re: /\bus[\s-]*west\b/, value: "us-west", sourceText: "us west" },
+    { re: /\bus[\s-]*central\b/, value: "us-central", sourceText: "us central" },
+    { re: /\beu[\s-]*west\b/, value: "eu-west", sourceText: "eu west" },
+    { re: /\beu[\s-]*central\b/, value: "eu-central", sourceText: "eu central" },
+    { re: /\bap[\s-]*south\b/, value: "ap-south", sourceText: "ap south" },
+    { re: /\bap[\s-]*northeast\b/, value: "ap-northeast", sourceText: "ap northeast" },
+    { re: /\bsa[\s-]*east\b/, value: "sa-east", sourceText: "sa east" },
   ];
 
   for (const entry of patterns) {
-    if (entry.re.test(raw) && allowedRegions.includes(entry.value)) {
-      return entry.value;
+    if (entry.re.test(raw)) {
+      return {
+        mentioned: true,
+        value: entry.value,
+        sourceText: entry.sourceText,
+      };
     }
   }
 
-  return null;
+    const explicitRegionMatch = raw.match(
+    /\bregion\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\b/i
+  );
+  if (explicitRegionMatch) {
+    return {
+      mentioned: true,
+      value: null,
+      sourceText: explicitRegionMatch[1]?.trim() || "unknown region",
+    };
+  }
+
+  const onlyUnknownRegionMatch = raw.match(
+    /\bonly\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\b/i
+  );
+  if (onlyUnknownRegionMatch) {
+    const candidate = onlyUnknownRegionMatch[1]?.trim() || "";
+    const knownOnlyKeywords = new Set([
+      "traffic",
+      "errors",
+      "latency",
+      "cache",
+      "mobile",
+      "web",
+      "stb",
+      "smart_tv",
+      "console",
+      "manifest",
+      "segment",
+      "api",
+      "live",
+      "vod",
+      "dvr",
+      "eas",
+      "app_backend",
+      "live ott",
+      "live_ott",
+    ]);
+
+    if (candidate && !knownOnlyKeywords.has(candidate)) {
+      return {
+        mentioned: true,
+        value: null,
+        sourceText: candidate,
+      };
+    }
+  }
+
+  return { mentioned: false, value: null, sourceText: null };
 }
 
 
-function extractPopOverrideFromText(
-  text: string,
-  allowedPops: string[]
-): string | null {
+function detectPopOverrideFromText(text: string): {
+  mentioned: boolean;
+  value: string | null;
+  sourceText: string | null;
+} {
   const raw = String(text || "").toLowerCase().trim();
-  if (!raw) return null;
-
-  // match "east 1", "west 2", etc → capture number
-  const match = raw.match(/\b(?:east|west|central|south|northeast)\s+(\d{1,2})\b/);
-  if (!match) return null;
-
-  const num = match[1].padStart(3, "0");
-  const candidate = `pop_${num}`;
-
-  if (allowedPops.includes(candidate)) {
-    return candidate;
+  if (!raw) {
+    return { mentioned: false, value: null, sourceText: null };
   }
 
-  return null;
+  const explicitPop = raw.match(/\bpop[_\s-]?(\d{1,3})\b/i);
+  if (explicitPop) {
+    const num = explicitPop[1].padStart(3, "0");
+    return {
+      mentioned: true,
+      value: `pop_${num}`,
+      sourceText: explicitPop[0],
+    };
+  }
+
+  const directional = raw.match(/\b(?:east|west|central|south|northeast)\s+(\d{1,2})\b/);
+  if (directional) {
+    const num = directional[1].padStart(3, "0");
+    return {
+      mentioned: true,
+      value: `pop_${num}`,
+      sourceText: directional[0],
+    };
+  }
+
+  if (/\bpop\b/i.test(raw)) {
+    return {
+      mentioned: true,
+      value: null,
+      sourceText: "pop",
+    };
+  }
+
+  return { mentioned: false, value: null, sourceText: null };
+}
+
+function detectUaFamilyOverrideFromText(text: string): {
+  mentioned: boolean;
+  value: string | null;
+  sourceText: string | null;
+} {
+  const raw = String(text || "").toLowerCase().trim();
+  if (!raw) {
+    return { mentioned: false, value: null, sourceText: null };
+  }
+
+  const patterns: Array<{ re: RegExp; value: string; sourceText: string }> = [
+    { re: /\bmobile\b/i, value: "mobile", sourceText: "mobile" },
+    { re: /\bweb\b/i, value: "web", sourceText: "web" },
+    { re: /\bstb\b/i, value: "stb", sourceText: "stb" },
+    { re: /\bsmart[\s_:-]*tv\b/i, value: "smart_tv", sourceText: "smart tv" },
+    { re: /\bconsole\b/i, value: "console", sourceText: "console" },
+  ];
+
+  for (const entry of patterns) {
+    if (entry.re.test(raw)) {
+      return {
+        mentioned: true,
+        value: entry.value,
+        sourceText: entry.sourceText,
+      };
+    }
+  }
+
+  const explicitUaMatch = raw.match(
+    /\b(?:ua|ua family|device|device type)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+){0,2})\b/i
+  );
+  if (explicitUaMatch) {
+    return {
+      mentioned: true,
+      value: null,
+      sourceText: explicitUaMatch[1]?.trim() || "unknown ua family",
+    };
+  }
+
+  return { mentioned: false, value: null, sourceText: null };
+}
+
+function detectContentTypeOverrideFromText(text: string): {
+  mentioned: boolean;
+  value: string | null;
+  sourceText: string | null;
+} {
+  const raw = String(text || "").toLowerCase().trim();
+  if (!raw) {
+    return { mentioned: false, value: null, sourceText: null };
+  }
+
+  const patterns: Array<{ re: RegExp; value: string; sourceText: string }> = [
+    { re: /\bmanifest(?:s)?\b/i, value: "manifest", sourceText: "manifest" },
+    { re: /\bsegment(?:s)?\b/i, value: "segment", sourceText: "segment" },
+    { re: /\bapi\b/i, value: "api", sourceText: "api" },
+  ];
+
+  for (const entry of patterns) {
+    if (entry.re.test(raw)) {
+      return {
+        mentioned: true,
+        value: entry.value,
+        sourceText: entry.sourceText,
+      };
+    }
+  }
+
+  const explicitContentMatch = raw.match(
+    /\b(?:content\s*type|content)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+){0,2})\b/i
+  );
+  if (explicitContentMatch) {
+    return {
+      mentioned: true,
+      value: null,
+      sourceText: explicitContentMatch[1]?.trim() || "unknown content type",
+    };
+  }
+
+  return { mentioned: false, value: null, sourceText: null };
 }
 
 // ── color helpers ──────────────────────────────────────────────────────────
@@ -433,6 +590,9 @@ function buildChatInputsFromIntent(args: {
   uaFamily: string;
   allowedRegions: string[];
   allowedPops: string[];
+  allowedContentTypes: string[];
+  allowedUaFamilies: string[];
+  now?: Date;
 }):
   | {
       ok: true;
@@ -462,18 +622,37 @@ function buildChatInputsFromIntent(args: {
 
   const partner = args.resolvedPartner;
   const service = args.resolvedService || "";
-  const detectedRegion = extractRegionOverrideFromText(
-    parseResult.rawText,
-    args.allowedRegions || []
-  );
-  const detectedPop = extractPopOverrideFromText(
-    parseResult.rawText,
-    args.allowedPops || []
-  );
+
+  const regionDetection = detectRegionOverrideFromText(parseResult.rawText);
+  const popDetection = detectPopOverrideFromText(parseResult.rawText);
+  const uaDetection = detectUaFamilyOverrideFromText(parseResult.rawText);
+  const contentTypeDetection = detectContentTypeOverrideFromText(parseResult.rawText);
+
+  const detectedRegion =
+    regionDetection.value && (args.allowedRegions || []).includes(regionDetection.value)
+      ? regionDetection.value
+      : null;
+
+  const detectedPop =
+    popDetection.value && (args.allowedPops || []).includes(popDetection.value)
+      ? popDetection.value
+      : null;
+
+  const detectedUaFamily =
+    uaDetection.value && (args.allowedUaFamilies || []).includes(uaDetection.value)
+      ? uaDetection.value
+      : null;
+
+  const detectedContentType =
+    contentTypeDetection.value &&
+    (args.allowedContentTypes || []).includes(contentTypeDetection.value)
+      ? contentTypeDetection.value
+      : null;
+
   const region = detectedRegion || args.region || "all";
   const pop = detectedPop || args.pop || "all";
-  const contentType = args.contentType || "all";
-  const uaFamily = args.uaFamily || "all";
+  const contentType = detectedContentType || args.contentType || "all";
+  const uaFamily = detectedUaFamily || args.uaFamily || "all";
 
   if (parseResult.partnerCanonical) {
     detected.partnerCanonical = parseResult.partnerCanonical;
@@ -485,13 +664,87 @@ function buildChatInputsFromIntent(args: {
     parseMode = "chat-overrides";
   }
 
-  if (detectedRegion) {
-    detected.region = detectedRegion;
+  if (regionDetection.mentioned) {
+    detected.regionMentioned = regionDetection.sourceText;
+
+    if (!regionDetection.value) {
+      return {
+        ok: false,
+        error: "Region not recognized.",
+      };
+    }
+
+    if (!(args.allowedRegions || []).includes(regionDetection.value)) {
+      return {
+        ok: false,
+        error: `Region not in schema: ${regionDetection.value}.`,
+      };
+    }
+
+    detected.region = regionDetection.value;
     parseMode = "chat-overrides";
   }
 
-  if (detectedPop) {
-    detected.pop = detectedPop;
+  if (popDetection.mentioned) {
+    detected.popMentioned = popDetection.sourceText;
+
+    if (!popDetection.value) {
+      return {
+        ok: false,
+        error: "POP not recognized.",
+      };
+    }
+
+    if (!(args.allowedPops || []).includes(popDetection.value)) {
+      return {
+        ok: false,
+        error: `POP not in schema: ${popDetection.value}.`,
+      };
+    }
+
+    detected.pop = popDetection.value;
+    parseMode = "chat-overrides";
+  }
+
+    if (uaDetection.mentioned) {
+    detected.uaFamilyMentioned = uaDetection.sourceText;
+
+    if (!uaDetection.value) {
+      return {
+        ok: false,
+        error: "UA family not recognized.",
+      };
+    }
+
+    if (!(args.allowedUaFamilies || []).includes(uaDetection.value)) {
+      return {
+        ok: false,
+        error: `UA family not in schema: ${uaDetection.value}.`,
+      };
+    }
+
+    detected.uaFamily = uaDetection.value;
+    parseMode = "chat-overrides";
+  }
+
+  if (contentTypeDetection.mentioned) {
+    detected.contentTypeMentioned = contentTypeDetection.sourceText;
+
+    if (!contentTypeDetection.value) {
+      return {
+        ok: false,
+        error: "Content type not recognized.",
+      };
+    }
+
+    if (!(args.allowedContentTypes || []).includes(contentTypeDetection.value)) {
+      return {
+        ok: false,
+        error: `Content type not in schema: ${contentTypeDetection.value}.`,
+      };
+    }
+
+    detected.contentType = contentTypeDetection.value;
     parseMode = "chat-overrides";
   }
   
@@ -529,7 +782,47 @@ function buildChatInputsFromIntent(args: {
     detected.windowMinutes = effectiveWindowMinutes;
     parseMode = "chat-overrides";
   } else if (parseResult.timeMeta?.kind === "named") {
+    const resolvedNamedTime = resolveNamedTimeWindow({
+      key: parseResult.timeMeta.key,
+      label: parseResult.timeMeta.label,
+      matchedText: parseResult.timeMeta.sourceText,
+      now: args.now ?? new Date(),
+    });
+
     detected.namedTime = parseResult.timeMeta.label;
+    detected.namedTimeKey = parseResult.timeMeta.key;
+    detected.namedTimeSourceText = parseResult.timeMeta.sourceText;
+
+    if (!resolvedNamedTime.ok) {
+      detected.namedTimeResolution = resolvedNamedTime;
+      return {
+        ok: false,
+        error: resolvedNamedTime.message,
+      };
+    }
+
+    startTsUtc = resolvedNamedTime.startUtcIso;
+    endTsUtc = resolvedNamedTime.endUtcIso;
+    effectiveWindowMinutes = windowMinutesFromRange(
+      startTsUtc,
+      endTsUtc,
+      args.windowMinutes
+    );
+
+    detected.namedTimeResolution = {
+      key: resolvedNamedTime.key,
+      label: resolvedNamedTime.label,
+      timezone: resolvedNamedTime.timezone,
+      startLocalIso: resolvedNamedTime.startLocalIso,
+      endLocalIso: resolvedNamedTime.endLocalIso,
+      startUtcIso: resolvedNamedTime.startUtcIso,
+      endUtcIso: resolvedNamedTime.endUtcIso,
+      timeMode: resolvedNamedTime.timeMode,
+      source: resolvedNamedTime.source,
+    };
+    detected.startTsUtc = startTsUtc;
+    detected.endTsUtc = endTsUtc;
+    detected.windowMinutes = effectiveWindowMinutes;
     parseMode = "chat-overrides";
   }
 
@@ -1902,7 +2195,17 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
         <div className="min-w-0">
           <div className="text-xs text-gray-400">Triage result</div>
           <div className="text-sm font-semibold text-gray-100 truncate">
-            {run.inputs.partner || "—"} • {run.inputs.service || "—"} • {run.inputs.region} • {run.inputs.pop} • {timeRangeText}
+            {[
+              run.inputs.partner || "—",
+              run.inputs.service || "—",
+              run.inputs.region,
+              run.inputs.pop,
+              run.inputs.contentType !== "all" ? `ct=${run.inputs.contentType}` : null,
+              run.inputs.uaFamily !== "all" ? `ua=${run.inputs.uaFamily}` : null,
+              timeRangeText,
+            ]
+              .filter(Boolean)
+              .join(" • ")}
           </div>
           {ts?.startTs && ts?.endTs && (
             <div className="text-[11px] text-gray-500 mt-1">
@@ -2786,7 +3089,7 @@ export default function Home() {
     });
 
     pushRunLog(
-      `Intent parse: kind=${parseResult.intentKind} shouldTrigger=${parseResult.shouldTrigger} partner=${parseResult.partnerCanonical || "-"} service=${parseResult.serviceCanonical || "-"}`
+      `Intent parse: kind=${parseResult.intentKind} shouldTrigger=${parseResult.shouldTrigger} partner=${parseResult.partnerCanonical || "-"} service=${parseResult.serviceCanonical || "-"} time=${parseResult.timeMeta?.kind || "-"}`
     );
 
     if (!parseResult.shouldTrigger) {
@@ -2852,6 +3155,9 @@ export default function Home() {
       uaFamily,
       allowedRegions: availableRegions,
       allowedPops: availablePops,
+      allowedContentTypes: availableContentTypes,
+      allowedUaFamilies: availableUaFamilies,
+      now: new Date(),
     });
   
 
