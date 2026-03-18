@@ -42,6 +42,8 @@ export type TimeMeta =
       sourceText: string;
     };
 
+type NamedTimeMeta = Extract<TimeMeta, { kind: "named" }>;
+
 export type MetricHint =
   | "traffic"
   | "latency"
@@ -271,7 +273,7 @@ function extractNamedTime(text: string): TimeMeta | null {
   return {
     kind: "named",
     key: match.key,
-    label: match.label as TimeMeta & { kind: "named" }["label"],
+    label: match.label as NamedTimeMeta["label"],
     sourceText: match.matchedText,
   };
 }
