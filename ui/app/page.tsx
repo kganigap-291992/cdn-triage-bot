@@ -309,7 +309,7 @@ function detectRegionOverrideFromText(text: string): {
     }
   }
 
-    const explicitRegionMatch = raw.match(
+  const explicitRegionMatch = raw.match(
     /\bregion\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\b/i
   );
   if (explicitRegionMatch) {
@@ -320,45 +320,8 @@ function detectRegionOverrideFromText(text: string): {
     };
   }
 
-  const onlyUnknownRegionMatch = raw.match(
-    /\bonly\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\b/i
-  );
-  if (onlyUnknownRegionMatch) {
-    const candidate = onlyUnknownRegionMatch[1]?.trim() || "";
-    const knownOnlyKeywords = new Set([
-      "traffic",
-      "errors",
-      "latency",
-      "cache",
-      "mobile",
-      "web",
-      "stb",
-      "smart_tv",
-      "console",
-      "manifest",
-      "segment",
-      "api",
-      "live",
-      "vod",
-      "dvr",
-      "eas",
-      "app_backend",
-      "live ott",
-      "live_ott",
-    ]);
-
-    if (candidate && !knownOnlyKeywords.has(candidate)) {
-      return {
-        mentioned: true,
-        value: null,
-        sourceText: candidate,
-      };
-    }
-  }
-
   return { mentioned: false, value: null, sourceText: null };
 }
-
 
 function detectPopOverrideFromText(text: string): {
   mentioned: boolean;
@@ -3037,7 +3000,24 @@ export default function Home() {
       });
 
     } catch (e: any) {
-      addText("assistant", `Triage failed: ${e?.message || "unknown error"}`);
+      const msg = String(e?.message || "").toLowerCase();
+
+      if (msg.includes("invalid region")) {
+        addText("assistant", "⚠️ Region not recognized. Check available regions in filters.");
+      } else if (msg.includes("invalid pop")) {
+        addText("assistant", "⚠️ POP not recognized. Check available POPs in filters.");
+      } else if (msg.includes("invalid uafamily")) {
+        addText("assistant", "⚠️ Device type not recognized. Try: mobile, web, stb, smart_tv.");
+      } else if (msg.includes("invalid contenttype")) {
+        addText("assistant", "⚠️ Content type not recognized. Try: manifest, segment, api.");
+      } else if (msg.includes("missing partner")) {
+        addText("assistant", "⚠️ Please select a partner first.");
+      } else if (msg.includes("missing service")) {
+        addText("assistant", "⚠️ Please select a service (live, vod, etc).");
+      } else {
+        // fallback
+        addText("assistant", `⚠️ ${e?.message || "Triage failed."}`);
+      }
     } finally {
       setTyping(false);
       setIsTriageLoading(false);
