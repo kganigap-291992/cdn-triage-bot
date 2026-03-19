@@ -135,7 +135,46 @@ type SchemaState = {
   uaFamilies: string[];
 };
 
+type InvestigationScope = {
+  partner: PartnerOrMissing;
+  service: string;
+  region: string;
+  pop: string;
+  contentType: string;
+  uaFamily: string;
+};
+
+type InvestigationTimeContext = {
+  mode: "relative" | "absolute";
+  windowMinutes: number;
+  startTsUtc: string | null;
+  endTsUtc: string | null;
+};
+
+type InvestigationWorstCandidate = {
+  value: string;
+  errorRatePct: number | null;
+  p95TtmsMs: number | null;
+  cacheHitRate: number | null;
+  totalRequests: number | null;
+  source: string;
+};
+
+type InvestigationContext = {
+  baseScope: InvestigationScope;
+  time: InvestigationTimeContext;
+  worstRegion: InvestigationWorstCandidate | null;
+  worstPop: InvestigationWorstCandidate | null;
+  availableDimensions: {
+    regions: string[];
+    pops: string[];
+    contentTypes: string[];
+    uaFamilies: string[];
+  };
+};
+
 // ── pure helpers ───────────────────────────────────────────────────────────
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -2083,6 +2122,7 @@ function MetricChips({ metricsJson }: { metricsJson: any }) {
 }
 
 // ── buildSummaryFallback ───────────────────────────────────────────────────
+
 function buildSummaryFallback(run: ChatTriage["run"]): string {
   const m = run.metricsJson || {};
   const totalRequests = Number(m.totalRequests) || 0;
@@ -2110,6 +2150,172 @@ function buildSummaryFallback(run: ChatTriage["run"]): string {
     `Health: ${health}`,
   ].join("\n");
 }
+
+function getRunBaseScope(run: ChatTriage["run"]): InvestigationScope {
+  return {
+    partner: run.inputs.partner || "",
+    service: run.inputs.service || "",
+    region: run.inputs.region || "all",
+    pop: run.inputs.pop || "all",
+    contentType: run.inputs.contentType || "all",
+    uaFamily: run.inputs.uaFamily || "all",
+  };
+}
+
+function getRunTimeContext(run: ChatTriage["run"]): InvestigationTimeContext {
+  const startTsUtc = run.inputs.startTsUtc ?? null;
+  const endTsUtc = run.inputs.endTsUtc ?? null;
+
+  return {
+    mode: startTsUtc && endTsUtc ? "absolute" : "relative",
+    windowMinutes: windowMinutesFromRange(
+      startTsUtc,
+      endTsUtc,
+      run.inputs.windowMinutes || 120
+    ),
+    startTsUtc,
+    endTsUtc,
+  };
+}
+
+function toNumOrNull(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizePctMaybe(v: unknown): number | null {
+  const n = toNumOrNull(v);
+  if (n == null) return null;
+  return n <= 1 ? n * 100 : n;
+}
+
+function normalizeCachePctMaybe(v: unknown): number | null {
+  const n = toNumOrNull(v);
+  if (n == null) return null;
+  return n <= 1 ? n * 100 : n;
+}
+
+function scoreWorstCandidate(x: {
+  errorRatePct: number | null;
+  p95TtmsMs: number | null;
+  cacheHitRate: number | null;
+  totalRequests: number | null;
+}): number {
+  const err = x.errorRatePct ?? 0;
+  const p95 = x.p95TtmsMs ?? 0;
+  const cachePenalty = x.cacheHitRate == null ? 0 : Math.max(0, 100 - x.cacheHitRate);
+  const reqWeight = x.totalRequests == null ? 0 : Math.min(x.totalRequests / 1000, 100);
+
+  return err * 1000 + p95 + cachePenalty * 10 + reqWeight;
+}
+
+function coerceBreakdownCandidate(
+  raw: any,
+  keyField: "region" | "pop",
+  source: string
+): InvestigationWorstCandidate | null {
+  const value = String(raw?.[keyField] || "").trim();
+  if (!value || value === "all") return null;
+
+  return {
+    value,
+    errorRatePct: normalizePctMaybe(raw?.errorRatePct ?? raw?.errorRate),
+    p95TtmsMs: toNumOrNull(raw?.p95TtmsMs ?? raw?.p95Ms ?? raw?.latencyP95Ms),
+    cacheHitRate: normalizeCachePctMaybe(raw?.cacheHitRate ?? raw?.cacheHitPct),
+    totalRequests: toNumOrNull(raw?.totalRequests ?? raw?.requests),
+    source,
+  };
+}
+
+function pickWorstFromBreakdown(
+  items: any[],
+  keyField: "region" | "pop",
+  source: string
+): InvestigationWorstCandidate | null {
+  const candidates = items
+    .map((item) => coerceBreakdownCandidate(item, keyField, source))
+    .filter(Boolean) as InvestigationWorstCandidate[];
+
+  if (!candidates.length) return null;
+
+  candidates.sort((a, b) => scoreWorstCandidate(b) - scoreWorstCandidate(a));
+  return candidates[0] ?? null;
+}
+
+function extractWorstRegionCandidate(run: ChatTriage["run"]): InvestigationWorstCandidate | null {
+  const m = run.metricsJson || {};
+
+  const candidateSources: Array<{ items: any[]; source: string }> = [
+    {
+      items: Array.isArray(m?.regionBreakdown) ? m.regionBreakdown : [],
+      source: "metricsJson.regionBreakdown",
+    },
+    {
+      items: Array.isArray(m?.evidenceBundle?.regionBreakdown)
+        ? m.evidenceBundle.regionBreakdown
+        : [],
+      source: "metricsJson.evidenceBundle.regionBreakdown",
+    },
+  ];
+
+  for (const entry of candidateSources) {
+    if (entry.items.length) {
+      const picked = pickWorstFromBreakdown(entry.items, "region", entry.source);
+      if (picked) return picked;
+    }
+  }
+
+  return null;
+}
+
+function extractWorstPopCandidate(run: ChatTriage["run"]): InvestigationWorstCandidate | null {
+  const m = run.metricsJson || {};
+
+  const candidateSources: Array<{ items: any[]; source: string }> = [
+    {
+      items: Array.isArray(m?.popBreakdown) ? m.popBreakdown : [],
+      source: "metricsJson.popBreakdown",
+    },
+    {
+      items: Array.isArray(m?.evidenceBundle?.popBreakdown)
+        ? m.evidenceBundle.popBreakdown
+        : [],
+      source: "metricsJson.evidenceBundle.popBreakdown",
+    },
+  ];
+
+  for (const entry of candidateSources) {
+    if (entry.items.length) {
+      const picked = pickWorstFromBreakdown(entry.items, "pop", entry.source);
+      if (picked) return picked;
+    }
+  }
+
+  return null;
+}
+
+function buildLatestInvestigationContext(args: {
+  run: ChatTriage["run"];
+  availableRegions: string[];
+  availablePops: string[];
+  availableContentTypes: string[];
+  availableUaFamilies: string[];
+}): InvestigationContext {
+  return {
+    baseScope: getRunBaseScope(args.run),
+    time: getRunTimeContext(args.run),
+    worstRegion: extractWorstRegionCandidate(args.run),
+    worstPop: extractWorstPopCandidate(args.run),
+    availableDimensions: {
+      regions: (args.availableRegions || []).filter((x) => x && x !== "all"),
+      pops: (args.availablePops || []).filter((x) => x && x !== "all"),
+      contentTypes: (args.availableContentTypes || []).filter((x) => x && x !== "all"),
+      uaFamilies: (args.availableUaFamilies || []).filter((x) => x && x !== "all"),
+    },
+  };
+}
+
+
 
 // ── TriageCard ─────────────────────────────────────────────────────────────
 function TriageCard({ run }: { run: ChatTriage["run"] }) {
@@ -2840,13 +3046,31 @@ export default function Home() {
     return uniq.includes("all") ? uniq : ["all", ...uniq];
   }, [schemaState.uaFamilies]);
 
-  const latestTriageRun = useMemo<ChatTriage["run"] | null>(() => {
+    const latestTriageRun = useMemo<ChatTriage["run"] | null>(() => {
     for (let i = chatMessages.length - 1; i >= 0; i--) {
       const m = chatMessages[i];
       if (m.type === "triage") return m.run;
     }
     return null;
   }, [chatMessages]);
+
+  const latestInvestigationContext = useMemo<InvestigationContext | null>(() => {
+    if (!latestTriageRun) return null;
+
+    return buildLatestInvestigationContext({
+      run: latestTriageRun,
+      availableRegions,
+      availablePops,
+      availableContentTypes,
+      availableUaFamilies,
+    });
+  }, [
+    latestTriageRun,
+    availableRegions,
+    availablePops,
+    availableContentTypes,
+    availableUaFamilies,
+  ]);
 
   function isAllowed(val: string, allowed: string[]) {
     const v = String(val ?? "").trim();

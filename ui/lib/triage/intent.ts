@@ -13,6 +13,16 @@ import {
 
 export type IntentKind = "must_trigger" | "conditional" | "reject";
 
+export type FollowUpKind =
+  | "compare_previous_window"
+  | "drilldown_region"
+  | "drilldown_pop"
+  | "drilldown_dimension"
+  | "explain_signal"
+  | "repeat_or_refresh";
+
+export type DrilldownTarget = "region" | "pop" | "dimension";
+
 export type TimeMeta =
   | {
       kind: "relative";
@@ -55,11 +65,24 @@ export type MetricHint =
   | "health"
   | "incident";
 
+export type FollowUpOverrides = {
+  region?: string;
+  pop?: string;
+  contentType?: string;
+  uaFamily?: string;
+  service?: string;
+};
+
 export type IntentParseResult = {
   intentKind: IntentKind;
   shouldTrigger: boolean;
   confidence: number;
   requiresPriorContext: boolean;
+
+  followUpKind?: FollowUpKind;
+  shouldRerun?: boolean;
+  drilldownTarget?: DrilldownTarget;
+  followUpOverrides?: FollowUpOverrides;
 
   partnerCanonical: CanonPartner | null;
   serviceCanonical: CanonService | null;
@@ -163,6 +186,59 @@ const CONDITIONAL_PHRASES = [
   "what changed",
   "compare with previous window",
   "compare with previous",
+];
+
+const FOLLOWUP_COMPARE_PHRASES = [
+  "what changed from previous window",
+  "what changed from the previous window",
+  "compare with previous window",
+  "compare to previous window",
+  "compare with previous run",
+  "compare to previous run",
+  "compare with previous",
+  "is this worse than before",
+  "worse than before",
+  "what changed since last run",
+  "what changed",
+];
+
+const FOLLOWUP_DRILLDOWN_REGION_PHRASES = [
+  "drill into worst region",
+  "show worst region",
+  "which region is worst",
+  "focus on worst region",
+  "worst region",
+];
+
+const FOLLOWUP_DRILLDOWN_POP_PHRASES = [
+  "drill into worst pop",
+  "show worst pop",
+  "which pop is worst",
+  "focus on worst pop",
+  "worst pop",
+];
+
+const FOLLOWUP_EXPLAIN_PHRASES = [
+  "why is this bad",
+  "what is driving errors",
+  "what's driving errors",
+  "what is causing this",
+  "what's causing this",
+  "what changed in latency",
+  "explain this",
+  "explain the issue",
+  "why are errors high",
+  "why is latency high",
+  "what is driving latency",
+  "what's driving latency",
+];
+
+const FOLLOWUP_REFRESH_PHRASES = [
+  "run again",
+  "rerun",
+  "rerun this",
+  "refresh",
+  "refresh this",
 ];
 
 const METRIC_TERMS: Array<{ term: string; hint: MetricHint }> = [
@@ -282,6 +358,138 @@ function extractTimeMeta(text: string): TimeMeta | null {
   return extractIsoRange(text) || extractRelativeWindowMinutes(text) || extractNamedTime(text);
 }
 
+function extractFollowUpOverrides(text: string): FollowUpOverrides {
+  const overrides: FollowUpOverrides = {};
+
+  if (/\bonly\s+mobile\b/i.test(text)) {
+    overrides.uaFamily = "mobile";
+  } else if (/\bonly\s+web\b/i.test(text)) {
+    overrides.uaFamily = "web";
+  } else if (/\bonly\s+smart\s*tv\b/i.test(text)) {
+    overrides.uaFamily = "smart_tv";
+  } else if (/\bonly\s+stb\b/i.test(text)) {
+    overrides.uaFamily = "stb";
+  } else if (/\bonly\s+console\b/i.test(text)) {
+    overrides.uaFamily = "console";
+  }
+
+  if (/\bonly\s+manifests?\b/i.test(text)) {
+    overrides.contentType = "manifest";
+  } else if (/\bonly\s+segments?\b/i.test(text)) {
+    overrides.contentType = "segment";
+  } else if (/\bonly\s+api\b/i.test(text)) {
+    overrides.contentType = "api";
+  }
+
+  const regionPatterns: Array<[RegExp, string]> = [
+    [/\bonly\s+us[\s-]*east\b/i, "us-east"],
+    [/\bonly\s+us[\s-]*west\b/i, "us-west"],
+    [/\bonly\s+us[\s-]*central\b/i, "us-central"],
+    [/\bonly\s+eu[\s-]*west\b/i, "eu-west"],
+    [/\bonly\s+eu[\s-]*central\b/i, "eu-central"],
+    [/\bonly\s+ap[\s-]*south\b/i, "ap-south"],
+    [/\bonly\s+ap[\s-]*northeast\b/i, "ap-northeast"],
+    [/\bonly\s+sa[\s-]*east\b/i, "sa-east"],
+  ];
+
+  for (const [pattern, value] of regionPatterns) {
+    if (pattern.test(text)) {
+      overrides.region = value;
+      break;
+    }
+  }
+
+  const popMatch = text.match(/\bonly\s+(pop[_\s-]?\d{3})\b/i);
+  if (popMatch?.[1]) {
+    overrides.pop = popMatch[1].toLowerCase().replace(/[\s-]+/g, "_");
+  }
+
+  const serviceMeta = resolveService(text);
+  if (serviceMeta?.value) {
+    overrides.service = serviceMeta.value;
+  }
+
+  return overrides;
+}
+
+function hasAnyFollowUpOverride(overrides: FollowUpOverrides): boolean {
+  return Boolean(
+    overrides.region ||
+      overrides.pop ||
+      overrides.contentType ||
+      overrides.uaFamily ||
+      overrides.service
+  );
+}
+
+function detectFollowUp(text: string): {
+  followUpKind?: FollowUpKind;
+  shouldRerun?: boolean;
+  drilldownTarget?: DrilldownTarget;
+  followUpOverrides?: FollowUpOverrides;
+  reason?: string;
+} {
+  const comparePhrase = firstMatchingPhrase(text, FOLLOWUP_COMPARE_PHRASES);
+  if (comparePhrase) {
+    return {
+      followUpKind: "compare_previous_window",
+      shouldRerun: true,
+      reason: `followup_compare:${comparePhrase}`,
+    };
+  }
+
+  const drilldownRegionPhrase = firstMatchingPhrase(text, FOLLOWUP_DRILLDOWN_REGION_PHRASES);
+  if (drilldownRegionPhrase) {
+    return {
+      followUpKind: "drilldown_region",
+      shouldRerun: true,
+      drilldownTarget: "region",
+      reason: `followup_drilldown_region:${drilldownRegionPhrase}`,
+    };
+  }
+
+  const drilldownPopPhrase = firstMatchingPhrase(text, FOLLOWUP_DRILLDOWN_POP_PHRASES);
+  if (drilldownPopPhrase) {
+    return {
+      followUpKind: "drilldown_pop",
+      shouldRerun: true,
+      drilldownTarget: "pop",
+      reason: `followup_drilldown_pop:${drilldownPopPhrase}`,
+    };
+  }
+
+  const explainPhrase = firstMatchingPhrase(text, FOLLOWUP_EXPLAIN_PHRASES);
+  if (explainPhrase) {
+    return {
+      followUpKind: "explain_signal",
+      shouldRerun: false,
+      reason: `followup_explain_signal:${explainPhrase}`,
+    };
+  }
+
+  const refreshPhrase = firstMatchingPhrase(text, FOLLOWUP_REFRESH_PHRASES);
+  if (refreshPhrase) {
+    return {
+      followUpKind: "repeat_or_refresh",
+      shouldRerun: true,
+      reason: `followup_repeat_or_refresh:${refreshPhrase}`,
+    };
+  }
+
+  const overrides = extractFollowUpOverrides(text);
+  if (hasAnyFollowUpOverride(overrides) && hasBoundaryPhrase(text, "only")) {
+    return {
+      followUpKind: "drilldown_dimension",
+      shouldRerun: true,
+      drilldownTarget: "dimension",
+      followUpOverrides: overrides,
+      reason: "followup_drilldown_dimension:only_override",
+    };
+  }
+
+  return {};
+}
+
 export function parseTriageIntent(args: {
   text: string;
   hasPriorContext?: boolean;
@@ -355,6 +563,8 @@ export function parseTriageIntent(args: {
   const matchedHealth = firstMatchingPhrase(normalizedText, HEALTH_PHRASES);
   const matchedConditional = firstMatchingPhrase(normalizedText, CONDITIONAL_PHRASES);
 
+  const followUp = detectFollowUp(normalizedText);
+
   const hasStrongIntentSignal = Boolean(
     matchedInvestigation ||
       matchedHealth ||
@@ -368,9 +578,7 @@ export function parseTriageIntent(args: {
     )
   );
 
-  const hasPopLikeFollowUp = Boolean(
-    /\b(?:east|west|central|south|northeast)\s+\d{1,2}\b/i.test(normalizedText)
-  );
+  const hasPopLikeFollowUp = Boolean(/\bpop[_\s-]?\d{3}\b/i.test(normalizedText));
 
   const hasScopeOnlyFollowUp = Boolean(
     partnerCanonical || serviceCanonical || hasRegionLikeFollowUp || hasPopLikeFollowUp
@@ -378,6 +586,68 @@ export function parseTriageIntent(args: {
 
   const missingPartner = !partnerCanonical;
   const missingService = !serviceCanonical;
+
+  if (followUp.followUpKind) {
+    reasons.push("followup_detected");
+    if (followUp.reason) reasons.push(followUp.reason);
+
+    if (timeMeta?.kind === "named") {
+      reasons.push(`named_time:${timeMeta.key}`);
+    }
+
+    if (hasPriorContext) {
+      reasons.push("prior_context_present");
+      return {
+        intentKind: "conditional",
+        shouldTrigger: true,
+        confidence: followUp.shouldRerun ? 0.86 : 0.82,
+        requiresPriorContext: true,
+        followUpKind: followUp.followUpKind,
+        shouldRerun: followUp.shouldRerun,
+        drilldownTarget: followUp.drilldownTarget,
+        followUpOverrides: followUp.followUpOverrides,
+        partnerCanonical,
+        serviceCanonical,
+        missingPartner,
+        missingService,
+        metricHints,
+        timeMeta,
+        partnerMeta,
+        serviceMeta,
+        rawText,
+        debug: {
+          normalizedText,
+          reasons,
+        },
+      };
+    }
+
+    reasons.push("prior_context_missing");
+    return {
+      intentKind: "conditional",
+      shouldTrigger: false,
+      confidence: 0.45,
+      requiresPriorContext: true,
+      followUpKind: followUp.followUpKind,
+      shouldRerun: followUp.shouldRerun,
+      drilldownTarget: followUp.drilldownTarget,
+      followUpOverrides: followUp.followUpOverrides,
+      partnerCanonical,
+      serviceCanonical,
+      missingPartner,
+      missingService,
+      metricHints,
+      timeMeta,
+      partnerMeta,
+      serviceMeta,
+      rawText,
+      replyText: "That follow-up needs prior context. Run a triage first, then refine it.",
+      debug: {
+        normalizedText,
+        reasons,
+      },
+    };
+  }
 
   if (hasStrongIntentSignal) {
     reasons.push("strong_intent_signal");
