@@ -672,14 +672,14 @@ function buildChatInputsFromIntent(args: {
     if (!regionDetection.value) {
       return {
         ok: false,
-        error: "Region not recognized.",
+        error: `I couldn't resolve region "${regionDetection.sourceText || "unknown"}". Use one of: ${(args.allowedRegions || []).join(", ")}.`,
       };
     }
 
     if (!(args.allowedRegions || []).includes(regionDetection.value)) {
       return {
         ok: false,
-        error: `Region not in schema: ${regionDetection.value}.`,
+        error: `Region "${regionDetection.value}" is valid, but it is not available in the current scope. Available regions: ${(args.allowedRegions || []).join(", ")}.`,
       };
     }
 
@@ -693,14 +693,14 @@ function buildChatInputsFromIntent(args: {
     if (!popDetection.value) {
       return {
         ok: false,
-        error: "POP not recognized.",
+        error: `I couldn't resolve POP "${popDetection.sourceText || "unknown"}". Use one of: ${(args.allowedPops || []).join(", ")}.`,
       };
     }
 
     if (!(args.allowedPops || []).includes(popDetection.value)) {
       return {
         ok: false,
-        error: `POP not in schema: ${popDetection.value}.`,
+        error: `POP "${popDetection.value}" is valid, but it is not available in the current scope. Available POPs: ${(args.allowedPops || []).join(", ")}.`,
       };
     }
 
@@ -708,20 +708,20 @@ function buildChatInputsFromIntent(args: {
     parseMode = "chat-overrides";
   }
 
-    if (uaDetection.mentioned) {
+  if (uaDetection.mentioned) {
     detected.uaFamilyMentioned = uaDetection.sourceText;
 
     if (!uaDetection.value) {
       return {
         ok: false,
-        error: "UA family not recognized.",
+        error: `I couldn't resolve device type "${uaDetection.sourceText || "unknown"}". Use one of: ${(args.allowedUaFamilies || []).join(", ")}.`,
       };
     }
 
     if (!(args.allowedUaFamilies || []).includes(uaDetection.value)) {
       return {
         ok: false,
-        error: `UA family not in schema: ${uaDetection.value}.`,
+        error: `Device type "${uaDetection.value}" is valid, but it is not available in the current scope. Available device types: ${(args.allowedUaFamilies || []).join(", ")}.`,
       };
     }
 
@@ -735,14 +735,14 @@ function buildChatInputsFromIntent(args: {
     if (!contentTypeDetection.value) {
       return {
         ok: false,
-        error: "Content type not recognized.",
+        error: `I couldn't resolve content type "${contentTypeDetection.sourceText || "unknown"}". Use one of: ${(args.allowedContentTypes || []).join(", ")}.`,
       };
     }
 
     if (!(args.allowedContentTypes || []).includes(contentTypeDetection.value)) {
       return {
         ok: false,
-        error: `Content type not in schema: ${contentTypeDetection.value}.`,
+        error: `Content type "${contentTypeDetection.value}" is valid, but it is not available in the current scope. Available content types: ${(args.allowedContentTypes || []).join(", ")}.`,
       };
     }
 
@@ -2280,20 +2280,29 @@ function extractWorstRegionCandidate(run: ChatTriage["run"]): InvestigationWorst
 
   const candidateSources: Array<{ items: any[]; source: string }> = [
     {
-      items: Array.isArray(m?.regionBreakdown) ? m.regionBreakdown : [],
+      items:
+        Array.isArray(m?.regionBreakdown) && m.regionBreakdown.length > 0
+          ? m.regionBreakdown
+          : [],
       source: "metricsJson.regionBreakdown",
     },
     {
-      items: Array.isArray(m?.evidenceBundle?.regionBreakdown)
-        ? m.evidenceBundle.regionBreakdown
-        : [],
+      items:
+        Array.isArray(m?.evidenceBundle?.regionBreakdown) &&
+        m.evidenceBundle.regionBreakdown.length > 0
+          ? m.evidenceBundle.regionBreakdown
+          : [],
       source: "metricsJson.evidenceBundle.regionBreakdown",
     },
   ];
 
   for (const entry of candidateSources) {
     if (entry.items.length) {
-      const picked = pickWorstFromBreakdown(entry.items, "region", entry.source);
+      const safeItems = entry.items.filter(
+        (x) => x && typeof x === "object" && x.region
+      );
+
+      const picked = pickWorstFromBreakdown(safeItems, "region", entry.source);
       if (picked) return picked;
     }
   }
@@ -2306,20 +2315,29 @@ function extractWorstPopCandidate(run: ChatTriage["run"]): InvestigationWorstCan
 
   const candidateSources: Array<{ items: any[]; source: string }> = [
     {
-      items: Array.isArray(m?.popBreakdown) ? m.popBreakdown : [],
+      items:
+        Array.isArray(m?.popBreakdown) && m.popBreakdown.length > 0
+          ? m.popBreakdown
+          : [],
       source: "metricsJson.popBreakdown",
     },
     {
-      items: Array.isArray(m?.evidenceBundle?.popBreakdown)
-        ? m.evidenceBundle.popBreakdown
-        : [],
+      items:
+        Array.isArray(m?.evidenceBundle?.popBreakdown) &&
+        m.evidenceBundle.popBreakdown.length > 0
+          ? m.evidenceBundle.popBreakdown
+          : [],
       source: "metricsJson.evidenceBundle.popBreakdown",
     },
   ];
 
   for (const entry of candidateSources) {
     if (entry.items.length) {
-      const picked = pickWorstFromBreakdown(entry.items, "pop", entry.source);
+      const safeItems = entry.items.filter(
+        (x) => x && typeof x === "object" && x.pop
+      );
+
+      const picked = pickWorstFromBreakdown(safeItems, "pop", entry.source);
       if (picked) return picked;
     }
   }
@@ -2457,7 +2475,13 @@ function deriveScopedFollowupInputs(
 ): TriageInputs {
   const base = contextToTriageInputs(ctx);
 
-  const nextRegion = overrides.region ?? base.region;
+  const nextRegion =
+    overrides.region != null
+      ? overrides.region
+      : overrides.pop != null
+      ? "all"
+      : base.region;
+
   const nextPop =
     overrides.pop != null
       ? overrides.pop
@@ -3213,25 +3237,70 @@ export default function Home() {
   }, [chatMessages]);
 
     const latestInvestigationContext = useMemo<InvestigationContext | null>(() => {
-    if (!latestTriageRun) return null;
+      let candidateRun: ChatTriage["run"] | null = null;
 
-    return buildLatestInvestigationContext({
-      run: latestTriageRun,
+      for (let i = chatMessages.length - 1; i >= 0; i--) {
+        const msg = chatMessages[i];
+        if (msg.type !== "triage") continue;
+
+        const metrics = msg.run.metricsJson || {};
+        const hasRegionEvidence =
+          Array.isArray(metrics.regionBreakdown) && metrics.regionBreakdown.length > 0;
+        const hasPopEvidence =
+          Array.isArray(metrics.popBreakdown) && metrics.popBreakdown.length > 0;
+        const hasEvidenceBundleRegion =
+          Array.isArray(metrics?.evidenceBundle?.regionBreakdown) &&
+          metrics.evidenceBundle.regionBreakdown.length > 0;
+        const hasEvidenceBundlePop =
+          Array.isArray(metrics?.evidenceBundle?.popBreakdown) &&
+          metrics.evidenceBundle.popBreakdown.length > 0;
+
+        if (hasRegionEvidence || hasPopEvidence || hasEvidenceBundleRegion || hasEvidenceBundlePop) {
+          candidateRun = msg.run;
+          break;
+        }
+
+        if (!candidateRun) {
+          candidateRun = msg.run;
+        }
+      }
+
+      if (!candidateRun) return null;
+
+      return buildLatestInvestigationContext({
+        run: candidateRun,
+        availableRegions,
+        availablePops,
+        availableContentTypes,
+        availableUaFamilies,
+      });
+    }, [
+      chatMessages,
       availableRegions,
       availablePops,
       availableContentTypes,
       availableUaFamilies,
-    });
-  }, [
-    latestTriageRun,
-    availableRegions,
-    availablePops,
-    availableContentTypes,
-    availableUaFamilies,
-  ]);
+    ]);
 
-  function buildMissingContextReply(): string {
-    return "Run a triage first, then I can refine or compare results.";
+  function buildMissingContextReply(
+    followUpKind?: ReturnType<typeof parseTriageIntent>["followUpKind"] | null
+  ): string {
+    switch (followUpKind) {
+      case "compare_previous_window":
+        return "Compare with previous window needs a prior triage result. Run a triage first, then compare it.";
+      case "drilldown_region":
+        return "I need a prior triage result with region evidence before I can drill into the worst region.";
+      case "drilldown_pop":
+        return "I need a prior triage result with POP evidence before I can drill into the worst POP.";
+      case "drilldown_dimension":
+        return "That refinement needs a prior triage result. Run a triage first, then narrow it with region, POP, content type, or device filters.";
+      case "repeat_or_refresh":
+        return "There is no prior triage result to refresh yet. Run a triage first.";
+      case "explain_signal":
+        return "I need a prior triage result before I can explain what is driving the current signal.";
+      default:
+        return "Run a triage first, then I can refine or compare results.";
+    }
   }
 
   function resolveFollowupAction(args: {
@@ -3249,9 +3318,14 @@ export default function Home() {
     if (!ctx) {
       return {
         kind: "missing_context",
-        replyText: buildMissingContextReply(),
+        replyText: buildMissingContextReply(followUpKind),
       };
     }
+
+    const allowedRegions = ctx.availableDimensions.regions || [];
+    const allowedPops = ctx.availableDimensions.pops || [];
+    const allowedContentTypes = ctx.availableDimensions.contentTypes || [];
+    const allowedUaFamilies = ctx.availableDimensions.uaFamilies || [];
 
     if (followUpKind === "repeat_or_refresh") {
       return {
@@ -3274,7 +3348,8 @@ export default function Home() {
       if (!inputs) {
         return {
           kind: "missing_context",
-          replyText: "I couldn't find a worst region from the last run. Run triage with region evidence first.",
+          replyText:
+            "I need region evidence from the last run before I can drill into the worst region.",
         };
       }
 
@@ -3290,7 +3365,8 @@ export default function Home() {
       if (!inputs) {
         return {
           kind: "missing_context",
-          replyText: "I couldn't find a worst POP from the last run. Run triage with POP evidence first.",
+          replyText:
+            "I need POP evidence from the last run before I can drill into the worst POP.",
         };
       }
 
@@ -3320,16 +3396,76 @@ export default function Home() {
       if (parseResult.serviceCanonical) {
         overrides.service = parseResult.serviceCanonical;
       }
-      if (regionDetection.value) {
+
+      if (regionDetection.mentioned) {
+        if (!regionDetection.value) {
+          return {
+            kind: "missing_context",
+            replyText: `I couldn't resolve region "${regionDetection.sourceText || "unknown"}". Use one of: ${allowedRegions.join(", ")}.`,
+          };
+        }
+
+        if (!allowedRegions.includes(regionDetection.value)) {
+          return {
+            kind: "missing_context",
+            replyText: `Region "${regionDetection.value}" is valid, but it is not available in the current scope. Available regions: ${allowedRegions.join(", ")}.`,
+          };
+        }
+
         overrides.region = regionDetection.value;
       }
-      if (popDetection.value) {
+
+      if (popDetection.mentioned) {
+        if (!popDetection.value) {
+          return {
+            kind: "missing_context",
+            replyText: `I couldn't resolve POP "${popDetection.sourceText || "unknown"}". Use one of: ${allowedPops.join(", ")}.`,
+          };
+        }
+
+        if (!allowedPops.includes(popDetection.value)) {
+          return {
+            kind: "missing_context",
+            replyText: `POP "${popDetection.value}" is valid, but it is not available in the current scope. Available POPs: ${allowedPops.join(", ")}.`,
+          };
+        }
+
         overrides.pop = popDetection.value;
       }
-      if (uaDetection.value) {
+
+      if (uaDetection.mentioned) {
+        if (!uaDetection.value) {
+          return {
+            kind: "missing_context",
+            replyText: `I couldn't resolve device type "${uaDetection.sourceText || "unknown"}". Use one of: ${allowedUaFamilies.join(", ")}.`,
+          };
+        }
+
+        if (!allowedUaFamilies.includes(uaDetection.value)) {
+          return {
+            kind: "missing_context",
+            replyText: `Device type "${uaDetection.value}" is valid, but it is not available in the current scope. Available device types: ${allowedUaFamilies.join(", ")}.`,
+          };
+        }
+
         overrides.uaFamily = uaDetection.value;
       }
-      if (contentTypeDetection.value) {
+
+      if (contentTypeDetection.mentioned) {
+        if (!contentTypeDetection.value) {
+          return {
+            kind: "missing_context",
+            replyText: `I couldn't resolve content type "${contentTypeDetection.sourceText || "unknown"}". Use one of: ${allowedContentTypes.join(", ")}.`,
+          };
+        }
+
+        if (!allowedContentTypes.includes(contentTypeDetection.value)) {
+          return {
+            kind: "missing_context",
+            replyText: `Content type "${contentTypeDetection.value}" is valid, but it is not available in the current scope. Available content types: ${allowedContentTypes.join(", ")}.`,
+          };
+        }
+
         overrides.contentType = contentTypeDetection.value;
       }
 
@@ -3498,13 +3634,25 @@ export default function Home() {
       const msg = String(e?.message || "").toLowerCase();
 
       if (msg.includes("invalid region")) {
-        addText("assistant", "⚠️ Region not recognized. Check available regions in filters.");
+        addText(
+          "assistant",
+          `⚠️ I couldn't resolve that region. Use one of: ${availableRegions.join(", ")}.`
+        );
       } else if (msg.includes("invalid pop")) {
-        addText("assistant", "⚠️ POP not recognized. Check available POPs in filters.");
+        addText(
+          "assistant",
+          `⚠️ I couldn't resolve that POP. Use one of: ${availablePops.join(", ")}.`
+        );
       } else if (msg.includes("invalid uafamily")) {
-        addText("assistant", "⚠️ Device type not recognized. Try: mobile, web, stb, smart_tv.");
+        addText(
+          "assistant",
+          `⚠️ I couldn't resolve that device type. Use one of: ${availableUaFamilies.join(", ")}.`
+        );
       } else if (msg.includes("invalid contenttype")) {
-        addText("assistant", "⚠️ Content type not recognized. Try: manifest, segment, api.");
+        addText(
+          "assistant",
+          `⚠️ I couldn't resolve that content type. Use one of: ${availableContentTypes.join(", ")}.`
+        );
       } else if (msg.includes("missing partner")) {
         addText("assistant", "⚠️ Please select a partner first.");
       } else if (msg.includes("missing service")) {
@@ -3597,7 +3745,31 @@ export default function Home() {
             followUpKind: parseResult.followUpKind ?? null,
             followUpReason: followupAction.reason,
             derivedFromLatestRun: true,
-            latestInvestigationContext,
+            latestContextSummary: latestInvestigationContext
+              ? {
+                  baseScope: latestInvestigationContext.baseScope,
+                  time: latestInvestigationContext.time,
+                  worstRegion: latestInvestigationContext.worstRegion?.value ?? null,
+                  worstPop: latestInvestigationContext.worstPop?.value ?? null,
+                  availableRegionCount: latestInvestigationContext.availableDimensions.regions.length,
+                  availablePopCount: latestInvestigationContext.availableDimensions.pops.length,
+                  availableContentTypeCount:
+                    latestInvestigationContext.availableDimensions.contentTypes.length,
+                  availableUaFamilyCount:
+                    latestInvestigationContext.availableDimensions.uaFamilies.length,
+                }
+              : null,
+            rerunScope: {
+              partner: followupAction.inputs.partner,
+              service: followupAction.inputs.service,
+              region: followupAction.inputs.region,
+              pop: followupAction.inputs.pop,
+              contentType: followupAction.inputs.contentType,
+              uaFamily: followupAction.inputs.uaFamily,
+              windowMinutes: followupAction.inputs.windowMinutes,
+              startTsUtc: followupAction.inputs.startTsUtc ?? null,
+              endTsUtc: followupAction.inputs.endTsUtc ?? null,
+            },
           },
         },
       });

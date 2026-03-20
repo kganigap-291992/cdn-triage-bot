@@ -5,7 +5,7 @@ import {
   type PartnerResolveResult,
   type ServiceResolveResult,
 } from "@/lib/schema/normalize";
-import type { CanonPartner, CanonService } from "@/lib/schema/canonical";
+import { CANON, type CanonPartner, type CanonService } from "@/lib/schema/canonical";
 import {
   parseNamedTimePhrase,
   type NamedTimeKey,
@@ -262,6 +262,25 @@ const METRIC_TERMS: Array<{ term: string; hint: MetricHint }> = [
   { term: "degradation", hint: "incident" },
 ];
 
+const REGION_ALIASES: Array<[string, string]> = [
+  ["us-east", "us-east"],
+  ["us east", "us-east"],
+  ["us-west", "us-west"],
+  ["us west", "us-west"],
+  ["us-central", "us-central"],
+  ["us central", "us-central"],
+  ["eu-west", "eu-west"],
+  ["eu west", "eu-west"],
+  ["eu-central", "eu-central"],
+  ["eu central", "eu-central"],
+  ["ap-south", "ap-south"],
+  ["ap south", "ap-south"],
+  ["ap-northeast", "ap-northeast"],
+  ["ap northeast", "ap-northeast"],
+  ["sa-east", "sa-east"],
+  ["sa east", "sa-east"],
+];
+
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
@@ -361,36 +380,50 @@ function extractTimeMeta(text: string): TimeMeta | null {
 function extractFollowUpOverrides(text: string): FollowUpOverrides {
   const overrides: FollowUpOverrides = {};
 
-  if (/\bonly\s+mobile\b/i.test(text)) {
-    overrides.uaFamily = "mobile";
-  } else if (/\bonly\s+web\b/i.test(text)) {
-    overrides.uaFamily = "web";
-  } else if (/\bonly\s+smart\s*tv\b/i.test(text)) {
-    overrides.uaFamily = "smart_tv";
-  } else if (/\bonly\s+stb\b/i.test(text)) {
-    overrides.uaFamily = "stb";
-  } else if (/\bonly\s+console\b/i.test(text)) {
-    overrides.uaFamily = "console";
-  }
+    if (/\bonly\s+mobile\b/i.test(text) || /\buafamily\s*=\s*mobile\b/i.test(text)) {
+        overrides.uaFamily = "mobile";
+    } else if (/\bonly\s+web\b/i.test(text) || /\buafamily\s*=\s*web\b/i.test(text)) {
+        overrides.uaFamily = "web";
+    } else if (
+        /\bonly\s+smart\s*tv\b/i.test(text) ||
+        /\buafamily\s*=\s*smart[_\s-]*tv\b/i.test(text)
+    ) {
+        overrides.uaFamily = "smart_tv";
+    } else if (/\bonly\s+stb\b/i.test(text) || /\buafamily\s*=\s*stb\b/i.test(text)) {
+        overrides.uaFamily = "stb";
+    } else if (
+        /\bonly\s+console\b/i.test(text) ||
+        /\buafamily\s*=\s*console\b/i.test(text)
+    ) {
+        overrides.uaFamily = "console";
+    }
 
-  if (/\bonly\s+manifests?\b/i.test(text)) {
-    overrides.contentType = "manifest";
-  } else if (/\bonly\s+segments?\b/i.test(text)) {
-    overrides.contentType = "segment";
-  } else if (/\bonly\s+api\b/i.test(text)) {
-    overrides.contentType = "api";
-  }
+    if (/\bonly\s+manifests?\b/i.test(text) || /\bcontenttype\s*=\s*manifest\b/i.test(text)) {
+        overrides.contentType = "manifest";
+    } else if (/\bonly\s+segments?\b/i.test(text) || /\bcontenttype\s*=\s*segment\b/i.test(text)) {
+        overrides.contentType = "segment";
+    } else if (/\bonly\s+api\b/i.test(text) || /\bcontenttype\s*=\s*api\b/i.test(text)) {
+        overrides.contentType = "api";
+    }
 
-  const regionPatterns: Array<[RegExp, string]> = [
-    [/\bonly\s+us[\s-]*east\b/i, "us-east"],
-    [/\bonly\s+us[\s-]*west\b/i, "us-west"],
-    [/\bonly\s+us[\s-]*central\b/i, "us-central"],
-    [/\bonly\s+eu[\s-]*west\b/i, "eu-west"],
-    [/\bonly\s+eu[\s-]*central\b/i, "eu-central"],
-    [/\bonly\s+ap[\s-]*south\b/i, "ap-south"],
-    [/\bonly\s+ap[\s-]*northeast\b/i, "ap-northeast"],
-    [/\bonly\s+sa[\s-]*east\b/i, "sa-east"],
-  ];
+    const regionPatterns: Array<[RegExp, string]> = [
+        [/\bonly\s+us[\s-]*east\b/i, "us-east"],
+        [/\bregion\s*=\s*us[\s-]*east\b/i, "us-east"],
+        [/\bonly\s+us[\s-]*west\b/i, "us-west"],
+        [/\bregion\s*=\s*us[\s-]*west\b/i, "us-west"],
+        [/\bonly\s+us[\s-]*central\b/i, "us-central"],
+        [/\bregion\s*=\s*us[\s-]*central\b/i, "us-central"],
+        [/\bonly\s+eu[\s-]*west\b/i, "eu-west"],
+        [/\bregion\s*=\s*eu[\s-]*west\b/i, "eu-west"],
+        [/\bonly\s+eu[\s-]*central\b/i, "eu-central"],
+        [/\bregion\s*=\s*eu[\s-]*central\b/i, "eu-central"],
+        [/\bonly\s+ap[\s-]*south\b/i, "ap-south"],
+        [/\bregion\s*=\s*ap[\s-]*south\b/i, "ap-south"],
+        [/\bonly\s+ap[\s-]*northeast\b/i, "ap-northeast"],
+        [/\bregion\s*=\s*ap[\s-]*northeast\b/i, "ap-northeast"],
+        [/\bonly\s+sa[\s-]*east\b/i, "sa-east"],
+        [/\bregion\s*=\s*sa[\s-]*east\b/i, "sa-east"],
+    ];
 
   for (const [pattern, value] of regionPatterns) {
     if (pattern.test(text)) {
@@ -400,8 +433,11 @@ function extractFollowUpOverrides(text: string): FollowUpOverrides {
   }
 
   const popMatch = text.match(/\bonly\s+(pop[_\s-]?\d{3})\b/i);
-  if (popMatch?.[1]) {
-    overrides.pop = popMatch[1].toLowerCase().replace(/[\s-]+/g, "_");
+  const popAssignMatch = text.match(/\bpop\s*=\s*(pop[_\s-]?\d{3})\b/i);
+  const resolvedPopRaw = popMatch?.[1] || popAssignMatch?.[1];
+
+  if (resolvedPopRaw) {
+    overrides.pop = resolvedPopRaw.toLowerCase().replace(/[\s-]+/g, "_");
   }
 
   const serviceMeta = resolveService(text);
@@ -420,6 +456,67 @@ function hasAnyFollowUpOverride(overrides: FollowUpOverrides): boolean {
       overrides.uaFamily ||
       overrides.service
   );
+}
+
+function normalizePopToken(candidate: string): string {
+  const cleaned = candidate.toLowerCase().replace(/[\s-]+/g, "_");
+  const match = cleaned.match(/^pop_(\d{1,4})$/);
+  if (!match?.[1]) return cleaned;
+  return `pop_${match[1].padStart(3, "0")}`;
+}
+
+function extractExplicitPopCandidate(text: string): string | null {
+  const match = text.match(/\b(pop[_\s-]?\d{1,4})\b/i);
+  return match?.[1] ? normalizePopToken(match[1]) : null;
+}
+
+function canonicalRegionFromText(text: string): string | null {
+  for (const [alias, canonical] of REGION_ALIASES) {
+    if (hasBoundaryPhrase(text, alias)) return canonical;
+  }
+  return null;
+}
+
+function extractExplicitRegionCandidate(text: string): string | null {
+  const regionLabelMatch = text.match(/\bregion\s+([a-z]+(?:[\s-][a-z]+)*)\b/i);
+  if (regionLabelMatch?.[1]) {
+    return regionLabelMatch[1].trim().toLowerCase().replace(/\s+/g, "-");
+  }
+
+  const inRegionMatch = text.match(/\bin\s+((?:us|eu|ap|sa)[\s-][a-z]+(?:[\s-][a-z]+)?)\b/i);
+  if (inRegionMatch?.[1]) {
+    return inRegionMatch[1].trim().toLowerCase().replace(/\s+/g, "-");
+  }
+
+  return null;
+}
+
+function buildInvalidPopReply(pop: string): string {
+  const exampleRange = `${CANON.pops[0]} to ${CANON.pops[CANON.pops.length - 1]}`;
+  return `I couldn't validate POP "${pop}". Use a canonical POP like ${exampleRange}, or say "drill into worst pop".`;
+}
+
+function buildInvalidRegionReply(region: string): string {
+  return `I couldn't validate region "${region}". Use one of: ${CANON.regions.join(", ")}.`;
+}
+
+function buildMissingPriorContextReply(followUpKind?: FollowUpKind): string {
+  switch (followUpKind) {
+    case "compare_previous_window":
+      return "Compare with previous window needs a prior triage result. Run a triage first, then compare it.";
+    case "drilldown_region":
+      return "I need a prior triage result with region evidence before I can drill into the worst region.";
+    case "drilldown_pop":
+      return "I need a prior triage result with POP evidence before I can drill into the worst POP.";
+    case "drilldown_dimension":
+      return "That refinement needs a prior triage result. Run a triage first, then narrow it with region, POP, content type, or device filters.";
+    case "repeat_or_refresh":
+      return "There is no prior triage result to refresh yet. Run a triage first.";
+    case "explain_signal":
+      return "I need a prior triage result before I can explain what is driving the current signal.";
+    default:
+      return "That follow-up needs prior context. Run a triage first, then refine it.";
+  }
 }
 
 function detectFollowUp(text: string): {
@@ -476,16 +573,20 @@ function detectFollowUp(text: string): {
     };
   }
 
-  const overrides = extractFollowUpOverrides(text);
-  if (hasAnyFollowUpOverride(overrides) && hasBoundaryPhrase(text, "only")) {
-    return {
-      followUpKind: "drilldown_dimension",
-      shouldRerun: true,
-      drilldownTarget: "dimension",
-      followUpOverrides: overrides,
-      reason: "followup_drilldown_dimension:only_override",
-    };
-  }
+    const overrides = extractFollowUpOverrides(text);
+    if (hasAnyFollowUpOverride(overrides)) {
+        const reason = hasBoundaryPhrase(text, "only")
+        ? "followup_drilldown_dimension:only_override"
+        : "followup_drilldown_dimension:assignment_override";
+
+        return {
+        followUpKind: "drilldown_dimension",
+        shouldRerun: true,
+        drilldownTarget: "dimension",
+        followUpOverrides: overrides,
+        reason,
+        };
+    }
 
   return {};
 }
@@ -543,6 +644,61 @@ export function parseTriageIntent(args: {
       rawText,
       replyText:
         "That didn't look like a triage request. Ask about traffic, latency, errors, cache, or incidents — or click Run Triage with the current scope.",
+      debug: {
+        normalizedText,
+        reasons,
+      },
+    };
+  }
+
+  const explicitPopCandidate = extractExplicitPopCandidate(normalizedText);
+  if (explicitPopCandidate && !(CANON.pops as readonly string[]).includes(explicitPopCandidate)) {
+    reasons.push("invalid_pop_candidate");
+    return {
+      intentKind: "reject",
+      shouldTrigger: false,
+      confidence: 0.08,
+      requiresPriorContext: false,
+      partnerCanonical: null,
+      serviceCanonical: null,
+      missingPartner: true,
+      missingService: true,
+      metricHints: [],
+      timeMeta: null,
+      partnerMeta: null,
+      serviceMeta: null,
+      rawText,
+      replyText: buildInvalidPopReply(explicitPopCandidate),
+      debug: {
+        normalizedText,
+        reasons,
+      },
+    };
+  }
+
+  const explicitRegionCandidate = extractExplicitRegionCandidate(normalizedText);
+  const canonicalRegionMention = canonicalRegionFromText(normalizedText);
+  if (
+    explicitRegionCandidate &&
+    !canonicalRegionMention &&
+    !hasBoundaryPhrase(normalizedText, "worst region")
+  ) {
+    reasons.push("invalid_region_candidate");
+    return {
+      intentKind: "reject",
+      shouldTrigger: false,
+      confidence: 0.08,
+      requiresPriorContext: false,
+      partnerCanonical: null,
+      serviceCanonical: null,
+      missingPartner: true,
+      missingService: true,
+      metricHints: [],
+      timeMeta: null,
+      partnerMeta: null,
+      serviceMeta: null,
+      rawText,
+      replyText: buildInvalidRegionReply(explicitRegionCandidate),
       debug: {
         normalizedText,
         reasons,
@@ -641,7 +797,7 @@ export function parseTriageIntent(args: {
       partnerMeta,
       serviceMeta,
       rawText,
-      replyText: "That follow-up needs prior context. Run a triage first, then refine it.",
+      replyText: buildMissingPriorContextReply(followUp.followUpKind),
       debug: {
         normalizedText,
         reasons,
