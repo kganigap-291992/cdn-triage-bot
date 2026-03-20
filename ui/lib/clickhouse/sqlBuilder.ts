@@ -43,7 +43,13 @@ function normalizeOptionalToken(v: unknown, fallback = "all"): string {
   return s || fallback;
 }
 
-function addEq(where: string[], params: Record<string, any>, col: string, key: string, val: string) {
+function addEq(
+  where: string[],
+  params: Record<string, any>,
+  col: string,
+  key: string,
+  val: string
+) {
   if (!val || val === "all") return;
   where.push(`${col} = {${key}:String}`);
   params[key] = val;
@@ -215,23 +221,44 @@ FROM
 ORDER BY c DESC
 `.trim();
 
-  // Query 2: top pops by 5xx
+  // Query 2: region breakdown for evidence bundle / worst-region drilldown
   const q2 = `
 ${timeWith}
 SELECT
-  pop,
-  sum(http_5xx_count) AS http_5xx,
+  region,
   sum(requests) AS total_requests,
-  round(100.0 * http_5xx / nullIf(total_requests, 0), 3) AS err_rate_pct
+  sum(http_5xx_count) AS error_5xx_count,
+  round(100.0 * sum(http_5xx_count) / nullIf(sum(requests), 0), 3) AS error_rate_pct,
+  avg(p95_ms) AS p95_ttms_ms,
+  avg(cache_hit_rate) AS cache_hit_rate
 FROM ${table}
 ${whereSql}
-GROUP BY pop
-ORDER BY http_5xx DESC
+GROUP BY region
+HAVING total_requests > 0
+ORDER BY error_5xx_count DESC, p95_ttms_ms DESC, total_requests DESC
 LIMIT 20
 `.trim();
 
-  // Query 3: timeseries buckets (for UI graphs)
+  // Query 3: pop breakdown for evidence bundle / worst-pop drilldown
   const q3 = `
+${timeWith}
+SELECT
+  pop,
+  sum(requests) AS total_requests,
+  sum(http_5xx_count) AS error_5xx_count,
+  round(100.0 * sum(http_5xx_count) / nullIf(sum(requests), 0), 3) AS error_rate_pct,
+  avg(p95_ms) AS p95_ttms_ms,
+  avg(cache_hit_rate) AS cache_hit_rate
+FROM ${table}
+${whereSql}
+GROUP BY pop
+HAVING total_requests > 0
+ORDER BY error_5xx_count DESC, p95_ttms_ms DESC, total_requests DESC
+LIMIT 20
+`.trim();
+
+  // Query 4: timeseries buckets (for UI graphs)
+  const q4 = `
 ${timeWith}
 SELECT
   toStartOfInterval(ts, INTERVAL {bucketSeconds:Int32} SECOND) AS bucket,
@@ -246,7 +273,7 @@ ORDER BY bucket ASC
 `.trim();
 
   return {
-    queries: [q0, q1, q2, q3],
+    queries: [q0, q1, q2, q3, q4],
     params,
     meta: {
       tableUsed: table,

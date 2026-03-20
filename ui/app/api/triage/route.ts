@@ -86,6 +86,118 @@ function buildEvidenceScope(inputs: Inputs, tm: TimeMode): EvidenceScope {
   };
 }
 
+function normalizeBreakdownKey(v: unknown): string | null {
+  const s = String(v ?? "").trim().toLowerCase();
+  return s || null;
+}
+
+function normalizeBreakdownNumber(v: unknown, fallback = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeRegionBreakdownRow(row: any) {
+  const region = normalizeBreakdownKey(row?.region);
+  if (!region) return null;
+
+  return {
+    region,
+    totalRequests: normalizeBreakdownNumber(
+      row?.totalRequests ?? row?.total_requests ?? row?.requests
+    ),
+    error5xxCount: normalizeBreakdownNumber(
+      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
+    ),
+    errorRatePct: normalizeBreakdownNumber(
+      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
+    ),
+    p95TtmsMs: numOrNull(row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms),
+    cacheHitPct: numOrNull(
+      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
+    ),
+  };
+}
+
+function normalizePopBreakdownRow(row: any) {
+  const pop = normalizeBreakdownKey(row?.pop);
+  if (!pop) return null;
+
+  return {
+    pop,
+    totalRequests: normalizeBreakdownNumber(
+      row?.totalRequests ?? row?.total_requests ?? row?.requests
+    ),
+    error5xxCount: normalizeBreakdownNumber(
+      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
+    ),
+    errorRatePct: normalizeBreakdownNumber(
+      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
+    ),
+    p95TtmsMs: numOrNull(row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms),
+    cacheHitPct: numOrNull(
+      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
+    ),
+  };
+}
+
+function normalizeRegionBreakdown(rows: unknown): any[] | undefined {
+  if (!Array.isArray(rows)) return undefined;
+
+  const out = rows
+    .map((row) => normalizeRegionBreakdownRow(row))
+    .filter(Boolean) as any[];
+
+  if (!out.length) return undefined;
+
+  out.sort((a, b) => {
+    if (b.error5xxCount !== a.error5xxCount) return b.error5xxCount - a.error5xxCount;
+    if ((b.p95TtmsMs ?? -1) !== (a.p95TtmsMs ?? -1)) return (b.p95TtmsMs ?? -1) - (a.p95TtmsMs ?? -1);
+    return b.totalRequests - a.totalRequests;
+  });
+
+  return out;
+}
+
+function normalizePopBreakdown(rows: unknown): any[] | undefined {
+  if (!Array.isArray(rows)) return undefined;
+
+  const out = rows
+    .map((row) => normalizePopBreakdownRow(row))
+    .filter(Boolean) as any[];
+
+  if (!out.length) return undefined;
+
+  out.sort((a, b) => {
+    if (b.error5xxCount !== a.error5xxCount) return b.error5xxCount - a.error5xxCount;
+    if ((b.p95TtmsMs ?? -1) !== (a.p95TtmsMs ?? -1)) return (b.p95TtmsMs ?? -1) - (a.p95TtmsMs ?? -1);
+    return b.totalRequests - a.totalRequests;
+  });
+
+  return out;
+}
+
+function pickRegionBreakdownFromProxy(parsed: any, rawMetrics: any): any[] | undefined {
+  return (
+    normalizeRegionBreakdown(rawMetrics?.regionBreakdown) ||
+    normalizeRegionBreakdown(rawMetrics?.evidenceBundle?.regionBreakdown) ||
+    normalizeRegionBreakdown(rawMetrics?.evidence?.regionBreakdown) ||
+    normalizeRegionBreakdown(parsed?.evidenceBundle?.regionBreakdown) ||
+    normalizeRegionBreakdown(parsed?.evidence?.regionBreakdown) ||
+    undefined
+  );
+}
+
+function pickPopBreakdownFromProxy(parsed: any, rawMetrics: any): any[] | undefined {
+  return (
+    normalizePopBreakdown(rawMetrics?.popBreakdown) ||
+    normalizePopBreakdown(rawMetrics?.evidenceBundle?.popBreakdown) ||
+    normalizePopBreakdown(rawMetrics?.evidence?.popBreakdown) ||
+    normalizePopBreakdown(parsed?.evidenceBundle?.popBreakdown) ||
+    normalizePopBreakdown(parsed?.evidence?.popBreakdown) ||
+    undefined
+  );
+}
+
 function assertCanonicalMetricsJson(metricsJson: any) {
   if (!metricsJson || typeof metricsJson !== "object") {
     throw new Error("route: metricsJson missing");
@@ -348,7 +460,10 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
   });
 }
 
-function adaptLegacyProxyMetricsToCanonical(legacyMetrics: any) {
+function adaptLegacyProxyMetricsToCanonical(
+  legacyMetrics: any,
+  parsed?: any
+) {
   const totalRequests = numOrNull(legacyMetrics?.totalRequests) ?? numOrNull(legacyMetrics?.requests) ?? 0;
   const p50 = numOrNull(legacyMetrics?.p50TtmsMs) ?? numOrNull(legacyMetrics?.p50_ms);
   const p95 = numOrNull(legacyMetrics?.p95TtmsMs) ?? numOrNull(legacyMetrics?.p95_ms);
@@ -359,7 +474,7 @@ function adaptLegacyProxyMetricsToCanonical(legacyMetrics: any) {
     numOrNull(legacyMetrics?.errorRatePct) ??
     (totalRequests > 0 ? (error5xxCount / totalRequests) * 100 : 0);
 
-  return {
+  const out: any = {
     totalRequests,
     p50TtmsMs: p50,
     p95TtmsMs: p95,
@@ -372,6 +487,14 @@ function adaptLegacyProxyMetricsToCanonical(legacyMetrics: any) {
         : { bucketSeconds: null, startTs: null, endTs: null, points: [] },
     debug: legacyMetrics?.debug && typeof legacyMetrics.debug === "object" ? legacyMetrics.debug : {},
   };
+
+  const regionBreakdown = pickRegionBreakdownFromProxy(parsed, legacyMetrics);
+  if (regionBreakdown) out.regionBreakdown = regionBreakdown;
+
+  const popBreakdown = pickPopBreakdownFromProxy(parsed, legacyMetrics);
+  if (popBreakdown) out.popBreakdown = popBreakdown;
+
+  return out;
 }
 
 function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScope) {
@@ -397,7 +520,17 @@ function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScope) {
   ) {
     metricsJson = assertCanonicalMetricsJson(rawMetrics);
   } else {
-    metricsJson = assertCanonicalMetricsJson(adaptLegacyProxyMetricsToCanonical(rawMetrics || {}));
+    metricsJson = assertCanonicalMetricsJson(adaptLegacyProxyMetricsToCanonical(rawMetrics || {}, parsed));
+  }
+
+  const regionBreakdown = pickRegionBreakdownFromProxy(parsed, rawMetrics);
+  if (regionBreakdown) {
+    metricsJson.regionBreakdown = regionBreakdown;
+  }
+
+  const popBreakdown = pickPopBreakdownFromProxy(parsed, rawMetrics);
+  if (popBreakdown) {
+    metricsJson.popBreakdown = popBreakdown;
   }
 
   metricsJson.debug = {

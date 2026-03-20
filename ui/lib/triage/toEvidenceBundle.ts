@@ -152,6 +152,24 @@ function normalizeSql(result: ClickhouseTriageResult) {
   };
 }
 
+function buildRegionBreakdown(result: ClickhouseTriageResult) {
+  const m = result?.metricsJson || {};
+  if (Array.isArray(m.regionBreakdown)) return m.regionBreakdown;
+  if (Array.isArray(m.evidenceBundle?.regionBreakdown)) {
+    return m.evidenceBundle.regionBreakdown;
+  }
+  return [];
+}
+
+function buildPopBreakdown(result: ClickhouseTriageResult) {
+  const m = result?.metricsJson || {};
+  if (Array.isArray(m.popBreakdown)) return m.popBreakdown;
+  if (Array.isArray(m.evidenceBundle?.popBreakdown)) {
+    return m.evidenceBundle.popBreakdown;
+  }
+  return [];
+}
+
 export function toEvidenceBundle(
   inputs: ClickhouseTriageInputs,
   result: ClickhouseTriageResult
@@ -163,6 +181,8 @@ export function toEvidenceBundle(
   const derivedMetrics = buildDerivedMetrics(result);
   const diagnostics = buildDiagnostics(result);
   const sql = normalizeSql(result);
+  const regionBreakdown = buildRegionBreakdown(result);
+  const popBreakdown = buildPopBreakdown(result);
 
   return {
     normalizedScope,
@@ -172,15 +192,13 @@ export function toEvidenceBundle(
     timeseries: {
       bucketSeconds:
         safeNumber(result?.metricsJson?.timeseries?.bucketSeconds) ?? null,
-      startTs:
-        asString(result?.metricsJson?.timeseries?.startTs) ?? null,
-      endTs:
-        asString(result?.metricsJson?.timeseries?.endTs) ?? null,
+      startTs: asString(result?.metricsJson?.timeseries?.startTs) ?? null,
+      endTs: asString(result?.metricsJson?.timeseries?.endTs) ?? null,
       points: currentPoints,
     },
     derivedMetrics,
-    regionBreakdown: [],
-    popBreakdown: [],
+    regionBreakdown,
+    popBreakdown,
     worstLatency: [],
     worstErrors: [],
     worstCache: [],

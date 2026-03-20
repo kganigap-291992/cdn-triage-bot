@@ -152,6 +152,100 @@ function buildScopedPopsAndHostsCanon(region: string, pop: string, seed: number)
   return { effectiveRegion, scopedPops, hostSeries };
 }
 
+function buildRegionBreakdown(args: {
+  canonRegions: string[];
+  scopedRegion: string;
+  totalRequests: number;
+  baseErrorPct: number;
+  baseP95: number;
+  cacheHitPct: number;
+  seed: number;
+}) {
+  const { canonRegions, scopedRegion, totalRequests, baseErrorPct, baseP95, cacheHitPct, seed } = args;
+
+  const rows = canonRegions.map((region, idx) => {
+    const regionSeed = hashToInt(`${seed}|region|${region}|${idx}`);
+    const emphasis = region === scopedRegion ? 1.35 : 1.0;
+
+    const requestShare = clamp(0.07 + ((regionSeed % 17) / 100), 0.07, 0.23);
+    const requests = Math.max(1000, round(totalRequests * requestShare * emphasis));
+
+    const errPct = clamp(baseErrorPct * (0.7 + ((regionSeed % 9) / 10)) * emphasis, 0.01, 12);
+    const p95 = round(baseP95 * (0.85 + ((regionSeed % 7) / 20)) * (region === scopedRegion ? 1.08 : 1.0));
+    const cacheHitRate = clamp(
+      cacheHitPct * (0.85 + ((regionSeed % 11) / 50)) * (region === scopedRegion ? 0.94 : 1.0),
+      1,
+      99
+    );
+    const error5xxCount = round((requests * errPct) / 100);
+
+    return {
+      region,
+      totalRequests: requests,
+      error5xxCount,
+      errorRatePct: errPct,
+      p95TtmsMs: p95,
+      cacheHitRate,
+    };
+  });
+
+  rows.sort((a, b) => {
+    if (b.errorRatePct !== a.errorRatePct) return b.errorRatePct - a.errorRatePct;
+    if (b.p95TtmsMs !== a.p95TtmsMs) return b.p95TtmsMs - a.p95TtmsMs;
+    return b.totalRequests - a.totalRequests;
+  });
+
+  return rows;
+}
+
+function buildPopBreakdown(args: {
+  canonPops: string[];
+  scopedPops: string[];
+  totalRequests: number;
+  baseErrorPct: number;
+  baseP95: number;
+  cacheHitPct: number;
+  seed: number;
+}) {
+  const { canonPops, scopedPops, totalRequests, baseErrorPct, baseP95, cacheHitPct, seed } = args;
+
+  const scopedSet = new Set(scopedPops);
+
+  const rows = canonPops.map((pop, idx) => {
+    const popSeed = hashToInt(`${seed}|pop|${pop}|${idx}`);
+    const emphasis = scopedSet.has(pop) ? 1.3 : 1.0;
+
+    const requestShare = clamp(0.015 + ((popSeed % 13) / 500), 0.015, 0.05);
+    const requests = Math.max(500, round(totalRequests * requestShare * emphasis));
+
+    const errPct = clamp(baseErrorPct * (0.8 + ((popSeed % 11) / 8)) * emphasis, 0.01, 15);
+    const p95 = round(baseP95 * (0.9 + ((popSeed % 9) / 18)) * (scopedSet.has(pop) ? 1.06 : 1.0));
+    const cacheHitRate = clamp(
+      cacheHitPct * (0.82 + ((popSeed % 13) / 55)) * (scopedSet.has(pop) ? 0.93 : 1.0),
+      1,
+      99
+    );
+    const error5xxCount = round((requests * errPct) / 100);
+
+    return {
+      pop,
+      totalRequests: requests,
+      error5xxCount,
+      errorRatePct: errPct,
+      p95TtmsMs: p95,
+      cacheHitRate,
+    };
+  });
+
+  rows.sort((a, b) => {
+    if (b.errorRatePct !== a.errorRatePct) return b.errorRatePct - a.errorRatePct;
+    if (b.p95TtmsMs !== a.p95TtmsMs) return b.p95TtmsMs - a.p95TtmsMs;
+    return b.totalRequests - a.totalRequests;
+  });
+
+  return rows;
+}
+
 // -----------------------------
 // Mock runner (CANON-only output)
 // -----------------------------
@@ -448,6 +542,26 @@ export async function runMockClickhouseTriage(
 
   const errorRatePct = totalRequests ? (total5xx / totalRequests) * 100 : 0;
 
+  const regionBreakdown = buildRegionBreakdown({
+    canonRegions,
+    scopedRegion: effectiveRegion,
+    totalRequests,
+    baseErrorPct,
+    baseP95,
+    cacheHitPct,
+    seed,
+  });
+
+  const popBreakdown = buildPopBreakdown({
+    canonPops,
+    scopedPops,
+    totalRequests,
+    baseErrorPct,
+    baseP95,
+    cacheHitPct,
+    seed,
+  });
+
   const warnings: string[] = [];
   if (totalRequests === 0) warnings.push("No rows matched (mock produced 0 requests).");
   if (debug) warnings.push(`debug=true: forcing spikes in last ${forcedBuckets} buckets for UI testing.`);
@@ -523,6 +637,8 @@ export async function runMockClickhouseTriage(
     statusCounts,
     topCrcClass,
     topErrorCrc,
+    regionBreakdown,
+    popBreakdown,
 
     available,
     timeRangeUTC: { start: startISO, end: endISO },
@@ -540,7 +656,7 @@ export async function runMockClickhouseTriage(
     warnings,
 
     debug: {
-      __runnerVersion: "mockclickhouse-vCANON-005",
+      __runnerVersion: "mockclickhouse-vCANON-006",
       note: "ClickHouse mock runner (no real DB access).",
       forcedAnomalies: !!debug,
       forcedBuckets,
