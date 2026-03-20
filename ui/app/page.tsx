@@ -2178,6 +2178,39 @@ function getRunTimeContext(run: ChatTriage["run"]): InvestigationTimeContext {
   };
 }
 
+function getRunAnchoredWindow(run: ChatTriage["run"]): {
+  startTsUtc: string | null;
+  endTsUtc: string | null;
+} {
+  const ts = parseTimeseries(run.metricsJson);
+  if (ts?.startTs && ts?.endTs) {
+    return {
+      startTsUtc: ts.startTs,
+      endTsUtc: ts.endTs,
+    };
+  }
+
+  const meta = run.swarm?.assessment?.metadata;
+  if (meta?.startTs && meta?.endTs) {
+    return {
+      startTsUtc: String(meta.startTs),
+      endTsUtc: String(meta.endTs),
+    };
+  }
+
+  if (run.inputs.startTsUtc && run.inputs.endTsUtc) {
+    return {
+      startTsUtc: run.inputs.startTsUtc,
+      endTsUtc: run.inputs.endTsUtc,
+    };
+  }
+
+  return {
+    startTsUtc: null,
+    endTsUtc: null,
+  };
+}
+
 function toNumOrNull(v: unknown): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
@@ -2301,9 +2334,26 @@ function buildLatestInvestigationContext(args: {
   availableContentTypes: string[];
   availableUaFamilies: string[];
 }): InvestigationContext {
+  const baseTime = getRunTimeContext(args.run);
+  const anchored = getRunAnchoredWindow(args.run);
+
+  const resolvedTime: InvestigationTimeContext =
+    anchored.startTsUtc && anchored.endTsUtc
+      ? {
+          mode: "absolute",
+          windowMinutes: windowMinutesFromRange(
+            anchored.startTsUtc,
+            anchored.endTsUtc,
+            baseTime.windowMinutes
+          ),
+          startTsUtc: anchored.startTsUtc,
+          endTsUtc: anchored.endTsUtc,
+        }
+      : baseTime;
+
   return {
     baseScope: getRunBaseScope(args.run),
-    time: getRunTimeContext(args.run),
+    time: resolvedTime,
     worstRegion: extractWorstRegionCandidate(args.run),
     worstPop: extractWorstPopCandidate(args.run),
     availableDimensions: {
@@ -3162,7 +3212,7 @@ export default function Home() {
     return null;
   }, [chatMessages]);
 
-  const latestInvestigationContext = useMemo<InvestigationContext | null>(() => {
+    const latestInvestigationContext = useMemo<InvestigationContext | null>(() => {
     if (!latestTriageRun) return null;
 
     return buildLatestInvestigationContext({
@@ -3179,6 +3229,119 @@ export default function Home() {
     availableContentTypes,
     availableUaFamilies,
   ]);
+
+  function buildMissingContextReply(): string {
+    return "Run a triage first, then I can refine or compare results.";
+  }
+
+  function resolveFollowupAction(args: {
+    parseResult: ReturnType<typeof parseTriageIntent>;
+    ctx: InvestigationContext | null;
+  }):
+    | { kind: "missing_context"; replyText: string }
+    | { kind: "rerun"; inputs: TriageInputs; reason: string }
+    | { kind: "unhandled" } {
+    const { parseResult, ctx } = args;
+
+    const followUpKind = parseResult.followUpKind ?? null;
+    if (!followUpKind) return { kind: "unhandled" };
+
+    if (!ctx) {
+      return {
+        kind: "missing_context",
+        replyText: buildMissingContextReply(),
+      };
+    }
+
+    if (followUpKind === "repeat_or_refresh") {
+      return {
+        kind: "rerun",
+        inputs: deriveRefreshInputs(ctx),
+        reason: "repeat_or_refresh",
+      };
+    }
+
+    if (followUpKind === "compare_previous_window") {
+      return {
+        kind: "rerun",
+        inputs: derivePreviousWindowInputs(ctx),
+        reason: "compare_previous_window",
+      };
+    }
+
+    if (followUpKind === "drilldown_region") {
+      const inputs = deriveWorstRegionInputs(ctx);
+      if (!inputs) {
+        return {
+          kind: "missing_context",
+          replyText: "I couldn't find a worst region from the last run. Run triage with region evidence first.",
+        };
+      }
+
+      return {
+        kind: "rerun",
+        inputs,
+        reason: "drilldown_region",
+      };
+    }
+
+    if (followUpKind === "drilldown_pop") {
+      const inputs = deriveWorstPopInputs(ctx);
+      if (!inputs) {
+        return {
+          kind: "missing_context",
+          replyText: "I couldn't find a worst POP from the last run. Run triage with POP evidence first.",
+        };
+      }
+
+      return {
+        kind: "rerun",
+        inputs,
+        reason: "drilldown_pop",
+      };
+    }
+
+    if (followUpKind === "drilldown_dimension") {
+      const overrides: {
+        region?: string;
+        pop?: string;
+        contentType?: string;
+        uaFamily?: string;
+        service?: string;
+      } = {};
+
+      const rawText = parseResult.rawText || "";
+
+      const regionDetection = detectRegionOverrideFromText(rawText);
+      const popDetection = detectPopOverrideFromText(rawText);
+      const uaDetection = detectUaFamilyOverrideFromText(rawText);
+      const contentTypeDetection = detectContentTypeOverrideFromText(rawText);
+
+      if (parseResult.serviceCanonical) {
+        overrides.service = parseResult.serviceCanonical;
+      }
+      if (regionDetection.value) {
+        overrides.region = regionDetection.value;
+      }
+      if (popDetection.value) {
+        overrides.pop = popDetection.value;
+      }
+      if (uaDetection.value) {
+        overrides.uaFamily = uaDetection.value;
+      }
+      if (contentTypeDetection.value) {
+        overrides.contentType = contentTypeDetection.value;
+      }
+
+      return {
+        kind: "rerun",
+        inputs: deriveScopedFollowupInputs(ctx, overrides),
+        reason: "drilldown_dimension",
+      };
+    }
+
+    return { kind: "unhandled" };
+  }
 
   function isAllowed(val: string, allowed: string[]) {
     const v = String(val ?? "").trim();
@@ -3410,6 +3573,34 @@ export default function Home() {
         parseResult.replyText ||
           "That didn't look like a triage request. Ask about traffic, latency, errors, cache, or incidents — or click Run Triage with the current scope."
       );
+      return;
+    }
+
+    const followupAction = resolveFollowupAction({
+      parseResult,
+      ctx: latestInvestigationContext,
+    });
+
+    if (followupAction.kind === "missing_context") {
+      addText("assistant", followupAction.replyText);
+      return;
+    }
+
+    if (followupAction.kind === "rerun") {
+      pushRunLog(`Follow-up rerun resolved: ${followupAction.reason}`);
+
+      await executeTriageRun(followupAction.inputs, "chat", {
+        chatContext: {
+          rawText: parseResult.rawText,
+          parseMode: "chat-overrides",
+          detected: {
+            followUpKind: parseResult.followUpKind ?? null,
+            followUpReason: followupAction.reason,
+            derivedFromLatestRun: true,
+            latestInvestigationContext,
+          },
+        },
+      });
       return;
     }
 
