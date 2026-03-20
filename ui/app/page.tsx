@@ -2336,6 +2336,95 @@ function deriveRefreshInputs(ctx: InvestigationContext): TriageInputs {
   return contextToTriageInputs(ctx);
 }
 
+function derivePreviousWindowInputs(
+  ctx: InvestigationContext,
+  now: Date = new Date()
+): TriageInputs {
+  const base = contextToTriageInputs(ctx);
+  const windowMs = Math.max(1, ctx.time.windowMinutes) * 60 * 1000;
+
+  if (ctx.time.mode === "absolute" && ctx.time.startTsUtc && ctx.time.endTsUtc) {
+    const startMs = new Date(ctx.time.startTsUtc).getTime();
+    const endMs = new Date(ctx.time.endTsUtc).getTime();
+
+    if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
+      const spanMs = endMs - startMs;
+      const prevStart = new Date(startMs - spanMs).toISOString();
+      const prevEnd = new Date(startMs).toISOString();
+
+      return {
+        ...base,
+        windowMinutes: Math.max(1, Math.round(spanMs / 60000)),
+        startTsUtc: prevStart,
+        endTsUtc: prevEnd,
+      };
+    }
+  }
+
+  const endMs = now.getTime() - windowMs;
+  const startMs = endMs - windowMs;
+
+  return {
+    ...base,
+    windowMinutes: ctx.time.windowMinutes,
+    startTsUtc: new Date(startMs).toISOString(),
+    endTsUtc: new Date(endMs).toISOString(),
+  };
+}
+
+function deriveWorstRegionInputs(ctx: InvestigationContext): TriageInputs | null {
+  if (!ctx.worstRegion?.value) return null;
+
+  const base = contextToTriageInputs(ctx);
+
+  return {
+    ...base,
+    region: ctx.worstRegion.value,
+    pop: "all",
+  };
+}
+
+function deriveWorstPopInputs(ctx: InvestigationContext): TriageInputs | null {
+  if (!ctx.worstPop?.value) return null;
+
+  const base = contextToTriageInputs(ctx);
+
+  return {
+    ...base,
+    pop: ctx.worstPop.value,
+  };
+}
+
+function deriveScopedFollowupInputs(
+  ctx: InvestigationContext,
+  overrides: {
+    region?: string;
+    pop?: string;
+    contentType?: string;
+    uaFamily?: string;
+    service?: string;
+  }
+): TriageInputs {
+  const base = contextToTriageInputs(ctx);
+
+  const nextRegion = overrides.region ?? base.region;
+  const nextPop =
+    overrides.pop != null
+      ? overrides.pop
+      : overrides.region != null
+      ? "all"
+      : base.pop;
+
+  return {
+    ...base,
+    service: overrides.service ?? base.service,
+    region: nextRegion,
+    pop: nextPop,
+    contentType: overrides.contentType ?? base.contentType,
+    uaFamily: overrides.uaFamily ?? base.uaFamily,
+  };
+}
+
 // ── TriageCard ─────────────────────────────────────────────────────────────
 function TriageCard({ run }: { run: ChatTriage["run"] }) {
   const ts = parseTimeseries(run.metricsJson);
