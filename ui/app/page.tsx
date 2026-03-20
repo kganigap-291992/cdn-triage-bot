@@ -2315,7 +2315,26 @@ function buildLatestInvestigationContext(args: {
   };
 }
 
+function contextToTriageInputs(ctx: InvestigationContext): TriageInputs {
+  const { baseScope, time } = ctx;
 
+  return {
+    dataSource: "clickhouse",
+    partner: baseScope.partner,
+    service: baseScope.service,
+    region: baseScope.region,
+    pop: baseScope.pop,
+    contentType: baseScope.contentType,
+    uaFamily: baseScope.uaFamily,
+    windowMinutes: time.windowMinutes,
+    startTsUtc: time.mode === "absolute" ? time.startTsUtc : null,
+    endTsUtc: time.mode === "absolute" ? time.endTsUtc : null,
+  };
+}
+
+function deriveRefreshInputs(ctx: InvestigationContext): TriageInputs {
+  return contextToTriageInputs(ctx);
+}
 
 // ── TriageCard ─────────────────────────────────────────────────────────────
 function TriageCard({ run }: { run: ChatTriage["run"] }) {
