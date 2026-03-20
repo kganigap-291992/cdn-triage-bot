@@ -261,7 +261,7 @@ Without context → reject or prompt
 
 ---
 
-## Non-Goals (Phase 1)
+## Non-Goals 
 
 - No LLM parsing
 - No fuzzy matching
@@ -270,14 +270,122 @@ Without context → reject or prompt
 
 ---
 
-## Future Extensions
+# 🕒 Named Time Resolution 
 
-- LLM layer on top of parser
-- Context memory (Redis)
-- Region / POP alias expansion
-- Multi-turn refinement
-- Intent confidence scoring
+This document defines the deterministic mapping of human time phrases
+(e.g., "last night", "this morning") into executable query windows.
 
+These mappings are **frozen for v1** and must remain stable unless explicitly versioned.
+
+---
+
+## 🔒 Core Policies
+
+### Policy 1 — Timezone
+
+- All human phrases are interpreted in:
+  → `America/New_York`
+
+- All queries execute in:
+  → UTC
+
+- Resolver must output:
+  - Local time window (for readability)
+  - UTC time window (for execution)
+
+---
+
+### Policy 2 — Future Windows
+
+- The system must NOT silently resolve future time ranges.
+
+Example:
+- `"tonight"` before 18:00 local time → ❌ invalid
+
+Instead, return:
+
+"Tonight has not started yet in America/New_York."
+
+---
+
+## 🧠 Named Time Mappings (v1)
+
+All intervals are **half-open**:
+[start, end)
+
+---
+
+### 1. last night
+- Previous day 20:00 → Current day 06:00
+
+---
+
+### 2. overnight
+- Previous day 22:00 → Current day 06:00
+
+---
+
+### 3. today
+- Today 00:00 → Now
+
+---
+
+### 4. this morning
+- Today 06:00 → min(Now, 12:00)
+
+---
+
+### 5. this afternoon
+- Today 12:00 → min(Now, 18:00)
+
+---
+
+### 6. tonight
+
+- If current time < 18:00:
+  → ❌ Not started
+
+- If current time ≥ 18:00:
+  → Today 18:00 → Now
+
+---
+
+### 7. yesterday
+- Previous day 00:00 → Current day 00:00
+
+---
+
+### 8. yesterday evening
+- Previous day 18:00 → Current day 00:00
+
+---
+
+### 9. now / right now
+- Last 30 minutes
+
+---
+
+## 🧩 Resolver Contract
+
+The resolver must return a structured result.
+
+### Success
+
+```ts
+type ResolvedTimeWindow = {
+  key: string;
+  label: string;
+  timezone: "America/New_York";
+
+  startLocalIso: string;
+  endLocalIso: string;
+
+  startUtcIso: string;
+  endUtcIso: string;
+
+  timeMode: "absolute";
+  source: "named_time";
+};
 ---
 
 ## Summary
@@ -289,3 +397,53 @@ This system:
 - Improves UX without infra changes
 
 This forms the foundation for future LLM enhancements.
+
+
+# 🔁 Multi-Hop Investigation (Phase 5C)
+
+This section defines how Cachey supports **follow-up / conversational triage workflows**.
+
+Goal:
+- Allow users to iteratively investigate issues using chat
+- Reuse prior triage results as context
+- Keep execution deterministic and reproducible
+
+---
+
+## 🧠 Design Principles
+
+### 1. Latest-Run Driven (No Persistence)
+
+All follow-up behavior is derived from:
+- the **most recent triage run**
+- its scope
+- its evidence (metricsJson / swarm output)
+
+No Redis or persistent memory is used in v1.
+
+---
+
+### 2. Deterministic Follow-Up Resolution
+
+Follow-up queries must resolve into either:
+- **Answer-only response** (no rerun), or
+- **Derived triage inputs** → executed via `/api/triage`
+
+No implicit or hidden state mutations.
+
+---
+
+### 3. No Backend Contract Changes
+
+All follow-up reruns must produce standard inputs:
+
+```ts
+{
+  partner,
+  service,
+  region,
+  pop,
+  contentType,
+  uaFamily,
+  windowMinutes | absolute time
+}
