@@ -6,6 +6,8 @@ import { buildClickhouseSql } from "@/lib/clickhouse/sqlBuilder";
 import { toEvidenceBundle } from "@/lib/triage/toEvidenceBundle";
 import { runAgents } from "@/lib/triage/runAgents";
 import { buildAssessment } from "@/lib/triage/buildAssessment";
+import { resolveDrillRequest, type DrillIntent } from "@/lib/triage/drillResolver";
+import { executeDrill } from "@/lib/triage/drillExecutor";
 
 export const runtime = "nodejs";
 
@@ -21,6 +23,7 @@ type Inputs = {
   debug: boolean;
   contentType: string;
   uaFamily: string;
+  drillIntent: DrillIntent | null;
 };
 
 type EvidenceScope = {
@@ -70,6 +73,20 @@ function isCanonService(x: string) {
 
 function isAllOrOneOf(x: string, allowed: readonly string[]) {
   return x === "all" || allowed.includes(x);
+}
+
+function isDrillIntent(x: string): x is DrillIntent {
+  return [
+    "worst_region",
+    "worst_pop",
+    "worst_ua",
+    "worst_content",
+    "worst_host",
+    "worst_status",
+    "worst_endpoint",
+    "time_trend",
+    "comparison",
+  ].includes(x);
 }
 
 function buildEvidenceScope(inputs: Inputs, tm: TimeMode): EvidenceScope {
@@ -293,6 +310,9 @@ function normalize(x: Record<string, any>): Inputs {
 
   const debug = boolish(x.debug);
 
+  const rawDrillIntent = tok(x.drillIntent ?? x.drill_intent ?? "");
+  const drillIntent = rawDrillIntent && isDrillIntent(rawDrillIntent) ? rawDrillIntent : null;
+
   return {
     dataSource,
     partner,
@@ -305,6 +325,7 @@ function normalize(x: Record<string, any>): Inputs {
     debug,
     contentType: ctRaw,
     uaFamily: uaRaw,
+    drillIntent,
   };
 }
 
@@ -390,6 +411,40 @@ function computeTimeMode(inputs: Inputs): TimeMode {
   return { mode: "absolute", startIso: s.iso, endIso: e.iso };
 }
 
+async function maybeExecuteDrill(
+  inputs: Inputs,
+  evidenceBundle: any,
+  metricsJson: any,
+  sql: any,
+  mode: "local" | "proxy"
+) {
+  if (!inputs.drillIntent) return null;
+
+  const drillRequest = resolveDrillRequest(inputs.drillIntent, evidenceBundle);
+  if (!drillRequest) {
+    return okJson({
+      ok: false,
+      kind: "drill",
+      error: `Unsupported drill intent: ${inputs.drillIntent}`,
+      metricsJson,
+      sql,
+      _mode: mode,
+    });
+  }
+
+  const drill = await executeDrill(drillRequest, evidenceBundle);
+
+  return okJson({
+    ok: true,
+    kind: "drill",
+    summary: `Drill: ${drill.title}`,
+    metricsJson,
+    sql,
+    drill,
+    _mode: mode,
+  });
+}
+
 async function runLocal(inputs: Inputs, tm: TimeMode) {
   const payload: any = {
     partner: inputs.partner,
@@ -443,11 +498,15 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
     }
   );
 
+  const drillResponse = await maybeExecuteDrill(inputs, evidenceBundle, metricsJson, sql, "local");
+  if (drillResponse) return drillResponse;
+
   const agents = runAgents(evidenceBundle);
   const assessment = buildAssessment(evidenceBundle, agents);
 
   return okJson({
     ok: true,
+    kind: "triage",
     summaryText: result.summaryText ?? result.summary ?? "",
     summary: result.summary ?? result.summaryText ?? "",
     metricsJson,
@@ -497,7 +556,7 @@ function adaptLegacyProxyMetricsToCanonical(
   return out;
 }
 
-function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScope) {
+async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScope, inputs: Inputs) {
   const ok = !!parsed?.ok;
   if (!ok) {
     return {
@@ -572,6 +631,15 @@ function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScope) {
     }
   );
 
+  const drillResponse = await maybeExecuteDrill(inputs, evidenceBundle, metricsJson, sql, "proxy");
+  if (drillResponse) {
+    return {
+      ok: true,
+      passthrough: true,
+      response: drillResponse,
+    };
+  }
+
   const agents = runAgents(evidenceBundle);
   const assessment = buildAssessment(evidenceBundle, agents);
 
@@ -587,6 +655,7 @@ function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScope) {
     },
     inputs: parsed?.inputs ?? undefined,
     _mode: "proxy",
+    kind: "triage",
   };
 }
 
@@ -715,7 +784,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const adapted = safeAdaptProxyToUi(parsed, tm, scope);
+    const adapted = await safeAdaptProxyToUi(parsed, tm, scope, inputs);
 
     if (!adapted.ok) {
       return NextResponse.json(
@@ -745,6 +814,10 @@ export async function POST(req: Request) {
         },
         { status: 502 }
       );
+    }
+
+    if ((adapted as any).passthrough && (adapted as any).response) {
+      return (adapted as any).response;
     }
 
     return okJson(adapted);

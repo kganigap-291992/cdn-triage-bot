@@ -27,6 +27,42 @@ function normalizeAllToken(v: unknown, fallback = "all"): string {
   return s || fallback;
 }
 
+function pctDelta(
+  current: number | undefined,
+  previous: number | undefined
+): number | undefined {
+  if (
+    current == null ||
+    previous == null ||
+    !Number.isFinite(current) ||
+    !Number.isFinite(previous)
+  ) {
+    return undefined;
+  }
+
+  if (previous === 0) {
+    if (current === 0) return 0;
+    return undefined;
+  }
+
+  return ((current - previous) / Math.abs(previous)) * 100;
+}
+
+function pickNumber(obj: any, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const val = safeNumber(obj?.[key]);
+    if (val != null) return val;
+  }
+  return undefined;
+}
+
+function pickArray(obj: any, keys: string[]): any[] {
+  for (const key of keys) {
+    if (Array.isArray(obj?.[key])) return obj[key];
+  }
+  return [];
+}
+
 function buildNormalizedScope(inputs: ClickhouseTriageInputs): NormalizedScope {
   return {
     partner: String(inputs.partner ?? "").trim(),
@@ -48,12 +84,14 @@ function buildWindowInfo(
   const startTs =
     asString(tr.start) ||
     asString(result?.metricsJson?.timeseries?.startTs) ||
+    asString(result?.metricsJson?.window_start) ||
     asString(debug.startTsUtc) ||
     "";
 
   const endTs =
     asString(tr.end) ||
     asString(result?.metricsJson?.timeseries?.endTs) ||
+    asString(result?.metricsJson?.window_end) ||
     asString(debug.endTsUtc) ||
     "";
 
@@ -74,12 +112,63 @@ function buildWindowInfo(
 
 function buildCurrentMetrics(result: ClickhouseTriageResult) {
   const m = result?.metricsJson || {};
+
   return {
-    totalRequests: Number(m.totalRequests || 0),
-    p95TtmsMs: safeNumber(m.p95TtmsMs),
-    error5xxCount: safeNumber(m.error5xxCount),
-    errorRatePct: safeNumber(m.errorRatePct),
-    cacheHitRate: safeNumber(m.cacheHitRate) ?? safeNumber(m.cacheHitPct),
+    totalRequests:
+      pickNumber(m, ["totalRequests", "total_requests", "requests"]) ?? 0,
+    p95TtmsMs: pickNumber(m, ["p95TtmsMs", "p95_ms", "p95_ttms_ms"]),
+    p99TtmsMs: pickNumber(m, ["p99TtmsMs", "p99_ms", "p99_ttms_ms"]),
+    error5xxCount: pickNumber(m, [
+      "error5xxCount",
+      "error_5xx_count",
+      "http_5xx",
+      "http_5xx_count",
+    ]),
+    errorRatePct: pickNumber(m, ["errorRatePct", "error_rate_pct"]),
+    cacheHitRate: pickNumber(m, [
+      "cacheHitRate",
+      "cacheHitPct",
+      "cache_hit_rate",
+      "cache_hit_pct",
+    ]),
+  };
+}
+
+function pickPreviousMetricsSource(result: ClickhouseTriageResult): any | null {
+  const m = result?.metricsJson || {};
+
+  return (
+    m.previousMetrics ||
+    m.previousWindow ||
+    m.previous ||
+    m.prev ||
+    m.evidenceBundle?.previousMetrics ||
+    null
+  );
+}
+
+function buildPreviousMetrics(result: ClickhouseTriageResult) {
+  const prev = pickPreviousMetricsSource(result);
+  if (!prev || typeof prev !== "object") return undefined;
+
+  return {
+    totalRequests:
+      pickNumber(prev, ["totalRequests", "total_requests", "requests"]) ?? 0,
+    p95TtmsMs: pickNumber(prev, ["p95TtmsMs", "p95_ms", "p95_ttms_ms"]),
+    p99TtmsMs: pickNumber(prev, ["p99TtmsMs", "p99_ms", "p99_ttms_ms"]),
+    error5xxCount: pickNumber(prev, [
+      "error5xxCount",
+      "error_5xx_count",
+      "http_5xx",
+      "http_5xx_count",
+    ]),
+    errorRatePct: pickNumber(prev, ["errorRatePct", "error_rate_pct"]),
+    cacheHitRate: pickNumber(prev, [
+      "cacheHitRate",
+      "cacheHitPct",
+      "cache_hit_rate",
+      "cache_hit_pct",
+    ]),
   };
 }
 
@@ -88,21 +177,73 @@ function buildTimeseries(result: ClickhouseTriageResult): TimeSeriesPoint[] {
   if (!Array.isArray(points)) return [];
 
   return points
-    .map((p: any): TimeSeriesPoint => ({
-      ts: String(p?.ts || ""),
-      requests: safeNumber(p?.requests) ?? safeNumber(p?.totalRequests),
-      p95TtmsMs: safeNumber(p?.p95TtmsMs),
-      errorRatePct: safeNumber(p?.errorRatePct),
-      cacheHitRate: safeNumber(p?.cacheHitRate) ?? safeNumber(p?.cacheHitPct),
-    }))
+    .map(
+      (p: any): TimeSeriesPoint => ({
+        ts: String(p?.ts || p?.bucket || ""),
+        requests: pickNumber(p, ["requests", "totalRequests", "total_requests"]),
+        p95TtmsMs: pickNumber(p, ["p95TtmsMs", "p95_ms", "p95_ttms_ms"]),
+        p99TtmsMs: pickNumber(p, ["p99TtmsMs", "p99_ms", "p99_ttms_ms"]),
+        errorRatePct: pickNumber(p, ["errorRatePct", "error_rate_pct"]),
+        cacheHitRate: pickNumber(p, [
+          "cacheHitRate",
+          "cacheHitPct",
+          "cache_hit_rate",
+          "cache_hit_pct",
+        ]),
+      })
+    )
     .filter((pt: TimeSeriesPoint) => Boolean(pt.ts));
 }
 
-function buildDerivedMetrics(result: ClickhouseTriageResult): DerivedMetrics {
+function buildDerivedMetrics(
+  result: ClickhouseTriageResult,
+  currentMetrics: {
+    totalRequests: number;
+    p95TtmsMs?: number;
+    p99TtmsMs?: number;
+    error5xxCount?: number;
+    errorRatePct?: number;
+    cacheHitRate?: number;
+  },
+  previousMetrics?: {
+    totalRequests?: number;
+    p95TtmsMs?: number;
+    p99TtmsMs?: number;
+    error5xxCount?: number;
+    errorRatePct?: number;
+    cacheHitRate?: number;
+  }
+): DerivedMetrics {
   const m = result?.metricsJson || {};
+
   return {
-    errorRatePct: safeNumber(m.errorRatePct),
-    cacheHitRate: safeNumber(m.cacheHitRate) ?? safeNumber(m.cacheHitPct),
+    errorRatePct: pickNumber(m, ["errorRatePct", "error_rate_pct"]),
+    cacheHitRate: pickNumber(m, [
+      "cacheHitRate",
+      "cacheHitPct",
+      "cache_hit_rate",
+      "cache_hit_pct",
+    ]),
+    trafficDeltaPct: pctDelta(
+      safeNumber(currentMetrics.totalRequests),
+      safeNumber(previousMetrics?.totalRequests)
+    ),
+    latencyDeltaPct: pctDelta(
+      currentMetrics.p95TtmsMs,
+      previousMetrics?.p95TtmsMs
+    ),
+    p99DeltaPct: pctDelta(
+      currentMetrics.p99TtmsMs,
+      previousMetrics?.p99TtmsMs
+    ),
+    errorDeltaPct: pctDelta(
+      currentMetrics.errorRatePct,
+      previousMetrics?.errorRatePct
+    ),
+    cacheDeltaPct: pctDelta(
+      currentMetrics.cacheHitRate,
+      previousMetrics?.cacheHitRate
+    ),
   };
 }
 
@@ -154,20 +295,16 @@ function normalizeSql(result: ClickhouseTriageResult) {
 
 function buildRegionBreakdown(result: ClickhouseTriageResult) {
   const m = result?.metricsJson || {};
-  if (Array.isArray(m.regionBreakdown)) return m.regionBreakdown;
-  if (Array.isArray(m.evidenceBundle?.regionBreakdown)) {
-    return m.evidenceBundle.regionBreakdown;
-  }
-  return [];
+  return pickArray(m, ["regionBreakdown"]).length
+    ? pickArray(m, ["regionBreakdown"])
+    : pickArray(m?.evidenceBundle, ["regionBreakdown"]);
 }
 
 function buildPopBreakdown(result: ClickhouseTriageResult) {
   const m = result?.metricsJson || {};
-  if (Array.isArray(m.popBreakdown)) return m.popBreakdown;
-  if (Array.isArray(m.evidenceBundle?.popBreakdown)) {
-    return m.evidenceBundle.popBreakdown;
-  }
-  return [];
+  return pickArray(m, ["popBreakdown"]).length
+    ? pickArray(m, ["popBreakdown"])
+    : pickArray(m?.evidenceBundle, ["popBreakdown"]);
 }
 
 export function toEvidenceBundle(
@@ -177,8 +314,13 @@ export function toEvidenceBundle(
   const normalizedScope = buildNormalizedScope(inputs);
   const windowInfo = buildWindowInfo(inputs, result);
   const currentMetrics = buildCurrentMetrics(result);
+  const previousMetrics = buildPreviousMetrics(result);
   const currentPoints = buildTimeseries(result);
-  const derivedMetrics = buildDerivedMetrics(result);
+  const derivedMetrics = buildDerivedMetrics(
+    result,
+    currentMetrics,
+    previousMetrics
+  );
   const diagnostics = buildDiagnostics(result);
   const sql = normalizeSql(result);
   const regionBreakdown = buildRegionBreakdown(result);
@@ -188,12 +330,20 @@ export function toEvidenceBundle(
     normalizedScope,
     windowInfo,
     currentMetrics,
-    previousMetrics: undefined,
+    previousMetrics,
     timeseries: {
       bucketSeconds:
-        safeNumber(result?.metricsJson?.timeseries?.bucketSeconds) ?? null,
-      startTs: asString(result?.metricsJson?.timeseries?.startTs) ?? null,
-      endTs: asString(result?.metricsJson?.timeseries?.endTs) ?? null,
+        safeNumber(result?.metricsJson?.timeseries?.bucketSeconds) ??
+        safeNumber(result?.metricsJson?.debug?.bucketSeconds) ??
+        null,
+      startTs:
+        asString(result?.metricsJson?.timeseries?.startTs) ??
+        asString(result?.metricsJson?.window_start) ??
+        null,
+      endTs:
+        asString(result?.metricsJson?.timeseries?.endTs) ??
+        asString(result?.metricsJson?.window_end) ??
+        null,
       points: currentPoints,
     },
     derivedMetrics,

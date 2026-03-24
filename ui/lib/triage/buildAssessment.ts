@@ -4,34 +4,7 @@ import type {
   IncidentAssessment,
 } from "@/lib/triage/types";
 
-function getPrimarySignal(agents: AgentResult[]): IncidentAssessment["primarySignal"] {
-  const critical = agents.filter((a) => a.status === "critical");
-  const warn = agents.filter((a) => a.status === "warn");
-
-  const pool = critical.length ? critical : warn.length ? warn : [];
-
-  if (!pool.length) return "mixed";
-
-  const first = pool.find((a) => a.agent !== "scope");
-  if (!first) return "mixed";
-
-  if (
-    first.agent === "traffic" ||
-    first.agent === "latency" ||
-    first.agent === "errors" ||
-    first.agent === "cache"
-  ) {
-    return first.agent;
-  }
-
-  return "mixed";
-}
-
-function getOverallStatus(agents: AgentResult[]): IncidentAssessment["overallStatus"] {
-  if (agents.some((a) => a.status === "critical")) return "critical";
-  if (agents.some((a) => a.status === "warn")) return "warn";
-  return "ok";
-}
+type NonScopeSignal = Exclude<IncidentAssessment["primarySignal"], "mixed">;
 
 function getScopeAgent(agents: AgentResult[]): AgentResult | undefined {
   return agents.find((a) => a.agent === "scope");
@@ -41,23 +14,205 @@ function getNonScopeAgents(agents: AgentResult[]): AgentResult[] {
   return agents.filter((a) => a.agent !== "scope");
 }
 
-function getKeyFindings(agents: AgentResult[]): string[] {
-  const scope = getScopeAgent(agents);
-  const nonScope = getNonScopeAgents(agents)
-    .map((a) => a.summary)
-    .filter(Boolean);
+function getOverallStatus(agents: AgentResult[]): IncidentAssessment["overallStatus"] {
+  if (agents.some((a) => a.status === "critical")) return "critical";
+  if (agents.some((a) => a.status === "warn")) return "warn";
+  return "ok";
+}
 
-  if (scope?.status === "critical" && scope.summary) {
-    return [scope.summary, ...nonScope].slice(0, 5);
+function severityWeight(status: AgentResult["status"]): number {
+  switch (status) {
+    case "critical":
+      return 3;
+    case "warn":
+      return 2;
+    case "ok":
+    default:
+      return 1;
+  }
+}
+
+function signalPriority(agent: NonScopeSignal): number {
+  switch (agent) {
+    case "errors":
+      return 4;
+    case "latency":
+      return 3;
+    case "cache":
+      return 2;
+    case "traffic":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function getPrimarySignal(
+  agents: AgentResult[]
+): IncidentAssessment["primarySignal"] {
+  const nonScope = getNonScopeAgents(agents).filter(
+    (a) => a.agent === "traffic" || a.agent === "latency" || a.agent === "errors" || a.agent === "cache"
+  ) as Array<AgentResult & { agent: NonScopeSignal }>;
+
+  const active = nonScope.filter((a) => a.status === "critical" || a.status === "warn");
+
+  if (!active.length) return "mixed";
+
+  const criticalSignals = active.filter((a) => a.status === "critical");
+  const warnSignals = active.filter((a) => a.status === "warn");
+
+  const strongest = (criticalSignals.length ? criticalSignals : warnSignals).sort((a, b) => {
+    const sevDiff = severityWeight(b.status) - severityWeight(a.status);
+    if (sevDiff !== 0) return sevDiff;
+    return signalPriority(b.agent) - signalPriority(a.agent);
+  });
+
+  const topSeverity = strongest[0]?.status;
+  const sameTopSeverity = active.filter((a) => a.status === topSeverity);
+
+  const uniqueTopSignals = new Set(sameTopSeverity.map((a) => a.agent));
+  if (uniqueTopSignals.size >= 2) return "mixed";
+
+  return strongest[0]?.agent ?? "mixed";
+}
+
+function countImpactedFromBreakdown(
+  rows: any[] | undefined,
+  kind: "region" | "pop"
+): {
+  count: number;
+  top: string[];
+} {
+  if (!Array.isArray(rows) || !rows.length) {
+    return { count: 0, top: [] };
   }
 
-  return nonScope.slice(0, 5);
+  const normalized = rows
+    .map((row) => {
+      const name = String(row?.[kind] || "").trim();
+      if (!name || name === "all") return null;
+
+      const errorRatePct = Number(row?.errorRatePct);
+      const p95TtmsMs = Number(row?.p95TtmsMs);
+      const cacheHitPct = Number(
+        row?.cacheHitPct ?? row?.cacheHitRate
+      );
+      const totalRequests = Number(row?.totalRequests ?? row?.requests ?? 0);
+
+      const impacted =
+        (Number.isFinite(errorRatePct) && errorRatePct >= 0.2) ||
+        (Number.isFinite(p95TtmsMs) && p95TtmsMs >= 500) ||
+        (Number.isFinite(cacheHitPct) && cacheHitPct < 80);
+
+      const score =
+        (Number.isFinite(errorRatePct) ? errorRatePct * 1000 : 0) +
+        (Number.isFinite(p95TtmsMs) ? p95TtmsMs : 0) +
+        (Number.isFinite(cacheHitPct) ? Math.max(0, 100 - cacheHitPct) * 10 : 0) +
+        (Number.isFinite(totalRequests) ? Math.min(totalRequests / 1000, 100) : 0);
+
+      return {
+        name,
+        impacted,
+        score,
+      };
+    })
+    .filter(Boolean) as Array<{
+    name: string;
+    impacted: boolean;
+    score: number;
+  }>;
+
+  if (!normalized.length) {
+    return { count: 0, top: [] };
+  }
+
+  const impactedOnly = normalized.filter((x) => x.impacted);
+  const source = impactedOnly.length ? impactedOnly : normalized;
+
+  const sorted = [...source].sort((a, b) => b.score - a.score);
+  const top = sorted.slice(0, 3).map((x) => x.name);
+
+  return {
+    count: impactedOnly.length,
+    top,
+  };
+}
+
+function getBlastRadius(bundle: EvidenceBundle): IncidentAssessment["blastRadius"] {
+  const regionStats = countImpactedFromBreakdown(bundle.regionBreakdown, "region");
+  const popStats = countImpactedFromBreakdown(bundle.popBreakdown, "pop");
+
+  const fallbackRegion =
+    bundle.normalizedScope.region && bundle.normalizedScope.region !== "all"
+      ? [bundle.normalizedScope.region]
+      : [];
+  const fallbackPop =
+    bundle.normalizedScope.pop && bundle.normalizedScope.pop !== "all"
+      ? [bundle.normalizedScope.pop]
+      : [];
+
+  return {
+    regionCount:
+      regionStats.count > 0
+        ? regionStats.count
+        : fallbackRegion.length,
+    popCount:
+      popStats.count > 0
+        ? popStats.count
+        : fallbackPop.length,
+    topRegions: regionStats.top.length ? regionStats.top : fallbackRegion,
+    topPops: popStats.top.length ? popStats.top : fallbackPop,
+  };
+}
+
+function getKeyFindings(agents: AgentResult[]): string[] {
+  const scope = getScopeAgent(agents);
+
+  const critical = getNonScopeAgents(agents)
+    .filter((a) => a.status === "critical" && a.summary)
+    .map((a) => a.summary);
+
+  const warn = getNonScopeAgents(agents)
+    .filter((a) => a.status === "warn" && a.summary)
+    .map((a) => a.summary);
+
+  const ok = getNonScopeAgents(agents)
+    .filter((a) => a.status === "ok" && a.summary)
+    .map((a) => a.summary);
+
+  const ordered = [
+    ...(scope?.status === "critical" && scope.summary ? [scope.summary] : []),
+    ...critical,
+    ...warn,
+    ...ok,
+  ].filter(Boolean);
+
+  return Array.from(new Set(ordered)).slice(0, 5);
+}
+
+function formatBlastRadiusText(
+  blastRadius: IncidentAssessment["blastRadius"]
+): string | null {
+  const regionText =
+    blastRadius.regionCount > 0
+      ? `${blastRadius.regionCount} region${blastRadius.regionCount === 1 ? "" : "s"}`
+      : null;
+
+  const popText =
+    blastRadius.popCount > 0
+      ? `${blastRadius.popCount} pop${blastRadius.popCount === 1 ? "" : "s"}`
+      : null;
+
+  const joined = [regionText, popText].filter(Boolean).join(", ");
+  return joined || null;
 }
 
 function pickHeadlineSummary(
   bundle: EvidenceBundle,
   agents: AgentResult[],
   overallStatus: IncidentAssessment["overallStatus"],
+  primarySignal: IncidentAssessment["primarySignal"],
+  blastRadius: IncidentAssessment["blastRadius"],
   keyFindings: string[]
 ): string {
   const scope = getScopeAgent(agents);
@@ -66,19 +221,41 @@ function pickHeadlineSummary(
   }
 
   const nonScope = getNonScopeAgents(agents);
+  const strongest = nonScope
+    .filter((a) => a.status === "critical" || a.status === "warn")
+    .sort((a, b) => {
+      const sevDiff = severityWeight(b.status) - severityWeight(a.status);
+      if (sevDiff !== 0) return sevDiff;
 
-  const critical = nonScope.find((a) => a.status === "critical" && a.summary);
-  if (critical?.summary) {
-    return critical.summary;
+      const aPriority =
+        a.agent === "errors" || a.agent === "latency" || a.agent === "cache" || a.agent === "traffic"
+          ? signalPriority(a.agent)
+          : 0;
+      const bPriority =
+        b.agent === "errors" || b.agent === "latency" || b.agent === "cache" || b.agent === "traffic"
+          ? signalPriority(b.agent)
+          : 0;
+
+      return bPriority - aPriority;
+    });
+
+  const strongestSummary = strongest[0]?.summary;
+  const blastText = formatBlastRadiusText(blastRadius);
+
+  if (strongestSummary && blastText && primarySignal !== "mixed") {
+    return `${strongestSummary} Blast radius currently spans ${blastText}.`;
   }
 
-  const warn = nonScope.find((a) => a.status === "warn" && a.summary);
-  if (warn?.summary) {
-    return warn.summary;
+  if (strongestSummary) {
+    return strongestSummary;
   }
 
   if (keyFindings[0]) {
     return keyFindings[0];
+  }
+
+  if (primarySignal !== "mixed") {
+    return `Service ${bundle.normalizedScope.service} for ${bundle.normalizedScope.partner} appears ${overallStatus}, primarily driven by ${primarySignal}.`;
   }
 
   return `Service ${bundle.normalizedScope.service} for ${bundle.normalizedScope.partner} appears ${overallStatus}.`;
@@ -90,20 +267,21 @@ export function buildAssessment(
 ): IncidentAssessment {
   const overallStatus = getOverallStatus(agents);
   const primarySignal = getPrimarySignal(agents);
+  const blastRadius = getBlastRadius(bundle);
   const keyFindings = getKeyFindings(agents);
-  const summary = pickHeadlineSummary(bundle, agents, overallStatus, keyFindings);
+  const summary = pickHeadlineSummary(
+    bundle,
+    agents,
+    overallStatus,
+    primarySignal,
+    blastRadius,
+    keyFindings
+  );
 
   return {
     overallStatus,
     primarySignal,
-    blastRadius: {
-      regionCount: bundle.normalizedScope.region === "all" ? 0 : 1,
-      popCount: bundle.normalizedScope.pop === "all" ? 0 : 1,
-      topRegions:
-        bundle.normalizedScope.region === "all" ? [] : [bundle.normalizedScope.region],
-      topPops:
-        bundle.normalizedScope.pop === "all" ? [] : [bundle.normalizedScope.pop],
-    },
+    blastRadius,
     keyFindings,
     agents,
     summary,

@@ -21,6 +21,7 @@ export type TimeSeriesPoint = {
   ts: string;
   requests?: number;
   p95TtmsMs?: number;
+  p99TtmsMs?: number;
   errorRatePct?: number;
   cacheHitRate?: number;
 };
@@ -52,7 +53,9 @@ export type DerivedMetrics = {
   cacheHitRate?: number;
   trafficDeltaPct?: number;
   latencyDeltaPct?: number;
+  p99DeltaPct?: number;
   errorDeltaPct?: number;
+  cacheDeltaPct?: number;
 };
 
 // ---------------------------------------------
@@ -79,6 +82,7 @@ export type EvidenceBundle = {
   currentMetrics: {
     totalRequests: number;
     p95TtmsMs?: number;
+    p99TtmsMs?: number;
     error5xxCount?: number;
     errorRatePct?: number;
     cacheHitRate?: number;
@@ -87,6 +91,8 @@ export type EvidenceBundle = {
   previousMetrics?: {
     totalRequests?: number;
     p95TtmsMs?: number;
+    p99TtmsMs?: number;
+    error5xxCount?: number;
     errorRatePct?: number;
     cacheHitRate?: number;
   };
