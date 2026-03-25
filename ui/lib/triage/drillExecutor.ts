@@ -40,15 +40,15 @@ function summarizeRows(request: DrillRequest, rows: Record<string, any>[]): stri
         return "No region drill-down evidence found for the current scope.";
       case "worst_pop":
         return "No POP drill-down evidence found for the current scope.";
-      case "ua_breakdown":
+      case "worst_ua":
         return "No UA-family drill-down evidence found for the current scope.";
-      case "content_breakdown":
+      case "worst_content":
         return "No content-type drill-down evidence found for the current scope.";
-      case "host_breakdown":
+      case "worst_host":
         return "No host-level drill-down evidence found for the current scope.";
-      case "status_breakdown":
+      case "worst_status":
         return "No status-code drill-down evidence found for the current scope.";
-      case "endpoint_breakdown":
+      case "worst_endpoint":
         return "No endpoint-class drill-down evidence found for the current scope.";
       case "time_trend":
         return "No timeline drill-down evidence found for the current scope.";
@@ -82,6 +82,11 @@ function summarizeRows(request: DrillRequest, rows: Record<string, any>[]): stri
     toNumberOrNull(top.p95_ms) ??
     toNumberOrNull(top.p95_ttms_ms);
 
+  const p99 =
+    toNumberOrNull(top.p99TtmsMs) ??
+    toNumberOrNull(top.p99_ms) ??
+    toNumberOrNull(top.p99_ttms_ms);
+
   const errorRate =
     toNumberOrNull(top.errorRatePct) ??
     toNumberOrNull(top.error_rate_pct);
@@ -94,6 +99,7 @@ function summarizeRows(request: DrillRequest, rows: Record<string, any>[]): stri
   const metrics = [
     totalRequests ? `requests=${Math.round(totalRequests).toLocaleString()}` : null,
     p95 != null ? `p95=${Math.round(p95)}ms` : null,
+    p99 != null ? `p99=${Math.round(p99)}ms` : null,
     errorRate != null ? `5xx=${errorRate.toFixed(3)}%` : null,
     cacheHit != null ? `cache=${(cacheHit > 1 ? cacheHit : cacheHit * 100).toFixed(1)}%` : null,
   ]
@@ -105,8 +111,22 @@ function summarizeRows(request: DrillRequest, rows: Record<string, any>[]): stri
       return `Top impacted region is ${dimension}${metrics ? ` (${metrics})` : ""}.`;
     case "worst_pop":
       return `Top impacted POP is ${dimension}${metrics ? ` (${metrics})` : ""}.`;
+    case "worst_ua":
+      return `Top impacted UA family is ${dimension}${metrics ? ` (${metrics})` : ""}.`;
+    case "worst_content":
+      return `Top impacted content type is ${dimension}${metrics ? ` (${metrics})` : ""}.`;
+    case "worst_host":
+      return `Top impacted host is ${dimension}${metrics ? ` (${metrics})` : ""}.`;
+    case "worst_status":
+      return `Top status-code signal is ${dimension}${metrics ? ` (${metrics})` : ""}.`;
+    case "worst_endpoint":
+      return `Top impacted endpoint class is ${dimension}${metrics ? ` (${metrics})` : ""}.`;
+    case "time_trend":
+      return `Timeline drill returned ${rows.length} point${rows.length === 1 ? "" : "s"} for the current scope.`;
+    case "comparison":
+      return `Comparison drill returned ${rows.length} row${rows.length === 1 ? "" : "s"} for the current scope.`;
     default:
-      return `Drill returned ${rows.length} rows.`;
+      return `Drill returned ${rows.length} row${rows.length === 1 ? "" : "s"}.`;
   }
 }
 
@@ -120,14 +140,12 @@ export async function executeDrill(
 
   let rawRows: any[] = [];
 
-  // ✅ USE EXISTING EVIDENCE FIRST
   if (request.type === "worst_region") {
     rawRows = bundle?.regionBreakdown ?? [];
   } else if (request.type === "worst_pop") {
     rawRows = bundle?.popBreakdown ?? [];
   }
 
-  // ✅ FALLBACK TO SQL (future / advanced drills)
   if (!rawRows.length && deps.runQuery) {
     rawRows = await deps.runQuery(built.queries, built.params);
   }
