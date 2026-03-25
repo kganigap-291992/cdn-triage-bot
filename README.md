@@ -188,6 +188,28 @@ Prevents drift between analytics and ML.
 
 ---
 
+# Example: Investigating a Production Issue
+
+User:
+"How was live traffic for partner_01 last night?"
+
+Cachey:
+1. Parses intent → partner_01, live, time window
+2. Runs deterministic SQL
+3. Detects:
+   - Elevated latency in us-east
+   - Increased 5xx errors
+4. Surfaces:
+   - worst region
+   - breakdown
+   - SQL queries
+5. Enables drill-down → worst POP
+
+Result:
+Evidence-backed triage in seconds
+
+---
+
 # 🚀 Roadmap
 
 ## Near-term
