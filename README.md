@@ -1,399 +1,245 @@
-# Cachey 🤖 – CDN Incident Triage Bot
+# Cachey 🤖 – Deterministic CDN Incident Triage System
 
 **Author:** Krishna Reddy GV  
 **Production URL:** https://cdn-triage-bot.vercel.app  
 
 ---
 
-## Overview
+# 🚀 What is Cachey
 
-Cachey is a deterministic, warehouse-backed operational analytics system
-designed for CDN incident triage.
+Cachey is a deterministic, warehouse-backed CDN triage system that produces
+reproducible, evidence-backed answers to operational questions.
 
-It transforms structured telemetry into:
+It replaces ad-hoc, human-driven incident analysis with:
 
--   Deterministic metrics
--   Inspectable SQL
--   Evidence-backed summaries
--   Reproducible triage workflows
+- Deterministic SQL-backed metrics  
+- Structured evidence (EvidenceBundle)  
+- Inspectable queries  
+- Reproducible triage workflows  
 
-Core principle:
-
-> Deterministic metrics first.
-> AI assistance second.
-
-All telemetry used in this repository is synthetically generated to
-simulate real-world CDN delivery patterns. No production logs are used.
+> Cachey is not a dashboard and not an LLM wrapper.  
+> It is an evidence-driven reasoning system.
 
 ---
 
-## Problem Statement
+# 🎯 Problem
 
-### Current Operational Challenges
+In real CDN operations:
 
-- Manual and time-intensive incident triage
-- Reliance on tribal knowledge
-- Inconsistent reasoning across engineers
-- Lack of reproducibility
-- No inspectable intermediate state
+- Engineers manually investigate incidents  
+- Explanations vary by person  
+- No reproducibility  
+- No shared reasoning model  
+- Leadership lacks clear visibility  
 
-### Required Correlations
-
-Effective CDN triage requires correlating:
-
-- Edge vs Upstream Errors  
-- Cache Hit / Miss Behavior  
-- P95 / P99 Latency Spikes  
-- Regional POP Degradation  
-- URL Type (Manifest vs Segment)  
-- Client / User-Agent Patterns  
-
-### Goal
-
-Systematize first-level triage into deterministic, inspectable, and reproducible workflows.
+Cachey systematizes this into a **deterministic, inspectable pipeline**.
 
 ---
 
-# Architecture Evolution
+# 🧠 Core Idea
+
+Cachey enforces a strict flow:
+
+User → Intent → SQL → EvidenceBundle → Reasoning → Output
+
+No step is allowed to invent data.
 
 ---
 
-## V1 — Automation Prototype (n8n + Slack)
+# 🔍 Trust & Evidence Model
 
-### Stack
+## 1. SQL as Source of Truth
+All metrics come from deterministic SQL queries against ClickHouse.
 
-- Slack  
-- n8n  
-- CSV Telemetry  
-- Deterministic Metrics Engine  
-
-### Characteristics
-
-- Slack `/triage` command  
-- n8n webhook orchestration  
-- One-shot triage execution  
-- Summary returned directly to Slack  
-
-### Architecture Diagram
-
-```mermaid
-flowchart LR
-    A["Slack /triage Command"] --> B["n8n Webhook"]
-    B --> C["Parse Filters"]
-    C --> D["Fetch CSV Telemetry"]
-    D --> E["Deterministic Metrics Engine"]
-    E --> F["Slack Summary Response"]
-```
-
-### Limitations
-
-- No interactive filtering  
-- No persistent state  
-- No conversational extensibility  
-- Limited transparency into intermediate metrics  
-
-### Conclusion
-
-The automation prototype validated deterministic triage logic,  
-but required a standalone UI + API for scalability and state management.
-
----
-
-## V2 — Deterministic UI + API (Next.js)
-
-### Stack
-
-- Next.js (App Router)  
-- React  
-- TypeScript  
-- Node.js  
-- API Routes  
-
-### Objectives
-
-- Externalize system state  
-- Ensure reproducibility  
-- Enable inspectable intermediate state  
-- Prepare for ClickHouse backend  
-
-### Key Features
-
-- Unified `/api/triage` endpoint  
-- Explicit filter controls  
-- Run history stored in LocalStorage  
-- Transparent Metrics JSON  
-- Deterministic execution pipeline  
-
-### Architecture Diagram
-
-```mermaid
-flowchart TD
-    A["User UI"] --> B["Next.js Frontend"]
-    B --> C["/api/triage Endpoint"]
-    C --> D["Deterministic Metrics Engine"]
-    D --> E["Structured Summary"]
-    D --> F["Raw Metrics JSON"]
-```
-
-### Design Principles
-
-- Deterministic computation  
-- Clear request/response boundaries  
-- ClickHouse-ready abstraction  
-- Separation of computation and explanation  
-- Inspectable intermediate state  
-
----
-
-## V3 — Conversational Controller
-
-### Stack
-
-- Deterministic Intent Parser  
-- Optional OpenRouter Integration  
-
-### Objectives
-
-- Introduce conversational triage  
-- Preserve deterministic metric computation  
-- Allow filter overrides via chat  
-
-### Behavior
-
-- Chat input may override filters  
-- Triage execution remains deterministic  
-- LLM is not trusted for metric computation  
-
-### Execution Policy
-
-> LLM may assist in intent parsing and explanation generation only.  
-> All metrics and decisions are computed deterministically.
-
-### Example Inputs
-
-- `run triage`  
-- `svc=live region=use1 win=60`  
-- `show p95 spike in bos for vod`  
-
----
-
-# Current System Architecture
-
-```mermaid
-flowchart LR
-    A["Browser UI"] --> B["Next.js App Router"]
-    B --> C["/api/triage"]
-    C --> D["Metrics Engine"]
-    D --> E["Structured Summary"]
-    D --> F["Raw Metrics JSON"]
-
-    subgraph "Data Layer"
-        G["CSV Telemetry (Synthetic)"]
-        H["ClickHouse (Planned)"]
-    end
-
-    C --> G
-    C -. "future integration" .-> H
-```
-
----
-
-# V4 — Warehouse-Backed Analytics (Current Phase)
-
-## Objective
-
-Replace CSV computation with a production-style ClickHouse warehouse
-while preserving deterministic guarantees.
-
----
-
-## Locked Time Semantics
-
-For ClickHouse-backed triage:
-
-    now := max(ts)
-
-We DO NOT use ClickHouse `now()`.
-
-Window calculation:
-
-    asOf_ts = SELECT max(ts) FROM cachey.raw_minute (scoped)
-    window_start = asOf_ts - INTERVAL <windowMinutes> MINUTE
-    window_end   = asOf_ts
-
-This guarantees deterministic demo-safe behavior even if ingestion lags.
-
----
-
-## Infrastructure Architecture - V 4.1
-
-```mermaid
-flowchart TD
-  %% ----------------------------
-  %% Frontend (Vercel)
-  %% ----------------------------
-  subgraph VERCEL["Frontend (Vercel)"]
-    UI["Home (/) Chat UI + Partner selector + Schema helper + Result Cards + Graphs"]
-    DBG["/debug (legacy) CSV deterministic triage UI"]
-    API["Vercel Serverless: /api/triage"]
-  end
-
-  %% ----------------------------
-  %% VPS side
-  %% ----------------------------
-  subgraph VPS["VPS"]
-    CADDY["Caddy (TLS termination)"]
-    PROXY["cachey-proxy API (reverse proxy + auth + query layer)"]
-    CH["ClickHouse (localhost)"]
-    RAW["cachey.raw_minute (MergeTree)"]
-  end
-
-  %% ----------------------------
-  %% Optional legacy CSV source
-  %% ----------------------------
-  subgraph LEGACY["Legacy (Debug only)"]
-    CSV["Debug CSV (local file / GitHub raw / generated)"]
-  end
-
-  %% Main ClickHouse path (Home)
-  UI -->|POST /api/triage| API
-  API -->|HTTPS| CADDY
-  CADDY -->|reverse_proxy| PROXY
-  PROXY -->|HTTP localhost| CH
-  CH --> RAW
-
-  %% Response back
-  PROXY -->|JSON metricsJson + evidence| API
-  API -->|JSON response| UI
-
-  %% Debug CSV path (/debug)
-  DBG -->|POST /api/triage?dataSource=csv| API
-  API -->|read/parse| CSV
-  CSV -.-> DBG
-```
-
-## Data Model (Current)
-
-Table: `cachey.raw_minute`
-
-One row per minute × slice.
-
+## 2. EvidenceBundle (Structured Facts)
 Includes:
+- Scope (partner, service, region)
+- Metrics (requests, latency, errors, cache)
+- Region / POP breakdowns
+- Worst offenders
+- SQL queries used
 
-- ts  
-- partner  
-- service  
-- region  
-- pop  
-- host  
-- content_type  
-- ua_family  
-- requests  
-- bytes_sent  
-- p50_ms / p95_ms / p99_ms  
-- cache_hit_rate  
-- http status buckets (2xx/3xx/4xx/5xx + detailed codes)  
-- crc_errors  
+## 3. Deterministic Reasoning
+- Summaries
+- Swarm agents
+- Drill-downs
 
-Raw table is source of truth.
+All operate ONLY on the EvidenceBundle.
 
 ---
 
-# Conversational Execution Model
+# ⚙️ Execution Flow
 
-When user types:
-
-    live in bos last 2h
-
-System:
-
-1. Deterministically parses filters  
-2. Computes `asOf_ts = max(ts)`  
-3. Constructs SQL  
-4. Queries ClickHouse  
-5. Returns:
-   - Summary  
-   - Metrics JSON  
-   - Graph data  
-   - Expandable SQL  
-   - Expandable evidence  
-
-LLM:
-- May refine intent  
-- May assist explanation  
-- Never computes metrics  
+1. Parse intent (chat or filters)
+2. Build SQL (sqlBuilder.ts)
+3. Query ClickHouse via proxy
+4. Construct EvidenceBundle
+5. Run deterministic reasoning (agents / summary)
+6. Return:
+   - Summary
+   - Metrics JSON
+   - Graphs
+   - SQL
+   - Evidence
 
 ---
 
-# Technology Stack
+# 🤖 Swarm Mode (Deterministic Agents)
+
+Agents:
+- Traffic
+- Latency
+- Errors
+- Cache
+- Scope
+
+Each agent:
+- Consumes EvidenceBundle
+- Produces structured findings
+- Cannot hallucinate
+
+---
+
+# 🔎 Drill-down System
+
+Supports:
+- worst_region
+- worst_pop
+- (future) time_trend
+
+Drills:
+- reuse EvidenceBundle OR
+- run new deterministic SQL
+
+---
+
+# 🧱 System Topology
+
+## Frontend (Vercel)
+- Next.js UI
+- /api/triage
+
+## Backend (VPS - Docker)
+- Caddy (TLS)
+- cachey-proxy
+- ClickHouse (private)
+
+Flow:
+
+UI → Vercel API → Caddy → Proxy → ClickHouse → Proxy → UI
+
+---
+
+# 🔐 Security & Deployment
+
+- ClickHouse bound to localhost (127.x)
+- No public DB access
+- Proxy is only access layer
+- Firewall rules enforced
+- Fail2ban enabled
+- TLS via Caddy
+- Dockerized services on VPS
+
+---
+
+# 📦 Technology Stack
 
 ## Frontend
+- Next.js
+- React
+- TypeScript
 
-- Next.js (App Router)  
-- React  
-- TypeScript  
+## Backend
+- Node.js
+- Vercel Serverless
+- cachey-proxy
 
-## API Layer
+## Data
+- ClickHouse (MergeTree)
+- Synthetic telemetry generator
 
-- Next.js API Routes  
-- Node.js runtime  
-- Proxy API on VPS  
-
-## Data Layer
-
-- Synthetic telemetry generator  
-- ClickHouse (MergeTree)  
-- SQL as source of truth  
-
-## Infrastructure
-
-- VPS-hosted ClickHouse  
-- Caddy reverse proxy  
-- HTTPS domain routing  
-- Vercel deployment for UI  
+## Infra
+- VPS (Docker)
+- Caddy
+- Vercel
 
 ---
 
-# Data Safety
+# 🔗 Shared Telemetry Generator
 
-- All telemetry is synthetic  
-- No production logs  
-- No customer data  
-- No proprietary systems exposed  
+Separate reusable system:
 
----
+- Defines canonical telemetry schema
+- Generates realistic CDN traffic patterns
+- Used by Cachey (analytics)
+- Used by future ML models
 
-# Engineering Philosophy
-
-- Deterministic metrics before AI reasoning  
-- Reproducibility over opacity  
-- Clear system boundaries  
-- SQL transparency  
-- Production-first architecture discipline  
+Prevents drift between analytics and ML.
 
 ---
 
-# Roadmap
+# 🧭 Design Principles
 
-## Short-Term
-
-- SQL inspector panel  
-- Evidence sampling from raw table  
-- Query transparency improvements  
-
-## Mid-Term
-
-- Materialized views (5m rollups)  
-- Time-series anomaly detection  
-- Rolling baseline scoring  
-- Blast radius estimation  
-
-## Long-Term (MLOps Track)
-
-- Feature store integration  
-- Airflow orchestration  
-- Automated retraining hooks  
-- Severity classification models  
+- Deterministic first, AI second  
+- SQL is truth  
+- Evidence before explanation  
+- Reproducibility over intuition  
+- Secure-by-default architecture  
 
 ---
 
+# 🚀 Roadmap
+
+## Near-term
+- SQL inspector
+- Better evidence panels
+- Drill expansions
+
+## Mid-term
+- Materialized views
+- Time-series anomaly detection
+
+## Long-term
+- ML integration (shared generator)
+- Feature store
+- Model-assisted triage
+
+---
+
+# 🧱 Architecture Evolution (Historical)
+
+## V1 – Slack + n8n
+- One-shot triage
+- No UI
+
+## V2 – UI + API
+- Deterministic pipeline
+- Local state
+
+## V3 – Conversational Layer
+- Intent parsing
+- Chat interface
+
+## V4 – ClickHouse + Proxy (Current)
+
+```mermaid
+flowchart TD
+  subgraph VERCEL["Frontend (Vercel)"]
+    UI["Home UI"]
+    API["/api/triage"]
+  end
+
+  subgraph VPS["VPS"]
+    CADDY["Caddy"]
+    PROXY["cachey-proxy"]
+    CH["ClickHouse"]
+  end
+
+  UI --> API
+  API --> CADDY
+  CADDY --> PROXY
+  PROXY --> CH
+  CH --> PROXY
+  PROXY --> API
+  API --> UI
+```
