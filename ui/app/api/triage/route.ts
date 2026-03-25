@@ -113,6 +113,12 @@ function normalizeBreakdownNumber(v: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function sortBreakdownRows(a: any, b: any) {
+  if (b.error5xxCount !== a.error5xxCount) return b.error5xxCount - a.error5xxCount;
+  if ((b.p95TtmsMs ?? -1) !== (a.p95TtmsMs ?? -1)) return (b.p95TtmsMs ?? -1) - (a.p95TtmsMs ?? -1);
+  return b.totalRequests - a.totalRequests;
+}
+
 function normalizeRegionBreakdownRow(row: any) {
   const region = normalizeBreakdownKey(row?.region);
   if (!region) return null;
@@ -157,6 +163,54 @@ function normalizePopBreakdownRow(row: any) {
   };
 }
 
+function normalizeUaBreakdownRow(row: any) {
+  const uaFamily = normalizeBreakdownKey(
+    row?.uaFamily ?? row?.ua_family ?? row?.ua
+  );
+  if (!uaFamily) return null;
+
+  return {
+    uaFamily,
+    totalRequests: normalizeBreakdownNumber(
+      row?.totalRequests ?? row?.total_requests ?? row?.requests
+    ),
+    error5xxCount: normalizeBreakdownNumber(
+      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
+    ),
+    errorRatePct: normalizeBreakdownNumber(
+      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
+    ),
+    p95TtmsMs: numOrNull(row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms),
+    cacheHitPct: numOrNull(
+      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
+    ),
+  };
+}
+
+function normalizeContentBreakdownRow(row: any) {
+  const contentType = normalizeBreakdownKey(
+    row?.contentType ?? row?.content_type ?? row?.content ?? row?.ct
+  );
+  if (!contentType) return null;
+
+  return {
+    contentType,
+    totalRequests: normalizeBreakdownNumber(
+      row?.totalRequests ?? row?.total_requests ?? row?.requests
+    ),
+    error5xxCount: normalizeBreakdownNumber(
+      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
+    ),
+    errorRatePct: normalizeBreakdownNumber(
+      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
+    ),
+    p95TtmsMs: numOrNull(row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms),
+    cacheHitPct: numOrNull(
+      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
+    ),
+  };
+}
+
 function normalizeRegionBreakdown(rows: unknown): any[] | undefined {
   if (!Array.isArray(rows)) return undefined;
 
@@ -166,12 +220,7 @@ function normalizeRegionBreakdown(rows: unknown): any[] | undefined {
 
   if (!out.length) return undefined;
 
-  out.sort((a, b) => {
-    if (b.error5xxCount !== a.error5xxCount) return b.error5xxCount - a.error5xxCount;
-    if ((b.p95TtmsMs ?? -1) !== (a.p95TtmsMs ?? -1)) return (b.p95TtmsMs ?? -1) - (a.p95TtmsMs ?? -1);
-    return b.totalRequests - a.totalRequests;
-  });
-
+  out.sort(sortBreakdownRows);
   return out;
 }
 
@@ -184,12 +233,33 @@ function normalizePopBreakdown(rows: unknown): any[] | undefined {
 
   if (!out.length) return undefined;
 
-  out.sort((a, b) => {
-    if (b.error5xxCount !== a.error5xxCount) return b.error5xxCount - a.error5xxCount;
-    if ((b.p95TtmsMs ?? -1) !== (a.p95TtmsMs ?? -1)) return (b.p95TtmsMs ?? -1) - (a.p95TtmsMs ?? -1);
-    return b.totalRequests - a.totalRequests;
-  });
+  out.sort(sortBreakdownRows);
+  return out;
+}
 
+function normalizeUaBreakdown(rows: unknown): any[] | undefined {
+  if (!Array.isArray(rows)) return undefined;
+
+  const out = rows
+    .map((row) => normalizeUaBreakdownRow(row))
+    .filter(Boolean) as any[];
+
+  if (!out.length) return undefined;
+
+  out.sort(sortBreakdownRows);
+  return out;
+}
+
+function normalizeContentBreakdown(rows: unknown): any[] | undefined {
+  if (!Array.isArray(rows)) return undefined;
+
+  const out = rows
+    .map((row) => normalizeContentBreakdownRow(row))
+    .filter(Boolean) as any[];
+
+  if (!out.length) return undefined;
+
+  out.sort(sortBreakdownRows);
   return out;
 }
 
@@ -211,6 +281,28 @@ function pickPopBreakdownFromProxy(parsed: any, rawMetrics: any): any[] | undefi
     normalizePopBreakdown(rawMetrics?.evidence?.popBreakdown) ||
     normalizePopBreakdown(parsed?.evidenceBundle?.popBreakdown) ||
     normalizePopBreakdown(parsed?.evidence?.popBreakdown) ||
+    undefined
+  );
+}
+
+function pickUaBreakdownFromProxy(parsed: any, rawMetrics: any): any[] | undefined {
+  return (
+    normalizeUaBreakdown(rawMetrics?.uaBreakdown) ||
+    normalizeUaBreakdown(rawMetrics?.evidenceBundle?.uaBreakdown) ||
+    normalizeUaBreakdown(rawMetrics?.evidence?.uaBreakdown) ||
+    normalizeUaBreakdown(parsed?.evidenceBundle?.uaBreakdown) ||
+    normalizeUaBreakdown(parsed?.evidence?.uaBreakdown) ||
+    undefined
+  );
+}
+
+function pickContentBreakdownFromProxy(parsed: any, rawMetrics: any): any[] | undefined {
+  return (
+    normalizeContentBreakdown(rawMetrics?.contentBreakdown) ||
+    normalizeContentBreakdown(rawMetrics?.evidenceBundle?.contentBreakdown) ||
+    normalizeContentBreakdown(rawMetrics?.evidence?.contentBreakdown) ||
+    normalizeContentBreakdown(parsed?.evidenceBundle?.contentBreakdown) ||
+    normalizeContentBreakdown(parsed?.evidence?.contentBreakdown) ||
     undefined
   );
 }
@@ -553,6 +645,12 @@ function adaptLegacyProxyMetricsToCanonical(
   const popBreakdown = pickPopBreakdownFromProxy(parsed, legacyMetrics);
   if (popBreakdown) out.popBreakdown = popBreakdown;
 
+  const uaBreakdown = pickUaBreakdownFromProxy(parsed, legacyMetrics);
+  if (uaBreakdown) out.uaBreakdown = uaBreakdown;
+
+  const contentBreakdown = pickContentBreakdownFromProxy(parsed, legacyMetrics);
+  if (contentBreakdown) out.contentBreakdown = contentBreakdown;
+
   return out;
 }
 
@@ -590,6 +688,16 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
   const popBreakdown = pickPopBreakdownFromProxy(parsed, rawMetrics);
   if (popBreakdown) {
     metricsJson.popBreakdown = popBreakdown;
+  }
+
+  const uaBreakdown = pickUaBreakdownFromProxy(parsed, rawMetrics);
+  if (uaBreakdown) {
+    metricsJson.uaBreakdown = uaBreakdown;
+  }
+
+  const contentBreakdown = pickContentBreakdownFromProxy(parsed, rawMetrics);
+  if (contentBreakdown) {
+    metricsJson.contentBreakdown = contentBreakdown;
   }
 
   metricsJson.debug = {

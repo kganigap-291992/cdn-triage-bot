@@ -307,6 +307,20 @@ function buildPopBreakdown(result: ClickhouseTriageResult) {
     : pickArray(m?.evidenceBundle, ["popBreakdown"]);
 }
 
+function buildUABreakdown(result: ClickhouseTriageResult) {
+  const m = result?.metricsJson || {};
+  return pickArray(m, ["uaBreakdown"]).length
+    ? pickArray(m, ["uaBreakdown"])
+    : pickArray(m?.evidenceBundle, ["uaBreakdown"]);
+}
+
+function buildContentBreakdown(result: ClickhouseTriageResult) {
+  const m = result?.metricsJson || {};
+  return pickArray(m, ["contentBreakdown"]).length
+    ? pickArray(m, ["contentBreakdown"])
+    : pickArray(m?.evidenceBundle, ["contentBreakdown"]);
+}
+
 export function toEvidenceBundle(
   inputs: ClickhouseTriageInputs,
   result: ClickhouseTriageResult
@@ -325,6 +339,8 @@ export function toEvidenceBundle(
   const sql = normalizeSql(result);
   const regionBreakdown = buildRegionBreakdown(result);
   const popBreakdown = buildPopBreakdown(result);
+  const uaBreakdown = buildUABreakdown(result);
+  const contentBreakdown = buildContentBreakdown(result);
 
   return {
     normalizedScope,
@@ -349,6 +365,8 @@ export function toEvidenceBundle(
     derivedMetrics,
     regionBreakdown,
     popBreakdown,
+    uaBreakdown,
+    contentBreakdown,
     worstLatency: [],
     worstErrors: [],
     worstCache: [],

@@ -17,11 +17,18 @@ export type FollowUpKind =
   | "compare_previous_window"
   | "drilldown_region"
   | "drilldown_pop"
+  | "drilldown_ua"
+  | "drilldown_content"
   | "drilldown_dimension"
   | "explain_signal"
   | "repeat_or_refresh";
 
-export type DrilldownTarget = "region" | "pop" | "dimension";
+export type DrilldownTarget =
+  | "region"
+  | "pop"
+  | "ua"
+  | "content"
+  | "dimension";
 
 export type TimeMeta =
   | {
@@ -218,6 +225,37 @@ const FOLLOWUP_DRILLDOWN_POP_PHRASES = [
   "worst pop",
 ];
 
+const FOLLOWUP_DRILLDOWN_UA_PHRASES = [
+  "drill into worst ua",
+  "show worst ua",
+  "which ua is worst",
+  "focus on worst ua",
+  "worst ua",
+  "drill into worst user agent",
+  "show worst user agent",
+  "which user agent is worst",
+  "focus on worst user agent",
+  "worst user agent",
+  "drill into worst device",
+  "show worst device",
+  "which device is worst",
+  "focus on worst device",
+  "worst device",
+];
+
+const FOLLOWUP_DRILLDOWN_CONTENT_PHRASES = [
+  "drill into worst content",
+  "show worst content",
+  "which content is worst",
+  "focus on worst content",
+  "worst content",
+  "drill into worst content type",
+  "show worst content type",
+  "which content type is worst",
+  "focus on worst content type",
+  "worst content type",
+];
+
 const FOLLOWUP_EXPLAIN_PHRASES = [
   "why is this bad",
   "what is driving errors",
@@ -380,50 +418,50 @@ function extractTimeMeta(text: string): TimeMeta | null {
 function extractFollowUpOverrides(text: string): FollowUpOverrides {
   const overrides: FollowUpOverrides = {};
 
-    if (/\bonly\s+mobile\b/i.test(text) || /\buafamily\s*=\s*mobile\b/i.test(text)) {
-        overrides.uaFamily = "mobile";
-    } else if (/\bonly\s+web\b/i.test(text) || /\buafamily\s*=\s*web\b/i.test(text)) {
-        overrides.uaFamily = "web";
-    } else if (
-        /\bonly\s+smart\s*tv\b/i.test(text) ||
-        /\buafamily\s*=\s*smart[_\s-]*tv\b/i.test(text)
-    ) {
-        overrides.uaFamily = "smart_tv";
-    } else if (/\bonly\s+stb\b/i.test(text) || /\buafamily\s*=\s*stb\b/i.test(text)) {
-        overrides.uaFamily = "stb";
-    } else if (
-        /\bonly\s+console\b/i.test(text) ||
-        /\buafamily\s*=\s*console\b/i.test(text)
-    ) {
-        overrides.uaFamily = "console";
-    }
+  if (/\bonly\s+mobile\b/i.test(text) || /\buafamily\s*=\s*mobile\b/i.test(text)) {
+    overrides.uaFamily = "mobile";
+  } else if (/\bonly\s+web\b/i.test(text) || /\buafamily\s*=\s*web\b/i.test(text)) {
+    overrides.uaFamily = "web";
+  } else if (
+    /\bonly\s+smart\s*tv\b/i.test(text) ||
+    /\buafamily\s*=\s*smart[_\s-]*tv\b/i.test(text)
+  ) {
+    overrides.uaFamily = "smart_tv";
+  } else if (/\bonly\s+stb\b/i.test(text) || /\buafamily\s*=\s*stb\b/i.test(text)) {
+    overrides.uaFamily = "stb";
+  } else if (
+    /\bonly\s+console\b/i.test(text) ||
+    /\buafamily\s*=\s*console\b/i.test(text)
+  ) {
+    overrides.uaFamily = "console";
+  }
 
-    if (/\bonly\s+manifests?\b/i.test(text) || /\bcontenttype\s*=\s*manifest\b/i.test(text)) {
-        overrides.contentType = "manifest";
-    } else if (/\bonly\s+segments?\b/i.test(text) || /\bcontenttype\s*=\s*segment\b/i.test(text)) {
-        overrides.contentType = "segment";
-    } else if (/\bonly\s+api\b/i.test(text) || /\bcontenttype\s*=\s*api\b/i.test(text)) {
-        overrides.contentType = "api";
-    }
+  if (/\bonly\s+manifests?\b/i.test(text) || /\bcontenttype\s*=\s*manifest\b/i.test(text)) {
+    overrides.contentType = "manifest";
+  } else if (/\bonly\s+segments?\b/i.test(text) || /\bcontenttype\s*=\s*segment\b/i.test(text)) {
+    overrides.contentType = "segment";
+  } else if (/\bonly\s+api\b/i.test(text) || /\bcontenttype\s*=\s*api\b/i.test(text)) {
+    overrides.contentType = "api";
+  }
 
-    const regionPatterns: Array<[RegExp, string]> = [
-        [/\bonly\s+us[\s-]*east\b/i, "us-east"],
-        [/\bregion\s*=\s*us[\s-]*east\b/i, "us-east"],
-        [/\bonly\s+us[\s-]*west\b/i, "us-west"],
-        [/\bregion\s*=\s*us[\s-]*west\b/i, "us-west"],
-        [/\bonly\s+us[\s-]*central\b/i, "us-central"],
-        [/\bregion\s*=\s*us[\s-]*central\b/i, "us-central"],
-        [/\bonly\s+eu[\s-]*west\b/i, "eu-west"],
-        [/\bregion\s*=\s*eu[\s-]*west\b/i, "eu-west"],
-        [/\bonly\s+eu[\s-]*central\b/i, "eu-central"],
-        [/\bregion\s*=\s*eu[\s-]*central\b/i, "eu-central"],
-        [/\bonly\s+ap[\s-]*south\b/i, "ap-south"],
-        [/\bregion\s*=\s*ap[\s-]*south\b/i, "ap-south"],
-        [/\bonly\s+ap[\s-]*northeast\b/i, "ap-northeast"],
-        [/\bregion\s*=\s*ap[\s-]*northeast\b/i, "ap-northeast"],
-        [/\bonly\s+sa[\s-]*east\b/i, "sa-east"],
-        [/\bregion\s*=\s*sa[\s-]*east\b/i, "sa-east"],
-    ];
+  const regionPatterns: Array<[RegExp, string]> = [
+    [/\bonly\s+us[\s-]*east\b/i, "us-east"],
+    [/\bregion\s*=\s*us[\s-]*east\b/i, "us-east"],
+    [/\bonly\s+us[\s-]*west\b/i, "us-west"],
+    [/\bregion\s*=\s*us[\s-]*west\b/i, "us-west"],
+    [/\bonly\s+us[\s-]*central\b/i, "us-central"],
+    [/\bregion\s*=\s*us[\s-]*central\b/i, "us-central"],
+    [/\bonly\s+eu[\s-]*west\b/i, "eu-west"],
+    [/\bregion\s*=\s*eu[\s-]*west\b/i, "eu-west"],
+    [/\bonly\s+eu[\s-]*central\b/i, "eu-central"],
+    [/\bregion\s*=\s*eu[\s-]*central\b/i, "eu-central"],
+    [/\bonly\s+ap[\s-]*south\b/i, "ap-south"],
+    [/\bregion\s*=\s*ap[\s-]*south\b/i, "ap-south"],
+    [/\bonly\s+ap[\s-]*northeast\b/i, "ap-northeast"],
+    [/\bregion\s*=\s*ap[\s-]*northeast\b/i, "ap-northeast"],
+    [/\bonly\s+sa[\s-]*east\b/i, "sa-east"],
+    [/\bregion\s*=\s*sa[\s-]*east\b/i, "sa-east"],
+  ];
 
   for (const [pattern, value] of regionPatterns) {
     if (pattern.test(text)) {
@@ -453,8 +491,7 @@ function hasAnyFollowUpOverride(overrides: FollowUpOverrides): boolean {
     overrides.region ||
       overrides.pop ||
       overrides.contentType ||
-      overrides.uaFamily ||
-      overrides.service
+      overrides.uaFamily
   );
 }
 
@@ -508,6 +545,10 @@ function buildMissingPriorContextReply(followUpKind?: FollowUpKind): string {
       return "I need a prior triage result with region evidence before I can drill into the worst region.";
     case "drilldown_pop":
       return "I need a prior triage result with POP evidence before I can drill into the worst POP.";
+    case "drilldown_ua":
+      return "I need a prior triage result with UA evidence before I can drill into the worst UA family.";
+    case "drilldown_content":
+      return "I need a prior triage result with content-type evidence before I can drill into the worst content type.";
     case "drilldown_dimension":
       return "That refinement needs a prior triage result. Run a triage first, then narrow it with region, POP, content type, or device filters.";
     case "repeat_or_refresh":
@@ -555,6 +596,26 @@ function detectFollowUp(text: string): {
     };
   }
 
+  const drilldownUaPhrase = firstMatchingPhrase(text, FOLLOWUP_DRILLDOWN_UA_PHRASES);
+  if (drilldownUaPhrase) {
+    return {
+      followUpKind: "drilldown_ua",
+      shouldRerun: true,
+      drilldownTarget: "ua",
+      reason: `followup_drilldown_ua:${drilldownUaPhrase}`,
+    };
+  }
+
+  const drilldownContentPhrase = firstMatchingPhrase(text, FOLLOWUP_DRILLDOWN_CONTENT_PHRASES);
+  if (drilldownContentPhrase) {
+    return {
+      followUpKind: "drilldown_content",
+      shouldRerun: true,
+      drilldownTarget: "content",
+      reason: `followup_drilldown_content:${drilldownContentPhrase}`,
+    };
+  }
+
   const explainPhrase = firstMatchingPhrase(text, FOLLOWUP_EXPLAIN_PHRASES);
   if (explainPhrase) {
     return {
@@ -573,20 +634,20 @@ function detectFollowUp(text: string): {
     };
   }
 
-    const overrides = extractFollowUpOverrides(text);
-    if (hasAnyFollowUpOverride(overrides)) {
-        const reason = hasBoundaryPhrase(text, "only")
-        ? "followup_drilldown_dimension:only_override"
-        : "followup_drilldown_dimension:assignment_override";
+  const overrides = extractFollowUpOverrides(text);
+  if (hasAnyFollowUpOverride(overrides)) {
+    const reason = hasBoundaryPhrase(text, "only")
+      ? "followup_drilldown_dimension:only_override"
+      : "followup_drilldown_dimension:assignment_override";
 
-        return {
-        followUpKind: "drilldown_dimension",
-        shouldRerun: true,
-        drilldownTarget: "dimension",
-        followUpOverrides: overrides,
-        reason,
-        };
-    }
+    return {
+      followUpKind: "drilldown_dimension",
+      shouldRerun: true,
+      drilldownTarget: "dimension",
+      followUpOverrides: overrides,
+      reason,
+    };
+  }
 
   return {};
 }

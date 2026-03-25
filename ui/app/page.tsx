@@ -87,7 +87,16 @@ type ChatTriage = {
   };
 };
 
-type ChatMsg = ChatText | ChatTriage;
+type ChatDrill = {
+  id: string;
+  type: "drill";
+  role: "assistant";
+  ts: string;
+  drill: any;
+  summaryText: string;
+};
+
+type ChatMsg = ChatText | ChatTriage | ChatDrill;
 
 type TimeseriesPoint = {
   ts: string;
@@ -2815,6 +2824,162 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
   );
 }
 
+function drillDimensionLabel(row: any): string {
+  return (
+    row?.region ||
+    row?.pop ||
+    row?.uaFamily ||
+    row?.contentType ||
+    row?.dimension ||
+    "n/a"
+  );
+}
+
+function drillDimensionHeader(drill: any): string {
+  switch (drill?.type) {
+    case "worst_region":
+      return "Region";
+    case "worst_pop":
+      return "POP";
+    case "worst_ua":
+      return "UA Family";
+    case "worst_content":
+      return "Content Type";
+    default:
+      return "Dimension";
+  }
+}
+
+
+function DrillCard({
+  drill,
+  summaryText,
+}: {
+  drill: any;
+  summaryText: string;
+}) {
+  return (
+    <div className="triage-enter rounded-2xl border border-white/10 bg-white/[0.05] backdrop-blur p-4 shadow-lg shadow-black/10 space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs text-gray-400">Drill result</div>
+          <div className="text-sm font-semibold text-gray-100 truncate">
+            {drill?.title || "Drill"}
+          </div>
+        </div>
+        <div className="flex flex-wrap justify-end gap-1.5 shrink-0">
+          <span className="text-[11px] px-2 py-1 rounded-full border border-blue-400/30 bg-blue-400/10 text-blue-200">
+            drill
+          </span>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+        <div className="text-xs text-gray-400 mb-2">Summary</div>
+        <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">
+          {drill?.summary || summaryText || ""}
+        </pre>
+      </div>
+
+      {Array.isArray(drill?.rows) && drill.rows.length > 0 ? (
+        <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-semibold text-gray-200">Top results</div>
+            <div className="text-[11px] text-gray-500">
+              {drill.rows.length} row{drill.rows.length === 1 ? "" : "s"}
+            </div>
+          </div>
+
+          <div className="mt-4 overflow-x-auto rounded-xl border border-white/10 bg-black/30">
+            <table className="min-w-full text-left text-xs text-gray-200">
+              <thead className="border-b border-white/10 bg-white/[0.03] text-gray-400">
+                <tr>
+                  <th className="px-4 py-3 font-medium">
+                    {drillDimensionHeader(drill)}
+                  </th>
+                  <th className="px-4 py-3 font-medium">Requests</th>
+                  <th className="px-4 py-3 font-medium">5xx</th>
+                  <th className="px-4 py-3 font-medium">5xx %</th>
+                  <th className="px-4 py-3 font-medium">P95</th>
+                  <th className="px-4 py-3 font-medium">Cache</th>
+                </tr>
+              </thead>
+              <tbody>
+                {drill.rows.map((row: any, idx: number) => {
+                  const cachePct =
+                    row?.cacheHitPct == null && row?.cacheHitRate == null
+                      ? null
+                      : Number(
+                          row?.cacheHitPct != null ? row.cacheHitPct : row.cacheHitRate
+                        ) <= 1
+                      ? Number(
+                          row?.cacheHitPct != null ? row.cacheHitPct : row.cacheHitRate
+                        ) * 100
+                      : Number(
+                          row?.cacheHitPct != null ? row.cacheHitPct : row.cacheHitRate
+                        );
+
+                  return (
+                    <tr
+                      key={`${drillDimensionLabel(row)}-${idx}`}
+                      className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.03]"
+                    >
+                      <td className="px-4 py-3 font-medium text-gray-100">
+                        {drillDimensionLabel(row)}
+                      </td>
+                      <td className="px-4 py-3 text-gray-300">
+                        {formatIntOrNA(row?.totalRequests)}
+                      </td>
+                      <td className="px-4 py-3 text-gray-300">
+                        {formatIntOrNA(row?.error5xxCount)}
+                      </td>
+                      <td className="px-4 py-3 text-gray-300">
+                        {formatPctOrNA(row?.errorRatePct)}
+                      </td>
+                      <td className="px-4 py-3 text-gray-300">
+                        {formatMsOrNA(row?.p95TtmsMs)}
+                      </td>
+                      <td className="px-4 py-3 text-gray-300">
+                        {formatPctOrNA(cachePct)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {drill?.sql?.queries?.length ? (
+        <details className="rounded-2xl border border-white/10 bg-black/20 p-3">
+          <summary className="cursor-pointer text-sm font-semibold text-gray-200 select-none">
+            SQL Evidence
+          </summary>
+          <div className="mt-4 space-y-3">
+            {drill.sql.queries.map((query: string, idx: number) => (
+              <div key={idx}>
+                <div className="text-xs text-gray-400 mb-1">Query {idx + 1}</div>
+                <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                  {query}
+                </pre>
+              </div>
+            ))}
+            {drill.sql.params && (
+              <div>
+                <div className="text-xs text-gray-400 mb-1">Params</div>
+                <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                  {JSON.stringify(drill.sql.params, null, 2)}
+                </pre>
+              </div>
+            )}
+          </div>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
 // ── Home ───────────────────────────────────────────────────────────────────
 export default function Home() {
   const [mounted, setMounted] = useState(false);
@@ -2966,6 +3131,20 @@ export default function Home() {
         role: "assistant",
         ts: nowIso(),
         run,
+      },
+    ]);
+  }
+
+  function addDrillCard(payload: { drill: any; summaryText: string }) {
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random()}`,
+        type: "drill",
+        role: "assistant",
+        ts: nowIso(),
+        drill: payload.drill,
+        summaryText: payload.summaryText,
       },
     ]);
   }
@@ -3377,6 +3556,22 @@ export default function Home() {
       };
     }
 
+    if (followUpKind === "drilldown_ua") {
+      return {
+        kind: "rerun",
+        inputs: contextToTriageInputs(ctx),
+        reason: "drilldown_ua",
+      };
+    }
+
+    if (followUpKind === "drilldown_content") {
+      return {
+        kind: "rerun",
+        inputs: contextToTriageInputs(ctx),
+        reason: "drilldown_content",
+      };
+    }
+
     if (followUpKind === "drilldown_dimension") {
       const overrides: {
         region?: string;
@@ -3565,7 +3760,10 @@ export default function Home() {
     return { ok: true as const };
   }
 
-  async function runTriage(inputs: TriageInputs) {
+  async function runTriage(
+    inputs: TriageInputs,
+    extra?: { drillIntent?: "worst_region" | "worst_pop" | "worst_ua" | "worst_content" }
+  ) {
     const formData = new FormData();
     formData.append("dataSource", inputs.dataSource);
     formData.append("partner", inputs.partner || "");
@@ -3576,6 +3774,7 @@ export default function Home() {
     formData.append("windowMinutes", String(inputs.windowMinutes));
     formData.append("contentType", String(inputs.contentType || "all"));
     formData.append("uaFamily", String(inputs.uaFamily || "all"));
+    if (extra?.drillIntent) formData.append("drillIntent", extra.drillIntent);
     if (inputs.startTsUtc) formData.append("startTsUtc", inputs.startTsUtc);
     if (inputs.endTsUtc) formData.append("endTsUtc", inputs.endTsUtc);
 
@@ -3591,17 +3790,22 @@ export default function Home() {
     if (!(data as any).ok) throw new Error((data as any).error);
 
     return {
+      kind: (data as any).kind ?? "triage",
       summaryText: (data as any).summaryText ?? (data as any).summary ?? "",
       metricsJson: (data as any).metricsJson ?? null,
       sql: (data as any).sql ?? null,
       swarm: (data as any).swarm ?? null,
+      drill: (data as any).drill ?? null,
     };
   }
 
   async function executeTriageRun(
     inputs: TriageInputs,
     scopeSource: "filters" | "chat",
-    extra?: { chatContext?: ChatTriage["run"]["chatContext"] }
+    extra?: {
+      chatContext?: ChatTriage["run"]["chatContext"];
+      drillIntent?: "worst_region" | "worst_pop" | "worst_ua" | "worst_content";
+    }
   ) {
     if (isTriageLoading) return;
     setIsTriageLoading(true);
@@ -3614,16 +3818,26 @@ export default function Home() {
       pushRunLog(
         `Running triage [${scopeSource}]: partner=${inputs.partner} svc=${inputs.service} region=${inputs.region} pop=${inputs.pop} ${timeLabel} ct=${inputs.contentType} ua=${inputs.uaFamily}`
       );
-      const data = await runTriage(inputs);
-      addTriageCard({
-        inputs,
-        summaryText: data.summaryText || "",
-        metricsJson: data.metricsJson || null,
-        sql: data.sql || null,
-        swarm: data.swarm || null,
-        scopeSource,
-        chatContext: extra?.chatContext ?? null,
+      const data = await runTriage(inputs, {
+        drillIntent: extra?.drillIntent,
       });
+
+      if (data.kind === "drill" && data.drill) {
+        addDrillCard({
+          drill: data.drill,
+          summaryText: data.summaryText || "",
+        });
+      } else {
+        addTriageCard({
+          inputs,
+          summaryText: data.summaryText || "",
+          metricsJson: data.metricsJson || null,
+          sql: data.sql || null,
+          swarm: data.swarm || null,
+          scopeSource,
+          chatContext: extra?.chatContext ?? null,
+        });
+      }
 
       setPendingChatScope({
         partner: "",
@@ -3737,7 +3951,19 @@ export default function Home() {
     if (followupAction.kind === "rerun") {
       pushRunLog(`Follow-up rerun resolved: ${followupAction.reason}`);
 
+      const followUpDrillIntent =
+        parseResult.followUpKind === "drilldown_region"
+          ? "worst_region"
+          : parseResult.followUpKind === "drilldown_pop"
+          ? "worst_pop"
+          : parseResult.followUpKind === "drilldown_ua"
+          ? "worst_ua"
+          : parseResult.followUpKind === "drilldown_content"
+          ? "worst_content"
+          : undefined;
+
       await executeTriageRun(followupAction.inputs, "chat", {
+        drillIntent: followUpDrillIntent,
         chatContext: {
           rawText: parseResult.rawText,
           parseMode: "chat-overrides",
@@ -4291,8 +4517,10 @@ export default function Home() {
                             {m.text}
                           </pre>
                         </div>
-                      ) : (
+                      ) : m.type === "triage" ? (
                         <TriageCard run={m.run} />
+                      ) : (
+                        <DrillCard drill={m.drill} summaryText={m.summaryText} />
                       )}
                     </div>
                   </div>

@@ -193,6 +193,64 @@ function normalizePopBreakdownRow(row: any) {
   };
 }
 
+function normalizeUaBreakdownRow(row: any) {
+  const uaFamily = normalizeBreakdownKey(
+    row?.uaFamily ?? row?.ua_family ?? row?.ua
+  );
+  if (!uaFamily) return null;
+
+  return {
+    uaFamily,
+    totalRequests: normalizeBreakdownNumber(
+      row?.totalRequests ?? row?.total_requests ?? row?.requests
+    ),
+    error5xxCount: normalizeBreakdownNumber(
+      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
+    ),
+    errorRatePct: normalizeBreakdownNumber(
+      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
+    ),
+    p95TtmsMs: safeNumberOrNull(
+      row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms
+    ),
+    cacheHitPct: safeNumberOrNull(
+      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
+    ),
+  };
+}
+
+function normalizeContentBreakdownRow(row: any) {
+  const contentType = normalizeBreakdownKey(
+    row?.contentType ?? row?.content_type ?? row?.ct
+  );
+  if (!contentType) return null;
+
+  return {
+    contentType,
+    totalRequests: normalizeBreakdownNumber(
+      row?.totalRequests ?? row?.total_requests ?? row?.requests
+    ),
+    error5xxCount: normalizeBreakdownNumber(
+      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
+    ),
+    errorRatePct: normalizeBreakdownNumber(
+      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
+    ),
+    p95TtmsMs: safeNumberOrNull(
+      row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms
+    ),
+    cacheHitPct: safeNumberOrNull(
+      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
+    ),
+  };
+}
+
+function sortBreakdownRows(a: any, b: any) {
+  if (b.error5xxCount !== a.error5xxCount) return b.error5xxCount - a.error5xxCount;
+  if ((b.p95TtmsMs ?? -1) !== (a.p95TtmsMs ?? -1)) return (b.p95TtmsMs ?? -1) - (a.p95TtmsMs ?? -1);
+  return b.totalRequests - a.totalRequests;
+}
+
 function normalizeRegionBreakdown(rows: unknown): any[] | undefined {
   if (!Array.isArray(rows)) return undefined;
 
@@ -202,12 +260,7 @@ function normalizeRegionBreakdown(rows: unknown): any[] | undefined {
 
   if (!out.length) return undefined;
 
-  out.sort((a, b) => {
-    if (b.error5xxCount !== a.error5xxCount) return b.error5xxCount - a.error5xxCount;
-    if ((b.p95TtmsMs ?? -1) !== (a.p95TtmsMs ?? -1)) return (b.p95TtmsMs ?? -1) - (a.p95TtmsMs ?? -1);
-    return b.totalRequests - a.totalRequests;
-  });
-
+  out.sort(sortBreakdownRows);
   return out;
 }
 
@@ -220,12 +273,33 @@ function normalizePopBreakdown(rows: unknown): any[] | undefined {
 
   if (!out.length) return undefined;
 
-  out.sort((a, b) => {
-    if (b.error5xxCount !== a.error5xxCount) return b.error5xxCount - a.error5xxCount;
-    if ((b.p95TtmsMs ?? -1) !== (a.p95TtmsMs ?? -1)) return (b.p95TtmsMs ?? -1) - (a.p95TtmsMs ?? -1);
-    return b.totalRequests - a.totalRequests;
-  });
+  out.sort(sortBreakdownRows);
+  return out;
+}
 
+function normalizeUaBreakdown(rows: unknown): any[] | undefined {
+  if (!Array.isArray(rows)) return undefined;
+
+  const out = rows
+    .map((row) => normalizeUaBreakdownRow(row))
+    .filter(Boolean) as any[];
+
+  if (!out.length) return undefined;
+
+  out.sort(sortBreakdownRows);
+  return out;
+}
+
+function normalizeContentBreakdown(rows: unknown): any[] | undefined {
+  if (!Array.isArray(rows)) return undefined;
+
+  const out = rows
+    .map((row) => normalizeContentBreakdownRow(row))
+    .filter(Boolean) as any[];
+
+  if (!out.length) return undefined;
+
+  out.sort(sortBreakdownRows);
   return out;
 }
 
@@ -243,6 +317,24 @@ function pickPopBreakdown(metricsJson: any): any[] | undefined {
     normalizePopBreakdown(metricsJson?.popBreakdown) ||
     normalizePopBreakdown(metricsJson?.evidenceBundle?.popBreakdown) ||
     normalizePopBreakdown(metricsJson?.evidence?.popBreakdown) ||
+    undefined
+  );
+}
+
+function pickUaBreakdown(metricsJson: any): any[] | undefined {
+  return (
+    normalizeUaBreakdown(metricsJson?.uaBreakdown) ||
+    normalizeUaBreakdown(metricsJson?.evidenceBundle?.uaBreakdown) ||
+    normalizeUaBreakdown(metricsJson?.evidence?.uaBreakdown) ||
+    undefined
+  );
+}
+
+function pickContentBreakdown(metricsJson: any): any[] | undefined {
+  return (
+    normalizeContentBreakdown(metricsJson?.contentBreakdown) ||
+    normalizeContentBreakdown(metricsJson?.evidenceBundle?.contentBreakdown) ||
+    normalizeContentBreakdown(metricsJson?.evidence?.contentBreakdown) ||
     undefined
   );
 }
@@ -303,6 +395,12 @@ function assertCanonicalMetrics(metricsJson: any) {
 
   const popBreakdown = pickPopBreakdown(metricsJson);
   if (popBreakdown) out.popBreakdown = popBreakdown;
+
+  const uaBreakdown = pickUaBreakdown(metricsJson);
+  if (uaBreakdown) out.uaBreakdown = uaBreakdown;
+
+  const contentBreakdown = pickContentBreakdown(metricsJson);
+  if (contentBreakdown) out.contentBreakdown = contentBreakdown;
 
   if (metricsJson.available && typeof metricsJson.available === "object") out.available = metricsJson.available;
   if (Array.isArray(metricsJson.warnings)) out.warnings = metricsJson.warnings;

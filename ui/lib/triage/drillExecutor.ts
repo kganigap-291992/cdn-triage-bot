@@ -64,7 +64,9 @@ function summarizeRows(request: DrillRequest, rows: Record<string, any>[]): stri
     top.dimension ??
     top.region ??
     top.pop ??
+    top.uaFamily ??
     top.ua_family ??
+    top.contentType ??
     top.content_type ??
     top.host ??
     top.status_code ??
@@ -144,6 +146,10 @@ export async function executeDrill(
     rawRows = bundle?.regionBreakdown ?? [];
   } else if (request.type === "worst_pop") {
     rawRows = bundle?.popBreakdown ?? [];
+  } else if (request.type === "worst_ua") {
+    rawRows = bundle?.uaBreakdown ?? [];
+  } else if (request.type === "worst_content") {
+    rawRows = bundle?.contentBreakdown ?? [];
   }
 
   if (!rawRows.length && deps.runQuery) {
