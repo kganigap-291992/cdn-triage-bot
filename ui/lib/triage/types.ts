@@ -105,6 +105,10 @@ export type EvidenceBundle = {
 
   popBreakdown?: any[];
 
+  uaBreakdown?: any[];
+
+  contentBreakdown?: any[];
+
   worstLatency?: any[];
 
   worstErrors?: any[];
