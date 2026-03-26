@@ -70,8 +70,12 @@ function minutesBetweenIso(startIso: string, endIso: string): number {
 }
 
 function pickTable(windowMinutes: number, hint?: "raw_minute" | "agg_15m") {
-  if (hint === "raw_minute") return { table: "cachey.raw_minute" as const, bucketSeconds: 60 as const };
-  if (hint === "agg_15m") return { table: "cachey.agg_15m" as const, bucketSeconds: 900 as const };
+  if (hint === "raw_minute") {
+    return { table: "cachey.raw_minute" as const, bucketSeconds: 60 as const };
+  }
+  if (hint === "agg_15m") {
+    return { table: "cachey.agg_15m" as const, bucketSeconds: 900 as const };
+  }
 
   if (Number.isFinite(windowMinutes) && windowMinutes > 360) {
     return { table: "cachey.agg_15m" as const, bucketSeconds: 900 as const };
@@ -161,9 +165,15 @@ SELECT
   t_end   AS window_end,
   sum(requests) AS total_requests,
   sum(http_5xx_count) AS http_5xx,
+  round(100.0 * sum(http_5xx_count) / nullIf(sum(requests), 0), 3) AS error_rate_pct,
+  round(
+    100.0 * (sum(status_200) + sum(status_206) + sum(status_304)) / nullIf(sum(requests), 0),
+    3
+  ) AS success_rate_pct,
   avg(p95_ms) AS p95_ms,
   avg(p99_ms) AS p99_ms,
-  avg(cache_hit_rate) AS cache_hit_rate
+  avg(cache_hit_rate) AS cache_hit_rate,
+  sum(crc_errors) AS crc_errors
 FROM ${table}
 ${whereSql}
 `.trim();
@@ -215,14 +225,21 @@ SELECT
   toStartOfInterval(ts, INTERVAL {bucketSeconds:Int32} SECOND) AS bucket,
   sum(requests) AS total_requests,
   sum(http_5xx_count) AS http_5xx,
-  avg(p95_ms) AS p95_ms
+  round(100.0 * sum(http_5xx_count) / nullIf(sum(requests), 0), 3) AS error_rate_pct,
+  round(
+    100.0 * (sum(status_200) + sum(status_206) + sum(status_304)) / nullIf(sum(requests), 0),
+    3
+  ) AS success_rate_pct,
+  avg(p95_ms) AS p95_ms,
+  avg(p99_ms) AS p99_ms,
+  avg(cache_hit_rate) AS cache_hit_rate,
+  sum(crc_errors) AS crc_errors
 FROM ${table}
 ${whereSql}
 GROUP BY bucket
 ORDER BY bucket ASC
 `.trim();
 
-  // ✅ NEW: UA breakdown
   const q5 = `
 ${timeWith}
 SELECT
@@ -239,7 +256,6 @@ ORDER BY error_5xx_count DESC
 LIMIT 20
 `.trim();
 
-  // ✅ NEW: Content breakdown
   const q6 = `
 ${timeWith}
 SELECT

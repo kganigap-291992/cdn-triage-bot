@@ -303,6 +303,17 @@ function pickContentBreakdownFromProxy(parsed: any, rawMetrics: any): any[] | un
   );
 }
 
+function deriveSuccessRatePctFromStatusCounts(
+  statusCountsByCode: Record<string, number> | undefined,
+  totalRequests: number
+): number {
+  if (!statusCountsByCode || totalRequests <= 0) return 0;
+  const ok200 = numOrZero(statusCountsByCode["200"]);
+  const ok206 = numOrZero(statusCountsByCode["206"]);
+  const ok304 = numOrZero(statusCountsByCode["304"]);
+  return (100 * (ok200 + ok206 + ok304)) / totalRequests;
+}
+
 function normalizeTimeseriesPoint(row: any) {
   const ts = asString(row?.ts) ?? asString(row?.bucket);
   if (!ts) return null;
@@ -330,6 +341,20 @@ function normalizeTimeseriesPoint(row: any) {
       ? (100 * error5xxCount) / totalRequests
       : 0;
 
+  const statusCountsByCode =
+    row?.statusCountsByCode && typeof row.statusCountsByCode === "object"
+      ? row.statusCountsByCode
+      : row?.status_counts_by_code && typeof row.status_counts_by_code === "object"
+      ? row.status_counts_by_code
+      : undefined;
+
+  const successRatePct =
+    row?.successRatePct != null && numOrZero(row.successRatePct) > 0
+      ? numOrZero(row.successRatePct)
+      : row?.success_rate_pct != null && numOrZero(row.success_rate_pct) > 0
+      ? numOrZero(row.success_rate_pct)
+      : deriveSuccessRatePctFromStatusCounts(statusCountsByCode, totalRequests);
+
   return {
     ts,
     totalRequests,
@@ -341,6 +366,7 @@ function normalizeTimeseriesPoint(row: any) {
         ? numOrZero(row.crc_errors)
         : 0,
     errorRatePct,
+    successRatePct,
     p95TtmsMs:
       row?.p95TtmsMs != null
         ? numOrNull(row.p95TtmsMs)
@@ -359,12 +385,7 @@ function normalizeTimeseriesPoint(row: any) {
         : row?.cache_hit_rate != null
         ? numOrNull(row.cache_hit_rate)
         : null,
-    statusCountsByCode:
-      row?.statusCountsByCode && typeof row.statusCountsByCode === "object"
-        ? row.statusCountsByCode
-        : row?.status_counts_by_code && typeof row.status_counts_by_code === "object"
-        ? row.status_counts_by_code
-        : undefined,
+    statusCountsByCode,
   };
 }
 
@@ -480,6 +501,13 @@ function assertCanonicalMetricsJson(metricsJson: any) {
       ? (100 * error5xxCount) / totalRequests
       : 0;
 
+  const successRatePct =
+    metricsJson.successRatePct != null && numOrZero(metricsJson.successRatePct) > 0
+      ? numOrZero(metricsJson.successRatePct)
+      : metricsJson.success_rate_pct != null && numOrZero(metricsJson.success_rate_pct) > 0
+      ? numOrZero(metricsJson.success_rate_pct)
+      : 0;
+
   if (totalRequests == null) {
     throw new Error("route: non-canonical metricsJson (missing totalRequests|total_requests)");
   }
@@ -496,6 +524,7 @@ function assertCanonicalMetricsJson(metricsJson: any) {
     p95TtmsMs,
     error5xxCount,
     errorRatePct,
+    successRatePct,
   };
 
   if (!out.debug || typeof out.debug !== "object") {
@@ -513,6 +542,7 @@ function canonicalStubMetricsJson(debug: Record<string, any>) {
     p95TtmsMs: null,
     error5xxCount: 0,
     errorRatePct: 0,
+    successRatePct: 0,
     timeseries: { bucketSeconds: null, startTs: null, endTs: null, points: [] },
     debug: { ...(debug || {}) },
   };
@@ -811,6 +841,13 @@ function adaptLegacyProxyMetricsToCanonical(legacyMetrics: any, parsed?: any) {
       ? (100 * error5xxCount) / totalRequests
       : 0;
 
+  const successRatePct =
+    legacyMetrics?.successRatePct != null && numOrZero(legacyMetrics.successRatePct) > 0
+      ? numOrZero(legacyMetrics.successRatePct)
+      : legacyMetrics?.success_rate_pct != null && numOrZero(legacyMetrics.success_rate_pct) > 0
+      ? numOrZero(legacyMetrics.success_rate_pct)
+      : 0;
+
   const out: any = {
     totalRequests,
     p50TtmsMs:
@@ -845,6 +882,7 @@ function adaptLegacyProxyMetricsToCanonical(legacyMetrics: any, parsed?: any) {
         : 0,
     error5xxCount,
     errorRatePct,
+    successRatePct,
     warnings: Array.isArray(legacyMetrics?.warnings) ? legacyMetrics.warnings : undefined,
     timeseries: normalizeTimeseries(legacyMetrics),
     debug:

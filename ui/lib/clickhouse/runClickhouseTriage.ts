@@ -341,6 +341,17 @@ function pickContentBreakdown(metricsJson: any): any[] | undefined {
   );
 }
 
+function deriveSuccessRatePctFromStatusCounts(
+  statusCountsByCode: Record<string, number> | undefined,
+  totalRequests: number
+): number {
+  if (!statusCountsByCode || !totalRequests) return 0;
+  const ok200 = safeNumber(statusCountsByCode["200"], 0);
+  const ok206 = safeNumber(statusCountsByCode["206"], 0);
+  const ok304 = safeNumber(statusCountsByCode["304"], 0);
+  return totalRequests > 0 ? (100 * (ok200 + ok206 + ok304)) / totalRequests : 0;
+}
+
 function normalizeTimeseriesPoint(row: any) {
   const ts = asString(row?.ts) ?? asString(row?.bucket);
   if (!ts) return null;
@@ -368,11 +379,26 @@ function normalizeTimeseriesPoint(row: any) {
       ? (100 * error5xxCount) / totalRequests
       : 0;
 
+  const statusCountsByCode =
+    row?.statusCountsByCode && typeof row.statusCountsByCode === "object"
+      ? row.statusCountsByCode
+      : row?.status_counts_by_code && typeof row.status_counts_by_code === "object"
+      ? row.status_counts_by_code
+      : undefined;
+  
+  const successRatePct =
+    row?.successRatePct != null && safeNumber(row.successRatePct, 0) > 0
+      ? safeNumber(row.successRatePct, 0)
+      : row?.success_rate_pct != null && safeNumber(row.success_rate_pct, 0) > 0
+      ? safeNumber(row.success_rate_pct, 0)
+      : deriveSuccessRatePctFromStatusCounts(statusCountsByCode, totalRequests);    
+
   return {
     ts,
     totalRequests,
     error5xxCount,
     errorRatePct,
+    successRatePct,
     p95TtmsMs:
       row?.p95TtmsMs != null
         ? safeNumberOrNull(row.p95TtmsMs)
@@ -397,12 +423,7 @@ function normalizeTimeseriesPoint(row: any) {
         : row?.crc_errors != null
         ? safeNumber(row.crc_errors, 0)
         : 0,
-    statusCountsByCode:
-      row?.statusCountsByCode && typeof row.statusCountsByCode === "object"
-        ? row.statusCountsByCode
-        : row?.status_counts_by_code && typeof row.status_counts_by_code === "object"
-        ? row.status_counts_by_code
-        : undefined,
+    statusCountsByCode,
   };
 }
 
@@ -543,6 +564,13 @@ function assertCanonicalMetrics(metricsJson: any) {
       ? (100 * error5xxCount) / totalRequests
       : 0;
 
+  const successRatePct =
+    metricsJson.successRatePct != null
+      ? safeNumber(metricsJson.successRatePct, 0)
+      : metricsJson.success_rate_pct != null
+      ? safeNumber(metricsJson.success_rate_pct, 0)
+      : 0;
+
   if (totalRequests == null) {
     throw new Error(
       "runClickhouseTriage: non-canonical metricsJson (missing totalRequests|total_requests)"
@@ -594,6 +622,7 @@ function assertCanonicalMetrics(metricsJson: any) {
         : null,
     error5xxCount,
     errorRatePct,
+    successRatePct,
     timeseries,
     timeRangeUTC,
     debug,
@@ -638,13 +667,10 @@ export async function runClickhouseTriage(
 ): Promise<ClickhouseTriageResult> {
   const scope = buildCanonicalRunnerScope(inputs);
 
-  // Decide time mode
   const tm = computeTimeMode(inputs);
 
-  // Dataset is backfilled/old → anchor window to max(ts) by default (relative mode only)
   const anchorToMaxTs = tm.mode === "relative";
 
-  // Always build canonical SQL first
   const built = buildClickhouseSql({
     partner: scope.partner,
     service: scope.service,
@@ -658,8 +684,6 @@ export async function runClickhouseTriage(
     anchorToMaxTs,
   });
 
-  // Later: swap this for real ClickHouse execution.
-  // Tell the mock what bucket to simulate + what table semantics we selected
   const raw = await runMockClickhouseTriage({
     ...inputs,
     partner: scope.partner,
@@ -669,12 +693,8 @@ export async function runClickhouseTriage(
     contentType: scope.contentType,
     uaFamily: scope.uaFamily,
     windowMinutes: scope.windowMinutes,
-
-    // absolute range (if present)
     startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
     endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
-
-    // chosen table semantics
     tableUsed: built.meta.tableUsed,
     bucketSeconds: built.meta.bucketSeconds,
     anchorToMaxTs,
@@ -686,7 +706,6 @@ export async function runClickhouseTriage(
   const baseMetrics = raw?.metricsJson ?? raw ?? {};
   const metricsJson = assertCanonicalMetrics(baseMetrics);
 
-  // Force bucketSeconds consistency (even if mock forgot)
   metricsJson.timeseries = metricsJson.timeseries || {
     bucketSeconds: null,
     startTs: null,
@@ -695,13 +714,11 @@ export async function runClickhouseTriage(
   };
   metricsJson.timeseries.bucketSeconds = built.meta.bucketSeconds;
 
-  // Ensure timeseries bounds align with absolute range if used (UI trust)
   if (tm.mode === "absolute") {
     metricsJson.timeseries.startTs = tm.startIso;
     metricsJson.timeseries.endTs = tm.endIso;
     metricsJson.timeRangeUTC = { start: tm.startIso, end: tm.endIso };
   } else {
-    // Ensure timeRangeUTC is never null when we have timeseries bounds
     if (!metricsJson.timeRangeUTC) {
       const s = asString(metricsJson.timeseries?.startTs);
       const e = asString(metricsJson.timeseries?.endTs);
@@ -709,26 +726,19 @@ export async function runClickhouseTriage(
     }
   }
 
-  // Stamp runner version + canonical scope/meta
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
-    __runnerVersion: "runclickhouse-vSTRICT-007",
-
-    // dims
+    __runnerVersion: "runclickhouse-vSTRICT-009",
     partner: scope.partner,
     service: scope.service,
     region: scope.region,
     pop: scope.pop,
     contentType: scope.contentType,
     uaFamily: scope.uaFamily,
-
-    // time mode
     timeMode: tm.mode,
     windowMinutes: scope.windowMinutes,
     startTsUtc: tm.mode === "absolute" ? tm.startIso : null,
     endTsUtc: tm.mode === "absolute" ? tm.endIso : null,
-
-    // anchoring + selection
     anchorToMaxTs,
     tableUsed: built.meta.tableUsed,
     bucketSeconds: built.meta.bucketSeconds,
