@@ -63,6 +63,15 @@ function numOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function numOrZero(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function asString(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
 function isCanonPartner(x: string) {
   return (CANON.partners as readonly string[]).includes(x);
 }
@@ -108,9 +117,24 @@ function normalizeBreakdownKey(v: unknown): string | null {
   return s || null;
 }
 
-function normalizeBreakdownNumber(v: unknown, fallback = 0): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
+function readUiOrSqlNumber(
+  row: Record<string, any>,
+  uiKey: string,
+  sqlKey: string
+): number {
+  if (row?.[uiKey] != null) return numOrZero(row[uiKey]);
+  if (row?.[sqlKey] != null) return numOrZero(row[sqlKey]);
+  return 0;
+}
+
+function readUiOrSqlNullableNumber(
+  row: Record<string, any>,
+  uiKey: string,
+  sqlKey: string
+): number | null {
+  if (row?.[uiKey] != null) return numOrNull(row[uiKey]);
+  if (row?.[sqlKey] != null) return numOrNull(row[sqlKey]);
+  return null;
 }
 
 function sortBreakdownRows(a: any, b: any) {
@@ -125,19 +149,18 @@ function normalizeRegionBreakdownRow(row: any) {
 
   return {
     region,
-    totalRequests: normalizeBreakdownNumber(
-      row?.totalRequests ?? row?.total_requests ?? row?.requests
-    ),
-    error5xxCount: normalizeBreakdownNumber(
-      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
-    ),
-    errorRatePct: normalizeBreakdownNumber(
-      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
-    ),
-    p95TtmsMs: numOrNull(row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms),
-    cacheHitPct: numOrNull(
-      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
-    ),
+    totalRequests: readUiOrSqlNumber(row, "totalRequests", "total_requests"),
+    error5xxCount: readUiOrSqlNumber(row, "error5xxCount", "error_5xx_count"),
+    errorRatePct: readUiOrSqlNumber(row, "errorRatePct", "error_rate_pct"),
+    p95TtmsMs: readUiOrSqlNullableNumber(row, "p95TtmsMs", "p95_ttms_ms"),
+    cacheHitPct:
+      row?.cacheHitPct != null
+        ? numOrNull(row.cacheHitPct)
+        : row?.cache_hit_rate != null
+        ? numOrNull(row.cache_hit_rate)
+        : row?.cacheHitRate != null
+        ? numOrNull(row.cacheHitRate)
+        : null,
   };
 }
 
@@ -147,118 +170,91 @@ function normalizePopBreakdownRow(row: any) {
 
   return {
     pop,
-    totalRequests: normalizeBreakdownNumber(
-      row?.totalRequests ?? row?.total_requests ?? row?.requests
-    ),
-    error5xxCount: normalizeBreakdownNumber(
-      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
-    ),
-    errorRatePct: normalizeBreakdownNumber(
-      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
-    ),
-    p95TtmsMs: numOrNull(row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms),
-    cacheHitPct: numOrNull(
-      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
-    ),
+    totalRequests: readUiOrSqlNumber(row, "totalRequests", "total_requests"),
+    error5xxCount: readUiOrSqlNumber(row, "error5xxCount", "error_5xx_count"),
+    errorRatePct: readUiOrSqlNumber(row, "errorRatePct", "error_rate_pct"),
+    p95TtmsMs: readUiOrSqlNullableNumber(row, "p95TtmsMs", "p95_ttms_ms"),
+    cacheHitPct:
+      row?.cacheHitPct != null
+        ? numOrNull(row.cacheHitPct)
+        : row?.cache_hit_rate != null
+        ? numOrNull(row.cache_hit_rate)
+        : row?.cacheHitRate != null
+        ? numOrNull(row.cacheHitRate)
+        : null,
   };
 }
 
 function normalizeUaBreakdownRow(row: any) {
-  const uaFamily = normalizeBreakdownKey(
-    row?.uaFamily ?? row?.ua_family ?? row?.ua
-  );
+  const uaFamily = normalizeBreakdownKey(row?.uaFamily ?? row?.ua_family);
   if (!uaFamily) return null;
 
   return {
     uaFamily,
-    totalRequests: normalizeBreakdownNumber(
-      row?.totalRequests ?? row?.total_requests ?? row?.requests
-    ),
-    error5xxCount: normalizeBreakdownNumber(
-      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
-    ),
-    errorRatePct: normalizeBreakdownNumber(
-      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
-    ),
-    p95TtmsMs: numOrNull(row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms),
-    cacheHitPct: numOrNull(
-      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
-    ),
+    totalRequests: readUiOrSqlNumber(row, "totalRequests", "total_requests"),
+    error5xxCount: readUiOrSqlNumber(row, "error5xxCount", "error_5xx_count"),
+    errorRatePct: readUiOrSqlNumber(row, "errorRatePct", "error_rate_pct"),
+    p95TtmsMs: readUiOrSqlNullableNumber(row, "p95TtmsMs", "p95_ttms_ms"),
+    cacheHitPct:
+      row?.cacheHitPct != null
+        ? numOrNull(row.cacheHitPct)
+        : row?.cache_hit_rate != null
+        ? numOrNull(row.cache_hit_rate)
+        : row?.cacheHitRate != null
+        ? numOrNull(row.cacheHitRate)
+        : null,
   };
 }
 
 function normalizeContentBreakdownRow(row: any) {
-  const contentType = normalizeBreakdownKey(
-    row?.contentType ?? row?.content_type ?? row?.content ?? row?.ct
-  );
+  const contentType = normalizeBreakdownKey(row?.contentType ?? row?.content_type);
   if (!contentType) return null;
 
   return {
     contentType,
-    totalRequests: normalizeBreakdownNumber(
-      row?.totalRequests ?? row?.total_requests ?? row?.requests
-    ),
-    error5xxCount: normalizeBreakdownNumber(
-      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
-    ),
-    errorRatePct: normalizeBreakdownNumber(
-      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
-    ),
-    p95TtmsMs: numOrNull(row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms),
-    cacheHitPct: numOrNull(
-      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
-    ),
+    totalRequests: readUiOrSqlNumber(row, "totalRequests", "total_requests"),
+    error5xxCount: readUiOrSqlNumber(row, "error5xxCount", "error_5xx_count"),
+    errorRatePct: readUiOrSqlNumber(row, "errorRatePct", "error_rate_pct"),
+    p95TtmsMs: readUiOrSqlNullableNumber(row, "p95TtmsMs", "p95_ttms_ms"),
+    cacheHitPct:
+      row?.cacheHitPct != null
+        ? numOrNull(row.cacheHitPct)
+        : row?.cache_hit_rate != null
+        ? numOrNull(row.cache_hit_rate)
+        : row?.cacheHitRate != null
+        ? numOrNull(row.cacheHitRate)
+        : null,
   };
 }
 
 function normalizeRegionBreakdown(rows: unknown): any[] | undefined {
   if (!Array.isArray(rows)) return undefined;
-
-  const out = rows
-    .map((row) => normalizeRegionBreakdownRow(row))
-    .filter(Boolean) as any[];
-
+  const out = rows.map((row) => normalizeRegionBreakdownRow(row)).filter(Boolean) as any[];
   if (!out.length) return undefined;
-
   out.sort(sortBreakdownRows);
   return out;
 }
 
 function normalizePopBreakdown(rows: unknown): any[] | undefined {
   if (!Array.isArray(rows)) return undefined;
-
-  const out = rows
-    .map((row) => normalizePopBreakdownRow(row))
-    .filter(Boolean) as any[];
-
+  const out = rows.map((row) => normalizePopBreakdownRow(row)).filter(Boolean) as any[];
   if (!out.length) return undefined;
-
   out.sort(sortBreakdownRows);
   return out;
 }
 
 function normalizeUaBreakdown(rows: unknown): any[] | undefined {
   if (!Array.isArray(rows)) return undefined;
-
-  const out = rows
-    .map((row) => normalizeUaBreakdownRow(row))
-    .filter(Boolean) as any[];
-
+  const out = rows.map((row) => normalizeUaBreakdownRow(row)).filter(Boolean) as any[];
   if (!out.length) return undefined;
-
   out.sort(sortBreakdownRows);
   return out;
 }
 
 function normalizeContentBreakdown(rows: unknown): any[] | undefined {
   if (!Array.isArray(rows)) return undefined;
-
-  const out = rows
-    .map((row) => normalizeContentBreakdownRow(row))
-    .filter(Boolean) as any[];
-
+  const out = rows.map((row) => normalizeContentBreakdownRow(row)).filter(Boolean) as any[];
   if (!out.length) return undefined;
-
   out.sort(sortBreakdownRows);
   return out;
 }
@@ -307,28 +303,208 @@ function pickContentBreakdownFromProxy(parsed: any, rawMetrics: any): any[] | un
   );
 }
 
+function normalizeTimeseriesPoint(row: any) {
+  const ts = asString(row?.ts) ?? asString(row?.bucket);
+  if (!ts) return null;
+
+  const totalRequests =
+    row?.totalRequests != null
+      ? numOrZero(row.totalRequests)
+      : row?.total_requests != null
+      ? numOrZero(row.total_requests)
+      : 0;
+
+  const error5xxCount =
+    row?.error5xxCount != null
+      ? numOrZero(row.error5xxCount)
+      : row?.http_5xx != null
+      ? numOrZero(row.http_5xx)
+      : 0;
+
+  const errorRatePct =
+    row?.errorRatePct != null
+      ? numOrZero(row.errorRatePct)
+      : row?.error_rate_pct != null
+      ? numOrZero(row.error_rate_pct)
+      : totalRequests > 0
+      ? (100 * error5xxCount) / totalRequests
+      : 0;
+
+  return {
+    ts,
+    totalRequests,
+    error5xxCount,
+    crcErrorCount:
+      row?.crcErrorCount != null
+        ? numOrZero(row.crcErrorCount)
+        : row?.crc_errors != null
+        ? numOrZero(row.crc_errors)
+        : 0,
+    errorRatePct,
+    p95TtmsMs:
+      row?.p95TtmsMs != null
+        ? numOrNull(row.p95TtmsMs)
+        : row?.p95_ms != null
+        ? numOrNull(row.p95_ms)
+        : null,
+    p99TtmsMs:
+      row?.p99TtmsMs != null
+        ? numOrNull(row.p99TtmsMs)
+        : row?.p99_ms != null
+        ? numOrNull(row.p99_ms)
+        : null,
+    cacheHitRate:
+      row?.cacheHitRate != null
+        ? numOrNull(row.cacheHitRate)
+        : row?.cache_hit_rate != null
+        ? numOrNull(row.cache_hit_rate)
+        : null,
+    statusCountsByCode:
+      row?.statusCountsByCode && typeof row.statusCountsByCode === "object"
+        ? row.statusCountsByCode
+        : row?.status_counts_by_code && typeof row.status_counts_by_code === "object"
+        ? row.status_counts_by_code
+        : undefined,
+  };
+}
+
+function normalizeHostSeriesRow(row: any) {
+  const host = asString(row?.host);
+  if (!host) return null;
+
+  return {
+    host,
+    totalRequests: readUiOrSqlNumber(row, "totalRequests", "total_requests"),
+    error5xxCount: readUiOrSqlNumber(row, "error5xxCount", "error_5xx_count"),
+    crcErrorCount:
+      row?.crcErrorCount != null
+        ? numOrZero(row.crcErrorCount)
+        : row?.crc_errors != null
+        ? numOrZero(row.crc_errors)
+        : 0,
+    errorRatePct: readUiOrSqlNumber(row, "errorRatePct", "error_rate_pct"),
+    p95TtmsMs:
+      row?.p95TtmsMs != null
+        ? numOrNull(row.p95TtmsMs)
+        : row?.p95_ttms_ms != null
+        ? numOrNull(row.p95_ttms_ms)
+        : null,
+    p99TtmsMs:
+      row?.p99TtmsMs != null
+        ? numOrNull(row.p99TtmsMs)
+        : row?.p99_ms != null
+        ? numOrNull(row.p99_ms)
+        : null,
+  };
+}
+
+function normalizeCrcSeriesRow(row: any) {
+  const ts = asString(row?.ts) ?? asString(row?.bucket);
+  if (!ts) return null;
+
+  return {
+    ts,
+    crcErrorCount:
+      row?.crcErrorCount != null
+        ? numOrZero(row.crcErrorCount)
+        : row?.crc_errors != null
+        ? numOrZero(row.crc_errors)
+        : 0,
+  };
+}
+
+function normalizeTimeseries(metricsJson: any) {
+  const t = metricsJson?.timeseries;
+  if (!t || typeof t !== "object") {
+    return { bucketSeconds: null, startTs: null, endTs: null, points: [] };
+  }
+
+  const points = Array.isArray(t.points)
+    ? t.points.map((row: any) => normalizeTimeseriesPoint(row)).filter(Boolean)
+    : [];
+
+  const hostSeries = Array.isArray(t.hostSeries)
+    ? t.hostSeries.map((row: any) => normalizeHostSeriesRow(row)).filter(Boolean)
+    : [];
+
+  const crcSeries = Array.isArray(t.crcSeries)
+    ? t.crcSeries.map((row: any) => normalizeCrcSeriesRow(row)).filter(Boolean)
+    : [];
+
+  return {
+    bucketSeconds: t.bucketSeconds != null ? numOrZero(t.bucketSeconds) : null,
+    startTs: asString(t.startTs) ?? (points.length ? asString(points[0]?.ts) : null) ?? null,
+    endTs:
+      asString(t.endTs) ?? (points.length ? asString(points[points.length - 1]?.ts) : null) ?? null,
+    points,
+    statusCodeSeries: Array.isArray(t.statusCodeSeries)
+      ? t.statusCodeSeries.map(String)
+      : undefined,
+    hostSeries,
+    crcSeries,
+  };
+}
+
 function assertCanonicalMetricsJson(metricsJson: any) {
   if (!metricsJson || typeof metricsJson !== "object") {
     throw new Error("route: metricsJson missing");
   }
 
-  const required = ["totalRequests", "p95TtmsMs", "error5xxCount", "errorRatePct"];
-  for (const k of required) {
-    if (!(k in metricsJson)) {
-      throw new Error(`route: non-canonical metricsJson (missing ${k})`);
-    }
+  const totalRequests =
+    metricsJson.totalRequests != null
+      ? numOrZero(metricsJson.totalRequests)
+      : metricsJson.total_requests != null
+      ? numOrZero(metricsJson.total_requests)
+      : null;
+
+  const p95TtmsMs =
+    metricsJson.p95TtmsMs != null
+      ? numOrNull(metricsJson.p95TtmsMs)
+      : metricsJson.p95_ms != null
+      ? numOrNull(metricsJson.p95_ms)
+      : null;
+
+  const error5xxCount =
+    metricsJson.error5xxCount != null
+      ? numOrZero(metricsJson.error5xxCount)
+      : metricsJson.http_5xx != null
+      ? numOrZero(metricsJson.http_5xx)
+      : null;
+
+  const errorRatePct =
+    metricsJson.errorRatePct != null
+      ? numOrZero(metricsJson.errorRatePct)
+      : metricsJson.error_rate_pct != null
+      ? numOrZero(metricsJson.error_rate_pct)
+      : totalRequests != null && error5xxCount != null && totalRequests > 0
+      ? (100 * error5xxCount) / totalRequests
+      : 0;
+
+  if (totalRequests == null) {
+    throw new Error("route: non-canonical metricsJson (missing totalRequests|total_requests)");
+  }
+  if (error5xxCount == null) {
+    throw new Error("route: non-canonical metricsJson (missing error5xxCount|http_5xx)");
+  }
+  if (p95TtmsMs == null && metricsJson.p95TtmsMs == null && metricsJson.p95_ms == null) {
+    throw new Error("route: non-canonical metricsJson (missing p95TtmsMs|p95_ms)");
   }
 
-  if (!metricsJson.debug || typeof metricsJson.debug !== "object") {
-    metricsJson.debug = {};
+  const out: any = {
+    ...metricsJson,
+    totalRequests,
+    p95TtmsMs,
+    error5xxCount,
+    errorRatePct,
+  };
+
+  if (!out.debug || typeof out.debug !== "object") {
+    out.debug = {};
   }
 
-  const t = metricsJson.timeseries;
-  if (!t || typeof t !== "object" || !Array.isArray(t.points)) {
-    metricsJson.timeseries = { bucketSeconds: null, startTs: null, endTs: null, points: [] };
-  }
+  out.timeseries = normalizeTimeseries(metricsJson);
 
-  return metricsJson;
+  return out;
 }
 
 function canonicalStubMetricsJson(debug: Record<string, any>) {
@@ -611,32 +787,70 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
   });
 }
 
-function adaptLegacyProxyMetricsToCanonical(
-  legacyMetrics: any,
-  parsed?: any
-) {
-  const totalRequests = numOrNull(legacyMetrics?.totalRequests) ?? numOrNull(legacyMetrics?.requests) ?? 0;
-  const p50 = numOrNull(legacyMetrics?.p50TtmsMs) ?? numOrNull(legacyMetrics?.p50_ms);
-  const p95 = numOrNull(legacyMetrics?.p95TtmsMs) ?? numOrNull(legacyMetrics?.p95_ms);
-  const p99 = numOrNull(legacyMetrics?.p99TtmsMs) ?? numOrNull(legacyMetrics?.p99_ms);
+function adaptLegacyProxyMetricsToCanonical(legacyMetrics: any, parsed?: any) {
+  const totalRequests =
+    legacyMetrics?.totalRequests != null
+      ? numOrZero(legacyMetrics.totalRequests)
+      : legacyMetrics?.total_requests != null
+      ? numOrZero(legacyMetrics.total_requests)
+      : 0;
+
   const error5xxCount =
-    numOrNull(legacyMetrics?.error5xxCount) ?? numOrNull(legacyMetrics?.errors_5xx) ?? 0;
+    legacyMetrics?.error5xxCount != null
+      ? numOrZero(legacyMetrics.error5xxCount)
+      : legacyMetrics?.http_5xx != null
+      ? numOrZero(legacyMetrics.http_5xx)
+      : 0;
+
   const errorRatePct =
-    numOrNull(legacyMetrics?.errorRatePct) ??
-    (totalRequests > 0 ? (error5xxCount / totalRequests) * 100 : 0);
+    legacyMetrics?.errorRatePct != null
+      ? numOrZero(legacyMetrics.errorRatePct)
+      : legacyMetrics?.error_rate_pct != null
+      ? numOrZero(legacyMetrics.error_rate_pct)
+      : totalRequests > 0
+      ? (100 * error5xxCount) / totalRequests
+      : 0;
 
   const out: any = {
     totalRequests,
-    p50TtmsMs: p50,
-    p95TtmsMs: p95,
-    p99TtmsMs: p99,
+    p50TtmsMs:
+      legacyMetrics?.p50TtmsMs != null
+        ? numOrNull(legacyMetrics.p50TtmsMs)
+        : legacyMetrics?.p50_ms != null
+        ? numOrNull(legacyMetrics.p50_ms)
+        : null,
+    p95TtmsMs:
+      legacyMetrics?.p95TtmsMs != null
+        ? numOrNull(legacyMetrics.p95TtmsMs)
+        : legacyMetrics?.p95_ms != null
+        ? numOrNull(legacyMetrics.p95_ms)
+        : null,
+    p99TtmsMs:
+      legacyMetrics?.p99TtmsMs != null
+        ? numOrNull(legacyMetrics.p99TtmsMs)
+        : legacyMetrics?.p99_ms != null
+        ? numOrNull(legacyMetrics.p99_ms)
+        : null,
+    cacheHitRate:
+      legacyMetrics?.cacheHitRate != null
+        ? numOrNull(legacyMetrics.cacheHitRate)
+        : legacyMetrics?.cache_hit_rate != null
+        ? numOrNull(legacyMetrics.cache_hit_rate)
+        : null,
+    crcErrorCount:
+      legacyMetrics?.crcErrorCount != null
+        ? numOrZero(legacyMetrics.crcErrorCount)
+        : legacyMetrics?.crc_errors != null
+        ? numOrZero(legacyMetrics.crc_errors)
+        : 0,
     error5xxCount,
     errorRatePct,
-    timeseries:
-      legacyMetrics?.timeseries && Array.isArray(legacyMetrics.timeseries?.points)
-        ? legacyMetrics.timeseries
-        : { bucketSeconds: null, startTs: null, endTs: null, points: [] },
-    debug: legacyMetrics?.debug && typeof legacyMetrics.debug === "object" ? legacyMetrics.debug : {},
+    warnings: Array.isArray(legacyMetrics?.warnings) ? legacyMetrics.warnings : undefined,
+    timeseries: normalizeTimeseries(legacyMetrics),
+    debug:
+      legacyMetrics?.debug && typeof legacyMetrics.debug === "object"
+        ? legacyMetrics.debug
+        : {},
   };
 
   const regionBreakdown = pickRegionBreakdownFromProxy(parsed, legacyMetrics);
@@ -666,39 +880,23 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
 
   const rawMetrics = parsed?.metricsJson ?? parsed?.metrics ?? null;
 
-  let metricsJson: any;
-  if (
-    rawMetrics &&
-    typeof rawMetrics === "object" &&
-    "totalRequests" in rawMetrics &&
-    "p95TtmsMs" in rawMetrics &&
-    "error5xxCount" in rawMetrics &&
-    "errorRatePct" in rawMetrics
-  ) {
-    metricsJson = assertCanonicalMetricsJson(rawMetrics);
-  } else {
-    metricsJson = assertCanonicalMetricsJson(adaptLegacyProxyMetricsToCanonical(rawMetrics || {}, parsed));
-  }
+  const metricsJson = assertCanonicalMetricsJson(
+    rawMetrics && typeof rawMetrics === "object"
+      ? rawMetrics
+      : adaptLegacyProxyMetricsToCanonical(rawMetrics || {}, parsed)
+  );
 
   const regionBreakdown = pickRegionBreakdownFromProxy(parsed, rawMetrics);
-  if (regionBreakdown) {
-    metricsJson.regionBreakdown = regionBreakdown;
-  }
+  if (regionBreakdown) metricsJson.regionBreakdown = regionBreakdown;
 
   const popBreakdown = pickPopBreakdownFromProxy(parsed, rawMetrics);
-  if (popBreakdown) {
-    metricsJson.popBreakdown = popBreakdown;
-  }
+  if (popBreakdown) metricsJson.popBreakdown = popBreakdown;
 
   const uaBreakdown = pickUaBreakdownFromProxy(parsed, rawMetrics);
-  if (uaBreakdown) {
-    metricsJson.uaBreakdown = uaBreakdown;
-  }
+  if (uaBreakdown) metricsJson.uaBreakdown = uaBreakdown;
 
   const contentBreakdown = pickContentBreakdownFromProxy(parsed, rawMetrics);
-  if (contentBreakdown) {
-    metricsJson.contentBreakdown = contentBreakdown;
-  }
+  if (contentBreakdown) metricsJson.contentBreakdown = contentBreakdown;
 
   metricsJson.debug = {
     ...(metricsJson.debug || {}),

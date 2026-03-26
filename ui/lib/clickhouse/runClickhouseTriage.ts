@@ -69,6 +69,11 @@ function safeNumberOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function safeNumber(v: unknown, fallback = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function computeTimeMode(
   inputs: ClickhouseTriageInputs
 ):
@@ -80,19 +85,25 @@ function computeTimeMode(
   if (!startIso && !endIso) return { mode: "relative" };
 
   if (!startIso || !endIso) {
-    throw new Error("runClickhouseTriage: startTsUtc and endTsUtc must both be provided for absolute range");
+    throw new Error(
+      "runClickhouseTriage: startTsUtc and endTsUtc must both be provided for absolute range"
+    );
   }
 
   const sMs = new Date(startIso).getTime();
   const eMs = new Date(endIso).getTime();
   if (!Number.isFinite(sMs) || !Number.isFinite(eMs) || eMs <= sMs) {
-    throw new Error("runClickhouseTriage: invalid absolute range (endTsUtc must be after startTsUtc)");
+    throw new Error(
+      "runClickhouseTriage: invalid absolute range (endTsUtc must be after startTsUtc)"
+    );
   }
 
   return { mode: "absolute", startIso, endIso };
 }
 
-function buildCanonicalRunnerScope(inputs: ClickhouseTriageInputs): CanonicalRunnerScope {
+function buildCanonicalRunnerScope(
+  inputs: ClickhouseTriageInputs
+): CanonicalRunnerScope {
   const partner = String(inputs.partner || "").trim().toLowerCase();
   const service = String(inputs.service || "").trim().toLowerCase();
   const region = String(inputs.region || "all").trim().toLowerCase();
@@ -103,7 +114,11 @@ function buildCanonicalRunnerScope(inputs: ClickhouseTriageInputs): CanonicalRun
   if (!partner || !isCanon(partner, CANON.partners as readonly string[])) {
     throw new Error(`runClickhouseTriage: invalid partner '${inputs.partner}'`);
   }
-  if (!service || service === "all" || !isCanon(service, CANON.services as readonly string[])) {
+  if (
+    !service ||
+    service === "all" ||
+    !isCanon(service, CANON.services as readonly string[])
+  ) {
     throw new Error(`runClickhouseTriage: invalid service '${inputs.service}'`);
   }
   if (region !== "all" && !isCanon(region, CANON.regions as readonly string[])) {
@@ -112,16 +127,26 @@ function buildCanonicalRunnerScope(inputs: ClickhouseTriageInputs): CanonicalRun
   if (pop !== "all" && !isCanon(pop, CANON.pops as readonly string[])) {
     throw new Error(`runClickhouseTriage: invalid pop '${inputs.pop}'`);
   }
-  if (contentType !== "all" && !isCanon(contentType, CANON.contentTypes as readonly string[])) {
-    throw new Error(`runClickhouseTriage: invalid contentType '${inputs.contentType}'`);
+  if (
+    contentType !== "all" &&
+    !isCanon(contentType, CANON.contentTypes as readonly string[])
+  ) {
+    throw new Error(
+      `runClickhouseTriage: invalid contentType '${inputs.contentType}'`
+    );
   }
-  if (uaFamily !== "all" && !isCanon(uaFamily, CANON.uaFamilies as readonly string[])) {
+  if (
+    uaFamily !== "all" &&
+    !isCanon(uaFamily, CANON.uaFamilies as readonly string[])
+  ) {
     throw new Error(`runClickhouseTriage: invalid uaFamily '${inputs.uaFamily}'`);
   }
 
   const win = Number(inputs.windowMinutes);
   if (!Number.isFinite(win) || win <= 0) {
-    throw new Error(`runClickhouseTriage: invalid windowMinutes '${inputs.windowMinutes}'`);
+    throw new Error(
+      `runClickhouseTriage: invalid windowMinutes '${inputs.windowMinutes}'`
+    );
   }
 
   return {
@@ -140,9 +165,24 @@ function normalizeBreakdownKey(v: unknown): string | null {
   return s ? s : null;
 }
 
-function normalizeBreakdownNumber(v: unknown, fallback = 0): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
+function readUiOrSqlNumber(
+  row: Record<string, any>,
+  uiKey: string,
+  sqlKey: string
+): number {
+  if (row?.[uiKey] != null) return safeNumber(row[uiKey], 0);
+  if (row?.[sqlKey] != null) return safeNumber(row[sqlKey], 0);
+  return 0;
+}
+
+function readUiOrSqlNullableNumber(
+  row: Record<string, any>,
+  uiKey: string,
+  sqlKey: string
+): number | null {
+  if (row?.[uiKey] != null) return safeNumberOrNull(row[uiKey]);
+  if (row?.[sqlKey] != null) return safeNumberOrNull(row[sqlKey]);
+  return null;
 }
 
 function normalizeRegionBreakdownRow(row: any) {
@@ -151,21 +191,11 @@ function normalizeRegionBreakdownRow(row: any) {
 
   return {
     region,
-    totalRequests: normalizeBreakdownNumber(
-      row?.totalRequests ?? row?.total_requests ?? row?.requests
-    ),
-    error5xxCount: normalizeBreakdownNumber(
-      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
-    ),
-    errorRatePct: normalizeBreakdownNumber(
-      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
-    ),
-    p95TtmsMs: safeNumberOrNull(
-      row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms
-    ),
-    cacheHitPct: safeNumberOrNull(
-      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
-    ),
+    totalRequests: readUiOrSqlNumber(row, "totalRequests", "total_requests"),
+    error5xxCount: readUiOrSqlNumber(row, "error5xxCount", "error_5xx_count"),
+    errorRatePct: readUiOrSqlNumber(row, "errorRatePct", "error_rate_pct"),
+    p95TtmsMs: readUiOrSqlNullableNumber(row, "p95TtmsMs", "p95_ttms_ms"),
+    cacheHitPct: readUiOrSqlNullableNumber(row, "cacheHitPct", "cache_hit_rate"),
   };
 }
 
@@ -175,79 +205,51 @@ function normalizePopBreakdownRow(row: any) {
 
   return {
     pop,
-    totalRequests: normalizeBreakdownNumber(
-      row?.totalRequests ?? row?.total_requests ?? row?.requests
-    ),
-    error5xxCount: normalizeBreakdownNumber(
-      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
-    ),
-    errorRatePct: normalizeBreakdownNumber(
-      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
-    ),
-    p95TtmsMs: safeNumberOrNull(
-      row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms
-    ),
-    cacheHitPct: safeNumberOrNull(
-      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
-    ),
+    totalRequests: readUiOrSqlNumber(row, "totalRequests", "total_requests"),
+    error5xxCount: readUiOrSqlNumber(row, "error5xxCount", "error_5xx_count"),
+    errorRatePct: readUiOrSqlNumber(row, "errorRatePct", "error_rate_pct"),
+    p95TtmsMs: readUiOrSqlNullableNumber(row, "p95TtmsMs", "p95_ttms_ms"),
+    cacheHitPct: readUiOrSqlNullableNumber(row, "cacheHitPct", "cache_hit_rate"),
   };
 }
 
 function normalizeUaBreakdownRow(row: any) {
-  const uaFamily = normalizeBreakdownKey(
-    row?.uaFamily ?? row?.ua_family ?? row?.ua
-  );
+  const uaFamily = normalizeBreakdownKey(row?.uaFamily ?? row?.ua_family);
   if (!uaFamily) return null;
 
   return {
     uaFamily,
-    totalRequests: normalizeBreakdownNumber(
-      row?.totalRequests ?? row?.total_requests ?? row?.requests
-    ),
-    error5xxCount: normalizeBreakdownNumber(
-      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
-    ),
-    errorRatePct: normalizeBreakdownNumber(
-      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
-    ),
-    p95TtmsMs: safeNumberOrNull(
-      row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms
-    ),
-    cacheHitPct: safeNumberOrNull(
-      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
-    ),
+    totalRequests: readUiOrSqlNumber(row, "totalRequests", "total_requests"),
+    error5xxCount: readUiOrSqlNumber(row, "error5xxCount", "error_5xx_count"),
+    errorRatePct: readUiOrSqlNumber(row, "errorRatePct", "error_rate_pct"),
+    p95TtmsMs: readUiOrSqlNullableNumber(row, "p95TtmsMs", "p95_ttms_ms"),
+    cacheHitPct: readUiOrSqlNullableNumber(row, "cacheHitPct", "cache_hit_rate"),
   };
 }
 
 function normalizeContentBreakdownRow(row: any) {
   const contentType = normalizeBreakdownKey(
-    row?.contentType ?? row?.content_type ?? row?.ct
+    row?.contentType ?? row?.content_type
   );
   if (!contentType) return null;
 
   return {
     contentType,
-    totalRequests: normalizeBreakdownNumber(
-      row?.totalRequests ?? row?.total_requests ?? row?.requests
-    ),
-    error5xxCount: normalizeBreakdownNumber(
-      row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? row?.http5xx
-    ),
-    errorRatePct: normalizeBreakdownNumber(
-      row?.errorRatePct ?? row?.error_rate_pct ?? row?.err_rate_pct
-    ),
-    p95TtmsMs: safeNumberOrNull(
-      row?.p95TtmsMs ?? row?.p95_ttms_ms ?? row?.p95_ms
-    ),
-    cacheHitPct: safeNumberOrNull(
-      row?.cacheHitPct ?? row?.cache_hit_pct ?? row?.cache_hit_rate ?? row?.cacheHitRate
-    ),
+    totalRequests: readUiOrSqlNumber(row, "totalRequests", "total_requests"),
+    error5xxCount: readUiOrSqlNumber(row, "error5xxCount", "error_5xx_count"),
+    errorRatePct: readUiOrSqlNumber(row, "errorRatePct", "error_rate_pct"),
+    p95TtmsMs: readUiOrSqlNullableNumber(row, "p95TtmsMs", "p95_ttms_ms"),
+    cacheHitPct: readUiOrSqlNullableNumber(row, "cacheHitPct", "cache_hit_rate"),
   };
 }
 
 function sortBreakdownRows(a: any, b: any) {
-  if (b.error5xxCount !== a.error5xxCount) return b.error5xxCount - a.error5xxCount;
-  if ((b.p95TtmsMs ?? -1) !== (a.p95TtmsMs ?? -1)) return (b.p95TtmsMs ?? -1) - (a.p95TtmsMs ?? -1);
+  if (b.error5xxCount !== a.error5xxCount) {
+    return b.error5xxCount - a.error5xxCount;
+  }
+  if ((b.p95TtmsMs ?? -1) !== (a.p95TtmsMs ?? -1)) {
+    return (b.p95TtmsMs ?? -1) - (a.p95TtmsMs ?? -1);
+  }
   return b.totalRequests - a.totalRequests;
 }
 
@@ -339,52 +341,273 @@ function pickContentBreakdown(metricsJson: any): any[] | undefined {
   );
 }
 
+function normalizeTimeseriesPoint(row: any) {
+  const ts = asString(row?.ts) ?? asString(row?.bucket);
+  if (!ts) return null;
+
+  const totalRequests =
+    row?.totalRequests != null
+      ? safeNumber(row.totalRequests, 0)
+      : row?.total_requests != null
+      ? safeNumber(row.total_requests, 0)
+      : 0;
+
+  const error5xxCount =
+    row?.error5xxCount != null
+      ? safeNumber(row.error5xxCount, 0)
+      : row?.http_5xx != null
+      ? safeNumber(row.http_5xx, 0)
+      : 0;
+
+  const errorRatePct =
+    row?.errorRatePct != null
+      ? safeNumber(row.errorRatePct, 0)
+      : row?.error_rate_pct != null
+      ? safeNumber(row.error_rate_pct, 0)
+      : totalRequests > 0
+      ? (100 * error5xxCount) / totalRequests
+      : 0;
+
+  return {
+    ts,
+    totalRequests,
+    error5xxCount,
+    errorRatePct,
+    p95TtmsMs:
+      row?.p95TtmsMs != null
+        ? safeNumberOrNull(row.p95TtmsMs)
+        : row?.p95_ms != null
+        ? safeNumberOrNull(row.p95_ms)
+        : null,
+    p99TtmsMs:
+      row?.p99TtmsMs != null
+        ? safeNumberOrNull(row.p99TtmsMs)
+        : row?.p99_ms != null
+        ? safeNumberOrNull(row.p99_ms)
+        : null,
+    cacheHitRate:
+      row?.cacheHitRate != null
+        ? safeNumberOrNull(row.cacheHitRate)
+        : row?.cache_hit_rate != null
+        ? safeNumberOrNull(row.cache_hit_rate)
+        : null,
+    crcErrorCount:
+      row?.crcErrorCount != null
+        ? safeNumber(row.crcErrorCount, 0)
+        : row?.crc_errors != null
+        ? safeNumber(row.crc_errors, 0)
+        : 0,
+    statusCountsByCode:
+      row?.statusCountsByCode && typeof row.statusCountsByCode === "object"
+        ? row.statusCountsByCode
+        : row?.status_counts_by_code && typeof row.status_counts_by_code === "object"
+        ? row.status_counts_by_code
+        : undefined,
+  };
+}
+
+function normalizeHostSeriesRow(row: any) {
+  const host = asString(row?.host);
+  if (!host) return null;
+
+  return {
+    host,
+    totalRequests: readUiOrSqlNumber(row, "totalRequests", "total_requests"),
+    error5xxCount:
+      row?.error5xxCount != null
+        ? safeNumber(row.error5xxCount, 0)
+        : row?.error_5xx_count != null
+        ? safeNumber(row.error_5xx_count, 0)
+        : 0,
+    crcErrorCount:
+      row?.crcErrorCount != null
+        ? safeNumber(row.crcErrorCount, 0)
+        : row?.crc_errors != null
+        ? safeNumber(row.crc_errors, 0)
+        : 0,
+    errorRatePct: readUiOrSqlNumber(row, "errorRatePct", "error_rate_pct"),
+    p95TtmsMs:
+      row?.p95TtmsMs != null
+        ? safeNumberOrNull(row.p95TtmsMs)
+        : row?.p95_ttms_ms != null
+        ? safeNumberOrNull(row.p95_ttms_ms)
+        : null,
+    p99TtmsMs:
+      row?.p99TtmsMs != null
+        ? safeNumberOrNull(row.p99TtmsMs)
+        : row?.p99_ms != null
+        ? safeNumberOrNull(row.p99_ms)
+        : null,
+  };
+}
+
+function normalizeCrcSeriesRow(row: any) {
+  const ts = asString(row?.ts) ?? asString(row?.bucket);
+  if (!ts) return null;
+
+  return {
+    ts,
+    crcErrorCount:
+      row?.crcErrorCount != null
+        ? safeNumber(row.crcErrorCount, 0)
+        : row?.crc_errors != null
+        ? safeNumber(row.crc_errors, 0)
+        : 0,
+  };
+}
+
+function normalizeTimeseries(metricsJson: any, fallbackBucketSeconds: number | null) {
+  const t = metricsJson?.timeseries;
+  if (!t || typeof t !== "object") {
+    return {
+      bucketSeconds: fallbackBucketSeconds,
+      startTs: null,
+      endTs: null,
+      points: [],
+    };
+  }
+
+  const rawPoints = Array.isArray(t.points) ? t.points : [];
+  const points = rawPoints
+    .map((row: any) => normalizeTimeseriesPoint(row))
+    .filter(Boolean);
+
+  const hostSeries = Array.isArray(t.hostSeries)
+    ? t.hostSeries
+        .map((row: any) => normalizeHostSeriesRow(row))
+        .filter(Boolean)
+    : [];
+
+  const crcSeries = Array.isArray(t.crcSeries)
+    ? t.crcSeries
+        .map((row: any) => normalizeCrcSeriesRow(row))
+        .filter(Boolean)
+    : [];
+
+  const startTs =
+    asString(t.startTs) ??
+    (points.length ? asString(points[0]?.ts) : null) ??
+    null;
+
+  const endTs =
+    asString(t.endTs) ??
+    (points.length ? asString(points[points.length - 1]?.ts) : null) ??
+    null;
+
+  return {
+    bucketSeconds:
+      t.bucketSeconds != null ? safeNumber(t.bucketSeconds, 0) : fallbackBucketSeconds,
+    startTs,
+    endTs,
+    points,
+    statusCodeSeries: Array.isArray(t.statusCodeSeries)
+      ? t.statusCodeSeries.map(String)
+      : undefined,
+    hostSeries,
+    crcSeries,
+  };
+}
+
 function assertCanonicalMetrics(metricsJson: any) {
   if (!metricsJson || typeof metricsJson !== "object") {
     throw new Error("runClickhouseTriage: metricsJson missing");
   }
 
-  const required = ["totalRequests", "p95TtmsMs", "error5xxCount", "errorRatePct"];
-  for (const k of required) {
-    if (!(k in metricsJson)) {
-      throw new Error(`runClickhouseTriage: non-canonical metricsJson (missing ${k})`);
-    }
+  const totalRequests =
+    metricsJson.totalRequests != null
+      ? safeNumber(metricsJson.totalRequests, 0)
+      : metricsJson.total_requests != null
+      ? safeNumber(metricsJson.total_requests, 0)
+      : null;
+
+  const p95TtmsMs =
+    metricsJson.p95TtmsMs != null
+      ? safeNumberOrNull(metricsJson.p95TtmsMs)
+      : metricsJson.p95_ms != null
+      ? safeNumberOrNull(metricsJson.p95_ms)
+      : null;
+
+  const error5xxCount =
+    metricsJson.error5xxCount != null
+      ? safeNumber(metricsJson.error5xxCount, 0)
+      : metricsJson.http_5xx != null
+      ? safeNumber(metricsJson.http_5xx, 0)
+      : null;
+
+  const errorRatePct =
+    metricsJson.errorRatePct != null
+      ? safeNumber(metricsJson.errorRatePct, 0)
+      : metricsJson.error_rate_pct != null
+      ? safeNumber(metricsJson.error_rate_pct, 0)
+      : totalRequests != null && error5xxCount != null && totalRequests > 0
+      ? (100 * error5xxCount) / totalRequests
+      : 0;
+
+  if (totalRequests == null) {
+    throw new Error(
+      "runClickhouseTriage: non-canonical metricsJson (missing totalRequests|total_requests)"
+    );
+  }
+  if (error5xxCount == null) {
+    throw new Error(
+      "runClickhouseTriage: non-canonical metricsJson (missing error5xxCount|http_5xx)"
+    );
+  }
+  if (p95TtmsMs == null && metricsJson.p95TtmsMs == null && metricsJson.p95_ms == null) {
+    throw new Error(
+      "runClickhouseTriage: non-canonical metricsJson (missing p95TtmsMs|p95_ms)"
+    );
   }
 
-  // Ensure timeseries exists to prevent UI crashes
-  const t = metricsJson.timeseries;
-  const timeseries =
-    t && typeof t === "object" && Array.isArray(t.points)
-      ? t
-      : { bucketSeconds: null, startTs: null, endTs: null, points: [] };
-
-  // Ensure debug is an object (never null)
   const debugIn = metricsJson.debug;
   const debug = debugIn && typeof debugIn === "object" ? debugIn : {};
 
-  // Preserve/derive timeRangeUTC
+  const timeseries = normalizeTimeseries(
+    metricsJson,
+    debug?.bucketSeconds != null ? safeNumber(debug.bucketSeconds, 0) : null
+  );
+
   const tr = metricsJson.timeRangeUTC;
-  const start = (tr && typeof tr === "object" && asString((tr as any).start)) || asString(timeseries.startTs);
-  const end = (tr && typeof tr === "object" && asString((tr as any).end)) || asString(timeseries.endTs);
+  const start =
+    (tr && typeof tr === "object" && asString((tr as any).start)) ||
+    asString(timeseries.startTs);
+  const end =
+    (tr && typeof tr === "object" && asString((tr as any).end)) ||
+    asString(timeseries.endTs);
 
   const timeRangeUTC = start && end ? { start, end } : null;
 
   const out: any = {
-    totalRequests: Number(metricsJson.totalRequests) || 0,
-    p50TtmsMs: metricsJson.p50TtmsMs == null ? null : Number(metricsJson.p50TtmsMs),
-    p95TtmsMs: metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs),
-    p99TtmsMs: metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs),
-    error5xxCount: Number(metricsJson.error5xxCount) || 0,
-    errorRatePct: Number(metricsJson.errorRatePct) || 0,
-
+    totalRequests,
+    p50TtmsMs:
+      metricsJson.p50TtmsMs != null
+        ? safeNumberOrNull(metricsJson.p50TtmsMs)
+        : metricsJson.p50_ms != null
+        ? safeNumberOrNull(metricsJson.p50_ms)
+        : null,
+    p95TtmsMs,
+    p99TtmsMs:
+      metricsJson.p99TtmsMs != null
+        ? safeNumberOrNull(metricsJson.p99TtmsMs)
+        : metricsJson.p99_ms != null
+        ? safeNumberOrNull(metricsJson.p99_ms)
+        : null,
+    error5xxCount,
+    errorRatePct,
     timeseries,
     timeRangeUTC,
     debug,
   };
 
-  // Optional extras (kept if provided by runner)
-  if (metricsJson.cacheHitPct != null) out.cacheHitPct = Number(metricsJson.cacheHitPct);
-  if (metricsJson.cacheMissPct != null) out.cacheMissPct = Number(metricsJson.cacheMissPct);
+  if (metricsJson.cacheHitPct != null) {
+    out.cacheHitPct = safeNumber(metricsJson.cacheHitPct, 0);
+  } else if (metricsJson.cache_hit_rate != null) {
+    out.cacheHitPct = safeNumber(metricsJson.cache_hit_rate, 0);
+  }
+
+  if (metricsJson.cacheMissPct != null) {
+    out.cacheMissPct = safeNumber(metricsJson.cacheMissPct, 0);
+  }
 
   if (Array.isArray(metricsJson.statusCounts)) out.statusCounts = metricsJson.statusCounts;
   if (Array.isArray(metricsJson.topCrcClass)) out.topCrcClass = metricsJson.topCrcClass;
@@ -402,7 +625,9 @@ function assertCanonicalMetrics(metricsJson: any) {
   const contentBreakdown = pickContentBreakdown(metricsJson);
   if (contentBreakdown) out.contentBreakdown = contentBreakdown;
 
-  if (metricsJson.available && typeof metricsJson.available === "object") out.available = metricsJson.available;
+  if (metricsJson.available && typeof metricsJson.available === "object") {
+    out.available = metricsJson.available;
+  }
   if (Array.isArray(metricsJson.warnings)) out.warnings = metricsJson.warnings;
 
   return out;
@@ -487,7 +712,7 @@ export async function runClickhouseTriage(
   // Stamp runner version + canonical scope/meta
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
-    __runnerVersion: "runclickhouse-vSTRICT-006",
+    __runnerVersion: "runclickhouse-vSTRICT-007",
 
     // dims
     partner: scope.partner,
