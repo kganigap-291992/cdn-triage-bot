@@ -155,8 +155,36 @@ WITH
   (t_end - toIntervalMinute({windowMinutes:Int32})) AS t_start
 `.trim();
 
+  const prevTimeWith = hasAbsolute
+    ? `
+WITH
+  parseDateTime64BestEffort({startTsUtc:String}) AS t_start,
+  parseDateTime64BestEffort({endTsUtc:String})   AS t_end,
+  (t_start - (t_end - t_start)) AS prev_start,
+  t_start AS prev_end
+`.trim()
+    : anchorToMaxTs
+    ? `
+WITH
+  (SELECT max(ts) FROM ${table}) AS t_end,
+  (t_end - toIntervalMinute({windowMinutes:Int32})) AS t_start,
+  (t_start - toIntervalMinute({windowMinutes:Int32})) AS prev_start,
+  t_start AS prev_end
+`.trim()
+    : `
+WITH
+  now() AS t_end,
+  (t_end - toIntervalMinute({windowMinutes:Int32})) AS t_start,
+  (t_start - toIntervalMinute({windowMinutes:Int32})) AS prev_start,
+  t_start AS prev_end
+`.trim();
+
   where.push(`ts >= t_start AND ts < t_end`);
   const whereSql = `WHERE ${where.join(" AND ")}`;
+
+  const prevWhereParts = [...where];
+  prevWhereParts[prevWhereParts.length - 1] = `ts >= prev_start AND ts < prev_end`;
+  const prevWhereSql = `WHERE ${prevWhereParts.join(" AND ")}`;
 
   const q0 = `
 ${timeWith}
@@ -272,8 +300,49 @@ ORDER BY error_5xx_count DESC
 LIMIT 20
 `.trim();
 
+  const q7 = `
+${prevTimeWith}
+SELECT
+  prev_start AS window_start,
+  prev_end   AS window_end,
+  sum(requests) AS total_requests,
+  sum(http_5xx_count) AS http_5xx,
+  round(100.0 * sum(http_5xx_count) / nullIf(sum(requests), 0), 3) AS error_rate_pct,
+  round(
+    100.0 * (sum(status_200) + sum(status_206) + sum(status_304)) / nullIf(sum(requests), 0),
+    3
+  ) AS success_rate_pct,
+  avg(p95_ms) AS p95_ms,
+  avg(p99_ms) AS p99_ms,
+  avg(cache_hit_rate) AS cache_hit_rate,
+  sum(crc_errors) AS crc_errors
+FROM ${table}
+${prevWhereSql}
+`.trim();
+
+  const q8 = `
+${prevTimeWith}
+SELECT
+  toStartOfInterval(ts, INTERVAL {bucketSeconds:Int32} SECOND) AS bucket,
+  sum(requests) AS total_requests,
+  sum(http_5xx_count) AS http_5xx,
+  round(100.0 * sum(http_5xx_count) / nullIf(sum(requests), 0), 3) AS error_rate_pct,
+  round(
+    100.0 * (sum(status_200) + sum(status_206) + sum(status_304)) / nullIf(sum(requests), 0),
+    3
+  ) AS success_rate_pct,
+  avg(p95_ms) AS p95_ms,
+  avg(p99_ms) AS p99_ms,
+  avg(cache_hit_rate) AS cache_hit_rate,
+  sum(crc_errors) AS crc_errors
+FROM ${table}
+${prevWhereSql}
+GROUP BY bucket
+ORDER BY bucket ASC
+`.trim();
+
   return {
-    queries: [q0, q1, q2, q3, q4, q5, q6],
+    queries: [q0, q1, q2, q3, q4, q5, q6, q7, q8],
     params,
     meta: {
       tableUsed: table,

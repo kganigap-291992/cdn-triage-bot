@@ -385,13 +385,13 @@ function normalizeTimeseriesPoint(row: any) {
       : row?.status_counts_by_code && typeof row.status_counts_by_code === "object"
       ? row.status_counts_by_code
       : undefined;
-  
+
   const successRatePct =
     row?.successRatePct != null && safeNumber(row.successRatePct, 0) > 0
       ? safeNumber(row.successRatePct, 0)
       : row?.success_rate_pct != null && safeNumber(row.success_rate_pct, 0) > 0
       ? safeNumber(row.success_rate_pct, 0)
-      : deriveSuccessRatePctFromStatusCounts(statusCountsByCode, totalRequests);    
+      : deriveSuccessRatePctFromStatusCounts(statusCountsByCode, totalRequests);
 
   return {
     ts,
@@ -529,67 +529,121 @@ function normalizeTimeseries(metricsJson: any, fallbackBucketSeconds: number | n
   };
 }
 
-function assertCanonicalMetrics(metricsJson: any) {
-  if (!metricsJson || typeof metricsJson !== "object") {
-    throw new Error("runClickhouseTriage: metricsJson missing");
-  }
+function normalizeAggregateMetrics(source: any) {
+  if (!source || typeof source !== "object") return null;
 
   const totalRequests =
-    metricsJson.totalRequests != null
-      ? safeNumber(metricsJson.totalRequests, 0)
-      : metricsJson.total_requests != null
-      ? safeNumber(metricsJson.total_requests, 0)
-      : null;
-
-  const p95TtmsMs =
-    metricsJson.p95TtmsMs != null
-      ? safeNumberOrNull(metricsJson.p95TtmsMs)
-      : metricsJson.p95_ms != null
-      ? safeNumberOrNull(metricsJson.p95_ms)
+    source.totalRequests != null
+      ? safeNumber(source.totalRequests, 0)
+      : source.total_requests != null
+      ? safeNumber(source.total_requests, 0)
       : null;
 
   const error5xxCount =
-    metricsJson.error5xxCount != null
-      ? safeNumber(metricsJson.error5xxCount, 0)
-      : metricsJson.http_5xx != null
-      ? safeNumber(metricsJson.http_5xx, 0)
+    source.error5xxCount != null
+      ? safeNumber(source.error5xxCount, 0)
+      : source.http_5xx != null
+      ? safeNumber(source.http_5xx, 0)
       : null;
 
   const errorRatePct =
-    metricsJson.errorRatePct != null
-      ? safeNumber(metricsJson.errorRatePct, 0)
-      : metricsJson.error_rate_pct != null
-      ? safeNumber(metricsJson.error_rate_pct, 0)
+    source.errorRatePct != null
+      ? safeNumber(source.errorRatePct, 0)
+      : source.error_rate_pct != null
+      ? safeNumber(source.error_rate_pct, 0)
       : totalRequests != null && error5xxCount != null && totalRequests > 0
       ? (100 * error5xxCount) / totalRequests
       : 0;
 
   const successRatePct =
-    metricsJson.successRatePct != null
-      ? safeNumber(metricsJson.successRatePct, 0)
-      : metricsJson.success_rate_pct != null
-      ? safeNumber(metricsJson.success_rate_pct, 0)
+    source.successRatePct != null
+      ? safeNumber(source.successRatePct, 0)
+      : source.success_rate_pct != null
+      ? safeNumber(source.success_rate_pct, 0)
       : 0;
 
-  if (totalRequests == null) {
-    throw new Error(
-      "runClickhouseTriage: non-canonical metricsJson (missing totalRequests|total_requests)"
-    );
+  return {
+    totalRequests: totalRequests ?? 0,
+    p50TtmsMs:
+      source.p50TtmsMs != null
+        ? safeNumberOrNull(source.p50TtmsMs)
+        : source.p50_ms != null
+        ? safeNumberOrNull(source.p50_ms)
+        : null,
+    p95TtmsMs:
+      source.p95TtmsMs != null
+        ? safeNumberOrNull(source.p95TtmsMs)
+        : source.p95_ms != null
+        ? safeNumberOrNull(source.p95_ms)
+        : null,
+    p99TtmsMs:
+      source.p99TtmsMs != null
+        ? safeNumberOrNull(source.p99TtmsMs)
+        : source.p99_ms != null
+        ? safeNumberOrNull(source.p99_ms)
+        : null,
+    error5xxCount: error5xxCount ?? 0,
+    errorRatePct,
+    successRatePct,
+    cacheHitPct:
+      source.cacheHitPct != null
+        ? safeNumber(source.cacheHitPct, 0)
+        : source.cache_hit_rate != null
+        ? safeNumber(source.cache_hit_rate, 0)
+        : null,
+    cacheMissPct:
+      source.cacheMissPct != null ? safeNumber(source.cacheMissPct, 0) : null,
+    crcErrorCount:
+      source.crcErrorCount != null
+        ? safeNumber(source.crcErrorCount, 0)
+        : source.crc_errors != null
+        ? safeNumber(source.crc_errors, 0)
+        : 0,
+    windowStart:
+      asString(source.windowStart) ??
+      asString(source.window_start) ??
+      asString(source.startTs) ??
+      null,
+    windowEnd:
+      asString(source.windowEnd) ??
+      asString(source.window_end) ??
+      asString(source.endTs) ??
+      null,
+  };
+}
+
+function pickPreviousWindowCandidate(metricsJson: any): any {
+  return (
+    metricsJson?.previousWindow ??
+    metricsJson?.previous_window ??
+    metricsJson?.compare?.previous ??
+    metricsJson?.compare?.previousWindow ??
+    metricsJson?.previous ??
+    null
+  );
+}
+
+function assertCanonicalMetrics(metricsJson: any) {
+  if (!metricsJson || typeof metricsJson !== "object") {
+    throw new Error("runClickhouseTriage: metricsJson missing");
   }
-  if (error5xxCount == null) {
-    throw new Error(
-      "runClickhouseTriage: non-canonical metricsJson (missing error5xxCount|http_5xx)"
-    );
-  }
-  if (p95TtmsMs == null && metricsJson.p95TtmsMs == null && metricsJson.p95_ms == null) {
-    throw new Error(
-      "runClickhouseTriage: non-canonical metricsJson (missing p95TtmsMs|p95_ms)"
-    );
+
+  const requiredTopLevel =
+    metricsJson.totalRequests != null ||
+    metricsJson.total_requests != null ||
+    metricsJson.error5xxCount != null ||
+    metricsJson.http_5xx != null ||
+    metricsJson.p95TtmsMs != null ||
+    metricsJson.p95_ms != null;
+
+  if (!requiredTopLevel) {
+    throw new Error("runClickhouseTriage: non-canonical metricsJson");
   }
 
   const debugIn = metricsJson.debug;
   const debug = debugIn && typeof debugIn === "object" ? debugIn : {};
 
+  const base = normalizeAggregateMetrics(metricsJson);
   const timeseries = normalizeTimeseries(
     metricsJson,
     debug?.bucketSeconds != null ? safeNumber(debug.bucketSeconds, 0) : null
@@ -606,37 +660,21 @@ function assertCanonicalMetrics(metricsJson: any) {
   const timeRangeUTC = start && end ? { start, end } : null;
 
   const out: any = {
-    totalRequests,
-    p50TtmsMs:
-      metricsJson.p50TtmsMs != null
-        ? safeNumberOrNull(metricsJson.p50TtmsMs)
-        : metricsJson.p50_ms != null
-        ? safeNumberOrNull(metricsJson.p50_ms)
-        : null,
-    p95TtmsMs,
-    p99TtmsMs:
-      metricsJson.p99TtmsMs != null
-        ? safeNumberOrNull(metricsJson.p99TtmsMs)
-        : metricsJson.p99_ms != null
-        ? safeNumberOrNull(metricsJson.p99_ms)
-        : null,
-    error5xxCount,
-    errorRatePct,
-    successRatePct,
+    totalRequests: base?.totalRequests ?? 0,
+    p50TtmsMs: base?.p50TtmsMs ?? null,
+    p95TtmsMs: base?.p95TtmsMs ?? null,
+    p99TtmsMs: base?.p99TtmsMs ?? null,
+    error5xxCount: base?.error5xxCount ?? 0,
+    errorRatePct: base?.errorRatePct ?? 0,
+    successRatePct: base?.successRatePct ?? 0,
     timeseries,
     timeRangeUTC,
     debug,
   };
 
-  if (metricsJson.cacheHitPct != null) {
-    out.cacheHitPct = safeNumber(metricsJson.cacheHitPct, 0);
-  } else if (metricsJson.cache_hit_rate != null) {
-    out.cacheHitPct = safeNumber(metricsJson.cache_hit_rate, 0);
-  }
-
-  if (metricsJson.cacheMissPct != null) {
-    out.cacheMissPct = safeNumber(metricsJson.cacheMissPct, 0);
-  }
+  if (base?.cacheHitPct != null) out.cacheHitPct = base.cacheHitPct;
+  if (base?.cacheMissPct != null) out.cacheMissPct = base.cacheMissPct;
+  if (base?.crcErrorCount != null) out.crcErrorCount = base.crcErrorCount;
 
   if (Array.isArray(metricsJson.statusCounts)) out.statusCounts = metricsJson.statusCounts;
   if (Array.isArray(metricsJson.topCrcClass)) out.topCrcClass = metricsJson.topCrcClass;
@@ -658,6 +696,33 @@ function assertCanonicalMetrics(metricsJson: any) {
     out.available = metricsJson.available;
   }
   if (Array.isArray(metricsJson.warnings)) out.warnings = metricsJson.warnings;
+
+  const previousWindowRaw = pickPreviousWindowCandidate(metricsJson);
+  if (previousWindowRaw && typeof previousWindowRaw === "object") {
+    const previousBase = normalizeAggregateMetrics(previousWindowRaw);
+    const previousTimeseries = normalizeTimeseries(
+      previousWindowRaw,
+      debug?.bucketSeconds != null ? safeNumber(debug.bucketSeconds, 0) : null
+    );
+
+    out.previousWindow = {
+      totalRequests: previousBase?.totalRequests ?? 0,
+      p50TtmsMs: previousBase?.p50TtmsMs ?? null,
+      p95TtmsMs: previousBase?.p95TtmsMs ?? null,
+      p99TtmsMs: previousBase?.p99TtmsMs ?? null,
+      error5xxCount: previousBase?.error5xxCount ?? 0,
+      errorRatePct: previousBase?.errorRatePct ?? 0,
+      successRatePct: previousBase?.successRatePct ?? 0,
+      cacheHitPct: previousBase?.cacheHitPct ?? null,
+      cacheMissPct: previousBase?.cacheMissPct ?? null,
+      crcErrorCount: previousBase?.crcErrorCount ?? 0,
+      timeRangeUTC:
+        previousBase?.windowStart && previousBase?.windowEnd
+          ? { start: previousBase.windowStart, end: previousBase.windowEnd }
+          : null,
+      timeseries: previousTimeseries,
+    };
+  }
 
   return out;
 }
@@ -726,9 +791,13 @@ export async function runClickhouseTriage(
     }
   }
 
+  if (metricsJson.previousWindow?.timeseries) {
+    metricsJson.previousWindow.timeseries.bucketSeconds = built.meta.bucketSeconds;
+  }
+
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
-    __runnerVersion: "runclickhouse-vSTRICT-009",
+    __runnerVersion: "runclickhouse-vSTRICT-010",
     partner: scope.partner,
     service: scope.service,
     region: scope.region,
@@ -742,6 +811,8 @@ export async function runClickhouseTriage(
     anchorToMaxTs,
     tableUsed: built.meta.tableUsed,
     bucketSeconds: built.meta.bucketSeconds,
+    queryCount: built.queries.length,
+    hasCompareQueries: built.queries.length >= 9,
   };
 
   const anchorLabel = anchorToMaxTs ? "max(ts)" : "absolute";
@@ -753,13 +824,21 @@ export async function runClickhouseTriage(
       ? `range=${tm.startIso}→${tm.endIso} UTC`
       : `win=${scope.windowMinutes}m anchor=max(ts)`;
 
+  const compareSuffix = metricsJson.previousWindow
+    ? ` prev_requests=${Number(metricsJson.previousWindow.totalRequests).toLocaleString()} prev_p95=${
+        metricsJson.previousWindow.p95TtmsMs == null
+          ? "n/a"
+          : `${Math.round(Number(metricsJson.previousWindow.p95TtmsMs))}ms`
+      } prev_5xx=${Number(metricsJson.previousWindow.error5xxCount).toLocaleString()}`
+    : "";
+
   const finalSummary =
     summary ||
     `Triage: partner=${scope.partner} service=${scope.service} region=${scope.region} pop=${scope.pop} ${rangeLabel} ct=${scope.contentType} ua=${scope.uaFamily}\n` +
       `table=${built.meta.tableUsed} bucket=${built.meta.bucketSeconds}s anchor=${anchorLabel}\n` +
       `requests=${Number(metricsJson.totalRequests).toLocaleString()} p95=${p95Label} 5xx=${Number(
         metricsJson.error5xxCount
-      ).toLocaleString()} (${Number(metricsJson.errorRatePct).toFixed(2)}%)`;
+      ).toLocaleString()} (${Number(metricsJson.errorRatePct).toFixed(2)}%)${compareSuffix}`;
 
   return {
     summary: finalSummary,
