@@ -160,7 +160,8 @@ WITH
 WITH
   parseDateTime64BestEffort({startTsUtc:String}) AS t_start,
   parseDateTime64BestEffort({endTsUtc:String})   AS t_end,
-  (t_start - (t_end - t_start)) AS prev_start,
+  dateDiff('second', t_start, t_end) AS span_seconds,
+  subtractSeconds(t_start, span_seconds) AS prev_start,
   t_start AS prev_end
 `.trim()
     : anchorToMaxTs
@@ -416,8 +417,26 @@ ORDER BY bucket ASC
 FORMAT JSON
 `.trim();
 
+  const q13 = `
+${timeWith}
+SELECT
+  host,
+  sum(requests) AS total_requests,
+  sum(http_5xx_count) AS error_5xx_count,
+  sum(crc_errors) AS crc_error_count,
+  round(100.0 * sum(http_5xx_count)/nullIf(sum(requests),0),3) AS error_rate_pct,
+  avg(p95_ms) AS p95_ttms_ms,
+  avg(p99_ms) AS p99_ttms_ms
+FROM ${table}
+${whereSql}
+GROUP BY host
+ORDER BY total_requests DESC
+LIMIT 20
+FORMAT JSON
+`.trim();
+
   return {
-    queries: [q0, q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12],
+    queries: [q0, q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13],
     params,
     meta: {
       tableUsed: table,

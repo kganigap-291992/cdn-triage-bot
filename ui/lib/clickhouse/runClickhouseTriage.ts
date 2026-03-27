@@ -443,6 +443,8 @@ function normalizeHostSeriesRow(row: any) {
     crcErrorCount:
       row?.crcErrorCount != null
         ? safeNumber(row.crcErrorCount, 0)
+        : row?.crc_error_count != null
+        ? safeNumber(row.crc_error_count, 0)
         : row?.crc_errors != null
         ? safeNumber(row.crc_errors, 0)
         : 0,
@@ -456,6 +458,10 @@ function normalizeHostSeriesRow(row: any) {
     p99TtmsMs:
       row?.p99TtmsMs != null
         ? safeNumberOrNull(row.p99TtmsMs)
+        : row?.p99TtmsMs != null
+        ? safeNumberOrNull(row.p99TtmsMs)
+        : row?.p99_ttms_ms != null
+        ? safeNumberOrNull(row.p99_ttms_ms)
         : row?.p99_ms != null
         ? safeNumberOrNull(row.p99_ms)
         : null,
@@ -797,7 +803,7 @@ export async function runClickhouseTriage(
 
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
-    __runnerVersion: "runclickhouse-vSTRICT-011",
+    __runnerVersion: "runclickhouse-vSTRICT-012",
     partner: scope.partner,
     service: scope.service,
     region: scope.region,
@@ -815,6 +821,7 @@ export async function runClickhouseTriage(
     hasCompareQueries: built.queries.length >= 9,
     hasStatusOverTimeQueries: built.queries.length >= 11,
     hasCrcOverTimeQueries: built.queries.length >= 13,
+    hasHostQueries: built.queries.length >= 14,
   };
 
   const anchorLabel = anchorToMaxTs ? "max(ts)" : "absolute";

@@ -859,26 +859,80 @@ function buildChatInputsFromIntent(args: {
   };
 }
 
+function normalizeTsKey(raw: unknown): string {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+
+  const iso = s.includes("T") ? s : `${s.replace(" ", "T")}Z`;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+
+  return d.toISOString().replace(".000Z", "Z");
+}
+
+
 // ── parseTimeseries ────────────────────────────────────────────────────────
 function parseTimeseries(metricsJson: any): TimeseriesData | null {
   const t = metricsJson?.timeseries;
-  if (!t || !Array.isArray(t.points)) return null;
+  if (!t) return null;
 
-  const points: TimeseriesPoint[] = t.points
-    .map(
-      (p: any): TimeseriesPoint => ({
-        ts: String(p.ts || ""),
-        totalRequests: Number(p.totalRequests) || 0,
-        error5xxCount: Number(p.error5xxCount) || 0,
-        errorRatePct: Number(p.errorRatePct) || 0,
-        p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
-        p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
-        cacheHitRate: p.cacheHitRate == null ? null : Number(p.cacheHitRate),
-        crcErrorCount: Number(p.crcErrorCount || 0),
-        statusCountsByCode: p.statusCountsByCode || undefined,
-      })
-    )
-    .filter((pt: TimeseriesPoint) => Boolean(pt.ts));
+  const basePoints: TimeseriesPoint[] = Array.isArray(t.points)
+    ? t.points
+        .map(
+          (p: any): TimeseriesPoint => ({
+            ts: normalizeTsKey(p.ts),
+            totalRequests: Number(p.totalRequests) || 0,
+            error5xxCount: Number(p.error5xxCount) || 0,
+            errorRatePct: Number(p.errorRatePct) || 0,
+            p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
+            p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
+            cacheHitRate: p.cacheHitRate == null ? null : Number(p.cacheHitRate),
+            crcErrorCount: Number(p.crcErrorCount || 0),
+            statusCountsByCode: p.statusCountsByCode || undefined,
+          })
+        )
+        .filter((pt: TimeseriesPoint) => Boolean(pt.ts))
+    : [];
+
+  const statusRows = Array.isArray(t.statusOverTime) ? t.statusOverTime : [];
+
+  const statusMap = new Map<string, Record<string, number>>();
+  for (const row of statusRows) {
+    const ts = normalizeTsKey(row.bucket || row.ts);
+      if (!ts) continue;
+
+    statusMap.set(ts, {
+      "200": Number(row.status_200 || 0),
+      "206": Number(row.status_206 || 0),
+      "304": Number(row.status_304 || 0),
+      "403": Number(row.status_403 || 0),
+      "404": Number(row.status_404 || 0),
+      "429": Number(row.status_429 || 0),
+      "500": Number(row.status_500 || 0),
+      "502": Number(row.status_502 || 0),
+      "503": Number(row.status_503 || 0),
+      "504": Number(row.status_504 || 0),
+    });
+  }
+
+  const points: TimeseriesPoint[] =
+    basePoints.length > 0
+      ? basePoints.map((pt) => ({
+          ...pt,
+          statusCountsByCode:
+            pt.statusCountsByCode || statusMap.get(pt.ts) || undefined,
+        }))
+      : Array.from(statusMap.entries()).map(([ts, counts]) => ({
+          ts,
+          totalRequests: 0,
+          error5xxCount: 0,
+          errorRatePct: 0,
+          p95TtmsMs: null,
+          p99TtmsMs: null,
+          cacheHitRate: null,
+          crcErrorCount: 0,
+          statusCountsByCode: counts,
+        }));
 
   const hostSeries: HostSeriesItem[] = Array.isArray(t.hostSeries)
     ? t.hostSeries.map((h: any) => ({
@@ -895,7 +949,7 @@ function parseTimeseries(metricsJson: any): TimeseriesData | null {
   const crcSeries: CrcSeriesItem[] = Array.isArray(t.crcSeries)
     ? t.crcSeries
         .map((c: any) => ({
-          ts: String(c.ts || ""),
+          ts: normalizeTsKey(c.ts),
           crcErrorCount: Number(c.crcErrorCount || 0),
         }))
         .filter((x: CrcSeriesItem) => Boolean(x.ts))
@@ -911,6 +965,63 @@ function parseTimeseries(metricsJson: any): TimeseriesData | null {
       : undefined,
     hostSeries,
     crcSeries,
+  };
+}
+
+
+function parseStatusOnlyTimeseries(metricsJson: any): TimeseriesData | null {
+  const t = metricsJson?.timeseries;
+  if (!t || !Array.isArray(t.statusOverTime) || !t.statusOverTime.length) return null;
+
+  const points: TimeseriesPoint[] = t.statusOverTime
+    .map((row: any): TimeseriesPoint => ({
+      ts: normalizeTsKey(row.bucket || row.ts),
+      totalRequests:
+        Number(row.status_200 || 0) +
+        Number(row.status_206 || 0) +
+        Number(row.status_304 || 0) +
+        Number(row.status_403 || 0) +
+        Number(row.status_404 || 0) +
+        Number(row.status_429 || 0) +
+        Number(row.status_500 || 0) +
+        Number(row.status_502 || 0) +
+        Number(row.status_503 || 0) +
+        Number(row.status_504 || 0),
+      error5xxCount:
+        Number(row.status_500 || 0) +
+        Number(row.status_502 || 0) +
+        Number(row.status_503 || 0) +
+        Number(row.status_504 || 0),
+      errorRatePct: 0,
+      p95TtmsMs: null,
+      p99TtmsMs: null,
+      cacheHitRate: null,
+      crcErrorCount: 0,
+      statusCountsByCode: {
+        "200": Number(row.status_200 || 0),
+        "206": Number(row.status_206 || 0),
+        "304": Number(row.status_304 || 0),
+        "403": Number(row.status_403 || 0),
+        "404": Number(row.status_404 || 0),
+        "429": Number(row.status_429 || 0),
+        "500": Number(row.status_500 || 0),
+        "502": Number(row.status_502 || 0),
+        "503": Number(row.status_503 || 0),
+        "504": Number(row.status_504 || 0),
+      },
+    }))
+    .filter((pt: TimeseriesPoint) => Boolean(pt.ts));
+
+  if (!points.length) return null;
+
+  return {
+    bucketSeconds: t.bucketSeconds == null ? null : Number(t.bucketSeconds),
+    startTs: points[0]?.ts || null,
+    endTs: points[points.length - 1]?.ts || null,
+    points,
+    statusCodeSeries: ["200", "206", "304", "403", "404", "429", "500", "502", "503", "504"],
+    hostSeries: [],
+    crcSeries: [],
   };
 }
 
@@ -2192,6 +2303,7 @@ function getRunAnchoredWindow(run: ChatTriage["run"]): {
   endTsUtc: string | null;
 } {
   const ts = parseTimeseries(run.metricsJson);
+  const statusTs = parseStatusOnlyTimeseries(run.metricsJson);
   if (ts?.startTs && ts?.endTs) {
     return {
       startTsUtc: ts.startTs,
@@ -2511,6 +2623,7 @@ function deriveScopedFollowupInputs(
 // ── TriageCard ─────────────────────────────────────────────────────────────
 function TriageCard({ run }: { run: ChatTriage["run"] }) {
   const ts = parseTimeseries(run.metricsJson);
+  const statusTs = parseStatusOnlyTimeseries(run.metricsJson);
   const effectiveWindowMinutes = windowMinutesFromRange(
     run.inputs.startTsUtc,
     run.inputs.endTsUtc,
@@ -2666,17 +2779,19 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <StackedBarTimeseries
-              title="Status code distribution"
-              subtitle="Diagnostic view"
-              ts={ts}
-              bucketSeconds={bucketSeconds}
-              seriesKeys={ts.statusCodeSeries || []}
-              getMap={(p) => p.statusCountsByCode}
-              height={190}
-              windowMinutes={effectiveWindowMinutes}
-              kind="status"
-            />
+            {statusTs ? (
+              <StackedBarTimeseries
+                title="Status code distribution"
+                subtitle="Diagnostic view"
+                ts={statusTs}
+                bucketSeconds={statusTs.bucketSeconds}
+                seriesKeys={statusTs.statusCodeSeries || []}
+                getMap={(p) => p.statusCountsByCode}
+                height={190}
+                windowMinutes={effectiveWindowMinutes}
+                kind="status"
+              />
+            ) : null}
             <HostSummaryCard hosts={ts.hostSeries || []} />
           </div>
 
