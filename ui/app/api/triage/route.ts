@@ -452,6 +452,12 @@ function normalizeTimeseries(metricsJson: any) {
     ? t.crcSeries.map((row: any) => normalizeCrcSeriesRow(row)).filter(Boolean)
     : [];
 
+  const statusOverTime = Array.isArray(t.statusOverTime)
+    ? t.statusOverTime
+    : Array.isArray(t.status_over_time)
+    ? t.status_over_time
+    : [];
+
   return {
     bucketSeconds: t.bucketSeconds != null ? numOrZero(t.bucketSeconds) : null,
     startTs: asString(t.startTs) ?? (points.length ? asString(points[0]?.ts) : null) ?? null,
@@ -463,6 +469,96 @@ function normalizeTimeseries(metricsJson: any) {
       : undefined,
     hostSeries,
     crcSeries,
+    statusOverTime,
+  };
+}
+
+function normalizePreviousWindow(previousWindow: any) {
+  if (!previousWindow || typeof previousWindow !== "object") return undefined;
+
+  const timeseriesRaw = previousWindow.timeseries && typeof previousWindow.timeseries === "object"
+    ? previousWindow.timeseries
+    : {};
+
+  const crcOverTime = Array.isArray(timeseriesRaw.crcOverTime)
+    ? timeseriesRaw.crcOverTime
+    : Array.isArray(timeseriesRaw.crc_over_time)
+    ? timeseriesRaw.crc_over_time
+    : [];
+
+  const statusOverTime = Array.isArray(timeseriesRaw.statusOverTime)
+    ? timeseriesRaw.statusOverTime
+    : Array.isArray(timeseriesRaw.status_over_time)
+    ? timeseriesRaw.status_over_time
+    : [];
+
+  return {
+    totalRequests:
+      previousWindow.totalRequests != null
+        ? numOrZero(previousWindow.totalRequests)
+        : previousWindow.total_requests != null
+        ? numOrZero(previousWindow.total_requests)
+        : 0,
+    p50TtmsMs:
+      previousWindow.p50TtmsMs != null
+        ? numOrNull(previousWindow.p50TtmsMs)
+        : previousWindow.p50_ms != null
+        ? numOrNull(previousWindow.p50_ms)
+        : null,
+    p95TtmsMs:
+      previousWindow.p95TtmsMs != null
+        ? numOrNull(previousWindow.p95TtmsMs)
+        : previousWindow.p95_ms != null
+        ? numOrNull(previousWindow.p95_ms)
+        : null,
+    p99TtmsMs:
+      previousWindow.p99TtmsMs != null
+        ? numOrNull(previousWindow.p99TtmsMs)
+        : previousWindow.p99_ms != null
+        ? numOrNull(previousWindow.p99_ms)
+        : null,
+    cacheHitRate:
+      previousWindow.cacheHitRate != null
+        ? numOrNull(previousWindow.cacheHitRate)
+        : previousWindow.cache_hit_rate != null
+        ? numOrNull(previousWindow.cache_hit_rate)
+        : null,
+    error5xxCount:
+      previousWindow.error5xxCount != null
+        ? numOrZero(previousWindow.error5xxCount)
+        : previousWindow.http_5xx != null
+        ? numOrZero(previousWindow.http_5xx)
+        : 0,
+    crcErrorCount:
+      previousWindow.crcErrorCount != null
+        ? numOrZero(previousWindow.crcErrorCount)
+        : previousWindow.crc_errors != null
+        ? numOrZero(previousWindow.crc_errors)
+        : 0,
+    errorRatePct:
+      previousWindow.errorRatePct != null
+        ? numOrZero(previousWindow.errorRatePct)
+        : previousWindow.error_rate_pct != null
+        ? numOrZero(previousWindow.error_rate_pct)
+        : 0,
+    successRatePct:
+      previousWindow.successRatePct != null
+        ? numOrZero(previousWindow.successRatePct)
+        : previousWindow.success_rate_pct != null
+        ? numOrZero(previousWindow.success_rate_pct)
+        : 0,
+    timeRangeUTC:
+      previousWindow.timeRangeUTC && typeof previousWindow.timeRangeUTC === "object"
+        ? {
+            start: asString(previousWindow.timeRangeUTC.start),
+            end: asString(previousWindow.timeRangeUTC.end),
+          }
+        : undefined,
+    timeseries: {
+      ...normalizeTimeseries({ timeseries: timeseriesRaw }),
+      crcOverTime,
+      statusOverTime,
+    },
   };
 }
 
@@ -532,6 +628,11 @@ function assertCanonicalMetricsJson(metricsJson: any) {
   }
 
   out.timeseries = normalizeTimeseries(metricsJson);
+
+  const previousWindow = normalizePreviousWindow(metricsJson.previousWindow);
+  if (previousWindow) {
+    out.previousWindow = previousWindow;
+  }
 
   return out;
 }
@@ -891,6 +992,9 @@ function adaptLegacyProxyMetricsToCanonical(legacyMetrics: any, parsed?: any) {
         : {},
   };
 
+  const previousWindow = normalizePreviousWindow(legacyMetrics?.previousWindow);
+  if (previousWindow) out.previousWindow = previousWindow;
+
   const regionBreakdown = pickRegionBreakdownFromProxy(parsed, legacyMetrics);
   if (regionBreakdown) out.regionBreakdown = regionBreakdown;
 
@@ -957,9 +1061,13 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
     normalizeSqlForUi(parsed?.sql ?? undefined) ??
     buildPlannerSqlFallback(scope, tm);
 
+  const effectiveSqlSource =
+    metricsJson.debug?.sqlSource ??
+    (parsed?.sql ? "request-sql" : "planner-fallback");
+
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
-    sqlSource: parsed?.sql ? "proxy" : "planner-fallback",
+    sqlSource: effectiveSqlSource,
   };
 
   const evidenceBundle = toEvidenceBundle(
@@ -1025,7 +1133,9 @@ export async function POST(req: Request) {
     }
 
     if (!isAllOrOneOf(inputs.region, CANON.regions as readonly string[])) {
-      return badRequest(`invalid region: ${inputs.region}`, { allowedRegions: ["all", ...CANON.regions] });
+      return badRequest(`invalid region: ${inputs.region}`, {
+        allowedRegions: ["all", ...CANON.regions],
+      });
     }
 
     if (!isAllOrOneOf(inputs.pop, CANON.pops as readonly string[])) {
@@ -1059,6 +1169,19 @@ export async function POST(req: Request) {
 
     const triageUrl = proxyTriageUrl();
 
+    const builtSql = buildClickhouseSql({
+      partner: inputs.partner,
+      service: inputs.service,
+      region: inputs.region,
+      pop: inputs.pop,
+      contentType: inputs.contentType,
+      uaFamily: inputs.uaFamily,
+      windowMinutes: inputs.windowMinutes,
+      startTsUtc: tm.mode === "absolute" ? tm.startIso : undefined,
+      endTsUtc: tm.mode === "absolute" ? tm.endIso : undefined,
+      anchorToMaxTs: tm.mode === "relative",
+    } as any);
+
     const upstreamBody: any = {
       partner: inputs.partner,
       service: inputs.service,
@@ -1068,6 +1191,15 @@ export async function POST(req: Request) {
       debug: inputs.debug,
       contentType: inputs.contentType,
       uaFamily: inputs.uaFamily,
+      sql: {
+        queries: Array.isArray(builtSql?.queries)
+          ? builtSql.queries.map((q: any) => String(q))
+          : [],
+        params:
+          builtSql?.params && typeof builtSql.params === "object"
+            ? builtSql.params
+            : {},
+      },
     };
 
     if (tm.mode === "absolute") {
@@ -1079,6 +1211,9 @@ export async function POST(req: Request) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        ...(process.env.CACHEY_PROXY_TOKEN
+          ? { "x-cachey-token": process.env.CACHEY_PROXY_TOKEN }
+          : {}),
       },
       body: JSON.stringify(upstreamBody),
     });

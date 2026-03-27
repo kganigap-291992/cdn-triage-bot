@@ -204,6 +204,7 @@ SELECT
   sum(crc_errors) AS crc_errors
 FROM ${table}
 ${whereSql}
+FORMAT JSON
 `.trim();
 
   const q1 = `
@@ -215,6 +216,7 @@ FROM
   UNION ALL SELECT '500', sum(status_500) FROM ${table} ${whereSql}
 )
 ORDER BY c DESC
+FORMAT JSON
 `.trim();
 
   const q2 = `
@@ -230,6 +232,7 @@ ${whereSql}
 GROUP BY region
 ORDER BY error_5xx_count DESC
 LIMIT 20
+FORMAT JSON
 `.trim();
 
   const q3 = `
@@ -245,6 +248,7 @@ ${whereSql}
 GROUP BY pop
 ORDER BY error_5xx_count DESC
 LIMIT 20
+FORMAT JSON
 `.trim();
 
   const q4 = `
@@ -266,6 +270,7 @@ FROM ${table}
 ${whereSql}
 GROUP BY bucket
 ORDER BY bucket ASC
+FORMAT JSON
 `.trim();
 
   const q5 = `
@@ -282,6 +287,7 @@ ${whereSql}
 GROUP BY ua_family
 ORDER BY error_5xx_count DESC
 LIMIT 20
+FORMAT JSON
 `.trim();
 
   const q6 = `
@@ -298,6 +304,7 @@ ${whereSql}
 GROUP BY content_type
 ORDER BY error_5xx_count DESC
 LIMIT 20
+FORMAT JSON
 `.trim();
 
   const q7 = `
@@ -318,6 +325,7 @@ SELECT
   sum(crc_errors) AS crc_errors
 FROM ${table}
 ${prevWhereSql}
+FORMAT JSON
 `.trim();
 
   const q8 = `
@@ -339,10 +347,77 @@ FROM ${table}
 ${prevWhereSql}
 GROUP BY bucket
 ORDER BY bucket ASC
+FORMAT JSON
+`.trim();
+
+  const q9 = `
+${timeWith}
+SELECT
+  toStartOfInterval(ts, INTERVAL {bucketSeconds:Int32} SECOND) AS bucket,
+  sum(status_200) AS status_200,
+  sum(status_206) AS status_206,
+  sum(status_304) AS status_304,
+  sum(status_403) AS status_403,
+  sum(status_404) AS status_404,
+  sum(status_429) AS status_429,
+  sum(status_500) AS status_500,
+  sum(status_502) AS status_502,
+  sum(status_503) AS status_503,
+  sum(status_504) AS status_504
+FROM ${table}
+${whereSql}
+GROUP BY bucket
+ORDER BY bucket ASC
+FORMAT JSON
+`.trim();
+
+  const q10 = `
+${prevTimeWith}
+SELECT
+  toStartOfInterval(ts, INTERVAL {bucketSeconds:Int32} SECOND) AS bucket,
+  sum(status_200) AS status_200,
+  sum(status_206) AS status_206,
+  sum(status_304) AS status_304,
+  sum(status_403) AS status_403,
+  sum(status_404) AS status_404,
+  sum(status_429) AS status_429,
+  sum(status_500) AS status_500,
+  sum(status_502) AS status_502,
+  sum(status_503) AS status_503,
+  sum(status_504) AS status_504
+FROM ${table}
+${prevWhereSql}
+GROUP BY bucket
+ORDER BY bucket ASC
+FORMAT JSON
+`.trim();
+
+  const q11 = `
+${timeWith}
+SELECT
+  toStartOfInterval(ts, INTERVAL {bucketSeconds:Int32} SECOND) AS bucket,
+  sum(crc_errors) AS crc_errors
+FROM ${table}
+${whereSql}
+GROUP BY bucket
+ORDER BY bucket ASC
+FORMAT JSON
+`.trim();
+
+  const q12 = `
+${prevTimeWith}
+SELECT
+  toStartOfInterval(ts, INTERVAL {bucketSeconds:Int32} SECOND) AS bucket,
+  sum(crc_errors) AS crc_errors
+FROM ${table}
+${prevWhereSql}
+GROUP BY bucket
+ORDER BY bucket ASC
+FORMAT JSON
 `.trim();
 
   return {
-    queries: [q0, q1, q2, q3, q4, q5, q6, q7, q8],
+    queries: [q0, q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12],
     params,
     meta: {
       tableUsed: table,

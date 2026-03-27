@@ -797,7 +797,7 @@ export async function runClickhouseTriage(
 
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
-    __runnerVersion: "runclickhouse-vSTRICT-010",
+    __runnerVersion: "runclickhouse-vSTRICT-011",
     partner: scope.partner,
     service: scope.service,
     region: scope.region,
@@ -813,6 +813,8 @@ export async function runClickhouseTriage(
     bucketSeconds: built.meta.bucketSeconds,
     queryCount: built.queries.length,
     hasCompareQueries: built.queries.length >= 9,
+    hasStatusOverTimeQueries: built.queries.length >= 11,
+    hasCrcOverTimeQueries: built.queries.length >= 13,
   };
 
   const anchorLabel = anchorToMaxTs ? "max(ts)" : "absolute";
