@@ -632,6 +632,21 @@ function assertCanonicalMetricsJson(metricsJson: any) {
   const previousWindow = normalizePreviousWindow(metricsJson.previousWindow);
   if (previousWindow) {
     out.previousWindow = previousWindow;
+
+    // 🔥 BACKWARD COMPATIBILITY SHIM (CRITICAL)
+    out.previousMetrics = {
+      totalRequests: previousWindow.totalRequests,
+      p50TtmsMs: previousWindow.p50TtmsMs,
+      p95TtmsMs: previousWindow.p95TtmsMs,
+      p99TtmsMs: previousWindow.p99TtmsMs,
+      cacheHitRate: previousWindow.cacheHitRate,
+      error5xxCount: previousWindow.error5xxCount,
+      crcErrorCount: previousWindow.crcErrorCount,
+      errorRatePct: previousWindow.errorRatePct,
+      successRatePct: previousWindow.successRatePct,
+    };
+
+    out.previousTimeseries = previousWindow.timeseries;
   }
 
   return out;
