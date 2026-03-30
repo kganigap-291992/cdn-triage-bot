@@ -796,7 +796,7 @@ function proxyTriageUrl() {
 function parseIsoOrNull(s: string | null): { ok: true; iso: string } | { ok: false; error: string } {
   if (!s) return { ok: false, error: "missing" };
   const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return { ok: false, error: `invalid ISO: ${s}` };
+  if (Number.isNaN(d.getTime())) return { ok: true, iso: s };
   return { ok: true, iso: d.toISOString() };
 }
 
@@ -1054,6 +1054,20 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
 
   const contentBreakdown = pickContentBreakdownFromProxy(parsed, rawMetrics);
   if (contentBreakdown) metricsJson.contentBreakdown = contentBreakdown;
+
+  // status-by-dimension passthrough
+  metricsJson.statusByRegion = Array.isArray(rawMetrics?.statusByRegion)
+    ? rawMetrics.statusByRegion
+    : [];
+  metricsJson.statusByPop = Array.isArray(rawMetrics?.statusByPop)
+    ? rawMetrics.statusByPop
+    : [];
+  metricsJson.statusByContentType = Array.isArray(rawMetrics?.statusByContentType)
+    ? rawMetrics.statusByContentType
+    : [];
+  metricsJson.statusByUaFamily = Array.isArray(rawMetrics?.statusByUaFamily)
+    ? rawMetrics.statusByUaFamily
+    : [];
 
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
