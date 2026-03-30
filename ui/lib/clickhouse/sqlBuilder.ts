@@ -435,8 +435,751 @@ LIMIT 20
 FORMAT JSON
 `.trim();
 
+  const q14 = `
+${timeWith}
+SELECT
+  sum(status_200) AS status_200,
+  sum(status_206) AS status_206,
+  sum(status_304) AS status_304,
+  sum(status_403) AS status_403,
+  sum(status_404) AS status_404,
+  sum(status_429) AS status_429,
+  sum(status_500) AS status_500,
+  sum(status_502) AS status_502,
+  sum(status_503) AS status_503,
+  sum(status_504) AS status_504
+FROM ${table}
+${whereSql}
+FORMAT JSON
+`.trim();
+
+  const q15 = `
+${prevTimeWith}
+SELECT
+  sum(status_200) AS status_200,
+  sum(status_206) AS status_206,
+  sum(status_304) AS status_304,
+  sum(status_403) AS status_403,
+  sum(status_404) AS status_404,
+  sum(status_429) AS status_429,
+  sum(status_500) AS status_500,
+  sum(status_502) AS status_502,
+  sum(status_503) AS status_503,
+  sum(status_504) AS status_504
+FROM ${table}
+${prevWhereSql}
+FORMAT JSON
+`.trim();
+
+  const q16 = `
+${timeWith}
+SELECT
+  (
+    sum(ats_tcp_hit_count) +
+    sum(ats_tcp_cf_hit_count) +
+    sum(ats_tcp_ims_hit_count)
+  ) AS hit_count,
+  (
+    sum(ats_tcp_miss_count) +
+    sum(ats_tcp_ims_miss_count)
+  ) AS miss_count,
+  (
+    sum(ats_tcp_refresh_hit_count) +
+    sum(ats_tcp_refresh_miss_count) +
+    sum(ats_tcp_client_refresh_count) +
+    sum(ats_tcp_ref_fail_hit_count)
+  ) AS refresh_count,
+  (
+    sum(ats_err_client_abort_count) +
+    sum(ats_err_client_read_error_count) +
+    sum(ats_err_invalid_req_count)
+  ) AS client_error_count,
+  (
+    sum(ats_err_connect_fail_count) +
+    sum(ats_err_dns_fail_count) +
+    sum(ats_err_read_timeout_count) +
+    sum(ats_err_proxy_denied_count) +
+    sum(ats_err_unknown_count) +
+    sum(ats_tcp_swapfail_count)
+  ) AS infra_error_count,
+  (
+    sum(ats_tcp_hit_count) +
+    sum(ats_tcp_cf_hit_count) +
+    sum(ats_tcp_ims_hit_count) +
+    sum(ats_tcp_miss_count) +
+    sum(ats_tcp_ims_miss_count) +
+    sum(ats_tcp_refresh_hit_count) +
+    sum(ats_tcp_refresh_miss_count) +
+    sum(ats_tcp_client_refresh_count) +
+    sum(ats_tcp_ref_fail_hit_count) +
+    sum(ats_err_client_abort_count) +
+    sum(ats_err_client_read_error_count) +
+    sum(ats_err_invalid_req_count) +
+    sum(ats_err_connect_fail_count) +
+    sum(ats_err_dns_fail_count) +
+    sum(ats_err_read_timeout_count) +
+    sum(ats_err_proxy_denied_count) +
+    sum(ats_err_unknown_count) +
+    sum(ats_tcp_swapfail_count)
+  ) AS ats_total,
+  round(
+    100.0 * (
+      sum(ats_tcp_hit_count) +
+      sum(ats_tcp_cf_hit_count) +
+      sum(ats_tcp_ims_hit_count)
+    ) / nullIf(sum(requests), 0),
+    3
+  ) AS hit_pct,
+  round(
+    100.0 * (
+      sum(ats_tcp_miss_count) +
+      sum(ats_tcp_ims_miss_count)
+    ) / nullIf(sum(requests), 0),
+    3
+  ) AS miss_pct,
+  round(
+    100.0 * (
+      sum(ats_tcp_refresh_hit_count) +
+      sum(ats_tcp_refresh_miss_count) +
+      sum(ats_tcp_client_refresh_count) +
+      sum(ats_tcp_ref_fail_hit_count)
+    ) / nullIf(sum(requests), 0),
+    3
+  ) AS refresh_pct,
+  round(
+    100.0 * (
+      sum(ats_err_client_abort_count) +
+      sum(ats_err_client_read_error_count) +
+      sum(ats_err_invalid_req_count)
+    ) / nullIf(sum(requests), 0),
+    3
+  ) AS client_error_pct,
+  round(
+    100.0 * (
+      sum(ats_err_connect_fail_count) +
+      sum(ats_err_dns_fail_count) +
+      sum(ats_err_read_timeout_count) +
+      sum(ats_err_proxy_denied_count) +
+      sum(ats_err_unknown_count) +
+      sum(ats_tcp_swapfail_count)
+    ) / nullIf(sum(requests), 0),
+    3
+  ) AS infra_error_pct
+FROM ${table}
+${whereSql}
+FORMAT JSON
+`.trim();
+
+  const q17 = `
+${prevTimeWith}
+SELECT
+  (
+    sum(ats_tcp_hit_count) +
+    sum(ats_tcp_cf_hit_count) +
+    sum(ats_tcp_ims_hit_count)
+  ) AS hit_count,
+  (
+    sum(ats_tcp_miss_count) +
+    sum(ats_tcp_ims_miss_count)
+  ) AS miss_count,
+  (
+    sum(ats_tcp_refresh_hit_count) +
+    sum(ats_tcp_refresh_miss_count) +
+    sum(ats_tcp_client_refresh_count) +
+    sum(ats_tcp_ref_fail_hit_count)
+  ) AS refresh_count,
+  (
+    sum(ats_err_client_abort_count) +
+    sum(ats_err_client_read_error_count) +
+    sum(ats_err_invalid_req_count)
+  ) AS client_error_count,
+  (
+    sum(ats_err_connect_fail_count) +
+    sum(ats_err_dns_fail_count) +
+    sum(ats_err_read_timeout_count) +
+    sum(ats_err_proxy_denied_count) +
+    sum(ats_err_unknown_count) +
+    sum(ats_tcp_swapfail_count)
+  ) AS infra_error_count,
+  (
+    sum(ats_tcp_hit_count) +
+    sum(ats_tcp_cf_hit_count) +
+    sum(ats_tcp_ims_hit_count) +
+    sum(ats_tcp_miss_count) +
+    sum(ats_tcp_ims_miss_count) +
+    sum(ats_tcp_refresh_hit_count) +
+    sum(ats_tcp_refresh_miss_count) +
+    sum(ats_tcp_client_refresh_count) +
+    sum(ats_tcp_ref_fail_hit_count) +
+    sum(ats_err_client_abort_count) +
+    sum(ats_err_client_read_error_count) +
+    sum(ats_err_invalid_req_count) +
+    sum(ats_err_connect_fail_count) +
+    sum(ats_err_dns_fail_count) +
+    sum(ats_err_read_timeout_count) +
+    sum(ats_err_proxy_denied_count) +
+    sum(ats_err_unknown_count) +
+    sum(ats_tcp_swapfail_count)
+  ) AS ats_total,
+  round(
+    100.0 * (
+      sum(ats_tcp_hit_count) +
+      sum(ats_tcp_cf_hit_count) +
+      sum(ats_tcp_ims_hit_count)
+    ) / nullIf(sum(requests), 0),
+    3
+  ) AS hit_pct,
+  round(
+    100.0 * (
+      sum(ats_tcp_miss_count) +
+      sum(ats_tcp_ims_miss_count)
+    ) / nullIf(sum(requests), 0),
+    3
+  ) AS miss_pct,
+  round(
+    100.0 * (
+      sum(ats_tcp_refresh_hit_count) +
+      sum(ats_tcp_refresh_miss_count) +
+      sum(ats_tcp_client_refresh_count) +
+      sum(ats_tcp_ref_fail_hit_count)
+    ) / nullIf(sum(requests), 0),
+    3
+  ) AS refresh_pct,
+  round(
+    100.0 * (
+      sum(ats_err_client_abort_count) +
+      sum(ats_err_client_read_error_count) +
+      sum(ats_err_invalid_req_count)
+    ) / nullIf(sum(requests), 0),
+    3
+  ) AS client_error_pct,
+  round(
+    100.0 * (
+      sum(ats_err_connect_fail_count) +
+      sum(ats_err_dns_fail_count) +
+      sum(ats_err_read_timeout_count) +
+      sum(ats_err_proxy_denied_count) +
+      sum(ats_err_unknown_count) +
+      sum(ats_tcp_swapfail_count)
+    ) / nullIf(sum(requests), 0),
+    3
+  ) AS infra_error_pct
+FROM ${table}
+${prevWhereSql}
+FORMAT JSON
+`.trim();
+
+  const q18 = `
+${timeWith}
+SELECT
+  toStartOfInterval(ts, INTERVAL {bucketSeconds:Int32} SECOND) AS bucket,
+  (
+    sum(ats_tcp_hit_count) +
+    sum(ats_tcp_cf_hit_count) +
+    sum(ats_tcp_ims_hit_count)
+  ) AS hit_count,
+  (
+    sum(ats_tcp_miss_count) +
+    sum(ats_tcp_ims_miss_count)
+  ) AS miss_count,
+  (
+    sum(ats_tcp_refresh_hit_count) +
+    sum(ats_tcp_refresh_miss_count) +
+    sum(ats_tcp_client_refresh_count) +
+    sum(ats_tcp_ref_fail_hit_count)
+  ) AS refresh_count,
+  (
+    sum(ats_err_client_abort_count) +
+    sum(ats_err_client_read_error_count) +
+    sum(ats_err_invalid_req_count)
+  ) AS client_error_count,
+  (
+    sum(ats_err_connect_fail_count) +
+    sum(ats_err_dns_fail_count) +
+    sum(ats_err_read_timeout_count) +
+    sum(ats_err_proxy_denied_count) +
+    sum(ats_err_unknown_count) +
+    sum(ats_tcp_swapfail_count)
+  ) AS infra_error_count
+FROM ${table}
+${whereSql}
+GROUP BY bucket
+ORDER BY bucket ASC
+FORMAT JSON
+`.trim();
+
+  const q19 = `
+${prevTimeWith}
+SELECT
+  toStartOfInterval(ts, INTERVAL {bucketSeconds:Int32} SECOND) AS bucket,
+  (
+    sum(ats_tcp_hit_count) +
+    sum(ats_tcp_cf_hit_count) +
+    sum(ats_tcp_ims_hit_count)
+  ) AS hit_count,
+  (
+    sum(ats_tcp_miss_count) +
+    sum(ats_tcp_ims_miss_count)
+  ) AS miss_count,
+  (
+    sum(ats_tcp_refresh_hit_count) +
+    sum(ats_tcp_refresh_miss_count) +
+    sum(ats_tcp_client_refresh_count) +
+    sum(ats_tcp_ref_fail_hit_count)
+  ) AS refresh_count,
+  (
+    sum(ats_err_client_abort_count) +
+    sum(ats_err_client_read_error_count) +
+    sum(ats_err_invalid_req_count)
+  ) AS client_error_count,
+  (
+    sum(ats_err_connect_fail_count) +
+    sum(ats_err_dns_fail_count) +
+    sum(ats_err_read_timeout_count) +
+    sum(ats_err_proxy_denied_count) +
+    sum(ats_err_unknown_count) +
+    sum(ats_tcp_swapfail_count)
+  ) AS infra_error_count
+FROM ${table}
+${prevWhereSql}
+GROUP BY bucket
+ORDER BY bucket ASC
+FORMAT JSON
+`.trim();
+
+  const q20 = `
+${timeWith}
+SELECT
+  region,
+  (
+    sum(ats_tcp_hit_count) +
+    sum(ats_tcp_cf_hit_count) +
+    sum(ats_tcp_ims_hit_count)
+  ) AS hit_count,
+  (
+    sum(ats_tcp_miss_count) +
+    sum(ats_tcp_ims_miss_count)
+  ) AS miss_count,
+  (
+    sum(ats_tcp_refresh_hit_count) +
+    sum(ats_tcp_refresh_miss_count) +
+    sum(ats_tcp_client_refresh_count) +
+    sum(ats_tcp_ref_fail_hit_count)
+  ) AS refresh_count,
+  (
+    sum(ats_err_client_abort_count) +
+    sum(ats_err_client_read_error_count) +
+    sum(ats_err_invalid_req_count)
+  ) AS client_error_count,
+  (
+    sum(ats_err_connect_fail_count) +
+    sum(ats_err_dns_fail_count) +
+    sum(ats_err_read_timeout_count) +
+    sum(ats_err_proxy_denied_count) +
+    sum(ats_err_unknown_count) +
+    sum(ats_tcp_swapfail_count)
+  ) AS infra_error_count,
+  sum(requests) AS total_requests
+FROM ${table}
+${whereSql}
+GROUP BY region
+ORDER BY total_requests DESC
+LIMIT 20
+FORMAT JSON
+`.trim();
+
+  const q21 = `
+${timeWith}
+SELECT
+  pop,
+  (
+    sum(ats_tcp_hit_count) +
+    sum(ats_tcp_cf_hit_count) +
+    sum(ats_tcp_ims_hit_count)
+  ) AS hit_count,
+  (
+    sum(ats_tcp_miss_count) +
+    sum(ats_tcp_ims_miss_count)
+  ) AS miss_count,
+  (
+    sum(ats_tcp_refresh_hit_count) +
+    sum(ats_tcp_refresh_miss_count) +
+    sum(ats_tcp_client_refresh_count) +
+    sum(ats_tcp_ref_fail_hit_count)
+  ) AS refresh_count,
+  (
+    sum(ats_err_client_abort_count) +
+    sum(ats_err_client_read_error_count) +
+    sum(ats_err_invalid_req_count)
+  ) AS client_error_count,
+  (
+    sum(ats_err_connect_fail_count) +
+    sum(ats_err_dns_fail_count) +
+    sum(ats_err_read_timeout_count) +
+    sum(ats_err_proxy_denied_count) +
+    sum(ats_err_unknown_count) +
+    sum(ats_tcp_swapfail_count)
+  ) AS infra_error_count,
+  sum(requests) AS total_requests
+FROM ${table}
+${whereSql}
+GROUP BY pop
+ORDER BY total_requests DESC
+LIMIT 20
+FORMAT JSON
+`.trim();
+
+  const q22 = `
+${timeWith}
+SELECT
+  content_type,
+  (
+    sum(ats_tcp_hit_count) +
+    sum(ats_tcp_cf_hit_count) +
+    sum(ats_tcp_ims_hit_count)
+  ) AS hit_count,
+  (
+    sum(ats_tcp_miss_count) +
+    sum(ats_tcp_ims_miss_count)
+  ) AS miss_count,
+  (
+    sum(ats_tcp_refresh_hit_count) +
+    sum(ats_tcp_refresh_miss_count) +
+    sum(ats_tcp_client_refresh_count) +
+    sum(ats_tcp_ref_fail_hit_count)
+  ) AS refresh_count,
+  (
+    sum(ats_err_client_abort_count) +
+    sum(ats_err_client_read_error_count) +
+    sum(ats_err_invalid_req_count)
+  ) AS client_error_count,
+  (
+    sum(ats_err_connect_fail_count) +
+    sum(ats_err_dns_fail_count) +
+    sum(ats_err_read_timeout_count) +
+    sum(ats_err_proxy_denied_count) +
+    sum(ats_err_unknown_count) +
+    sum(ats_tcp_swapfail_count)
+  ) AS infra_error_count,
+  sum(requests) AS total_requests
+FROM ${table}
+${whereSql}
+GROUP BY content_type
+ORDER BY total_requests DESC
+LIMIT 20
+FORMAT JSON
+`.trim();
+
+  const q23 = `
+${timeWith}
+SELECT
+  ua_family,
+  (
+    sum(ats_tcp_hit_count) +
+    sum(ats_tcp_cf_hit_count) +
+    sum(ats_tcp_ims_hit_count)
+  ) AS hit_count,
+  (
+    sum(ats_tcp_miss_count) +
+    sum(ats_tcp_ims_miss_count)
+  ) AS miss_count,
+  (
+    sum(ats_tcp_refresh_hit_count) +
+    sum(ats_tcp_refresh_miss_count) +
+    sum(ats_tcp_client_refresh_count) +
+    sum(ats_tcp_ref_fail_hit_count)
+  ) AS refresh_count,
+  (
+    sum(ats_err_client_abort_count) +
+    sum(ats_err_client_read_error_count) +
+    sum(ats_err_invalid_req_count)
+  ) AS client_error_count,
+  (
+    sum(ats_err_connect_fail_count) +
+    sum(ats_err_dns_fail_count) +
+    sum(ats_err_read_timeout_count) +
+    sum(ats_err_proxy_denied_count) +
+    sum(ats_err_unknown_count) +
+    sum(ats_tcp_swapfail_count)
+  ) AS infra_error_count,
+  sum(requests) AS total_requests
+FROM ${table}
+${whereSql}
+GROUP BY ua_family
+ORDER BY total_requests DESC
+LIMIT 20
+FORMAT JSON
+`.trim();
+
+  const q24 = `
+${timeWith}
+SELECT
+  sum(ats_tcp_hit_count) AS ats_tcp_hit_count,
+  sum(ats_tcp_cf_hit_count) AS ats_tcp_cf_hit_count,
+  sum(ats_tcp_miss_count) AS ats_tcp_miss_count,
+  sum(ats_tcp_refresh_hit_count) AS ats_tcp_refresh_hit_count,
+  sum(ats_tcp_ref_fail_hit_count) AS ats_tcp_ref_fail_hit_count,
+  sum(ats_tcp_refresh_miss_count) AS ats_tcp_refresh_miss_count,
+  sum(ats_tcp_client_refresh_count) AS ats_tcp_client_refresh_count,
+  sum(ats_tcp_ims_hit_count) AS ats_tcp_ims_hit_count,
+  sum(ats_tcp_ims_miss_count) AS ats_tcp_ims_miss_count,
+  sum(ats_tcp_swapfail_count) AS ats_tcp_swapfail_count,
+  sum(ats_err_client_abort_count) AS ats_err_client_abort_count,
+  sum(ats_err_client_read_error_count) AS ats_err_client_read_error_count,
+  sum(ats_err_connect_fail_count) AS ats_err_connect_fail_count,
+  sum(ats_err_dns_fail_count) AS ats_err_dns_fail_count,
+  sum(ats_err_invalid_req_count) AS ats_err_invalid_req_count,
+  sum(ats_err_read_timeout_count) AS ats_err_read_timeout_count,
+  sum(ats_err_proxy_denied_count) AS ats_err_proxy_denied_count,
+  sum(ats_err_unknown_count) AS ats_err_unknown_count
+FROM ${table}
+${whereSql}
+FORMAT JSON
+`.trim();
+
+  const q25 = `
+${prevTimeWith}
+SELECT
+  sum(ats_tcp_hit_count) AS ats_tcp_hit_count,
+  sum(ats_tcp_cf_hit_count) AS ats_tcp_cf_hit_count,
+  sum(ats_tcp_miss_count) AS ats_tcp_miss_count,
+  sum(ats_tcp_refresh_hit_count) AS ats_tcp_refresh_hit_count,
+  sum(ats_tcp_ref_fail_hit_count) AS ats_tcp_ref_fail_hit_count,
+  sum(ats_tcp_refresh_miss_count) AS ats_tcp_refresh_miss_count,
+  sum(ats_tcp_client_refresh_count) AS ats_tcp_client_refresh_count,
+  sum(ats_tcp_ims_hit_count) AS ats_tcp_ims_hit_count,
+  sum(ats_tcp_ims_miss_count) AS ats_tcp_ims_miss_count,
+  sum(ats_tcp_swapfail_count) AS ats_tcp_swapfail_count,
+  sum(ats_err_client_abort_count) AS ats_err_client_abort_count,
+  sum(ats_err_client_read_error_count) AS ats_err_client_read_error_count,
+  sum(ats_err_connect_fail_count) AS ats_err_connect_fail_count,
+  sum(ats_err_dns_fail_count) AS ats_err_dns_fail_count,
+  sum(ats_err_invalid_req_count) AS ats_err_invalid_req_count,
+  sum(ats_err_read_timeout_count) AS ats_err_read_timeout_count,
+  sum(ats_err_proxy_denied_count) AS ats_err_proxy_denied_count,
+  sum(ats_err_unknown_count) AS ats_err_unknown_count
+FROM ${table}
+${prevWhereSql}
+FORMAT JSON
+`.trim();
+
+  const q26 = `
+${timeWith}
+SELECT
+  toStartOfInterval(ts, INTERVAL {bucketSeconds:Int32} SECOND) AS bucket,
+  sum(ats_tcp_hit_count) AS ats_tcp_hit_count,
+  sum(ats_tcp_cf_hit_count) AS ats_tcp_cf_hit_count,
+  sum(ats_tcp_miss_count) AS ats_tcp_miss_count,
+  sum(ats_tcp_refresh_hit_count) AS ats_tcp_refresh_hit_count,
+  sum(ats_tcp_ref_fail_hit_count) AS ats_tcp_ref_fail_hit_count,
+  sum(ats_tcp_refresh_miss_count) AS ats_tcp_refresh_miss_count,
+  sum(ats_tcp_client_refresh_count) AS ats_tcp_client_refresh_count,
+  sum(ats_tcp_ims_hit_count) AS ats_tcp_ims_hit_count,
+  sum(ats_tcp_ims_miss_count) AS ats_tcp_ims_miss_count,
+  sum(ats_tcp_swapfail_count) AS ats_tcp_swapfail_count,
+  sum(ats_err_client_abort_count) AS ats_err_client_abort_count,
+  sum(ats_err_client_read_error_count) AS ats_err_client_read_error_count,
+  sum(ats_err_connect_fail_count) AS ats_err_connect_fail_count,
+  sum(ats_err_dns_fail_count) AS ats_err_dns_fail_count,
+  sum(ats_err_invalid_req_count) AS ats_err_invalid_req_count,
+  sum(ats_err_read_timeout_count) AS ats_err_read_timeout_count,
+  sum(ats_err_proxy_denied_count) AS ats_err_proxy_denied_count,
+  sum(ats_err_unknown_count) AS ats_err_unknown_count
+FROM ${table}
+${whereSql}
+GROUP BY bucket
+ORDER BY bucket ASC
+FORMAT JSON
+`.trim();
+
+  const q27 = `
+${prevTimeWith}
+SELECT
+  toStartOfInterval(ts, INTERVAL {bucketSeconds:Int32} SECOND) AS bucket,
+  sum(ats_tcp_hit_count) AS ats_tcp_hit_count,
+  sum(ats_tcp_cf_hit_count) AS ats_tcp_cf_hit_count,
+  sum(ats_tcp_miss_count) AS ats_tcp_miss_count,
+  sum(ats_tcp_refresh_hit_count) AS ats_tcp_refresh_hit_count,
+  sum(ats_tcp_ref_fail_hit_count) AS ats_tcp_ref_fail_hit_count,
+  sum(ats_tcp_refresh_miss_count) AS ats_tcp_refresh_miss_count,
+  sum(ats_tcp_client_refresh_count) AS ats_tcp_client_refresh_count,
+  sum(ats_tcp_ims_hit_count) AS ats_tcp_ims_hit_count,
+  sum(ats_tcp_ims_miss_count) AS ats_tcp_ims_miss_count,
+  sum(ats_tcp_swapfail_count) AS ats_tcp_swapfail_count,
+  sum(ats_err_client_abort_count) AS ats_err_client_abort_count,
+  sum(ats_err_client_read_error_count) AS ats_err_client_read_error_count,
+  sum(ats_err_connect_fail_count) AS ats_err_connect_fail_count,
+  sum(ats_err_dns_fail_count) AS ats_err_dns_fail_count,
+  sum(ats_err_invalid_req_count) AS ats_err_invalid_req_count,
+  sum(ats_err_read_timeout_count) AS ats_err_read_timeout_count,
+  sum(ats_err_proxy_denied_count) AS ats_err_proxy_denied_count,
+  sum(ats_err_unknown_count) AS ats_err_unknown_count
+FROM ${table}
+${prevWhereSql}
+GROUP BY bucket
+ORDER BY bucket ASC
+FORMAT JSON
+`.trim();
+
+  const q28 = `
+${timeWith}
+SELECT
+  region,
+  sum(ats_tcp_hit_count) AS ats_tcp_hit_count,
+  sum(ats_tcp_cf_hit_count) AS ats_tcp_cf_hit_count,
+  sum(ats_tcp_miss_count) AS ats_tcp_miss_count,
+  sum(ats_tcp_refresh_hit_count) AS ats_tcp_refresh_hit_count,
+  sum(ats_tcp_ref_fail_hit_count) AS ats_tcp_ref_fail_hit_count,
+  sum(ats_tcp_refresh_miss_count) AS ats_tcp_refresh_miss_count,
+  sum(ats_tcp_client_refresh_count) AS ats_tcp_client_refresh_count,
+  sum(ats_tcp_ims_hit_count) AS ats_tcp_ims_hit_count,
+  sum(ats_tcp_ims_miss_count) AS ats_tcp_ims_miss_count,
+  sum(ats_tcp_swapfail_count) AS ats_tcp_swapfail_count,
+  sum(ats_err_client_abort_count) AS ats_err_client_abort_count,
+  sum(ats_err_client_read_error_count) AS ats_err_client_read_error_count,
+  sum(ats_err_connect_fail_count) AS ats_err_connect_fail_count,
+  sum(ats_err_dns_fail_count) AS ats_err_dns_fail_count,
+  sum(ats_err_invalid_req_count) AS ats_err_invalid_req_count,
+  sum(ats_err_read_timeout_count) AS ats_err_read_timeout_count,
+  sum(ats_err_proxy_denied_count) AS ats_err_proxy_denied_count,
+  sum(ats_err_unknown_count) AS ats_err_unknown_count,
+  sum(requests) AS total_requests
+FROM ${table}
+${whereSql}
+GROUP BY region
+ORDER BY total_requests DESC
+LIMIT 20
+FORMAT JSON
+`.trim();
+
+  const q29 = `
+${timeWith}
+SELECT
+  pop,
+  sum(ats_tcp_hit_count) AS ats_tcp_hit_count,
+  sum(ats_tcp_cf_hit_count) AS ats_tcp_cf_hit_count,
+  sum(ats_tcp_miss_count) AS ats_tcp_miss_count,
+  sum(ats_tcp_refresh_hit_count) AS ats_tcp_refresh_hit_count,
+  sum(ats_tcp_ref_fail_hit_count) AS ats_tcp_ref_fail_hit_count,
+  sum(ats_tcp_refresh_miss_count) AS ats_tcp_refresh_miss_count,
+  sum(ats_tcp_client_refresh_count) AS ats_tcp_client_refresh_count,
+  sum(ats_tcp_ims_hit_count) AS ats_tcp_ims_hit_count,
+  sum(ats_tcp_ims_miss_count) AS ats_tcp_ims_miss_count,
+  sum(ats_tcp_swapfail_count) AS ats_tcp_swapfail_count,
+  sum(ats_err_client_abort_count) AS ats_err_client_abort_count,
+  sum(ats_err_client_read_error_count) AS ats_err_client_read_error_count,
+  sum(ats_err_connect_fail_count) AS ats_err_connect_fail_count,
+  sum(ats_err_dns_fail_count) AS ats_err_dns_fail_count,
+  sum(ats_err_invalid_req_count) AS ats_err_invalid_req_count,
+  sum(ats_err_read_timeout_count) AS ats_err_read_timeout_count,
+  sum(ats_err_proxy_denied_count) AS ats_err_proxy_denied_count,
+  sum(ats_err_unknown_count) AS ats_err_unknown_count,
+  sum(requests) AS total_requests
+FROM ${table}
+${whereSql}
+GROUP BY pop
+ORDER BY total_requests DESC
+LIMIT 20
+FORMAT JSON
+`.trim();
+
+  const q30 = `
+${timeWith}
+SELECT
+  content_type,
+  sum(ats_tcp_hit_count) AS ats_tcp_hit_count,
+  sum(ats_tcp_cf_hit_count) AS ats_tcp_cf_hit_count,
+  sum(ats_tcp_miss_count) AS ats_tcp_miss_count,
+  sum(ats_tcp_refresh_hit_count) AS ats_tcp_refresh_hit_count,
+  sum(ats_tcp_ref_fail_hit_count) AS ats_tcp_ref_fail_hit_count,
+  sum(ats_tcp_refresh_miss_count) AS ats_tcp_refresh_miss_count,
+  sum(ats_tcp_client_refresh_count) AS ats_tcp_client_refresh_count,
+  sum(ats_tcp_ims_hit_count) AS ats_tcp_ims_hit_count,
+  sum(ats_tcp_ims_miss_count) AS ats_tcp_ims_miss_count,
+  sum(ats_tcp_swapfail_count) AS ats_tcp_swapfail_count,
+  sum(ats_err_client_abort_count) AS ats_err_client_abort_count,
+  sum(ats_err_client_read_error_count) AS ats_err_client_read_error_count,
+  sum(ats_err_connect_fail_count) AS ats_err_connect_fail_count,
+  sum(ats_err_dns_fail_count) AS ats_err_dns_fail_count,
+  sum(ats_err_invalid_req_count) AS ats_err_invalid_req_count,
+  sum(ats_err_read_timeout_count) AS ats_err_read_timeout_count,
+  sum(ats_err_proxy_denied_count) AS ats_err_proxy_denied_count,
+  sum(ats_err_unknown_count) AS ats_err_unknown_count,
+  sum(requests) AS total_requests
+FROM ${table}
+${whereSql}
+GROUP BY content_type
+ORDER BY total_requests DESC
+LIMIT 20
+FORMAT JSON
+`.trim();
+
+  const q31 = `
+${timeWith}
+SELECT
+  ua_family,
+  sum(ats_tcp_hit_count) AS ats_tcp_hit_count,
+  sum(ats_tcp_cf_hit_count) AS ats_tcp_cf_hit_count,
+  sum(ats_tcp_miss_count) AS ats_tcp_miss_count,
+  sum(ats_tcp_refresh_hit_count) AS ats_tcp_refresh_hit_count,
+  sum(ats_tcp_ref_fail_hit_count) AS ats_tcp_ref_fail_hit_count,
+  sum(ats_tcp_refresh_miss_count) AS ats_tcp_refresh_miss_count,
+  sum(ats_tcp_client_refresh_count) AS ats_tcp_client_refresh_count,
+  sum(ats_tcp_ims_hit_count) AS ats_tcp_ims_hit_count,
+  sum(ats_tcp_ims_miss_count) AS ats_tcp_ims_miss_count,
+  sum(ats_tcp_swapfail_count) AS ats_tcp_swapfail_count,
+  sum(ats_err_client_abort_count) AS ats_err_client_abort_count,
+  sum(ats_err_client_read_error_count) AS ats_err_client_read_error_count,
+  sum(ats_err_connect_fail_count) AS ats_err_connect_fail_count,
+  sum(ats_err_dns_fail_count) AS ats_err_dns_fail_count,
+  sum(ats_err_invalid_req_count) AS ats_err_invalid_req_count,
+  sum(ats_err_read_timeout_count) AS ats_err_read_timeout_count,
+  sum(ats_err_proxy_denied_count) AS ats_err_proxy_denied_count,
+  sum(ats_err_unknown_count) AS ats_err_unknown_count,
+  sum(requests) AS total_requests
+FROM ${table}
+${whereSql}
+GROUP BY ua_family
+ORDER BY total_requests DESC
+LIMIT 20
+FORMAT JSON
+`.trim();
+
   return {
-    queries: [q0, q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13],
+    queries: [
+      q0,
+      q1,
+      q2,
+      q3,
+      q4,
+      q5,
+      q6,
+      q7,
+      q8,
+      q9,
+      q10,
+      q11,
+      q12,
+      q13,
+      q14,
+      q15,
+      q16,
+      q17,
+      q18,
+      q19,
+      q20,
+      q21,
+      q22,
+      q23,
+      q24,
+      q25,
+      q26,
+      q27,
+      q28,
+      q29,
+      q30,
+      q31,
+    ],
     params,
     meta: {
       tableUsed: table,
