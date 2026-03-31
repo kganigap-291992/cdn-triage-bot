@@ -71,6 +71,33 @@ export type Diagnostics = {
 };
 
 // ---------------------------------------------
+// Severity
+// ---------------------------------------------
+
+export type SeverityLevel =
+  | "healthy"
+  | "early_warning"
+  | "performance_issue"
+  | "major_incident";
+
+export type SeveritySignal = "latency" | "errors" | "cache";
+
+export type SeverityReason = {
+  signal: SeveritySignal;
+  severity: SeverityLevel;
+  reason: string;
+  currentValue: number | null;
+  previousValue: number | null;
+  unit: "ms" | "pct";
+};
+
+export type SeverityAssessment = {
+  overall: SeverityLevel;
+  reasons: SeverityReason[];
+  topDriver: SeverityReason | null;
+};
+
+// ---------------------------------------------
 // Evidence Bundle
 // ---------------------------------------------
 
@@ -166,6 +193,10 @@ export type IncidentAssessment = {
   agents: AgentResult[];
 
   summary: string;
+
+  severity?: SeverityLevel;
+  severityReasons?: SeverityReason[];
+  severityTopDriver?: SeverityReason | null;
 
   metadata?: {
     table?: string;
