@@ -1,300 +1,255 @@
-# UI Service Architecture (End-to-End)
+# Cachey UI — Canonical Spec (v1)
 
-This document explains how the UI service works from request →
-middleware → API → ClickHouse → response.
+## Purpose
+This is the **full, no-loss system design** for Cachey UI.
+It captures routing, state, UI, agents interaction, and UX rules.
 
-------------------------------------------------------------------------
+---
 
-## Overview
+# 1. System Overview
 
-The UI service is a Next.js application that:
-
--   Serves authenticated UI pages
--   Exposes public `/api/*` routes
--   Orchestrates ClickHouse triage (mock / proxy / real DB)
-
-Core rule:
-
-> `/api/*` is always public. UI pages are gated by cookie.
-
-------------------------------------------------------------------------
-
-## Architecture Diagram
-
-``` mermaid
-flowchart LR
-
-U[Browser] --> MW[middleware]
-C[curl] --> MW
-
-MW -->|/api/*| API
-MW -->|static| STATIC
-MW -->|auth| UI
-
-UI --> PAGES
-UI --> DEMO
-
-API --> TRIAGE
-API --> SCHEMA
-
-TRIAGE --> ORCH
-ORCH --> SQL
-ORCH --> RUN
-
-RUN --> MOCK
-RUN --> PROXY
-PROXY --> CLICKHOUSE
-
-MOCK --> RESP
-CLICKHOUSE --> RESP
-
-RESP --> API
-API --> U
-API --> C
-```
-
-------------------------------------------------------------------------
-
-## Request Flow
-
-### UI Page
-
-1.  Request hits middleware
-2.  Cookie `cachey_demo` checked
-3.  If missing → /demo
-4.  If present → page loads
-
-### API
-
-1.  Hits middleware
-2.  `/api/*` bypasses auth
-3.  Route executes
-4.  Returns JSON
-
-------------------------------------------------------------------------
-
-## middleware.ts
-
-Controls access.
-
-Rules:
-
-  Path         Behavior
-  ------------ ----------------
-  /api/\*      Always allowed
-  /\_next/\*   Allowed
-  /demo        Allowed
-  Static       Allowed
-  Others       Need cookie
-
-Cookie:
-
-    cachey_demo=1
-
-------------------------------------------------------------------------
-
-## api/triage/route.ts
-
-Main data entrypoint.
-
-Responsibilities:
-
--   Parse inputs
--   Normalize fields
--   Call ClickHouse runner
--   Return unified JSON
-
-Example:
-
-``` json
-{
-  "partner": "acme_media",
-  "service": "all",
-  "region": "all",
-  "pop": "all",
-  "windowMinutes": 60,
-  "debug": true,
-  "contentType": "all",
-  "uaFamily": "all"
-}
-```
-
-Returns:
-
-``` json
-{
-  "summary": "...",
-  "metricsJson": {},
-  "sql": {}
-}
-```
-
-------------------------------------------------------------------------
-
-## api/schema/route.ts
-
-Provides metadata for UI dropdowns.
-
-Used for validation.
-
-------------------------------------------------------------------------
-
-## runClickhouseTriage.ts
-
-Central orchestrator.
-
-Steps:
-
-1.  Map partner
-2.  Build SQL
-3.  Select runner
-4.  Normalize output
-
-Never builds SQL manually.
-
-------------------------------------------------------------------------
-
-## runMockClickhouseTriage.ts
-
-Generates deterministic fake data.
-
-Used for:
-
--   Local dev
--   Demos
--   Testing UI
-
-Features:
-
--   Time series
--   Anomalies
--   Debug forcing
--   Stable seeds
-
-------------------------------------------------------------------------
-
-## runProxyClickhouseTriage.ts (Future)
-
-Will:
-
--   Send SQL to VPS
--   Talk to Cachey Proxy
--   Execute real ClickHouse queries
+Cachey is a **deterministic CDN triage engine with a conversational UI**.
 
 Flow:
 
-UI → API → Proxy → ClickHouse
+User → Router → Query Plan → ClickHouse → EvidenceBundle → Agents → IncidentAssessment → UI
 
-------------------------------------------------------------------------
+---
 
-## SQL Builder
+# 2. Routing Brain (Full Logic)
 
-All SQL originates from:
+## Intent Classification Tree
 
-    lib/clickhouse/sqlBuilder.ts
+1. Empty / greeting → greeting
+2. Contains CDN/ATS concept → glossary / knowledge
+3. Missing scope but operational → clarification
+4. Valid operational query → triage
+5. Follow-up keywords:
+   - worst / top → drill
+   - compare / previous → compare
+   - only / filter → filter
+   - why / explain → explain
+6. Non-CDN → guardrail
 
-Guarantees:
+---
 
--   Canonical queries
--   Filter safety
--   Stable structure
+## Routing Matrix
 
-------------------------------------------------------------------------
+| Intent | Uses Scope | Mutates Scope | Calls API |
+|--------|-----------|--------------|----------|
+| triage | yes       | yes          | yes      |
+| drill  | yes       | sometimes    | yes      |
+| compare| yes       | no           | yes      |
+| filter | yes       | yes          | yes      |
+| explain| yes       | no           | no       |
+| glossary| no       | no           | no       |
+| knowledge| no      | no           | LLM      |
+| greeting| no       | no           | no       |
+| guardrail| no      | no           | no       |
 
-## Debug Mode
+---
 
-If debug=true:
+# 3. State Model (Strict)
 
--   Forces anomalies
--   Adds metadata
--   Anchors SQL
--   Adds warnings
+## Global State
 
-Used for UI testing.
+activeScope  
+missionContext  
+conversationHistory  
+lastResult  
+pendingFilters  
+executionState  
 
-------------------------------------------------------------------------
+---
 
-## Design Principles
+## Scope Mutation Table
 
-1.  Single source of truth (sqlBuilder)
-2.  Public APIs
-3.  Stable response shape
-4.  Mock-first development
-5.  Proxy-ready architecture
+| Action        | Mutates Scope |
+|---------------|--------------|
+| triage        | yes          |
+| drill region  | yes          |
+| drill pop     | yes          |
+| filter apply  | yes          |
+| compare       | no           |
+| explain       | no           |
+| glossary      | no           |
 
-------------------------------------------------------------------------
+---
 
-## File Responsibilities
+# 4. Mission Context Rules
 
-  File            Role
-  --------------- --------------
-  middleware.ts   Auth gate
-  api/triage      Main API
-  api/schema      Metadata
-  runClickhouse   Orchestrator
-  runMock         Fake DB
-  runProxy        Real DB
-  sqlBuilder      SQL factory
+Update ONLY on:
+- triage
+- drill (if narrowing)
+- filter
 
-------------------------------------------------------------------------
+Never update on:
+- explain
+- compare
+- glossary
+- greeting
 
-## Production Flow (Future)
+---
 
-    Browser
-      ↓
-    API
-      ↓
-    Proxy (VPS)
-      ↓
-    ClickHouse
-      ↓
-    Metrics
+# 5. UI Architecture
 
-------------------------------------------------------------------------
+## Layout
 
-## Development Flow (Today)
+Mission Strip  
+Conversation Thread  
+Chat Input  
 
-    Browser
-      ↓
-    API
-      ↓
-    Mock Runner
-      ↓
-    Synthetic Metrics
+---
 
-------------------------------------------------------------------------
+# 6. Card Contracts
 
-## Why CSV Was Removed
+## Triage Card
 
-CSV path was legacy debug.
+Inputs:
+- IncidentAssessment
 
-Problems:
+Outputs:
+- summary
+- state
+- primary signal
+- findings
+- next actions
+- graph
+- proof
 
--   Inconsistent
--   Hard to validate
--   Different shape
+---
 
-Now:
+## Drill Card
 
-✔ ClickHouse-first ✔ Mock replaces CSV ✔ Unified pipeline
+Inputs:
+- breakdown data
 
-------------------------------------------------------------------------
+Outputs:
+- ranked list
+- summary
+- next actions
 
-## Summary
+---
 
-This UI service is:
+## Compare Card
 
--   A secure frontend
--   A thin API layer
--   A ClickHouse orchestrator
+Inputs:
+- current vs previous
 
-It is designed to:
+Outputs:
+- delta summary
+- graph
 
--   Scale to real DB
--   Support demos
--   Avoid breaking curl
--   Keep UI stable
+---
 
-------------------------------------------------------------------------
+## Explain Card
 
-End of document.
+Inputs:
+- EvidenceBundle
+
+Outputs:
+- explanation text
+
+---
+
+# 7. Graph System
+
+Primary:
+- 1 graph only
+
+Proof:
+- secondary graphs
+
+Follow-ups:
+- max 1 graph
+
+---
+
+# 8. Evidence System
+
+EvidenceBundle includes:
+
+- metrics
+- breakdowns
+- timeseries
+- SQL
+- diagnostics
+
+---
+
+# 9. UX Rules
+
+Tone:
+- calm
+- precise
+- operational
+
+---
+
+## Microcopy Examples
+
+Loading:
+Investigating service health...
+
+Error:
+Could not complete request. Try adjusting scope.
+
+No Data:
+No data found. Try widening window.
+
+---
+
+# 10. Filters Model
+
+pendingFilters ≠ activeScope
+
+Apply → mutate scope  
+Clear → reset draft  
+
+---
+
+# 11. Reset Rules
+
+Reset clears:
+- scope
+- mission
+- history (v1)
+
+---
+
+# 12. Implementation Map
+
+page.tsx → shell  
+ChatInput → input + filters  
+Thread → history  
+MissionStrip → context  
+Cards → rendering  
+Router → classification  
+
+---
+
+# 13. Future Extensions
+
+## Redis
+- persist conversation
+- persist scope
+
+## LLM
+- narration only
+- never source of truth
+
+## Multi-layer Agents
+- edge + mid + origin
+- combine assessments
+
+---
+
+# 14. Final Mental Model
+
+Cachey = Deterministic Engine + Chat Interface
+
+NOT a chatbot.
+
+---
+
+End.
