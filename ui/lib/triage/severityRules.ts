@@ -47,10 +47,13 @@ export const SEVERITY_THRESHOLDS: SeverityThresholds = {
 };
 
 export type EvidenceMetricsLike = {
-  p95Ms?: NumericLike;
+  p95TtmsMs?: NumericLike;
+  p95_ttms_ms?: NumericLike;
   p95_ms?: NumericLike;
+
   errorRatePct?: NumericLike;
   error_rate_pct?: NumericLike;
+
   cacheHitRate?: NumericLike;
   cache_hit_rate?: NumericLike;
 };
@@ -73,6 +76,11 @@ export type SeverityAssessment = {
   overall: SeverityLevel;
   reasons: SeverityReason[];
   topDriver: SeverityReason | null;
+  signals: {
+    latency: SeverityLevel;
+    errors: SeverityLevel;
+    cache: SeverityLevel;
+  };
 };
 
 const SEVERITY_RANK: Record<SeverityLevel, number> = {
@@ -105,6 +113,14 @@ function normalizeCacheHitRatePct(value: number | null): number | null {
 
 function maxSeverity(a: SeverityLevel, b: SeverityLevel): SeverityLevel {
   return SEVERITY_RANK[a] >= SEVERITY_RANK[b] ? a : b;
+}
+
+export function severityToUiState(
+  severity: SeverityLevel
+): "normal" | "elevated" | "degraded" {
+  if (severity === "healthy") return "normal";
+  if (severity === "early_warning") return "elevated";
+  return "degraded";
 }
 
 function getLatencySeverity(latencyMs: number | null): SeverityLevel {
@@ -261,8 +277,8 @@ export function assessSeverity(
   const current = bundle.currentMetrics ?? null;
   const previous = bundle.previousMetrics ?? null;
 
-  const currentLatency = pickMetric(current, "p95Ms", "p95_ms");
-  const previousLatency = pickMetric(previous, "p95Ms", "p95_ms");
+  const currentLatency = pickMetric(current, "p95TtmsMs", "p95_ttms_ms", "p95_ms");
+  const previousLatency = pickMetric(previous, "p95TtmsMs", "p95_ttms_ms", "p95_ms");
 
   const currentErrors = pickMetric(current, "errorRatePct", "error_rate_pct");
   const previousErrors = pickMetric(previous, "errorRatePct", "error_rate_pct");
@@ -294,5 +310,10 @@ export function assessSeverity(
     overall,
     reasons: sortedReasons,
     topDriver: sortedReasons[0] ?? null,
+    signals: {
+      latency: latencySeverity,
+      errors: errorSeverity,
+      cache: cacheSeverity,
+    },
   };
 }

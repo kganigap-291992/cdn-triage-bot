@@ -3,8 +3,9 @@ import type {
   EvidenceBundle,
   IncidentAssessment,
 } from "@/lib/triage/types";
-import { assessSeverity } from "@/lib/triage/severityRules";
+import { assessSeverity, severityToUiState } from "@/lib/triage/severityRules";
 
+type AssessmentStatus = "ok" | "warn" | "critical";
 type NonScopeSignal = Exclude<IncidentAssessment["primarySignal"], "mixed">;
 
 function getScopeAgent(agents: AgentResult[]): AgentResult | undefined {
@@ -15,15 +16,30 @@ function getNonScopeAgents(agents: AgentResult[]): AgentResult[] {
   return agents.filter((a) => a.agent !== "scope");
 }
 
-function getOverallStatus(
-  agents: AgentResult[]
-): IncidentAssessment["overallStatus"] {
-  if (agents.some((a) => a.status === "critical")) return "critical";
-  if (agents.some((a) => a.status === "warn")) return "warn";
+function normalizeSeverity(
+  level: AgentResult["severityInternal"]
+): AssessmentStatus {
+  switch (level) {
+    case "major_incident":
+      return "critical";
+    case "performance_issue":
+    case "early_warning":
+      return "warn";
+    case "healthy":
+    default:
+      return "ok";
+  }
+}
+
+function getOverallStatus(agents: AgentResult[]): AssessmentStatus {
+  const normalized = agents.map((a) => normalizeSeverity(a.severityInternal));
+
+  if (normalized.some((s) => s === "critical")) return "critical";
+  if (normalized.some((s) => s === "warn")) return "warn";
   return "ok";
 }
 
-function severityWeight(status: AgentResult["status"]): number {
+function severityWeight(status: AssessmentStatus): number {
   switch (status) {
     case "critical":
       return 3;
@@ -52,7 +68,7 @@ function signalPriority(agent: NonScopeSignal): number {
 
 function severityLevelToOverallStatus(
   level: "healthy" | "early_warning" | "performance_issue" | "major_incident"
-): IncidentAssessment["overallStatus"] {
+): AssessmentStatus {
   switch (level) {
     case "major_incident":
       return "critical";
@@ -92,9 +108,10 @@ function getPrimarySignal(
       a.agent === "cache"
   ) as Array<AgentResult & { agent: NonScopeSignal }>;
 
-  const active = nonScope.filter(
-    (a) => a.status === "critical" || a.status === "warn"
-  );
+  const active = nonScope.filter((a) => {
+    const s = normalizeSeverity(a.severityInternal);
+    return s === "critical" || s === "warn";
+  });
 
   if (!active.length) {
     const severityAssessment = assessSeverity(bundle);
@@ -103,19 +120,30 @@ function getPrimarySignal(
     );
   }
 
-  const criticalSignals = active.filter((a) => a.status === "critical");
-  const warnSignals = active.filter((a) => a.status === "warn");
+  const criticalSignals = active.filter(
+    (a) => normalizeSeverity(a.severityInternal) === "critical"
+  );
+  const warnSignals = active.filter(
+    (a) => normalizeSeverity(a.severityInternal) === "warn"
+  );
 
   const strongest = (
     criticalSignals.length ? criticalSignals : warnSignals
   ).sort((a, b) => {
-    const sevDiff = severityWeight(b.status) - severityWeight(a.status);
+    const sevDiff =
+      severityWeight(normalizeSeverity(b.severityInternal)) -
+      severityWeight(normalizeSeverity(a.severityInternal));
     if (sevDiff !== 0) return sevDiff;
     return signalPriority(b.agent) - signalPriority(a.agent);
   });
 
-  const topSeverity = strongest[0]?.status;
-  const sameTopSeverity = active.filter((a) => a.status === topSeverity);
+  const topSeverity = strongest[0]
+    ? normalizeSeverity(strongest[0].severityInternal)
+    : null;
+
+  const sameTopSeverity = active.filter(
+    (a) => normalizeSeverity(a.severityInternal) === topSeverity
+  );
 
   const uniqueTopSignals = new Set(sameTopSeverity.map((a) => a.agent));
   if (uniqueTopSignals.size >= 2) return "mixed";
@@ -219,15 +247,19 @@ function getKeyFindings(bundle: EvidenceBundle, agents: AgentResult[]): string[]
   const severityAssessment = assessSeverity(bundle);
 
   const critical = getNonScopeAgents(agents)
-    .filter((a) => a.status === "critical" && a.summary)
+    .filter(
+      (a) => normalizeSeverity(a.severityInternal) === "critical" && a.summary
+    )
     .map((a) => a.summary);
 
   const warn = getNonScopeAgents(agents)
-    .filter((a) => a.status === "warn" && a.summary)
+    .filter(
+      (a) => normalizeSeverity(a.severityInternal) === "warn" && a.summary
+    )
     .map((a) => a.summary);
 
   const ok = getNonScopeAgents(agents)
-    .filter((a) => a.status === "ok" && a.summary)
+    .filter((a) => normalizeSeverity(a.severityInternal) === "ok" && a.summary)
     .map((a) => a.summary);
 
   const severityReasonFindings = severityAssessment.reasons
@@ -235,7 +267,10 @@ function getKeyFindings(bundle: EvidenceBundle, agents: AgentResult[]): string[]
     .filter(Boolean);
 
   const ordered = [
-    ...(scope?.status === "critical" && scope.summary ? [scope.summary] : []),
+    ...(normalizeSeverity(scope?.severityInternal) === "critical" &&
+    scope?.summary
+      ? [scope.summary]
+      : []),
     ...critical,
     ...warn,
     ...severityReasonFindings,
@@ -243,6 +278,14 @@ function getKeyFindings(bundle: EvidenceBundle, agents: AgentResult[]): string[]
   ].filter(Boolean);
 
   return Array.from(new Set(ordered)).slice(0, 5);
+}
+
+function getNextActions(agents: AgentResult[]): string[] {
+  const actions = agents
+    .flatMap((a) => a.recommendedNextSteps || [])
+    .filter(Boolean);
+
+  return Array.from(new Set(actions)).slice(0, 5);
 }
 
 function formatBlastRadiusText(
@@ -267,7 +310,7 @@ function formatBlastRadiusText(
 function pickHeadlineSummary(
   bundle: EvidenceBundle,
   agents: AgentResult[],
-  overallStatus: IncidentAssessment["overallStatus"],
+  overallStatus: AssessmentStatus,
   primarySignal: IncidentAssessment["primarySignal"],
   blastRadius: IncidentAssessment["blastRadius"],
   keyFindings: string[]
@@ -275,15 +318,23 @@ function pickHeadlineSummary(
   const severityAssessment = assessSeverity(bundle);
   const scope = getScopeAgent(agents);
 
-  if (scope?.status === "critical" && scope.summary) {
+  if (
+    normalizeSeverity(scope?.severityInternal) === "critical" &&
+    scope?.summary
+  ) {
     return scope.summary;
   }
 
   const nonScope = getNonScopeAgents(agents);
   const strongest = nonScope
-    .filter((a) => a.status === "critical" || a.status === "warn")
+    .filter((a) => {
+      const s = normalizeSeverity(a.severityInternal);
+      return s === "critical" || s === "warn";
+    })
     .sort((a, b) => {
-      const sevDiff = severityWeight(b.status) - severityWeight(a.status);
+      const sevDiff =
+        severityWeight(normalizeSeverity(b.severityInternal)) -
+        severityWeight(normalizeSeverity(a.severityInternal));
       if (sevDiff !== 0) return sevDiff;
 
       const aPriority =
@@ -315,12 +366,22 @@ function pickHeadlineSummary(
     return strongestSummary;
   }
 
-  if (severityAssessment.topDriver?.reason) {
+  const topReason = severityAssessment.topDriver?.reason;
+
+  if (topReason) {
+    if (
+      strongestSummary &&
+      strongestSummary.toLowerCase().includes("cache hit rate")
+    ) {
+      return strongestSummary;
+    }
+
     const blastSuffix =
       blastText && primarySignal !== "mixed"
         ? ` Blast radius currently spans ${blastText}.`
         : "";
-    return `${severityAssessment.topDriver.reason}.${blastSuffix}`;
+
+    return `${topReason}.${blastSuffix}`;
   }
 
   if (keyFindings[0]) {
@@ -346,26 +407,14 @@ export function buildAssessment(
   );
 
   const overallStatus =
-    severityWeight(
-      agentOverallStatus === "critical"
-        ? "critical"
-        : agentOverallStatus === "warn"
-        ? "warn"
-        : "ok"
-    ) >=
-    severityWeight(
-      severityOverallStatus === "critical"
-        ? "critical"
-        : severityOverallStatus === "warn"
-        ? "warn"
-        : "ok"
-    )
+    severityWeight(agentOverallStatus) >= severityWeight(severityOverallStatus)
       ? agentOverallStatus
       : severityOverallStatus;
 
   const primarySignal = getPrimarySignal(agents, bundle);
   const blastRadius = getBlastRadius(bundle);
   const keyFindings = getKeyFindings(bundle, agents);
+  const nextActions = getNextActions(agents);
   const summary = pickHeadlineSummary(
     bundle,
     agents,
@@ -376,10 +425,12 @@ export function buildAssessment(
   );
 
   return {
+    overallState: severityToUiState(severityAssessment.overall),
     overallStatus,
     primarySignal,
     blastRadius,
     keyFindings,
+    nextActions,
     agents,
     summary,
     severity: severityAssessment.overall,
@@ -389,6 +440,7 @@ export function buildAssessment(
       table: bundle.diagnostics?.tableUsed,
       bucketSeconds: bundle.diagnostics?.bucketSeconds,
       timeMode: bundle.windowInfo.timeMode,
+      source: bundle.diagnostics?.source,
     },
   };
 }

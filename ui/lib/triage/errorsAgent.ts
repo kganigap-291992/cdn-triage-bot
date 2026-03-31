@@ -1,4 +1,21 @@
 import type { AgentResult, EvidenceBundle } from "@/lib/triage/types";
+import { assessSeverity } from "@/lib/triage/severityRules";
+
+function mapSeverityToState(
+  severity: AgentResult["severityInternal"]
+): AgentResult["state"] {
+  switch (severity) {
+    case "healthy":
+      return "normal";
+    case "early_warning":
+      return "elevated";
+    case "performance_issue":
+    case "major_incident":
+      return "degraded";
+    default:
+      return "elevated";
+  }
+}
 
 export function errorsAgent(bundle: EvidenceBundle): AgentResult {
   const errPct = bundle.currentMetrics?.errorRatePct;
@@ -8,7 +25,6 @@ export function errorsAgent(bundle: EvidenceBundle): AgentResult {
   const prevErrPct = bundle.previousMetrics?.errorRatePct;
   const errDeltaPct = bundle.derivedMetrics?.errorDeltaPct;
 
-  let status: AgentResult["status"] = "ok";
   const findings: string[] = [];
 
   if (err5xx != null) findings.push(`error5xxCount=${Math.round(err5xx)}`);
@@ -27,72 +43,59 @@ export function errorsAgent(bundle: EvidenceBundle): AgentResult {
 
   findings.push(`totalRequests=${Math.round(totalRequests)}`);
 
-  // --------------------------------------------------
-  // Severity logic
-  // Rules:
-  // - rate matters
-  // - absolute 5xx count matters for large windows
-  // - deltas add trend context
-  // - tiny traffic windows should not overreact too easily
-  // --------------------------------------------------
-  if (errPct == null && err5xx == null) {
-    status = "warn";
-  } else {
-    const lowVolume = totalRequests > 0 && totalRequests < 1000;
-
-    // Rate-based severity
-    if (errPct != null) {
-      if (errPct >= 1.0) {
-        status = "critical";
-      } else if (errPct >= 0.2) {
-        status = "warn";
-      }
-
-      // In very low-volume windows, avoid overreacting to a tiny sample
-      if (lowVolume && errPct < 5.0 && status === "warn") {
-        status = "ok";
-        findings.push("lowVolumeWindow=true");
-      }
-    }
-
-    // Count-based escalation
-    if (err5xx != null) {
-      if (err5xx >= 10000) {
-        status = "critical";
-      } else if (err5xx >= 1000 && status !== "critical") {
-        status = "warn";
-      }
-    }
-
-    // Delta-based escalation
-    if (errDeltaPct != null) {
-      if (errDeltaPct >= 200) {
-        status = "critical";
-      } else if (errDeltaPct >= 100 && status === "ok") {
-        status = "warn";
-      }
-    }
+  const lowVolume = totalRequests > 0 && totalRequests < 1000;
+  if (lowVolume) {
+    findings.push("lowVolumeWindow=true");
   }
 
-  // --------------------------------------------------
-  // Summary
-  // --------------------------------------------------
+  const severityAssessment = assessSeverity(bundle);
+  const errorReasons = severityAssessment.reasons.filter(
+    (reason) => reason.signal === "errors"
+  );
+  const errorTopReason =
+    errorReasons[0] ??
+    (severityAssessment.topDriver?.signal === "errors"
+      ? severityAssessment.topDriver
+      : null);
+
+  const severityInternal =
+    errorTopReason?.severity ??
+    (errPct == null && err5xx == null ? "early_warning" : "healthy");
+
+  const state = mapSeverityToState(severityInternal);
+
   let summary: string;
 
   if (errPct == null && err5xx == null) {
-    summary = "Error signal unavailable.";
+    summary = "Error signal is unavailable for this window.";
   } else {
-    const base =
-      status === "critical"
-        ? `Errors are critically elevated${errPct != null ? ` at ${errPct.toFixed(2)}% 5xx rate` : ""}`
-        : status === "warn"
-        ? `Errors are elevated${errPct != null ? ` at ${errPct.toFixed(2)}% 5xx rate` : ""}`
-        : `Errors are under control${errPct != null ? ` at ${errPct.toFixed(2)}% 5xx rate` : ""}`;
+    let base: string;
+
+    switch (state) {
+      case "degraded":
+        base = `Errors are degraded${
+          errPct != null ? ` at ${errPct.toFixed(2)}% 5xx rate` : ""
+        }`;
+        break;
+      case "elevated":
+        base = `Errors are elevated for review${
+          errPct != null ? ` at ${errPct.toFixed(2)}% 5xx rate` : ""
+        }`;
+        break;
+      default:
+        base = `Errors look normal${
+          errPct != null ? ` at ${errPct.toFixed(2)}% 5xx rate` : ""
+        }`;
+        break;
+    }
 
     const countText =
       err5xx != null
         ? ` with ${Math.round(err5xx).toLocaleString()} 5xx responses`
         : "";
+
+    const previousText =
+      prevErrPct != null ? ` (previous ${prevErrPct.toFixed(2)}%)` : "";
 
     const deltaText =
       errDeltaPct != null
@@ -101,19 +104,35 @@ export function errorsAgent(bundle: EvidenceBundle): AgentResult {
           )}% vs previous window`
         : "";
 
-    const lowVolumeText =
-      totalRequests > 0 && totalRequests < 1000
-        ? ` across a low-volume window (${Math.round(totalRequests).toLocaleString()} requests)`
-        : "";
+    const volumeText = lowVolume
+      ? ` across a low-volume window (${Math.round(totalRequests).toLocaleString()} requests)`
+      : "";
 
-    summary = `${base}${countText}${deltaText}${lowVolumeText}.`;
+    const reasonText = errorTopReason?.reason ? ` ${errorTopReason.reason}.` : ".";
+
+    summary = `${base}${countText}${previousText}${deltaText}${volumeText}${reasonText}`;
+  }
+
+  const recommendedNextSteps: string[] = [];
+
+  if (state === "degraded") {
+    recommendedNextSteps.push("Drill into worst error region.");
+    recommendedNextSteps.push("Drill into worst error pop.");
+  } else if (state === "elevated") {
+    recommendedNextSteps.push("Compare error trend against the previous window.");
+  }
+
+  if (lowVolume) {
+    recommendedNextSteps.push("Validate whether the error signal is sample-size sensitive.");
   }
 
   return {
     agent: "errors",
-    status,
+    state,
+    severityInternal,
     summary,
     findings,
     graphs: [],
+    recommendedNextSteps,
   };
 }

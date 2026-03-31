@@ -19,11 +19,36 @@ export type NormalizedScope = {
 
 export type TimeSeriesPoint = {
   ts: string;
+
+  // Backward-compatible alias still used in some normalization paths.
   requests?: number;
+
+  // Preferred canonical field going forward.
+  totalRequests?: number;
+
+  error5xxCount?: number;
+  crcErrorCount?: number;
+  errorRatePct?: number;
+  successRatePct?: number;
   p95TtmsMs?: number;
   p99TtmsMs?: number;
-  errorRatePct?: number;
   cacheHitRate?: number;
+  statusCountsByCode?: Record<string, number>;
+};
+
+export type HostSeriesPoint = {
+  host: string;
+  totalRequests?: number;
+  error5xxCount?: number;
+  crcErrorCount?: number;
+  errorRatePct?: number;
+  p95TtmsMs?: number | null;
+  p99TtmsMs?: number | null;
+};
+
+export type CrcSeriesPoint = {
+  ts: string;
+  crcErrorCount?: number;
 };
 
 export type TimeSeries = {
@@ -31,6 +56,10 @@ export type TimeSeries = {
   startTs: string | null;
   endTs: string | null;
   points: TimeSeriesPoint[];
+  statusCodeSeries?: string[];
+  hostSeries?: HostSeriesPoint[];
+  crcSeries?: CrcSeriesPoint[];
+  statusOverTime?: any[];
 };
 
 // ---------------------------------------------
@@ -98,8 +127,34 @@ export type SeverityAssessment = {
 };
 
 // ---------------------------------------------
+// User-facing state
+// ---------------------------------------------
+
+export type UiState = "normal" | "elevated" | "degraded";
+
+export type PrimarySignal =
+  | "scope"
+  | "traffic"
+  | "latency"
+  | "errors"
+  | "cache"
+  | "mixed";
+
+export type AgentName = "scope" | "traffic" | "latency" | "errors" | "cache";
+
+// ---------------------------------------------
 // Evidence Bundle
 // ---------------------------------------------
+
+export type BreakdownRow = {
+  totalRequests?: number;
+  error5xxCount?: number;
+  errorRatePct?: number;
+  p95TtmsMs?: number | null;
+  cacheHitPct?: number | null;
+  cacheHitRate?: number | null;
+  [key: string]: unknown;
+};
 
 export type EvidenceBundle = {
   normalizedScope: NormalizedScope;
@@ -128,13 +183,13 @@ export type EvidenceBundle = {
 
   derivedMetrics?: DerivedMetrics;
 
-  regionBreakdown?: any[];
+  regionBreakdown?: BreakdownRow[];
 
-  popBreakdown?: any[];
+  popBreakdown?: BreakdownRow[];
 
-  uaBreakdown?: any[];
+  uaBreakdown?: BreakdownRow[];
 
-  contentBreakdown?: any[];
+  contentBreakdown?: BreakdownRow[];
 
   worstLatency?: any[];
 
@@ -165,11 +220,21 @@ export type AgentGraph = {
 // ---------------------------------------------
 
 export type AgentResult = {
-  agent: "scope" | "traffic" | "latency" | "errors" | "cache";
-  status: "ok" | "warn" | "critical";
+  agent: AgentName;
+
+  // Calm product-facing state.
+  state: UiState;
+
+  // Internal severity stays available for deterministic ranking/debug.
+  severityInternal?: SeverityLevel;
+
   summary: string;
+
   findings?: string[];
+
   graphs?: AgentGraph[];
+
+  recommendedNextSteps?: string[];
 };
 
 // ---------------------------------------------
@@ -177,9 +242,18 @@ export type AgentResult = {
 // ---------------------------------------------
 
 export type IncidentAssessment = {
-  overallStatus: "ok" | "warn" | "critical";
+  // Main UI-facing top-level state.
+  overallState: UiState;
 
-  primarySignal: "traffic" | "latency" | "errors" | "cache" | "mixed";
+  // Transitional/internal compatibility for existing backend logic.
+  overallStatus?: "ok" | "warn" | "critical";
+
+  // Internal severity remains available, but is not the main outward label.
+  severity?: SeverityLevel;
+  severityReasons?: SeverityReason[];
+  severityTopDriver?: SeverityReason | null;
+
+  primarySignal: Exclude<PrimarySignal, "scope">;
 
   blastRadius: {
     regionCount: number;
@@ -190,17 +264,16 @@ export type IncidentAssessment = {
 
   keyFindings: string[];
 
+  nextActions?: string[];
+
   agents: AgentResult[];
 
   summary: string;
-
-  severity?: SeverityLevel;
-  severityReasons?: SeverityReason[];
-  severityTopDriver?: SeverityReason | null;
 
   metadata?: {
     table?: string;
     bucketSeconds?: number;
     timeMode?: "relative" | "absolute";
+    source?: "proxy" | "local";
   };
 };

@@ -1,4 +1,21 @@
 import type { AgentResult, EvidenceBundle } from "@/lib/triage/types";
+import { assessSeverity } from "@/lib/triage/severityRules";
+
+function mapSeverityToState(
+  severity: AgentResult["severityInternal"]
+): AgentResult["state"] {
+  switch (severity) {
+    case "healthy":
+      return "normal";
+    case "early_warning":
+      return "elevated";
+    case "performance_issue":
+    case "major_incident":
+      return "degraded";
+    default:
+      return "elevated";
+  }
+}
 
 export function latencyAgent(bundle: EvidenceBundle): AgentResult {
   const p95 = bundle.currentMetrics?.p95TtmsMs;
@@ -7,12 +24,8 @@ export function latencyAgent(bundle: EvidenceBundle): AgentResult {
   const p95DeltaPct = bundle.derivedMetrics?.latencyDeltaPct;
   const p99DeltaPct = bundle.derivedMetrics?.p99DeltaPct;
 
-  let status: AgentResult["status"] = "ok";
   const findings: string[] = [];
 
-  // --------------------------------------------------
-  // Findings
-  // --------------------------------------------------
   if (p95 != null) findings.push(`p95TtmsMs=${Math.round(p95)}`);
   else findings.push("p95TtmsMs=missing");
 
@@ -27,57 +40,40 @@ export function latencyAgent(bundle: EvidenceBundle): AgentResult {
     findings.push(`p99DeltaPct=${p99DeltaPct.toFixed(1)}`);
   }
 
-  // --------------------------------------------------
-  // Severity logic
-  // Rules:
-  // - absolute thresholds matter first
-  // - p99 catches tail pain / hotspots
-  // - deltas add trend-awareness
-  // --------------------------------------------------
-  if (p95 == null && p99 == null) {
-    status = "warn";
-  } else {
-    // Absolute thresholds
-    if ((p95 != null && p95 >= 2000) || (p99 != null && p99 >= 2500)) {
-      status = "critical";
-    } else if ((p95 != null && p95 >= 800) || (p99 != null && p99 >= 1500)) {
-      status = "warn";
-    }
+  const severityAssessment = assessSeverity(bundle);
+  const latencyReasons = severityAssessment.reasons.filter(
+    (reason) => reason.signal === "latency"
+  );
+  const latencyTopReason =
+    latencyReasons[0] ??
+    (severityAssessment.topDriver?.signal === "latency"
+      ? severityAssessment.topDriver
+      : null);
 
-    // Trend escalation
-    // Large p95 jump can escalate
-    if (p95DeltaPct != null) {
-      if (p95DeltaPct >= 200) {
-        status = "critical";
-      } else if (p95DeltaPct >= 100 && status === "ok") {
-        status = "warn";
-      }
-    }
+  const severityInternal =
+    latencyTopReason?.severity ??
+    (p95 == null && p99 == null ? "early_warning" : "healthy");
 
-    // Very large p99 jump can also escalate tail issues
-    if (p99DeltaPct != null) {
-      if (p99DeltaPct >= 250) {
-        status = "critical";
-      } else if (p99DeltaPct >= 125 && status === "ok") {
-        status = "warn";
-      }
-    }
-  }
+  const state = mapSeverityToState(severityInternal);
 
-  // --------------------------------------------------
-  // Summary
-  // --------------------------------------------------
   let summary: string;
 
   if (p95 == null && p99 == null) {
-    summary = "Latency signal unavailable.";
+    summary = "Latency signal is unavailable for this window.";
   } else {
-    const level =
-      status === "critical"
-        ? "Latency is critically elevated"
-        : status === "warn"
-        ? "Latency is elevated"
-        : "Latency is within expected range";
+    let base: string;
+
+    switch (state) {
+      case "degraded":
+        base = "Latency is degraded";
+        break;
+      case "elevated":
+        base = "Latency is elevated for review";
+        break;
+      default:
+        base = "Latency looks normal";
+        break;
+    }
 
     const metrics = [
       p95 != null ? `p95=${Math.round(p95)}ms` : null,
@@ -88,25 +84,46 @@ export function latencyAgent(bundle: EvidenceBundle): AgentResult {
 
     const deltas = [
       p95DeltaPct != null
-        ? `p95 ${p95DeltaPct >= 0 ? "up" : "down"} ${Math.abs(p95DeltaPct).toFixed(1)}%`
+        ? `p95 ${p95DeltaPct >= 0 ? "up" : "down"} ${Math.abs(
+            p95DeltaPct
+          ).toFixed(1)}%`
         : null,
       p99DeltaPct != null
-        ? `p99 ${p99DeltaPct >= 0 ? "up" : "down"} ${Math.abs(p99DeltaPct).toFixed(1)}%`
+        ? `p99 ${p99DeltaPct >= 0 ? "up" : "down"} ${Math.abs(
+            p99DeltaPct
+          ).toFixed(1)}%`
         : null,
     ]
       .filter(Boolean)
       .join(", ");
 
-    summary = deltas
-      ? `${level} (${metrics}; ${deltas} vs previous window).`
-      : `${level} (${metrics}).`;
+    const reasonText = latencyTopReason?.reason
+      ? ` ${latencyTopReason.reason}`
+      : "";
+
+    const core = deltas
+      ? `${base} (${metrics}; ${deltas} vs previous window)`
+      : `${base} (${metrics})`;
+
+    summary = `${core}${reasonText}.`;
+  }
+
+  const recommendedNextSteps: string[] = [];
+
+  if (state === "degraded") {
+    recommendedNextSteps.push("Drill into worst latency region.");
+    recommendedNextSteps.push("Drill into worst latency pop.");
+  } else if (state === "elevated") {
+    recommendedNextSteps.push("Compare latency trend against the previous window.");
   }
 
   return {
     agent: "latency",
-    status,
+    state,
+    severityInternal,
     summary,
     findings,
     graphs: [],
+    recommendedNextSteps,
   };
 }
