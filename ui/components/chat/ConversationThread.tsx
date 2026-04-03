@@ -1,0 +1,163 @@
+"use client";
+
+import React from "react";
+
+type ConversationThreadProps = {
+  chatMessages: any[];
+  typing: boolean;
+  mounted: boolean;
+  chatScrollRef: React.RefObject<HTMLDivElement | null>;
+  renderTriageCard: (run: any) => React.ReactNode;
+  renderDrillCard: (drill: any, summaryText: string) => React.ReactNode;
+  renderExplainCard: (payload: {
+    summary: string;
+    overallState?: string;
+    primarySignal?: string;
+  }) => React.ReactNode;
+  renderCompareCard: (payload: {
+    summary: string;
+    overallState?: string;
+    primarySignal?: string;
+    compareMetrics?: {
+      cache?: {
+        current: number | null;
+        previous: number | null;
+        delta: number | null;
+      };
+      errors?: {
+        current: number | null;
+        previous: number | null;
+        delta: number | null;
+      };
+      latency?: {
+        current: number | null;
+        previous: number | null;
+        delta: number | null;
+      };
+      traffic?: {
+        current: number | null;
+        previous: number | null;
+        delta: number | null;
+      };
+    };
+  }) => React.ReactNode;
+  renderTypingDots: () => React.ReactNode;
+  formatUtcYmdHm: (iso: string) => string;
+  nowIso: () => string;
+};
+
+export default function ConversationThread({
+  chatMessages,
+  typing,
+  mounted,
+  chatScrollRef,
+  renderTriageCard,
+  renderDrillCard,
+  renderExplainCard,
+  renderCompareCard,
+  renderTypingDots,
+  formatUtcYmdHm,
+  nowIso,
+}: ConversationThreadProps) {
+  return (
+    <div
+      ref={chatScrollRef}
+      className="h-[66vh] min-h-[520px] overflow-y-auto rounded-2xl border border-white/10 bg-black/25 p-4"
+    >
+      {chatMessages.length === 0 && (
+        <div className="flex h-full select-none flex-col items-center justify-center gap-3 text-center">
+          <div className="text-5xl opacity-25">🤖</div>
+          <div className="text-base font-semibold text-gray-300">
+            Run triage to analyze CDN health
+          </div>
+          <div className="text-sm leading-relaxed text-gray-500">
+            Select partner and service,
+            <br />
+            then press <span className="text-gray-300">Run Triage</span>.
+          </div>
+          <div className="mt-2 text-xs text-gray-600">
+            Or ask in the chat box below using ISO UTC timestamps for absolute windows.
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-4">
+        {chatMessages.map((m) => {
+          const isUser = m.role === "user";
+          const isSystem = m.role === "system";
+          const rowAlign = isSystem
+            ? "justify-center"
+            : isUser
+            ? "justify-end"
+            : "justify-start";
+          const bubbleMax = isUser ? "max-w-[70%]" : "max-w-[82%]";
+          const bubbleStyle = isSystem
+            ? "border-white/10 bg-white/5 text-gray-300"
+            : isUser
+            ? "border-white/10 bg-white/10 text-gray-100"
+            : "border-white/10 bg-white/5 text-gray-100";
+
+          return (
+            <div key={m.id} className={`flex ${rowAlign}`}>
+              <div className={`${bubbleMax} w-full`}>
+                <div
+                  className={`mb-1 text-[10px] text-gray-500 ${
+                    isSystem ? "text-center" : isUser ? "text-right" : "text-left"
+                  }`}
+                >
+                  {mounted ? `${formatUtcYmdHm(m.ts)} UTC` : m.ts}
+                </div>
+
+                {m.type === "text" && (
+                  <div className={`rounded-2xl border ${bubbleStyle} px-4 py-3`}>
+                    <pre className="whitespace-pre-wrap text-sm leading-relaxed">
+                      {m.text}
+                    </pre>
+                  </div>
+                )}
+
+                {m.type === "triage" && renderTriageCard(m.run)}
+
+                {m.type === "drill" && renderDrillCard(m.drill, m.summaryText)}
+
+                {m.type === "explain" &&
+                  renderExplainCard({
+                    summary: m.summary,
+                    overallState: m.overallState,
+                    primarySignal: m.primarySignal,
+                  })}
+
+                {m.type === "compare" &&
+                  renderCompareCard({
+                    summary: m.summary,
+                    overallState: m.overallState,
+                    primarySignal: m.primarySignal,
+                    compareMetrics: m.compareMetrics,
+                  })}
+
+                {!["text", "triage", "drill", "explain", "compare"].includes(m.type) && (
+                  <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                    Unknown message type: {m.type}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+
+        {typing && (
+          <div className="flex justify-start">
+            <div className="max-w-[82%] w-full">
+              <div className="mb-1 text-left text-[10px] text-gray-500">
+                {mounted ? `${formatUtcYmdHm(nowIso())} UTC` : nowIso()}
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                {renderTypingDots()}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -562,6 +562,59 @@ function normalizePreviousWindow(previousWindow: any) {
   };
 }
 
+function buildCompareMetrics(metricsJson: any) {
+  const previous = metricsJson?.previousMetrics ?? metricsJson?.previousWindow ?? null;
+
+  if (!previous || typeof previous !== "object") return undefined;
+
+  const currentTraffic = numOrNull(metricsJson?.totalRequests);
+  const previousTraffic = numOrNull(previous?.totalRequests);
+
+  const currentErrors = numOrNull(metricsJson?.errorRatePct);
+  const previousErrors = numOrNull(previous?.errorRatePct);
+
+  const currentLatency = numOrNull(metricsJson?.p95TtmsMs);
+  const previousLatency = numOrNull(previous?.p95TtmsMs);
+
+  const currentCache = numOrNull(metricsJson?.cacheHitRate);
+  const previousCache = numOrNull(previous?.cacheHitRate);
+
+  return {
+    traffic: {
+      current: currentTraffic,
+      previous: previousTraffic,
+      delta:
+        currentTraffic != null && previousTraffic != null
+          ? currentTraffic - previousTraffic
+          : null,
+    },
+    errors: {
+      current: currentErrors,
+      previous: previousErrors,
+      delta:
+        currentErrors != null && previousErrors != null
+          ? currentErrors - previousErrors
+          : null,
+    },
+    latency: {
+      current: currentLatency,
+      previous: previousLatency,
+      delta:
+        currentLatency != null && previousLatency != null
+          ? currentLatency - previousLatency
+          : null,
+    },
+    cache: {
+      current: currentCache,
+      previous: previousCache,
+      delta:
+        currentCache != null && previousCache != null
+          ? currentCache - previousCache
+          : null,
+    },
+  };
+}
+
 function assertCanonicalMetricsJson(metricsJson: any) {
   if (!metricsJson || typeof metricsJson !== "object") {
     throw new Error("route: metricsJson missing");
@@ -579,6 +632,13 @@ function assertCanonicalMetricsJson(metricsJson: any) {
       ? numOrNull(metricsJson.p95TtmsMs)
       : metricsJson.p95_ms != null
       ? numOrNull(metricsJson.p95_ms)
+      : null;
+
+  const cacheHitRate =
+    metricsJson.cacheHitRate != null
+      ? numOrNull(metricsJson.cacheHitRate)
+      : metricsJson.cache_hit_rate != null
+      ? numOrNull(metricsJson.cache_hit_rate)
       : null;
 
   const error5xxCount =
@@ -618,6 +678,7 @@ function assertCanonicalMetricsJson(metricsJson: any) {
     ...metricsJson,
     totalRequests,
     p95TtmsMs,
+    cacheHitRate,
     error5xxCount,
     errorRatePct,
     successRatePct,
@@ -656,6 +717,7 @@ function canonicalStubMetricsJson(debug: Record<string, any>) {
   return {
     totalRequests: 0,
     p95TtmsMs: null,
+    cacheHitRate: null,
     error5xxCount: 0,
     errorRatePct: 0,
     successRatePct: 0,
@@ -879,6 +941,8 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
   const result = await runClickhouseTriage(payload);
 
   const metricsJson = assertCanonicalMetricsJson(result.metricsJson);
+  const compareMetrics = buildCompareMetrics(metricsJson);
+
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
     hasProxyEnv: hasProxyEnv(),
@@ -924,6 +988,7 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
     summaryText: result.summaryText ?? result.summary ?? "",
     summary: result.summary ?? result.summaryText ?? "",
     metricsJson,
+    compareMetrics,
     sql,
     swarm: {
       assessment,
@@ -1043,6 +1108,8 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
       : adaptLegacyProxyMetricsToCanonical(rawMetrics || {}, parsed)
   );
 
+  const compareMetrics = buildCompareMetrics(metricsJson);
+
   const regionBreakdown = pickRegionBreakdownFromProxy(parsed, rawMetrics);
   if (regionBreakdown) metricsJson.regionBreakdown = regionBreakdown;
 
@@ -1129,6 +1196,7 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
     summaryText: parsed?.summaryText ?? parsed?.summary ?? "",
     summary: parsed?.summary ?? parsed?.summaryText ?? "",
     metricsJson,
+    compareMetrics,
     sql,
     swarm: {
       assessment,

@@ -6,6 +6,14 @@ import type { TriageResponse } from "@/lib/triage/contracts";
 import { CANON } from "@/lib/schema/canonical";
 import { parseTriageIntent } from "@/lib/triage/intent";
 import { resolveNamedTimeWindow } from "@/lib/triage/resolveNamedTimeWindow";
+import ChatInput from "@/components/chat/ChatInput";
+import ConversationThread from "@/components/chat/ConversationThread";
+import ExplainCard from "@/components/cards/ExplainCard";
+import MissionStrip from "@/components/mission/MissionStrip";
+import { detectIntent } from "@/lib/router/intent";
+import CompareCard from "@/components/cards/CompareCard";
+import NextActionChips from "@/components/NextActionChips";
+import { getNextActions } from "@/lib/nextActions/getNextActions";
 
 // ── constants ──────────────────────────────────────────────────────────────
 const LOGO_SRC = "/cachey-logo.png";
@@ -96,7 +104,49 @@ type ChatDrill = {
   summaryText: string;
 };
 
-type ChatMsg = ChatText | ChatTriage | ChatDrill;
+type ChatExplain = {
+  id: string;
+  type: "explain";
+  role: "assistant";
+  ts: string;
+  summary: string;
+  overallState?: string;
+  primarySignal?: string;
+};
+
+type ChatCompare = {
+  id: string;
+  type: "compare";
+  role: "assistant";
+  ts: string;
+  summary: string;
+  overallState?: string;
+  primarySignal?: string;
+  compareMetrics?: {
+    cache?: {
+      current: number | null;
+      previous: number | null;
+      delta: number | null;
+    };
+    errors?: {
+      current: number | null;
+      previous: number | null;
+      delta: number | null;
+    };
+    latency?: {
+      current: number | null;
+      previous: number | null;
+      delta: number | null;
+    };
+    traffic?: {
+      current: number | null;
+      previous: number | null;
+      delta: number | null;
+    };
+  };
+};
+
+type ChatMsg = ChatText | ChatTriage | ChatDrill | ChatExplain | ChatCompare;
 
 type TimeseriesPoint = {
   ts: string;
@@ -2271,6 +2321,64 @@ function buildSummaryFallback(run: ChatTriage["run"]): string {
   ].join("\n");
 }
 
+function buildExplainVerdict(run: ChatTriage["run"]): string {
+  const assessment = run.swarm?.assessment;
+  const primarySignal = assessment?.primarySignal || "mixed";
+  const status = assessment?.overallStatus || "warn";
+
+  const m = run.metricsJson || {};
+  const cacheRaw =
+    m.cacheHitRate != null
+      ? Number(m.cacheHitRate)
+      : m.cacheHitPct != null
+      ? Number(m.cacheHitPct)
+      : null;
+  const cachePct =
+    cacheRaw == null ? null : cacheRaw <= 1 ? cacheRaw * 100 : cacheRaw;
+
+  const errPct =
+    m.errorRatePct != null && Number.isFinite(Number(m.errorRatePct))
+      ? Number(m.errorRatePct)
+      : null;
+
+  const p95 =
+    m.p95TtmsMs != null && Number.isFinite(Number(m.p95TtmsMs))
+      ? Number(m.p95TtmsMs)
+      : null;
+
+  if (status === "ok") {
+    return "We look healthy right now. Traffic, latency, errors, and cache all look normal.";
+  }
+
+  if (primarySignal === "cache") {
+    return `We’re mostly okay, but cache is degraded${
+      cachePct != null ? ` at ${cachePct.toFixed(2)}%` : ""
+    }. Traffic, latency, and errors look normal.`;
+  }
+
+  if (primarySignal === "latency") {
+    return `We’re seeing elevated latency${
+      p95 != null ? ` with p95 around ${Math.round(p95)} ms` : ""
+    }, but the rest of the system looks mostly stable.`;
+  }
+
+  if (primarySignal === "errors") {
+    return `We’re seeing elevated error activity${
+      errPct != null ? ` at ${errPct.toFixed(2)}% 5xx` : ""
+    }, while other signals look less concerning.`;
+  }
+
+  if (primarySignal === "traffic") {
+    return "Traffic looks unusual right now, while latency, errors, and cache look less concerning.";
+  }
+
+  return (
+    assessment?.summary ||
+    run.summaryText ||
+    "There’s a degraded signal right now, but I need a deeper look to say more."
+  );
+}
+
 function getRunBaseScope(run: ChatTriage["run"]): InvestigationScope {
   return {
     partner: run.inputs.partner || "",
@@ -2663,7 +2771,7 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
       : `last ${run.inputs.windowMinutes}m`;
 
   return (
-    <div className="triage-enter rounded-2xl border border-white/10 bg-white/[0.05] backdrop-blur p-4 shadow-lg shadow-black/10 space-y-4">
+    <div className="triage-enter rounded-2xl border border-white/12 bg-[#10151c] backdrop-blur p-4 shadow-xl shadow-black/20 space-y-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs text-gray-400">Triage result</div>
@@ -2732,7 +2840,7 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
         </div>
       )}
 
-      <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+      <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
         <div className="text-xs text-gray-400 mb-2">Summary</div>
         <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">
           {summaryText}
@@ -2745,7 +2853,7 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
       </div>
 
       {keyFindings.length > 0 && (
-        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
           <div className="text-xs text-gray-400 mb-2">Key Findings</div>
           <div className="space-y-2">
             {keyFindings.map((finding, idx) => (
@@ -2974,7 +3082,7 @@ function DrillCard({
   summaryText: string;
 }) {
   return (
-    <div className="triage-enter rounded-2xl border border-white/10 bg-white/[0.05] backdrop-blur p-4 shadow-lg shadow-black/10 space-y-4">
+      <div className="triage-enter rounded-2xl border border-white/12 bg-[#10151c] backdrop-blur p-4 shadow-xl shadow-black/20 space-y-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs text-gray-400">Drill result</div>
@@ -2997,7 +3105,7 @@ function DrillCard({
       </div>
 
       {Array.isArray(drill?.rows) && drill.rows.length > 0 ? (
-        <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
           <div className="flex items-center justify-between gap-3">
             <div className="text-sm font-semibold text-gray-200">Top results</div>
             <div className="text-[11px] text-gray-500">
@@ -3130,7 +3238,9 @@ export default function Home() {
   const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const lastMsgIdRef = useRef<string | null>(null);
+  const lastSuggestedScopeKeyRef = useRef<string | null>(null);
   const [typing, setTyping] = useState(false);
+  const [dismissedSuggestionScopeKey, setDismissedSuggestionScopeKey] = useState<string | null>(null);
 
   const [pendingChatScope, setPendingChatScope] = useState<{
     partner: PartnerOrMissing;
@@ -3264,6 +3374,67 @@ export default function Home() {
     ]);
   }
 
+  function addExplainCard(payload: {
+    summary: string;
+    overallState?: string;
+    primarySignal?: string;
+  }) {
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random()}`,
+        type: "explain",
+        role: "assistant",
+        ts: nowIso(),
+        summary: payload.summary,
+        overallState: payload.overallState,
+        primarySignal: payload.primarySignal,
+      },
+    ]);
+  }
+
+   function addCompareCard(payload: {
+      summary: string;
+      overallState?: string;
+      primarySignal?: string;
+      compareMetrics?: {
+        cache?: {
+          current: number | null;
+          previous: number | null;
+          delta: number | null;
+        };
+        errors?: {
+          current: number | null;
+          previous: number | null;
+          delta: number | null;
+        };
+        latency?: {
+          current: number | null;
+          previous: number | null;
+          delta: number | null;
+        };
+        traffic?: {
+          current: number | null;
+          previous: number | null;
+          delta: number | null;
+        };
+      };
+    }) {
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random()}`,
+        type: "compare",
+        role: "assistant",
+        ts: nowIso(),
+        summary: payload.summary,
+        overallState: payload.overallState,
+        primarySignal: payload.primarySignal,
+        compareMetrics: payload.compareMetrics,
+      },
+    ]);
+  }
+
   function handleResetInvestigation() {
     setChatMessages([]);
     setChatInput("");
@@ -3272,6 +3443,11 @@ export default function Home() {
       partner: "",
       service: "",
     });
+
+    setDismissedSuggestionScopeKey(null);
+    lastSuggestionTriageMsgIdRef.current = null;
+    lastSuggestedScopeKeyRef.current = null;
+
     pushRunLog("Investigation reset by user.");
   }
 
@@ -3522,13 +3698,71 @@ export default function Home() {
     return uniq.includes("all") ? uniq : ["all", ...uniq];
   }, [schemaState.uaFamilies]);
 
-    const latestTriageRun = useMemo<ChatTriage["run"] | null>(() => {
+  const lastSuggestionTriageMsgIdRef = useRef<string | null>(null);
+
+  function getSuggestionScopeKey(inputs?: Partial<TriageInputs> | null) {
+    if (!inputs) return "";
+
+    return [
+      inputs.partner || "",
+      inputs.service || "",
+      inputs.region || "all",
+      inputs.pop || "all",
+      inputs.contentType || "all",
+      inputs.uaFamily || "all",
+      inputs.startTsUtc || "",
+      inputs.endTsUtc || "",
+      inputs.windowMinutes || "",
+    ].join("|");
+  }
+
+  const latestActionableMsg = useMemo<ChatMsg | null>(() => {
     for (let i = chatMessages.length - 1; i >= 0; i--) {
-      const m = chatMessages[i];
-      if (m.type === "triage") return m.run;
+      const msg = chatMessages[i];
+      if (
+        msg.role === "assistant" &&
+        (msg.type === "triage" ||
+          msg.type === "drill" ||
+          msg.type === "compare" ||
+          msg.type === "explain")
+      ) {
+        return msg;
+      }
     }
     return null;
   }, [chatMessages]);
+
+  const latestTriageMsg = useMemo<ChatTriage | null>(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      const msg = chatMessages[i];
+      if (msg.type === "triage") return msg;
+    }
+    return null;
+  }, [chatMessages]);
+
+  const latestTriageRun = latestTriageMsg?.run ?? null;
+
+  const currentSuggestionScopeKey = useMemo(() => {
+    return latestTriageRun ? getSuggestionScopeKey(latestTriageRun.inputs) : "";
+  }, [latestTriageRun]);
+
+  useEffect(() => {
+    if (!latestTriageMsg) return;
+
+    const msgId = latestTriageMsg.id;
+    if (lastSuggestionTriageMsgIdRef.current === msgId) return;
+
+    lastSuggestionTriageMsgIdRef.current = msgId;
+
+    const nextScopeKey = getSuggestionScopeKey(latestTriageMsg.run.inputs);
+
+    if (lastSuggestedScopeKeyRef.current !== nextScopeKey) {
+      lastSuggestedScopeKeyRef.current = nextScopeKey;
+      setDismissedSuggestionScopeKey(null);
+    }
+  }, [latestTriageMsg]);
+
+  
 
     const latestInvestigationContext = useMemo<InvestigationContext | null>(() => {
       let candidateRun: ChatTriage["run"] | null = null;
@@ -3810,6 +4044,17 @@ export default function Home() {
 
   function applyDraftFilters() {
     const s = String(draftService || "").trim();
+    console.log("🧪 APPLY DRAFT FILTERS:", {
+      draftService,
+      draftRegion,
+      draftPop,
+      draftWindowMinutes,
+      draftContentType,
+      draftUaFamily,
+      draftTimeMode,
+      draftStartUtcLocal,
+      draftEndUtcLocal,
+    });
     if (!s) return { ok: false as const, error: "Pick a service before Apply." };
     if (!(SERVICE_OPTIONS as readonly string[]).includes(s)) {
       return { ok: false as const, error: "Invalid service selection." };
@@ -3817,6 +4062,7 @@ export default function Home() {
 
     setServiceSticky(s);
     setDraftService(s);
+    setService(s);
 
     const tm: TimeMode = draftTimeMode === "absolute" ? "absolute" : "relative";
     if (tm === "absolute") {
@@ -3908,6 +4154,7 @@ export default function Home() {
       kind: (data as any).kind ?? "triage",
       summaryText: (data as any).summaryText ?? (data as any).summary ?? "",
       metricsJson: (data as any).metricsJson ?? null,
+      compareMetrics: (data as any).compareMetrics ?? null,
       sql: (data as any).sql ?? null,
       swarm: (data as any).swarm ?? null,
       drill: (data as any).drill ?? null,
@@ -3997,6 +4244,25 @@ export default function Home() {
   }
 
   async function handleRunFromFilters() {
+    console.log("🚀 RUN TRIAGE WITH STATE:", {
+      partner,
+      service,
+      region,
+      pop,
+      windowMinutes,
+      timeMode,
+      startTsUtc,
+      endTsUtc,
+      contentType,
+      uaFamily,
+      draftService,
+      draftRegion,
+      draftPop,
+      draftWindowMinutes,
+      draftContentType,
+      draftUaFamily,
+    });
+
     if (!partner) {
       addText("assistant", `Pick a partner first. (${PARTNER_OPTIONS.join(", ")})`);
       return;
@@ -4011,227 +4277,471 @@ export default function Home() {
         ? windowMinutesFromRange(startTsUtc, endTsUtc, windowMinutes)
         : windowMinutes;
 
-    await executeTriageRun(
-      {
-        dataSource: "clickhouse",
-        partner,
-        service,
-        region,
-        pop,
-        windowMinutes: effectiveWin,
-        startTsUtc: timeMode === "absolute" ? startTsUtc : null,
-        endTsUtc: timeMode === "absolute" ? endTsUtc : null,
-        contentType,
-        uaFamily,
-      },
-      "filters"
-    );
+    const payload = {
+      dataSource: "clickhouse" as const,
+      partner,
+      service,
+      region,
+      pop,
+      windowMinutes: effectiveWin,
+      startTsUtc: timeMode === "absolute" ? startTsUtc : null,
+      endTsUtc: timeMode === "absolute" ? endTsUtc : null,
+      contentType,
+      uaFamily,
+    };
+
+    console.log("📦 PAYLOAD SENT TO API:", payload);
+
+    await executeTriageRun(payload, "filters");
   }
 
-  async function handleSend() {
-    const text = chatInput.trim();
-    if (!text || isTriageLoading) return;
+  function detectExplicitDrillIntent(text: string):
+    | "worst_region"
+    | "worst_pop"
+    | null {
+    const lowered = text.toLowerCase().replace(/what’s/g, "whats");
 
-    setChatInput("");
-    addText("user", text);
+    const asksForPop =
+      lowered.includes("pop") &&
+      (lowered.includes("bad") ||
+        lowered.includes("worst") ||
+        lowered.includes("which") ||
+        lowered.includes("by pop"));
 
-    const parseResult = parseTriageIntent({
-      text,
-      hasPriorContext: Boolean(latestTriageRun),
-    });
+    if (asksForPop) return "worst_pop";
 
-    pushRunLog(
-      `Intent parse: kind=${parseResult.intentKind} shouldTrigger=${parseResult.shouldTrigger} partner=${parseResult.partnerCanonical || "-"} service=${parseResult.serviceCanonical || "-"} time=${parseResult.timeMeta?.kind || "-"}`
-    );
+    const asksForRegion =
+      lowered.includes("region") &&
+      (lowered.includes("bad") ||
+        lowered.includes("worst") ||
+        lowered.includes("which") ||
+        lowered.includes("breakdown") ||
+        lowered.includes("by region") ||
+        lowered.includes("show"));
 
-    if (!parseResult.shouldTrigger) {
-      addText(
-        "assistant",
-        parseResult.replyText ||
-          "That didn't look like a triage request. Ask about traffic, latency, errors, cache, or incidents — or click Run Triage with the current scope."
+    if (asksForRegion) return "worst_region";
+
+    return null;
+  }
+
+    async function processUserMessage(rawText: string) {
+      const text = String(rawText || "").trim();
+      if (!text || isTriageLoading) return;
+
+      addText("user", text);
+
+      const chatIntent = detectIntent(text);
+      const explicitDrillIntent = detectExplicitDrillIntent(text);
+      console.log(
+        "Detected intent:",
+        chatIntent,
+        "explicitDrillIntent:",
+        explicitDrillIntent
       );
-      return;
-    }
 
-    const followupAction = resolveFollowupAction({
-      parseResult,
-      ctx: latestInvestigationContext,
-    });
+      const parseResult = parseTriageIntent({
+        text,
+        hasPriorContext: Boolean(latestTriageRun),
+      });
 
-    if (followupAction.kind === "missing_context") {
-      addText("assistant", followupAction.replyText);
-      return;
-    }
+      pushRunLog(
+        `Intent parse: kind=${parseResult.intentKind} shouldTrigger=${parseResult.shouldTrigger} partner=${parseResult.partnerCanonical || "-"} service=${parseResult.serviceCanonical || "-"} time=${parseResult.timeMeta?.kind || "-"}`
+      );
 
-    if (followupAction.kind === "rerun") {
-      pushRunLog(`Follow-up rerun resolved: ${followupAction.reason}`);
+      if (!parseResult.shouldTrigger) {
+        if (chatIntent === "greeting") {
+          addText(
+            "assistant",
+            "Hey — I can help you investigate CDN performance. Try asking something like 'how is live traffic' or 'why is cache low'."
+          );
+          return;
+        }
 
-      const followUpDrillIntent =
-        parseResult.followUpKind === "drilldown_region"
-          ? "worst_region"
-          : parseResult.followUpKind === "drilldown_pop"
-          ? "worst_pop"
-          : parseResult.followUpKind === "drilldown_ua"
-          ? "worst_ua"
-          : parseResult.followUpKind === "drilldown_content"
-          ? "worst_content"
-          : undefined;
+        if (chatIntent === "explain" && latestTriageRun) {
+          const verdict = buildExplainVerdict(latestTriageRun);
+          const summary =
+            latestTriageRun.swarm?.assessment?.summary ||
+            latestTriageRun.summaryText ||
+            "No summary available.";
 
-      await executeTriageRun(followupAction.inputs, "chat", {
-        drillIntent: followUpDrillIntent,
-        chatContext: {
-          rawText: parseResult.rawText,
-          parseMode: "chat-overrides",
-          detected: {
-            followUpKind: parseResult.followUpKind ?? null,
-            followUpReason: followupAction.reason,
-            derivedFromLatestRun: true,
-            latestContextSummary: latestInvestigationContext
-              ? {
-                  baseScope: latestInvestigationContext.baseScope,
-                  time: latestInvestigationContext.time,
-                  worstRegion: latestInvestigationContext.worstRegion?.value ?? null,
-                  worstPop: latestInvestigationContext.worstPop?.value ?? null,
-                  availableRegionCount: latestInvestigationContext.availableDimensions.regions.length,
-                  availablePopCount: latestInvestigationContext.availableDimensions.pops.length,
-                  availableContentTypeCount:
-                    latestInvestigationContext.availableDimensions.contentTypes.length,
-                  availableUaFamilyCount:
-                    latestInvestigationContext.availableDimensions.uaFamilies.length,
-                }
-              : null,
-            rerunScope: {
-              partner: followupAction.inputs.partner,
-              service: followupAction.inputs.service,
-              region: followupAction.inputs.region,
-              pop: followupAction.inputs.pop,
-              contentType: followupAction.inputs.contentType,
-              uaFamily: followupAction.inputs.uaFamily,
-              windowMinutes: followupAction.inputs.windowMinutes,
-              startTsUtc: followupAction.inputs.startTsUtc ?? null,
-              endTsUtc: followupAction.inputs.endTsUtc ?? null,
+          addExplainCard({
+            summary: `${verdict}\n\n${summary}`,
+            overallState: latestTriageRun.swarm?.assessment?.overallStatus,
+            primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
+          });
+          return;
+        }
+
+        if (chatIntent === "explain" && !latestTriageRun) {
+          addText(
+            "assistant",
+            "Run a triage first, then I can explain what’s going on."
+          );
+          return;
+        }
+
+        if (chatIntent === "triage" && !explicitDrillIntent) {
+          const fallbackPartner =
+            pendingChatScope.partner ||
+            latestTriageRun?.inputs.partner ||
+            partner ||
+            "";
+
+          const fallbackService =
+            pendingChatScope.service ||
+            latestTriageRun?.inputs.service ||
+            service ||
+            "";
+
+          if (!fallbackPartner || !fallbackService) {
+            addText(
+              "assistant",
+              "I can check the current status, but I need a partner and service first."
+            );
+            return;
+          }
+
+          const fallbackInputs: TriageInputs = {
+            dataSource: "clickhouse",
+            partner: fallbackPartner as PartnerOrMissing,
+            service: fallbackService,
+            region: latestTriageRun?.inputs.region || region || "all",
+            pop: latestTriageRun?.inputs.pop || pop || "all",
+            windowMinutes:
+              latestTriageRun?.inputs.windowMinutes || windowMinutes || 120,
+            startTsUtc: latestTriageRun?.inputs.startTsUtc ?? startTsUtc ?? null,
+            endTsUtc: latestTriageRun?.inputs.endTsUtc ?? endTsUtc ?? null,
+            contentType:
+              latestTriageRun?.inputs.contentType || contentType || "all",
+            uaFamily: latestTriageRun?.inputs.uaFamily || uaFamily || "all",
+          };
+
+          await executeTriageRun(fallbackInputs, "chat", {
+            chatContext: {
+              rawText: text,
+              parseMode: "filters-default",
+              detected: {
+                chatIntent,
+                fallbackFromNonTrigger: true,
+                reason: "generic triage wording",
+              },
             },
+          });
+          return;
+        }
+
+        if (chatIntent === "drill" || explicitDrillIntent) {
+          if (!latestInvestigationContext) {
+            addText(
+              "assistant",
+              "Run a triage first, then I can drill into the worst region or POP."
+            );
+            return;
+          }
+
+          let drillInputs: TriageInputs | null = null;
+          let drillIntent:
+            | "worst_region"
+            | "worst_pop"
+            | "worst_ua"
+            | "worst_content"
+            | undefined;
+          let reason = "generic drill wording";
+
+          const lowered = text.toLowerCase().replace(/what’s/g, "whats");
+
+          if (
+            lowered.includes("pop") &&
+            (lowered.includes("bad") ||
+              lowered.includes("worst") ||
+              lowered.includes("which"))
+          ) {
+            drillInputs = deriveWorstPopInputs(latestInvestigationContext);
+            drillIntent = "worst_pop";
+            reason = "drill worst pop fallback";
+          } else if (
+            lowered.includes("region") &&
+            (lowered.includes("bad") ||
+              lowered.includes("worst") ||
+              lowered.includes("which") ||
+              lowered.includes("breakdown") ||
+              lowered.includes("by region"))
+          ) {
+            drillInputs = deriveWorstRegionInputs(latestInvestigationContext);
+            drillIntent = "worst_region";
+            reason = "drill worst region fallback";
+          } else if (lowered.includes("pop") || lowered.includes("by pop")) {
+            drillInputs = deriveWorstPopInputs(latestInvestigationContext);
+            drillIntent = "worst_pop";
+            reason = "drill pop breakdown fallback";
+          } else {
+            drillInputs = deriveWorstRegionInputs(latestInvestigationContext);
+            drillIntent = "worst_region";
+            reason = "default drill fallback";
+          }
+
+          if (!drillInputs) {
+            addText(
+              "assistant",
+              "I need a prior triage result with enough evidence before I can drill further."
+            );
+            return;
+          }
+
+          await executeTriageRun(drillInputs, "chat", {
+            drillIntent,
+            chatContext: {
+              rawText: text,
+              parseMode: "chat-overrides",
+              detected: {
+                chatIntent,
+                fallbackFromNonTrigger: true,
+                reason,
+              },
+            },
+          });
+          return;
+        }
+
+        if (chatIntent === "compare") {
+          if (!latestTriageRun || !latestInvestigationContext) {
+            addText(
+              "assistant",
+              "Run a triage first, then I can compare this window to the previous one."
+            );
+            return;
+          }
+
+          setTyping(true);
+          setIsTriageLoading(true);
+
+          try {
+            const compareInputs =
+              derivePreviousWindowInputs(latestInvestigationContext);
+
+            const data = await runTriage(compareInputs);
+
+            const previousSummary =
+              data.swarm?.assessment?.summary ||
+              data.summaryText ||
+              "Previous window comparison completed.";
+
+            const currentSummary =
+              latestTriageRun.swarm?.assessment?.summary ||
+              latestTriageRun.summaryText ||
+              "Current window summary unavailable.";
+
+            addCompareCard({
+              summary:
+                `Compared against the previous window.\n\n` +
+                `Current: ${currentSummary}\n\n` +
+                `Previous: ${previousSummary}`,
+              overallState: latestTriageRun.swarm?.assessment?.overallStatus,
+              primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
+              compareMetrics: data.compareMetrics,
+            });
+
+            pushRunLog("Compare card created from previous-window rerun.");
+          } catch (e: any) {
+            addText("assistant", `⚠️ ${e?.message || "Compare failed."}`);
+          } finally {
+            setTyping(false);
+            setIsTriageLoading(false);
+          }
+
+          return;
+        }
+
+        addText(
+          "assistant",
+          parseResult.replyText ||
+            "That didn't look like a triage request. Ask about traffic, latency, errors, cache, or incidents — or click Run Triage with the current scope."
+        );
+        return;
+      }
+
+      if (explicitDrillIntent) {
+        if (!latestInvestigationContext) {
+          addText(
+            "assistant",
+            "Run a triage first, then I can drill into the worst region or POP."
+          );
+          return;
+        }
+
+        let drillInputs: TriageInputs | null = null;
+        let drillIntent:
+          | "worst_region"
+          | "worst_pop"
+          | "worst_ua"
+          | "worst_content"
+          | undefined;
+
+        if (explicitDrillIntent === "worst_pop") {
+          drillInputs = deriveWorstPopInputs(latestInvestigationContext);
+          drillIntent = "worst_pop";
+        } else {
+          drillInputs = deriveWorstRegionInputs(latestInvestigationContext);
+          drillIntent = "worst_region";
+        }
+
+        if (!drillInputs) {
+          addText(
+            "assistant",
+            "I need a prior triage result with enough evidence before I can drill further."
+          );
+          return;
+        }
+
+        await executeTriageRun(drillInputs, "chat", {
+          drillIntent,
+          chatContext: {
+            rawText: text,
+            parseMode: "chat-overrides",
+            detected: {
+              chatIntent,
+              explicitDrillIntent,
+              forcedExplicitDrillIntercept: true,
+            },
+          },
+        });
+        return;
+      }
+
+      const mergedPartner =
+        (parseResult.partnerCanonical ||
+          pendingChatScope.partner ||
+          latestTriageRun?.inputs.partner ||
+          partner ||
+          "") as PartnerOrMissing;
+
+      const mergedService =
+        parseResult.serviceCanonical ||
+        pendingChatScope.service ||
+        latestTriageRun?.inputs.service ||
+        service ||
+        "";
+
+      if (!mergedPartner || !mergedService) {
+        setPendingChatScope({
+          partner: mergedPartner,
+          service: mergedService,
+        });
+
+        if (!mergedPartner && !mergedService) {
+          addText(
+            "assistant",
+            `Pick a partner and service first. Partners: ${PARTNER_OPTIONS.join(", ")}. Services: ${SERVICE_OPTIONS.join(", ")}.`
+          );
+          return;
+        }
+
+        if (!mergedPartner) {
+          addText(
+            "assistant",
+            `Got it${mergedService ? ` — service=${mergedService}` : ""}. Now pick a partner. (${PARTNER_OPTIONS.join(", ")})`
+          );
+          return;
+        }
+
+        addText(
+          "assistant",
+          `Got it${mergedPartner ? ` — partner=${mergedPartner}` : ""}. Now pick a service. (${SERVICE_OPTIONS.join(", ")})`
+        );
+        return;
+      }
+
+      const built = buildChatInputsFromIntent({
+        parseResult,
+        resolvedPartner: mergedPartner,
+        resolvedService: mergedService,
+        region,
+        pop,
+        windowMinutes,
+        contentType,
+        uaFamily,
+        allowedRegions: availableRegions,
+        allowedPops: availablePops,
+        allowedContentTypes: availableContentTypes,
+        allowedUaFamilies: availableUaFamilies,
+        now: new Date(),
+      });
+
+      if (!built.ok) {
+        addText("assistant", built.error);
+        return;
+      }
+
+      await executeTriageRun(built.inputs, "chat", {
+        chatContext: {
+          ...(built.chatContext || {}),
+          detected: {
+            ...(built.chatContext?.detected || {}),
+            mergedPartner,
+            mergedService,
+            pendingScopeUsed: Boolean(
+              pendingChatScope.partner || pendingChatScope.service
+            ),
           },
         },
       });
-      return;
     }
 
-    const mergedPartner =
-      (parseResult.partnerCanonical ||
-        pendingChatScope.partner ||
-        latestTriageRun?.inputs.partner ||
-        partner ||
-        "") as PartnerOrMissing;
+    async function handleSend() {
+      const text = chatInput.trim();
+      if (!text || isTriageLoading) return;
 
-    const mergedService =
-      parseResult.serviceCanonical ||
-      pendingChatScope.service ||
-      latestTriageRun?.inputs.service ||
-      service ||
-      "";
-
-    if (!mergedPartner || !mergedService) {
-      setPendingChatScope({
-        partner: mergedPartner,
-        service: mergedService,
-      });
-
-      if (!mergedPartner && !mergedService) {
-        addText(
-          "assistant",
-          `Pick a partner and service first. Partners: ${PARTNER_OPTIONS.join(", ")}. Services: ${SERVICE_OPTIONS.join(", ")}.`
-        );
-        return;
-      }
-
-      if (!mergedPartner) {
-        addText(
-          "assistant",
-          `Got it${mergedService ? ` — service=${mergedService}` : ""}. Now pick a partner. (${PARTNER_OPTIONS.join(", ")})`
-        );
-        return;
-      }
-
-      addText(
-        "assistant",
-        `Got it${mergedPartner ? ` — partner=${mergedPartner}` : ""}. Now pick a service. (${SERVICE_OPTIONS.join(", ")})`
-      );
-      return;
+      setChatInput("");
+      await processUserMessage(text);
     }
 
-    const built = buildChatInputsFromIntent({
-      parseResult,
-      resolvedPartner: mergedPartner,
-      resolvedService: mergedService,
-      region,
-      pop,
-      windowMinutes,
-      contentType,
-      uaFamily,
-      allowedRegions: availableRegions,
-      allowedPops: availablePops,
-      allowedContentTypes: availableContentTypes,
-      allowedUaFamilies: availableUaFamilies,
-      now: new Date(),
-    });
-  
+    const latestAssessment = latestTriageRun?.swarm?.assessment ?? null;
+    const headerStatusLabel = uiStatusLabel(
+      latestAssessment?.overallStatus,
+      isTriageLoading
+    );
+    const headerStatusClass = uiStatusClass(
+      latestAssessment?.overallStatus,
+      isTriageLoading
+    );
 
-    if (!built.ok) {
-      addText("assistant", built.error);
-      return;
-    }
+    const scopeSummary = useMemo(() => {
+      if (isTriageLoading) return `Status: ${headerStatusLabel}`;
+      if (!latestTriageRun || !latestAssessment?.overallStatus) return "Status: Idle";
+      const run = latestTriageRun.inputs;
+      const timeText =
+        run.startTsUtc && run.endTsUtc
+          ? `${isoToUtcText(run.startTsUtc)} → ${isoToUtcText(run.endTsUtc)} UTC`
+          : `last ${run.windowMinutes}m`;
+      return `Status: ${headerStatusLabel} • ${run.partner || "—"} • ${run.service || "—"} • ${run.region || "all"} • ${timeText}`;
+    }, [
+      isTriageLoading,
+      latestTriageRun,
+      latestAssessment?.overallStatus,
+      headerStatusLabel,
+    ]);
 
-    await executeTriageRun(built.inputs, "chat", {
-      chatContext: {
-        ...(built.chatContext || {}),
-        detected: {
-          ...(built.chatContext?.detected || {}),
-          mergedPartner,
-          mergedService,
-          pendingScopeUsed: Boolean(
-            pendingChatScope.partner || pendingChatScope.service
-          ),
-        },
-      },
-    });
-  }
-    
-  const latestAssessment = latestTriageRun?.swarm?.assessment ?? null;
-  const headerStatusLabel = uiStatusLabel(
-    latestAssessment?.overallStatus,
-    isTriageLoading
-  );
-  const headerStatusClass = uiStatusClass(
-    latestAssessment?.overallStatus,
-    isTriageLoading
-  );
+    const utcWindowPreview = useMemo(() => {
+      if (draftTimeMode !== "absolute") return "";
+      return computeWindowPreview(draftStartUtcLocal, draftEndUtcLocal);
+    }, [draftTimeMode, draftStartUtcLocal, draftEndUtcLocal]);
 
-  const scopeSummary = useMemo(() => {
-    if (isTriageLoading) return `Status: ${headerStatusLabel}`;
-    if (!latestTriageRun || !latestAssessment?.overallStatus) return "Status: Idle";
-    const run = latestTriageRun.inputs;
-    const timeText =
-      run.startTsUtc && run.endTsUtc
-        ? `${isoToUtcText(run.startTsUtc)} → ${isoToUtcText(run.endTsUtc)} UTC`
-        : `last ${run.windowMinutes}m`;
-    return `Status: ${headerStatusLabel} • ${run.partner || "—"} • ${run.service || "—"} • ${run.region || "all"} • ${timeText}`;
-  }, [
-    isTriageLoading,
-    latestTriageRun,
-    latestAssessment?.overallStatus,
-    headerStatusLabel,
-  ]);
+    const hasTriage = useMemo(() => {
+      return chatMessages.some((m) => m.type === "triage");
+    }, [chatMessages]);
 
-  const utcWindowPreview = useMemo(() => {
-    if (draftTimeMode !== "absolute") return "";
-    return computeWindowPreview(draftStartUtcLocal, draftEndUtcLocal);
-  }, [draftTimeMode, draftStartUtcLocal, draftEndUtcLocal]);
+    const suggestedActions = useMemo(() => {
+      if (!latestTriageMsg) return [];
+      return getNextActions(latestTriageMsg).slice(0, 3);
+    }, [latestTriageMsg]);
 
-  return (
-    <main className="min-h-screen bg-black text-gray-100">
-      <div className="sticky top-0 z-50 border-b border-white/10 bg-black/75 backdrop-blur">
-        <div className="mx-auto max-w-6xl px-6 py-4">
+    console.log("latestActionableMsg", latestActionableMsg);
+    console.log("suggestedActions", suggestedActions);
+
+    return (
+    <main className="min-h-screen bg-[#07090d] text-gray-100">
+      <div className="sticky top-0 z-50 border-b border-white/10 bg-[#0b0f14]/90 backdrop-blur-xl">
+        <div className="mx-auto w-full max-w-[1300px] px-6 py-4">
           <div className="flex items-center gap-3">
             <Image src={LOGO_SRC} alt="Cachey" width={34} height={34} className="rounded-full" />
             <div className="min-w-0">
@@ -4252,7 +4762,7 @@ export default function Home() {
         </div>
       </div>
 
-      <div className="mx-auto max-w-6xl px-6 py-6">
+      <div className="mx-auto w-full max-w-[1300px] px-6 py-6">
         {filtersOpen && (
           <div className="mb-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
             <div className="flex items-start justify-between gap-3">
@@ -4558,10 +5068,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="mt-4 flex items-center justify-between gap-3">
-              <div className="text-xs text-gray-400">
-                Apply updates the active scope. Run executes triage with the applied scope.
-              </div>
+            <div className="mt-4 flex items-center justify-end gap-3">
               <button
                 type="button"
                 disabled={!filtersDirty}
@@ -4576,124 +5083,78 @@ export default function Home() {
             </div>
           </div>
         )}
+          <MissionStrip
+            partner={partner}
+            service={service}
+            region={region}
+            pop={pop}
+            windowMinutes={windowMinutes}
+            timeMode={timeMode}
+            startTsUtc={startTsUtc}
+            endTsUtc={endTsUtc}
+            overallState={latestAssessment?.overallStatus}
+            primarySignal={latestAssessment?.primarySignal}
+            onChange={openFilters}
+          />
+        <div>
+          <ConversationThread
+            chatMessages={chatMessages}
+            typing={typing}
+            mounted={mounted}
+            chatScrollRef={chatScrollRef}
+            renderTriageCard={(run) => <TriageCard run={run} />}
+            renderDrillCard={(drill, summaryText) => (
+              <DrillCard drill={drill} summaryText={summaryText} />
+            )}
+            renderExplainCard={({ summary, overallState, primarySignal }) => (
+              <ExplainCard
+                summary={summary}
+                overallState={overallState}
+                primarySignal={primarySignal}
+              />
+            )}
+            renderCompareCard={({ summary, overallState, primarySignal, compareMetrics }) => (
+              <CompareCard
+                summary={summary}
+                overallState={overallState}
+                primarySignal={primarySignal}
+                compareMetrics={compareMetrics}
+              />
+            )}
+            renderTypingDots={() => <TypingDots />}
+            formatUtcYmdHm={formatUtcYmdHm}
+            nowIso={nowIso}
+          />
 
-        <div className="rounded-3xl border border-white/10 bg-white/[0.05] backdrop-blur p-4 shadow-lg shadow-black/10">
-          <div
-            ref={chatScrollRef}
-            className="h-[66vh] min-h-[520px] overflow-y-auto rounded-2xl border border-white/10 bg-black/25 p-4"
-          >
-            {chatMessages.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-full text-center gap-3 select-none">
-                <div className="text-5xl opacity-25">🤖</div>
-                <div className="text-base font-semibold text-gray-300">
-                  Run triage to analyze CDN health
-                </div>
-                <div className="text-sm text-gray-500 leading-relaxed">
-                  Select partner and service,
-                  <br />
-                  then press <span className="text-gray-300">Run Triage</span>.
-                </div>
-                <div className="mt-2 text-xs text-gray-600">
-                  Or ask in the chat box below using ISO UTC timestamps for absolute windows.
-                </div>
+          {hasTriage &&
+            suggestedActions.length > 0 &&
+            latestActionableMsg &&
+            currentSuggestionScopeKey &&
+            dismissedSuggestionScopeKey !== currentSuggestionScopeKey && (
+              <div className="mt-3 mb-1">
+                <NextActionChips
+                  actions={suggestedActions}
+                  onSelect={(query) => {
+                    setDismissedSuggestionScopeKey(currentSuggestionScopeKey);
+                    void processUserMessage(query);
+                  }}
+                />
               </div>
             )}
 
-            <div className="space-y-4">
-              {chatMessages.map((m) => {
-                const isUser = m.role === "user";
-                const isSystem = m.role === "system";
-                const rowAlign = isSystem
-                  ? "justify-center"
-                  : isUser
-                  ? "justify-end"
-                  : "justify-start";
-                const bubbleMax = isUser ? "max-w-[70%]" : "max-w-[82%]";
-                const bubbleStyle = isSystem
-                  ? "border-white/10 bg-white/5 text-gray-300"
-                  : isUser
-                  ? "border-white/10 bg-white/10 text-gray-100"
-                  : "border-white/10 bg-white/5 text-gray-100";
-
-                return (
-                  <div key={m.id} className={`flex ${rowAlign}`}>
-                    <div className={`${bubbleMax} w-full`}>
-                      <div
-                        className={`text-[10px] text-gray-500 mb-1 ${
-                          isSystem ? "text-center" : isUser ? "text-right" : "text-left"
-                        }`}
-                      >
-                        {mounted ? `${formatUtcYmdHm(m.ts)} UTC` : m.ts}
-                      </div>
-
-                      {m.type === "text" ? (
-                        <div className={`rounded-2xl border ${bubbleStyle} px-4 py-3`}>
-                          <pre className="whitespace-pre-wrap text-sm leading-relaxed">
-                            {m.text}
-                          </pre>
-                        </div>
-                      ) : m.type === "triage" ? (
-                        <TriageCard run={m.run} />
-                      ) : (
-                        <DrillCard drill={m.drill} summaryText={m.summaryText} />
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-
-              {typing && (
-                <div className="flex justify-start">
-                  <div className="max-w-[82%] w-full">
-                    <div className="text-[10px] text-gray-500 mb-1 text-left">
-                      {mounted ? `${formatUtcYmdHm(nowIso())} UTC` : nowIso()}
-                    </div>
-                    <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-                      <TypingDots />
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="mt-4 flex gap-3">
-            <input
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-              placeholder="Ask about traffic, latency, errors, cache, or incidents…"
-              className="flex-1 rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-blue-500/40"
-              disabled={isTriageLoading}
-            />
-            <button
-              onClick={handleSend}
-              disabled={isTriageLoading || !chatInput.trim()}
-              className="rounded-2xl px-5 py-3 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isTriageLoading ? "Running…" : "Send"}
-            </button>
-          </div>
-
+          <ChatInput
+            value={chatInput}
+            onChange={setChatInput}
+            onSend={handleSend}
+            disabled={isTriageLoading}
+            isLoading={isTriageLoading}
+          />
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={openFilters}
-              className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-200 hover:bg-white/10"
-            >
-              Filters
-            </button>
-
             <button
               type="button"
               onClick={handleRunFromFilters}
               disabled={isTriageLoading || !partner || !service}
-              className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-gray-200 hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="rounded-full border border-white/10 bg-white/10 px-3 py-2 text-xs font-medium text-gray-100 hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isTriageLoading ? "Running…" : "Run Triage"}
             </button>
@@ -4708,12 +5169,10 @@ export default function Home() {
               </button>
             )}
 
-            {!partner || !service ? (
+            {!partner || !service && (
               <span className="text-xs text-gray-500">
                 Select partner and service to run triage.
               </span>
-            ) : (
-              <span className="text-xs text-gray-500 truncate">{scopeSummary}</span>
             )}
           </div>
 
