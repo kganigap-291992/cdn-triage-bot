@@ -4,13 +4,21 @@ export type IntentType =
   | "drill"
   | "compare"
   | "explain"
+  | "status_breakdown"
   | "unknown";
 
-export function detectIntent(input: string): IntentType {
-  let text = input.toLowerCase();
+function includesAny(text: string, needles: string[]): boolean {
+  return needles.some((needle) => text.includes(needle));
+}
 
-  // normalize common punctuation variants
+export function detectIntent(input: string): IntentType {
+  let text = input.toLowerCase().trim();
+
+  // normalize common punctuation / phrasing variants
   text = text.replace(/what’s/g, "whats");
+  text = text.replace(/break down/g, "breakdown");
+  text = text.replace(/status codes/g, "status code");
+  text = text.replace(/uafamily/g, "ua family");
 
   // -----------------------------
   // Greeting
@@ -23,78 +31,139 @@ export function detectIntent(input: string): IntentType {
   // Compare (highest priority)
   // -----------------------------
   if (
-    text.includes("compare") ||
-    text.includes("vs") ||
-    text.includes("versus") ||
-    text.includes("previous") ||
-    text.includes("last hour") ||
-    text.includes("yesterday") ||
-    text.includes("previous window") ||
-    text.includes("compared to")
+    includesAny(text, [
+      "compare",
+      "vs",
+      "versus",
+      "previous",
+      "last hour",
+      "yesterday",
+      "previous window",
+      "compared to",
+    ])
   ) {
     return "compare";
   }
 
   // -----------------------------
-  // Drill (explicit breakdown / worst)
+  // Status breakdown
+  // Must come before drill so
+  // "status breakdown by pop/region" does not get hijacked.
   // -----------------------------
-  if (
-    text.includes("drill") ||
-    text.includes("breakdown") ||
-    text.includes("deep dive") ||
-    text.includes("show worst") ||
-    text.includes("worst region") ||
-    text.includes("worst pop") ||
-    text.includes("which region") ||
-    text.includes("which pop") ||
-    text.includes("bad region") ||
-    text.includes("bad pop") ||
-    text.includes("by region") ||
-    text.includes("by pop")
-  ) {
-    return "drill";
+  const mentionsStatusConcept = includesAny(text, [
+    "status code",
+    "status",
+    "200",
+    "206",
+    "304",
+    "403",
+    "404",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+  ]);
+
+  const mentionsBreakdownConcept = includesAny(text, [
+    "breakdown",
+    "distribution",
+    "mix",
+    "split",
+    "show status",
+    "show me status",
+  ]);
+
+  if (mentionsStatusConcept && mentionsBreakdownConcept) {
+    return "status_breakdown";
   }
 
   // -----------------------------
   // Explain / health-check
   // -----------------------------
   if (
-    text.includes("why") ||
-    text.includes("explain") ||
-    text.includes("whats going on") ||
-    text.includes("what is going on") ||
-    text.includes("what happened") ||
-    text.includes("anything bad") ||
-    text.includes("is something wrong") ||
-    text.includes("are we good") ||
-    text.includes("are we okay") ||
-    text.includes("are we ok") ||
-    text.includes("any issues") ||
-    text.includes("any problem") ||
-    text.includes("how are things looking")
+    includesAny(text, [
+      "why",
+      "explain",
+      "whats going on",
+      "what is going on",
+      "what happened",
+      "anything bad",
+      "is something wrong",
+      "are we good",
+      "are we okay",
+      "are we ok",
+      "any issues",
+      "any problem",
+      "how are things looking",
+    ])
   ) {
     return "explain";
   }
 
   // -----------------------------
-  // Triage (status / investigation)
+  // Drill
+  // Keep this below status_breakdown.
+  // Expand to include UA/content drill asks.
   // -----------------------------
   if (
-    text.includes("status") ||
-    text.includes("current status") ||
-    text.includes("how is") ||
-    text.includes("how are things") ||
-    text.includes("check") ||
-    text.includes("check status") ||
-    text.includes("investigate") ||
-    text.includes("look into") ||
-    text.includes("look at") ||
-    text.includes("analyze") ||
-    text.includes("analyse") ||
-    text.includes("traffic") ||
-    text.includes("latency") ||
-    text.includes("errors") ||
-    text.includes("cache")
+    includesAny(text, [
+      "drill",
+      "deep dive",
+      "show worst",
+      "worst region",
+      "worst pop",
+      "worst ua",
+      "worst ua family",
+      "worst device",
+      "worst content",
+      "worst content type",
+      "which region",
+      "which pop",
+      "which ua",
+      "which device",
+      "which content",
+      "which content type",
+      "bad region",
+      "bad pop",
+      "bad ua",
+      "bad device",
+      "bad content",
+      "bad content type",
+      "drill deeper",
+    ])
+  ) {
+    return "drill";
+  }
+
+  if (
+    includesAny(text, ["by region", "by pop", "by ua", "by device", "by content"]) &&
+    !includesAny(text, ["status", "status code", "distribution", "breakdown"])
+  ) {
+    return "drill";
+  }
+
+  // -----------------------------
+  // Triage
+  // -----------------------------
+  if (
+    includesAny(text, [
+      "status",
+      "current status",
+      "how is",
+      "how are things",
+      "check",
+      "check status",
+      "investigate",
+      "look into",
+      "look at",
+      "analyze",
+      "analyse",
+      "traffic",
+      "latency",
+      "errors",
+      "cache",
+    ])
   ) {
     return "triage";
   }

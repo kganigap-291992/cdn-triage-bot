@@ -14,6 +14,7 @@ import { detectIntent } from "@/lib/router/intent";
 import CompareCard from "@/components/cards/CompareCard";
 import NextActionChips from "@/components/NextActionChips";
 import { getNextActions } from "@/lib/nextActions/getNextActions";
+import UtcDateTimeInput from "@/components/filters/UtcDateTimeInput";
 
 // ── constants ──────────────────────────────────────────────────────────────
 const LOGO_SRC = "/cachey-logo.png";
@@ -530,14 +531,35 @@ function detectContentTypeOverrideFromText(text: string): {
     }
   }
 
-  const explicitContentMatch = raw.match(
-    /\b(?:content\s*type|content)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+){0,2})\b/i
-  );
-  if (explicitContentMatch) {
+  // generic dimension mention: "content" / "content type"
+  // should mean the user is talking about the dimension,
+  // not requesting a literal value named "type".
+  if (/\bcontent\s*type\b/i.test(raw)) {
     return {
       mentioned: true,
       value: null,
-      sourceText: explicitContentMatch[1]?.trim() || "unknown content type",
+      sourceText: "content type",
+    };
+  }
+
+  if (/\bcontent\b/i.test(raw)) {
+    return {
+      mentioned: true,
+      value: null,
+      sourceText: "content",
+    };
+  }
+
+  const explicitContentMatch = raw.match(
+    /\b(?:content\s*type|content)\s+(manifest|segment|api)\b/i
+  );
+
+  if (explicitContentMatch) {
+    const resolved = explicitContentMatch[1].toLowerCase();
+    return {
+      mentioned: true,
+      value: resolved,
+      sourceText: resolved,
     };
   }
 
@@ -4298,8 +4320,19 @@ export default function Home() {
   function detectExplicitDrillIntent(text: string):
     | "worst_region"
     | "worst_pop"
+    | "worst_ua"
+    | "worst_content"
     | null {
     const lowered = text.toLowerCase().replace(/what’s/g, "whats");
+
+    const mentionsStatusBreakdown =
+      (lowered.includes("status") || lowered.includes("status code")) &&
+      (lowered.includes("breakdown") ||
+        lowered.includes("distribution") ||
+        lowered.includes("mix") ||
+        lowered.includes("split"));
+
+    if (mentionsStatusBreakdown) return null;
 
     const asksForPop =
       lowered.includes("pop") &&
@@ -4320,6 +4353,27 @@ export default function Home() {
         lowered.includes("show"));
 
     if (asksForRegion) return "worst_region";
+
+    const asksForUa =
+      (lowered.includes("ua") ||
+        lowered.includes("ua family") ||
+        lowered.includes("device")) &&
+      (lowered.includes("bad") ||
+        lowered.includes("worst") ||
+        lowered.includes("which") ||
+        lowered.includes("by ua") ||
+        lowered.includes("by device"));
+
+    if (asksForUa) return "worst_ua";
+
+    const asksForContent =
+      (lowered.includes("content type") || lowered.includes("content")) &&
+      (lowered.includes("bad") ||
+        lowered.includes("worst") ||
+        lowered.includes("which") ||
+        lowered.includes("by content"));
+
+    if (asksForContent) return "worst_content";
 
     return null;
   }
@@ -4450,6 +4504,21 @@ export default function Home() {
 
           const lowered = text.toLowerCase().replace(/what’s/g, "whats");
 
+          const mentionsStatusBreakdown =
+            (lowered.includes("status") || lowered.includes("status code")) &&
+            (lowered.includes("breakdown") ||
+              lowered.includes("distribution") ||
+              lowered.includes("mix") ||
+              lowered.includes("split"));
+
+          if (mentionsStatusBreakdown) {
+            addText(
+              "assistant",
+              "Status-code breakdown routing is being added separately. For now, ask for worst region, POP, device, or content type."
+            );
+            return;
+          }
+
           if (
             lowered.includes("pop") &&
             (lowered.includes("bad") ||
@@ -4470,6 +4539,29 @@ export default function Home() {
             drillInputs = deriveWorstRegionInputs(latestInvestigationContext);
             drillIntent = "worst_region";
             reason = "drill worst region fallback";
+          } else if (
+            (lowered.includes("ua") ||
+              lowered.includes("ua family") ||
+              lowered.includes("device")) &&
+            (lowered.includes("bad") ||
+              lowered.includes("worst") ||
+              lowered.includes("which") ||
+              lowered.includes("by ua") ||
+              lowered.includes("by device"))
+          ) {
+            drillInputs = contextToTriageInputs(latestInvestigationContext);
+            drillIntent = "worst_ua";
+            reason = "drill worst ua fallback";
+          } else if (
+            (lowered.includes("content type") || lowered.includes("content")) &&
+            (lowered.includes("bad") ||
+              lowered.includes("worst") ||
+              lowered.includes("which") ||
+              lowered.includes("by content"))
+          ) {
+            drillInputs = contextToTriageInputs(latestInvestigationContext);
+            drillIntent = "worst_content";
+            reason = "drill worst content fallback";
           } else if (lowered.includes("pop") || lowered.includes("by pop")) {
             drillInputs = deriveWorstPopInputs(latestInvestigationContext);
             drillIntent = "worst_pop";
@@ -4480,7 +4572,7 @@ export default function Home() {
             reason = "default drill fallback";
           }
 
-          if (!drillInputs) {
+          if (!drillInputs || !drillIntent) {
             addText(
               "assistant",
               "I need a prior triage result with enough evidence before I can drill further."
@@ -4488,8 +4580,11 @@ export default function Home() {
             return;
           }
 
-          await executeTriageRun(drillInputs, "chat", {
-            drillIntent,
+          const safeDrillInputs = drillInputs;
+          const safeDrillIntent = drillIntent;
+
+          await executeTriageRun(safeDrillInputs, "chat", {
+            drillIntent: safeDrillIntent,
             chatContext: {
               rawText: text,
               parseMode: "chat-overrides",
@@ -4501,7 +4596,7 @@ export default function Home() {
             },
           });
           return;
-        }
+        } 
 
         if (chatIntent === "compare") {
           if (!latestTriageRun || !latestInvestigationContext) {
@@ -4559,579 +4654,610 @@ export default function Home() {
         );
         return;
       }
-
-      if (explicitDrillIntent) {
-        if (!latestInvestigationContext) {
-          addText(
-            "assistant",
-            "Run a triage first, then I can drill into the worst region or POP."
-          );
-          return;
-        }
-
-        let drillInputs: TriageInputs | null = null;
-        let drillIntent:
-          | "worst_region"
-          | "worst_pop"
-          | "worst_ua"
-          | "worst_content"
-          | undefined;
-
-        if (explicitDrillIntent === "worst_pop") {
-          drillInputs = deriveWorstPopInputs(latestInvestigationContext);
-          drillIntent = "worst_pop";
-        } else {
-          drillInputs = deriveWorstRegionInputs(latestInvestigationContext);
-          drillIntent = "worst_region";
-        }
-
-        if (!drillInputs) {
-          addText(
-            "assistant",
-            "I need a prior triage result with enough evidence before I can drill further."
-          );
-          return;
-        }
-
-        await executeTriageRun(drillInputs, "chat", {
-          drillIntent,
-          chatContext: {
-            rawText: text,
-            parseMode: "chat-overrides",
-            detected: {
-              chatIntent,
-              explicitDrillIntent,
-              forcedExplicitDrillIntercept: true,
-            },
-          },
-        });
-        return;
-      }
-
-      const mergedPartner =
-        (parseResult.partnerCanonical ||
-          pendingChatScope.partner ||
-          latestTriageRun?.inputs.partner ||
-          partner ||
-          "") as PartnerOrMissing;
-
-      const mergedService =
-        parseResult.serviceCanonical ||
-        pendingChatScope.service ||
-        latestTriageRun?.inputs.service ||
-        service ||
-        "";
-
-      if (!mergedPartner || !mergedService) {
-        setPendingChatScope({
-          partner: mergedPartner,
-          service: mergedService,
-        });
-
-        if (!mergedPartner && !mergedService) {
-          addText(
-            "assistant",
-            `Pick a partner and service first. Partners: ${PARTNER_OPTIONS.join(", ")}. Services: ${SERVICE_OPTIONS.join(", ")}.`
-          );
-          return;
-        }
-
-        if (!mergedPartner) {
-          addText(
-            "assistant",
-            `Got it${mergedService ? ` — service=${mergedService}` : ""}. Now pick a partner. (${PARTNER_OPTIONS.join(", ")})`
-          );
-          return;
-        }
-
-        addText(
-          "assistant",
-          `Got it${mergedPartner ? ` — partner=${mergedPartner}` : ""}. Now pick a service. (${SERVICE_OPTIONS.join(", ")})`
-        );
-        return;
-      }
-
-      const built = buildChatInputsFromIntent({
-        parseResult,
-        resolvedPartner: mergedPartner,
-        resolvedService: mergedService,
-        region,
-        pop,
-        windowMinutes,
-        contentType,
-        uaFamily,
-        allowedRegions: availableRegions,
-        allowedPops: availablePops,
-        allowedContentTypes: availableContentTypes,
-        allowedUaFamilies: availableUaFamilies,
-        now: new Date(),
-      });
-
-      if (!built.ok) {
-        addText("assistant", built.error);
-        return;
-      }
-
-      await executeTriageRun(built.inputs, "chat", {
-        chatContext: {
-          ...(built.chatContext || {}),
-          detected: {
-            ...(built.chatContext?.detected || {}),
-            mergedPartner,
-            mergedService,
-            pendingScopeUsed: Boolean(
-              pendingChatScope.partner || pendingChatScope.service
-            ),
-          },
-        },
-      });
-    }
-
-    async function handleSend() {
-      const text = chatInput.trim();
-      if (!text || isTriageLoading) return;
-
-      setChatInput("");
-      await processUserMessage(text);
-    }
-
-    const latestAssessment = latestTriageRun?.swarm?.assessment ?? null;
-    const headerStatusLabel = uiStatusLabel(
-      latestAssessment?.overallStatus,
-      isTriageLoading
+        if (explicitDrillIntent) {
+  if (!latestInvestigationContext) {
+    addText(
+      "assistant",
+      "Run a triage first, then I can drill into the worst region, POP, device, or content type."
     );
-    const headerStatusClass = uiStatusClass(
-      latestAssessment?.overallStatus,
-      isTriageLoading
+    return;
+  }
+
+  let drillInputs: TriageInputs | null = null;
+  let drillIntent:
+    | "worst_region"
+    | "worst_pop"
+    | "worst_ua"
+    | "worst_content"
+    | undefined;
+
+  if (explicitDrillIntent === "worst_pop") {
+    drillInputs = deriveWorstPopInputs(latestInvestigationContext);
+    drillIntent = "worst_pop";
+  } else if (explicitDrillIntent === "worst_region") {
+    drillInputs = deriveWorstRegionInputs(latestInvestigationContext);
+    drillIntent = "worst_region";
+  } else if (explicitDrillIntent === "worst_ua") {
+    drillInputs = contextToTriageInputs(latestInvestigationContext);
+    drillIntent = "worst_ua";
+  } else if (explicitDrillIntent === "worst_content") {
+    drillInputs = contextToTriageInputs(latestInvestigationContext);
+    drillIntent = "worst_content";
+  }
+
+  if (!drillInputs || !drillIntent) {
+    addText(
+      "assistant",
+      "I need a prior triage result with enough evidence before I can drill further."
     );
+    return;
+  }
 
-    const scopeSummary = useMemo(() => {
-      if (isTriageLoading) return `Status: ${headerStatusLabel}`;
-      if (!latestTriageRun || !latestAssessment?.overallStatus) return "Status: Idle";
-      const run = latestTriageRun.inputs;
-      const timeText =
-        run.startTsUtc && run.endTsUtc
-          ? `${isoToUtcText(run.startTsUtc)} → ${isoToUtcText(run.endTsUtc)} UTC`
-          : `last ${run.windowMinutes}m`;
-      return `Status: ${headerStatusLabel} • ${run.partner || "—"} • ${run.service || "—"} • ${run.region || "all"} • ${timeText}`;
-    }, [
-      isTriageLoading,
-      latestTriageRun,
-      latestAssessment?.overallStatus,
-      headerStatusLabel,
-    ]);
+  await executeTriageRun(drillInputs, "chat", {
+    drillIntent,
+    chatContext: {
+      rawText: text,
+      parseMode: "chat-overrides",
+      detected: {
+        chatIntent,
+        explicitDrillIntent,
+        forcedExplicitDrillIntercept: true,
+      },
+    },
+  });
+  return;
+}
 
-    const utcWindowPreview = useMemo(() => {
-      if (draftTimeMode !== "absolute") return "";
-      return computeWindowPreview(draftStartUtcLocal, draftEndUtcLocal);
-    }, [draftTimeMode, draftStartUtcLocal, draftEndUtcLocal]);
+const mergedPartner =
+  (parseResult.partnerCanonical ||
+    pendingChatScope.partner ||
+    latestTriageRun?.inputs.partner ||
+    partner ||
+    "") as PartnerOrMissing;
 
-    const hasTriage = useMemo(() => {
-      return chatMessages.some((m) => m.type === "triage");
-    }, [chatMessages]);
+const mergedService =
+  parseResult.serviceCanonical ||
+  pendingChatScope.service ||
+  latestTriageRun?.inputs.service ||
+  service ||
+  "";
 
-    const suggestedActions = useMemo(() => {
-      if (!latestTriageMsg) return [];
-      return getNextActions(latestTriageMsg).slice(0, 3);
-    }, [latestTriageMsg]);
+if (!mergedPartner || !mergedService) {
+  setPendingChatScope({
+    partner: mergedPartner,
+    service: mergedService,
+  });
 
-    console.log("latestActionableMsg", latestActionableMsg);
-    console.log("suggestedActions", suggestedActions);
+  if (!mergedPartner && !mergedService) {
+    addText(
+      "assistant",
+      `Pick a partner and service first. Partners: ${PARTNER_OPTIONS.join(", ")}. Services: ${SERVICE_OPTIONS.join(", ")}.`
+    );
+    return;
+  }
 
-    return (
-    <main className="min-h-screen bg-[#07090d] text-gray-100">
-      <div className="sticky top-0 z-50 border-b border-white/10 bg-[#0b0f14]/90 backdrop-blur-xl">
-        <div className="mx-auto w-full max-w-[1300px] px-6 py-4">
-          <div className="flex items-center gap-3">
-            <Image src={LOGO_SRC} alt="Cachey" width={34} height={34} className="rounded-full" />
-            <div className="min-w-0">
-              <div className="font-semibold text-lg text-white leading-tight">
-                Cachey <span className="text-gray-400">🤖</span>
-              </div>
-            </div>
-            <div className="ml-auto flex items-center gap-2">
-              <a
-                href="/debug"
-                className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
-              >
-                Debug
-              </a>
+  if (!mergedPartner) {
+    addText(
+      "assistant",
+      `Got it${mergedService ? ` — service=${mergedService}` : ""}. Now pick a partner. (${PARTNER_OPTIONS.join(", ")})`
+    );
+    return;
+  }
+
+  addText(
+    "assistant",
+    `Got it${mergedPartner ? ` — partner=${mergedPartner}` : ""}. Now pick a service. (${SERVICE_OPTIONS.join(", ")})`
+  );
+  return;
+}
+
+const built = buildChatInputsFromIntent({
+  parseResult,
+  resolvedPartner: mergedPartner,
+  resolvedService: mergedService,
+  region,
+  pop,
+  windowMinutes,
+  contentType,
+  uaFamily,
+  allowedRegions: availableRegions,
+  allowedPops: availablePops,
+  allowedContentTypes: availableContentTypes,
+  allowedUaFamilies: availableUaFamilies,
+  now: new Date(),
+});
+
+if (!built.ok) {
+  addText("assistant", built.error);
+  return;
+}
+
+await executeTriageRun(built.inputs, "chat", {
+  chatContext: {
+    ...(built.chatContext || {}),
+    detected: {
+      ...(built.chatContext?.detected || {}),
+      mergedPartner,
+      mergedService,
+      pendingScopeUsed: Boolean(
+        pendingChatScope.partner || pendingChatScope.service
+      ),
+    },
+  },
+});
+}
+
+async function handleSend() {
+  const text = chatInput.trim();
+  if (!text || isTriageLoading) return;
+
+  setChatInput("");
+  await processUserMessage(text);
+}
+
+const latestAssessment = latestTriageRun?.swarm?.assessment ?? null;
+const headerStatusLabel = uiStatusLabel(
+  latestAssessment?.overallStatus,
+  isTriageLoading
+);
+const headerStatusClass = uiStatusClass(
+  latestAssessment?.overallStatus,
+  isTriageLoading
+);
+
+const scopeSummary = useMemo(() => {
+  if (isTriageLoading) return `Status: ${headerStatusLabel}`;
+  if (!latestTriageRun || !latestAssessment?.overallStatus) return "Status: Idle";
+  const run = latestTriageRun.inputs;
+  const timeText =
+    run.startTsUtc && run.endTsUtc
+      ? `${isoToUtcText(run.startTsUtc)} → ${isoToUtcText(run.endTsUtc)} UTC`
+      : `last ${run.windowMinutes}m`;
+  return `Status: ${headerStatusLabel} • ${run.partner || "—"} • ${run.service || "—"} • ${run.region || "all"} • ${timeText}`;
+}, [
+  isTriageLoading,
+  latestTriageRun,
+  latestAssessment?.overallStatus,
+  headerStatusLabel,
+]);
+
+const utcWindowPreview = useMemo(() => {
+  if (draftTimeMode !== "absolute") return "";
+  return computeWindowPreview(draftStartUtcLocal, draftEndUtcLocal);
+}, [draftTimeMode, draftStartUtcLocal, draftEndUtcLocal]);
+
+const hasTriage = useMemo(() => {
+  return chatMessages.some((m) => m.type === "triage");
+}, [chatMessages]);
+
+const suggestedActions = useMemo(() => {
+  if (!latestActionableMsg) return [];
+
+  if (latestActionableMsg.type === "triage") {
+    return getNextActions({
+      type: "triage",
+      primarySignal: latestActionableMsg.run.swarm?.assessment?.primarySignal,
+    }).slice(0, 3);
+  }
+
+  if (latestActionableMsg.type === "compare") {
+    return getNextActions({
+      type: "compare",
+      primarySignal: latestActionableMsg.primarySignal,
+    }).slice(0, 3);
+  }
+
+  if (latestActionableMsg.type === "explain") {
+    return getNextActions({
+      type: "explain",
+      primarySignal: latestActionableMsg.primarySignal,
+    }).slice(0, 3);
+  }
+
+  if (latestActionableMsg.type === "drill") {
+    return getNextActions({
+      type: "drill",
+    }).slice(0, 3);
+  }
+
+  return [];
+}, [latestActionableMsg]);
+
+console.log("latestActionableMsg", latestActionableMsg);
+console.log("suggestedActions", suggestedActions);
+
+return (
+  <main className="min-h-screen bg-[#07090d] text-gray-100">
+    <div className="sticky top-0 z-50 border-b border-white/10 bg-[#0b0f14]/90 backdrop-blur-xl">
+      <div className="mx-auto w-full max-w-[1300px] px-6 py-4">
+        <div className="flex items-center gap-3">
+          <Image src={LOGO_SRC} alt="Cachey" width={34} height={34} className="rounded-full" />
+          <div className="min-w-0">
+            <div className="font-semibold text-lg text-white leading-tight">
+              Cachey <span className="text-gray-400">🤖</span>
             </div>
           </div>
-          <div className={`mt-3 text-sm ${headerStatusClass}`}>{scopeSummary}</div>
+          <div className="ml-auto flex items-center gap-2">
+            <a
+              href="/debug"
+              className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
+            >
+              Debug
+            </a>
+          </div>
         </div>
+        <div className={`mt-3 text-sm ${headerStatusClass}`}>{scopeSummary}</div>
       </div>
+    </div>
 
-      <div className="mx-auto w-full max-w-[1300px] px-6 py-6">
-        {filtersOpen && (
-          <div className="mb-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold text-white">Scope Controls</div>
-                <div className="text-xs text-gray-400 mt-1">
-                  Apply updates the active scope. Run uses the applied scope.
-                  <span className="ml-2 text-gray-500">(TTL: 10m · service persists)</span>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDraftService(service);
-                    setDraftRegion(region);
-                    setDraftPop(pop);
-                    setDraftWindowMinutes(windowMinutes);
-                    setDraftContentType(contentType);
-                    setDraftUaFamily(uaFamily);
-                    setDraftTimeMode(timeMode);
-                    setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
-                    setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
-                    setFiltersDirty(false);
-                  }}
-                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
-                >
-                  Reset draft
-                </button>
-                <button
-                  type="button"
-                  onClick={resetAllFilters}
-                  className="rounded-lg border border-white/10 bg-red-500/10 px-3 py-2 text-xs text-red-200 hover:bg-red-500/15"
-                >
-                  Clear all
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFiltersOpen(false)}
-                  className="rounded-lg border border-white/10 bg-white/10 px-3 py-2 text-xs hover:bg-white/15"
-                >
-                  Close
-                </button>
+    <div className="mx-auto w-full max-w-[1300px] px-6 py-6">
+      {filtersOpen && (
+        <div className="mb-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-white">Scope Controls</div>
+              <div className="text-xs text-gray-400 mt-1">
+                Apply updates the active scope. Run uses the applied scope.
+                <span className="ml-2 text-gray-500">(TTL: 10m · service persists)</span>
               </div>
             </div>
-
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-              <div className="min-w-0">
-                <div className="text-xs text-gray-400 mb-1">
-                  Partner <span className="text-amber-300">*</span>
-                </div>
-                <select
-                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                  value={partner}
-                  onChange={(e) => {
-                    setPartnerSticky(e.target.value);
-                    setFiltersDirty(true);
-                  }}
-                  disabled={!mounted}
-                >
-                  <option value="" className="bg-black">
-                    Select…
-                  </option>
-                  {PARTNER_OPTIONS.map((p) => (
-                    <option key={p} value={p} className="bg-black">
-                      {p}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="min-w-0">
-                <div className="text-xs text-gray-400 mb-1">
-                  Service <span className="text-amber-300">*</span>
-                </div>
-                <select
-                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                  value={draftService}
-                  onChange={(e) => {
-                    setDraftService(String(e.target.value || ""));
-                    setFiltersDirty(true);
-                  }}
-                  disabled={!mounted}
-                >
-                  <option value="" className="bg-black">
-                    Select…
-                  </option>
-                  {SERVICE_OPTIONS.map((s) => (
-                    <option key={s} value={s} className="bg-black">
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="min-w-0">
-                <div className="text-xs text-gray-400 mb-1">Region</div>
-                <select
-                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                  value={draftRegion}
-                  onChange={(e) => {
-                    setDraftRegion(String(e.target.value || "all"));
-                    setFiltersDirty(true);
-                  }}
-                  disabled={!mounted}
-                >
-                  {availableRegions.map((r) => (
-                    <option key={r} value={r} className="bg-black">
-                      {r}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="min-w-0">
-                <div className="text-xs text-gray-400 mb-1">POP</div>
-                <select
-                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                  value={draftPop}
-                  onChange={(e) => {
-                    setDraftPop(String(e.target.value || "all"));
-                    setFiltersDirty(true);
-                  }}
-                  disabled={!mounted}
-                >
-                  {availablePops.map((p) => (
-                    <option key={p} value={p} className="bg-black">
-                      {p}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-              <div className="min-w-0">
-                <div className="text-xs text-gray-400 mb-1">Content Type</div>
-                <select
-                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                  value={draftContentType}
-                  onChange={(e) => {
-                    setDraftContentType(String(e.target.value || "all"));
-                    setFiltersDirty(true);
-                  }}
-                  disabled={!mounted}
-                >
-                  {availableContentTypes.map((ct) => (
-                    <option key={ct} value={ct} className="bg-black">
-                      {ct}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="min-w-0">
-                <div className="text-xs text-gray-400 mb-1">UA Family</div>
-                <select
-                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                  value={draftUaFamily}
-                  onChange={(e) => {
-                    setDraftUaFamily(String(e.target.value || "all"));
-                    setFiltersDirty(true);
-                  }}
-                  disabled={!mounted}
-                >
-                  {availableUaFamilies.map((ua) => (
-                    <option key={ua} value={ua} className="bg-black">
-                      {ua}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="min-w-0 xl:col-span-2">
-                <div className="flex items-center justify-between mb-1">
-                  <div className="text-xs text-gray-400">Time Window</div>
-                  <div className="text-[11px] text-blue-400/70 font-mono">UTC</div>
-                </div>
-
-                <div className="flex items-center gap-2 mb-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDraftTimeMode("relative");
-                      setFiltersDirty(true);
-                    }}
-                    className={`px-3 py-1.5 rounded-full border text-xs transition ${
-                      draftTimeMode === "relative"
-                        ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
-                        : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
-                    }`}
-                  >
-                    Relative
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDraftTimeMode("absolute");
-                      setFiltersDirty(true);
-                    }}
-                    className={`px-3 py-1.5 rounded-full border text-xs transition ${
-                      draftTimeMode === "absolute"
-                        ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
-                        : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
-                    }`}
-                  >
-                    Absolute
-                  </button>
-                </div>
-
-                {draftTimeMode === "relative" ? (
-                  <select
-                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                    value={String(draftWindowMinutes)}
-                    onChange={(e) => {
-                      setDraftWindowMinutes(Number(e.target.value));
-                      setFiltersDirty(true);
-                    }}
-                    disabled={!mounted}
-                  >
-                    {[30, 60, 120, 360, 720, 1440].map((m) => (
-                      <option key={m} value={String(m)} className="bg-black">
-                        Last {m}m
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <div className="text-[11px] text-gray-400 mb-1">Start (UTC)</div>
-                        <input
-                          type="datetime-local"
-                          value={draftStartUtcLocal}
-                          onChange={(e) => {
-                            setDraftStartUtcLocal(e.target.value);
-                            setFiltersDirty(true);
-                          }}
-                          className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                        />
-                      </div>
-                      <div>
-                        <div className="text-[11px] text-gray-400 mb-1">End (UTC)</div>
-                        <input
-                          type="datetime-local"
-                          value={draftEndUtcLocal}
-                          onChange={(e) => {
-                            setDraftEndUtcLocal(e.target.value);
-                            setFiltersDirty(true);
-                          }}
-                          className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-[11px] font-mono text-blue-300/80 min-h-[16px]">
-                        {utcWindowPreview && (
-                          <>
-                            <span className="text-gray-500 mr-1">
-                              {draftStartUtcLocal
-                                ? isoToUtcText(parseDatetimeLocalAsUtcToIso(draftStartUtcLocal))
-                                : "—"}
-                            </span>
-                            <span className="text-gray-500 mx-1">→</span>
-                            <span className="text-gray-500 mr-2">
-                              {draftEndUtcLocal
-                                ? isoToUtcText(parseDatetimeLocalAsUtcToIso(draftEndUtcLocal))
-                                : "—"}
-                            </span>
-                            <span className="text-blue-300 font-semibold">{utcWindowPreview}</span>
-                          </>
-                        )}
-                      </div>
-                      <div className="flex gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const end = new Date();
-                            const start = new Date(end.getTime() - 60 * 60 * 1000);
-                            setDraftStartUtcLocal(isoToDatetimeLocalUtc(start.toISOString()));
-                            setDraftEndUtcLocal(isoToDatetimeLocalUtc(end.toISOString()));
-                            setFiltersDirty(true);
-                          }}
-                          className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
-                        >
-                          Last 60m
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setDraftEndUtcLocal(isoToDatetimeLocalUtc(new Date().toISOString()));
-                            setFiltersDirty(true);
-                          }}
-                          className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
-                        >
-                          End=Now
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="mt-4 flex items-center justify-end gap-3">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                disabled={!filtersDirty}
                 onClick={() => {
-                  const res = applyDraftFilters();
-                  if (!res.ok) addText("assistant", res.error);
+                  setDraftService(service);
+                  setDraftRegion(region);
+                  setDraftPop(pop);
+                  setDraftWindowMinutes(windowMinutes);
+                  setDraftContentType(contentType);
+                  setDraftUaFamily(uaFamily);
+                  setDraftTimeMode(timeMode);
+                  setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
+                  setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
+                  setFiltersDirty(false);
                 }}
-                className="rounded-xl px-5 py-2 text-sm font-semibold bg-white/10 hover:bg-white/15 border border-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
               >
-                Apply
+                Reset draft
+              </button>
+              <button
+                type="button"
+                onClick={resetAllFilters}
+                className="rounded-lg border border-white/10 bg-red-500/10 px-3 py-2 text-xs text-red-200 hover:bg-red-500/15"
+              >
+                Clear all
+              </button>
+              <button
+                type="button"
+                onClick={() => setFiltersOpen(false)}
+                className="rounded-lg border border-white/10 bg-white/10 px-3 py-2 text-xs hover:bg-white/15"
+              >
+                Close
               </button>
             </div>
           </div>
-        )}
-          <MissionStrip
-            partner={partner}
-            service={service}
-            region={region}
-            pop={pop}
-            windowMinutes={windowMinutes}
-            timeMode={timeMode}
-            startTsUtc={startTsUtc}
-            endTsUtc={endTsUtc}
-            overallState={latestAssessment?.overallStatus}
-            primarySignal={latestAssessment?.primarySignal}
-            onChange={openFilters}
-          />
-        <div>
-          <ConversationThread
-            chatMessages={chatMessages}
-            typing={typing}
-            mounted={mounted}
-            chatScrollRef={chatScrollRef}
-            renderTriageCard={(run) => <TriageCard run={run} />}
-            renderDrillCard={(drill, summaryText) => (
-              <DrillCard drill={drill} summaryText={summaryText} />
-            )}
-            renderExplainCard={({ summary, overallState, primarySignal }) => (
-              <ExplainCard
-                summary={summary}
-                overallState={overallState}
-                primarySignal={primarySignal}
-              />
-            )}
-            renderCompareCard={({ summary, overallState, primarySignal, compareMetrics }) => (
-              <CompareCard
-                summary={summary}
-                overallState={overallState}
-                primarySignal={primarySignal}
-                compareMetrics={compareMetrics}
-              />
-            )}
-            renderTypingDots={() => <TypingDots />}
-            formatUtcYmdHm={formatUtcYmdHm}
-            nowIso={nowIso}
-          />
 
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            <div className="min-w-0">
+              <div className="text-xs text-gray-400 mb-1">
+                Partner <span className="text-amber-300">*</span>
+              </div>
+              <select
+                className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                value={partner}
+                onChange={(e) => {
+                  setPartnerSticky(e.target.value);
+                  setFiltersDirty(true);
+                }}
+                disabled={!mounted}
+              >
+                <option value="" className="bg-black">
+                  Select…
+                </option>
+                {PARTNER_OPTIONS.map((p) => (
+                  <option key={p} value={p} className="bg-black">
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="min-w-0">
+              <div className="text-xs text-gray-400 mb-1">
+                Service <span className="text-amber-300">*</span>
+              </div>
+              <select
+                className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                value={draftService}
+                onChange={(e) => {
+                  setDraftService(String(e.target.value || ""));
+                  setFiltersDirty(true);
+                }}
+                disabled={!mounted}
+              >
+                <option value="" className="bg-black">
+                  Select…
+                </option>
+                {SERVICE_OPTIONS.map((s) => (
+                  <option key={s} value={s} className="bg-black">
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="min-w-0">
+              <div className="text-xs text-gray-400 mb-1">Region</div>
+              <select
+                className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                value={draftRegion}
+                onChange={(e) => {
+                  setDraftRegion(String(e.target.value || "all"));
+                  setFiltersDirty(true);
+                }}
+                disabled={!mounted}
+              >
+                {availableRegions.map((r) => (
+                  <option key={r} value={r} className="bg-black">
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="min-w-0">
+              <div className="text-xs text-gray-400 mb-1">POP</div>
+              <select
+                className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                value={draftPop}
+                onChange={(e) => {
+                  setDraftPop(String(e.target.value || "all"));
+                  setFiltersDirty(true);
+                }}
+                disabled={!mounted}
+              >
+                {availablePops.map((p) => (
+                  <option key={p} value={p} className="bg-black">
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            <div className="min-w-0">
+              <div className="text-xs text-gray-400 mb-1">Content Type</div>
+              <select
+                className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                value={draftContentType}
+                onChange={(e) => {
+                  setDraftContentType(String(e.target.value || "all"));
+                  setFiltersDirty(true);
+                }}
+                disabled={!mounted}
+              >
+                {availableContentTypes.map((ct) => (
+                  <option key={ct} value={ct} className="bg-black">
+                    {ct}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="min-w-0">
+              <div className="text-xs text-gray-400 mb-1">UA Family</div>
+              <select
+                className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                value={draftUaFamily}
+                onChange={(e) => {
+                  setDraftUaFamily(String(e.target.value || "all"));
+                  setFiltersDirty(true);
+                }}
+                disabled={!mounted}
+              >
+                {availableUaFamilies.map((ua) => (
+                  <option key={ua} value={ua} className="bg-black">
+                    {ua}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="min-w-0 xl:col-span-2">
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs text-gray-400">Time Window</div>
+                <div className="text-[11px] text-blue-400/70 font-mono">UTC</div>
+              </div>
+
+              <div className="flex items-center gap-2 mb-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraftTimeMode("relative");
+                    setFiltersDirty(true);
+                  }}
+                  className={`px-3 py-1.5 rounded-full border text-xs transition ${
+                    draftTimeMode === "relative"
+                      ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
+                      : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+                  }`}
+                >
+                  Relative
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraftTimeMode("absolute");
+                    setFiltersDirty(true);
+                  }}
+                  className={`px-3 py-1.5 rounded-full border text-xs transition ${
+                    draftTimeMode === "absolute"
+                      ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
+                      : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+                  }`}
+                >
+                  Absolute
+                </button>
+              </div>
+
+              {draftTimeMode === "relative" ? (
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                  value={String(draftWindowMinutes)}
+                  onChange={(e) => {
+                    setDraftWindowMinutes(Number(e.target.value));
+                    setFiltersDirty(true);
+                  }}
+                  disabled={!mounted}
+                >
+                  {[30, 60, 120, 360, 720, 1440].map((m) => (
+                    <option key={m} value={String(m)} className="bg-black">
+                      Last {m}m
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <UtcDateTimeInput
+                      label="Start (UTC)"
+                      value={draftStartUtcLocal}
+                      onChange={(next) => {
+                        setDraftStartUtcLocal(next);
+                        setFiltersDirty(true);
+                      }}
+                    />
+
+                    <UtcDateTimeInput
+                      label="End (UTC)"
+                      value={draftEndUtcLocal}
+                      onChange={(next) => {
+                        setDraftEndUtcLocal(next);
+                        setFiltersDirty(true);
+                      }}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-mono text-blue-300/80 min-h-[16px]">
+                      {utcWindowPreview && (
+                        <>
+                          <span className="text-gray-500 mr-1">
+                            {draftStartUtcLocal
+                              ? isoToUtcText(parseDatetimeLocalAsUtcToIso(draftStartUtcLocal))
+                              : "—"}
+                          </span>
+                          <span className="text-gray-500 mx-1">→</span>
+                          <span className="text-gray-500 mr-2">
+                            {draftEndUtcLocal
+                              ? isoToUtcText(parseDatetimeLocalAsUtcToIso(draftEndUtcLocal))
+                              : "—"}
+                          </span>
+                          <span className="text-blue-300 font-semibold">{utcWindowPreview}</span>
+                        </>
+                      )}
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const end = new Date();
+                          const start = new Date(end.getTime() - 60 * 60 * 1000);
+                          setDraftStartUtcLocal(isoToDatetimeLocalUtc(start.toISOString()));
+                          setDraftEndUtcLocal(isoToDatetimeLocalUtc(end.toISOString()));
+                          setFiltersDirty(true);
+                        }}
+                        className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                      >
+                        Last 60m
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDraftEndUtcLocal(isoToDatetimeLocalUtc(new Date().toISOString()));
+                          setFiltersDirty(true);
+                        }}
+                        className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                      >
+                        End=Now
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 flex items-center justify-end gap-3">
+            <button
+              type="button"
+              disabled={!filtersDirty}
+              onClick={() => {
+                const res = applyDraftFilters();
+                if (!res.ok) addText("assistant", res.error);
+              }}
+              className="rounded-xl px-5 py-2 text-sm font-semibold bg-white/10 hover:bg-white/15 border border-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Apply
+            </button>
+          </div>
+        </div>
+      )}
+      <MissionStrip
+        partner={partner}
+        service={service}
+        region={region}
+        pop={pop}
+        windowMinutes={windowMinutes}
+        timeMode={timeMode}
+        startTsUtc={startTsUtc}
+        endTsUtc={endTsUtc}
+        overallState={latestAssessment?.overallStatus}
+        primarySignal={latestAssessment?.primarySignal}
+        onChange={openFilters}
+      />
+      <div>
+        <ConversationThread
+          chatMessages={chatMessages}
+          typing={typing}
+          mounted={mounted}
+          chatScrollRef={chatScrollRef}
+          renderTriageCard={(run) => <TriageCard run={run} />}
+          renderDrillCard={(drill, summaryText) => (
+            <DrillCard drill={drill} summaryText={summaryText} />
+          )}
+          renderExplainCard={({ summary, overallState, primarySignal }) => (
+            <ExplainCard
+              summary={summary}
+              overallState={overallState}
+              primarySignal={primarySignal}
+            />
+          )}
+          renderCompareCard={({ summary, overallState, primarySignal, compareMetrics }) => (
+            <CompareCard
+              summary={summary}
+              overallState={overallState}
+              primarySignal={primarySignal}
+              compareMetrics={compareMetrics}
+            />
+          )}
+          renderTypingDots={() => <TypingDots />}
+          formatUtcYmdHm={formatUtcYmdHm}
+          nowIso={nowIso}
+        />
+
+        <div className="mt-3 space-y-2">
           {hasTriage &&
             suggestedActions.length > 0 &&
             latestActionableMsg &&
             currentSuggestionScopeKey &&
             dismissedSuggestionScopeKey !== currentSuggestionScopeKey && (
-              <div className="mt-3 mb-1">
+              <div>
+                <div className="px-1 text-[11px] text-gray-500">
+                  try asking this next
+                </div>
+
                 <NextActionChips
                   actions={suggestedActions}
                   onSelect={(query) => {
@@ -5149,65 +5275,67 @@ export default function Home() {
             disabled={isTriageLoading}
             isLoading={isTriageLoading}
           />
-          <div className="mt-3 flex flex-wrap items-center gap-2">
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleRunFromFilters}
+            disabled={isTriageLoading || !partner || !service}
+            className="rounded-full border border-white/10 bg-white/10 px-3 py-2 text-xs font-medium text-gray-100 hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isTriageLoading ? "Running…" : "Run Triage"}
+          </button>
+
+          {chatMessages.length > 0 && (
             <button
               type="button"
-              onClick={handleRunFromFilters}
-              disabled={isTriageLoading || !partner || !service}
-              className="rounded-full border border-white/10 bg-white/10 px-3 py-2 text-xs font-medium text-gray-100 hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={handleResetInvestigation}
+              className="rounded-full border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-300/80 hover:bg-red-500/10 hover:text-red-200"
             >
-              {isTriageLoading ? "Running…" : "Run Triage"}
+              Reset Investigation
             </button>
+          )}
 
-            {chatMessages.length > 0 && (
-              <button
-                type="button"
-                onClick={handleResetInvestigation}
-                className="rounded-full border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-300/80 hover:bg-red-500/10 hover:text-red-200"
-              >
-                Reset Investigation
-              </button>
-            )}
+          {!partner || !service && (
+            <span className="text-xs text-gray-500">
+              Select partner and service to run triage.
+            </span>
+          )}
+        </div>
 
-            {!partner || !service && (
-              <span className="text-xs text-gray-500">
-                Select partner and service to run triage.
-              </span>
+        <details
+          className="mt-6 rounded-2xl border border-white/10 bg-black/25 p-4"
+          open={debugOpen}
+          onToggle={(e) => setDebugOpen((e.target as HTMLDetailsElement).open)}
+        >
+          <summary className="cursor-pointer text-sm font-semibold text-gray-200 select-none">
+            Debug (internal)
+          </summary>
+          <div className="mt-3 max-h-[220px] overflow-auto rounded-xl border border-white/10 bg-black/30 p-3">
+            {runLog.length ? (
+              <div className="space-y-2">
+                {runLog
+                  .slice()
+                  .reverse()
+                  .map((x, idx) => (
+                    <div key={`${x.ts}-${idx}`} className="text-xs text-gray-300">
+                      <span className="text-gray-500 mr-2">{formatUtcYmdHm(x.ts)} UTC</span>
+                      {x.text}
+                    </div>
+                  ))}
+              </div>
+            ) : (
+              <div className="text-xs text-gray-500">No runs yet.</div>
             )}
           </div>
+        </details>
 
-          <details
-            className="mt-6 rounded-2xl border border-white/10 bg-black/25 p-4"
-            open={debugOpen}
-            onToggle={(e) => setDebugOpen((e.target as HTMLDetailsElement).open)}
-          >
-            <summary className="cursor-pointer text-sm font-semibold text-gray-200 select-none">
-              Debug (internal)
-            </summary>
-            <div className="mt-3 max-h-[220px] overflow-auto rounded-xl border border-white/10 bg-black/30 p-3">
-              {runLog.length ? (
-                <div className="space-y-2">
-                  {runLog
-                    .slice()
-                    .reverse()
-                    .map((x, idx) => (
-                      <div key={`${x.ts}-${idx}`} className="text-xs text-gray-300">
-                        <span className="text-gray-500 mr-2">{formatUtcYmdHm(x.ts)} UTC</span>
-                        {x.text}
-                      </div>
-                    ))}
-                </div>
-              ) : (
-                <div className="text-xs text-gray-500">No runs yet.</div>
-              )}
-            </div>
-          </details>
-
-          <div className="mt-6 border-t border-white/10 pt-4 text-[11px] text-gray-500">
-            Cachey • Deterministic triage assistant • ClickHouse path
-          </div>
+        <div className="mt-6 pt-4 text-[11px] text-gray-500 opacity-60">
+          Cachey • Deterministic triage assistant • ClickHouse path
         </div>
       </div>
-    </main>
-  );
+    </div>
+  </main>
+);
 }
