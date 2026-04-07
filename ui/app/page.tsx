@@ -1755,7 +1755,7 @@ function LatencyTimeseriesLines({
   const maxV = vals.length ? Math.max(...vals) : 1;
   const span = maxV - minV || 1;
 
-  const w = 360;
+  const w = 760;
   const h = height;
   const padLeft = 54;
   const padRight = 12;
@@ -2775,6 +2775,9 @@ function deriveScopedFollowupInputs(
   };
 }
 
+
+
+
 // ── TriageCard ─────────────────────────────────────────────────────────────
 function TriageCard({ run }: { run: ChatTriage["run"] }) {
   const ts = parseTimeseries(run.metricsJson);
@@ -2918,20 +2921,102 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
 
       {ts && ts.points.length > 0 ? (
         <div className="space-y-4">
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <RequestsErrorRateLines
-              points={ts.points}
-              bucketSeconds={bucketSeconds}
-              height={190}
-              windowMinutes={effectiveWindowMinutes}
-            />
+          <div className="grid grid-cols-1 gap-4">
             <LatencyTimeseriesLines
               points={ts.points}
               bucketSeconds={bucketSeconds}
-              height={190}
+              height={220}
               windowMinutes={effectiveWindowMinutes}
             />
           </div>
+
+     <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs text-gray-400">Cache behavior</div>
+          <div className="text-sm font-semibold text-gray-100">ATS Summary</div>
+          <div className="text-[11px] text-gray-500 mt-1">
+            Cache outcome mix for the current investigation window
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+          <div className="text-[11px] text-gray-400">Hit</div>
+          <div className="mt-1 text-lg font-semibold text-gray-100">
+            {formatPctOrNA(76)}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+          <div className="text-[11px] text-gray-400">Miss</div>
+          <div className="mt-1 text-lg font-semibold text-gray-100">
+            {formatPctOrNA(18)}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+          <div className="text-[11px] text-gray-400">Refresh</div>
+          <div className="mt-1 text-lg font-semibold text-gray-100">
+            {formatPctOrNA(3)}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+          <div className="text-[11px] text-gray-400">Client Err</div>
+          <div className="mt-1 text-lg font-semibold text-gray-100">
+            {formatPctOrNA(2)}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+          <div className="text-[11px] text-gray-400">Infra Err</div>
+          <div className="mt-1 text-lg font-semibold text-gray-100">
+            {formatPctOrNA(1)}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[11px] text-gray-400">Delivery trust</div>
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <span className="text-sm font-semibold text-gray-100">
+                {formatPctOrNA(2.3)}
+              </span>
+
+              <span className="text-[11px] font-medium text-red-300">
+                ↑ +0.80% vs previous
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 text-[10px] text-gray-500 shrink-0">
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-red-400/80" />
+              Infra
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-amber-400/80" />
+              Client
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-2 relative h-2 w-full rounded-full bg-white/15 overflow-hidden">
+          <div
+            className="absolute left-0 top-0 h-full bg-red-400/80"
+            style={{ width: `${Math.max(1.0, 3)}%` }}
+          />
+          <div
+            className="absolute top-0 h-full bg-amber-400/80"
+            style={{ left: `${Math.max(1.0, 3)}%`, width: `${Math.max(2.0, 3)}%` }}
+          />
+        </div>
+      </div>
+    </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
             {statusTs ? (
@@ -2948,29 +3033,6 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
               />
             ) : null}
             <HostSummaryCard hosts={ts.hostSeries || []} />
-          </div>
-
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <CrcTimeseriesBars
-              crcSeries={ts.crcSeries || []}
-              bucketSeconds={bucketSeconds}
-              height={190}
-              windowMinutes={effectiveWindowMinutes}
-            />
-            <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 flex items-center justify-center">
-              <div className="text-center text-xs text-gray-500 space-y-1">
-                <div className="text-2xl opacity-30">📊</div>
-                <div>
-                  Points: <span className="text-gray-300 font-semibold">{pointsCount}</span>
-                </div>
-                <div>
-                  Hosts: <span className="text-gray-300 font-semibold">{ts.hostSeries?.length || 0}</span>
-                </div>
-                <div>
-                  CRC buckets: <span className="text-gray-300 font-semibold">{ts.crcSeries?.length || 0}</span>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       ) : (
