@@ -4504,76 +4504,88 @@ export default function Home() {
   }
 
   function detectExplicitDrillIntent(text: string):
-    | "worst_region"
-    | "worst_pop"
-    | "worst_host"
-    | "worst_ua"
-    | "worst_content"
-    | null {
-    const lowered = text.toLowerCase().replace(/what’s/g, "whats");
+  | "worst_region"
+  | "worst_pop"
+  | "worst_host"
+  | "worst_ua"
+  | "worst_content"
+  | null {
+  const lowered = text.toLowerCase().replace(/what’s/g, "whats");
 
-    const mentionsStatusBreakdown =
-      (lowered.includes("status") || lowered.includes("status code")) &&
-      (lowered.includes("breakdown") ||
-        lowered.includes("distribution") ||
-        lowered.includes("mix") ||
-        lowered.includes("split"));
+  const mentionsStatusBreakdown =
+    (lowered.includes("status") || lowered.includes("status code")) &&
+    (lowered.includes("breakdown") ||
+      lowered.includes("distribution") ||
+      lowered.includes("mix") ||
+      lowered.includes("split"));
 
-    if (mentionsStatusBreakdown) return null;
+  if (mentionsStatusBreakdown) return null;
 
-    const asksForPop =
-      lowered.includes("pop") &&
-      (lowered.includes("bad") ||
-        lowered.includes("worst") ||
-        lowered.includes("which") ||
-        lowered.includes("by pop"));
+  const asksForPop =
+    lowered.includes("pop") &&
+    (lowered.includes("bad") ||
+      lowered.includes("worst") ||
+      lowered.includes("which") ||
+      lowered.includes("show") ||
+      lowered.includes("top") ||
+      lowered.includes("breakdown") ||
+      lowered.includes("by pop"));
 
-    if (asksForPop) return "worst_pop";
+  if (asksForPop) return "worst_pop";
 
+  const asksForHost =
+    lowered.includes("host") &&
+    (lowered.includes("bad") ||
+      lowered.includes("worst") ||
+      lowered.includes("which") ||
+      lowered.includes("show") ||
+      lowered.includes("top") ||
+      lowered.includes("breakdown") ||
+      lowered.includes("by host"));
 
-    const asksForHost =
-      lowered.includes("host") &&
-      (lowered.includes("bad") ||
-        lowered.includes("worst") ||
-        lowered.includes("which") ||
-        lowered.includes("show"));
+  if (asksForHost) return "worst_host";
 
-    if (asksForHost) return "worst_host";
+  const asksForRegion =
+    lowered.includes("region") &&
+    (lowered.includes("bad") ||
+      lowered.includes("worst") ||
+      lowered.includes("which") ||
+      lowered.includes("show") ||
+      lowered.includes("top") ||
+      lowered.includes("breakdown") ||
+      lowered.includes("by region"));
 
-    const asksForRegion =
-      lowered.includes("region") &&
-      (lowered.includes("bad") ||
-        lowered.includes("worst") ||
-        lowered.includes("which") ||
-        lowered.includes("breakdown") ||
-        lowered.includes("by region") ||
-        lowered.includes("show"));
+  if (asksForRegion) return "worst_region";
 
-    if (asksForRegion) return "worst_region";
+  const asksForUa =
+    (lowered.includes("ua") ||
+      lowered.includes("ua family") ||
+      lowered.includes("device")) &&
+    (lowered.includes("bad") ||
+      lowered.includes("worst") ||
+      lowered.includes("which") ||
+      lowered.includes("show") ||
+      lowered.includes("top") ||
+      lowered.includes("breakdown") ||
+      lowered.includes("by ua") ||
+      lowered.includes("by device"));
 
-    const asksForUa =
-      (lowered.includes("ua") ||
-        lowered.includes("ua family") ||
-        lowered.includes("device")) &&
-      (lowered.includes("bad") ||
-        lowered.includes("worst") ||
-        lowered.includes("which") ||
-        lowered.includes("by ua") ||
-        lowered.includes("by device"));
+  if (asksForUa) return "worst_ua";
 
-    if (asksForUa) return "worst_ua";
+  const asksForContent =
+    (lowered.includes("content type") || lowered.includes("content")) &&
+    (lowered.includes("bad") ||
+      lowered.includes("worst") ||
+      lowered.includes("which") ||
+      lowered.includes("show") ||
+      lowered.includes("top") ||
+      lowered.includes("breakdown") ||
+      lowered.includes("by content"));
 
-    const asksForContent =
-      (lowered.includes("content type") || lowered.includes("content")) &&
-      (lowered.includes("bad") ||
-        lowered.includes("worst") ||
-        lowered.includes("which") ||
-        lowered.includes("by content"));
+  if (asksForContent) return "worst_content";
 
-    if (asksForContent) return "worst_content";
-
-    return null;
-  }
+  return null;
+}
 
     async function processUserMessage(rawText: string) {
       const text = String(rawText || "").trim();
@@ -4667,99 +4679,168 @@ export default function Home() {
           if (wantsByPop) {
             const rows = Array.isArray(metrics.statusByPop) ? metrics.statusByPop : [];
 
-            if (!rows.length) {
-              addText(
-                "assistant",
-                "I recognized a POP-level status breakdown request, but there is no status-by-POP data on the latest triage result yet."
-              );
+            if (rows.length) {
+              const topRows = rows.slice(0, 5);
+
+              addStatusBreakdownCard({
+                mode: "pop",
+                title: "Status breakdown by POP",
+                summary: "Top POPs ranked from the latest triage status payload.",
+                rows: topRows.map((row: any) => {
+                  const counts: Record<string, number> = {};
+                  for (const code of statusCodes) {
+                    counts[code] = Number(row?.[`status_${code}`] || 0);
+                  }
+
+                  return {
+                    label: String(row?.pop || "unknown"),
+                    totalRequests: Number(row?.total_requests ?? row?.totalRequests ?? 0),
+                    counts,
+                  };
+                }),
+              });
               return;
             }
 
-            const topRows = rows.slice(0, 5);
+            const fallbackRows = Array.isArray(metrics.popBreakdown)
+              ? metrics.popBreakdown
+              : [];
 
-            addStatusBreakdownCard({
-              mode: "pop",
-              title: "Status breakdown by POP",
-              summary: "Top POPs ranked from the latest triage status payload.",
-              rows: topRows.map((row: any) => {
-                const counts: Record<string, number> = {};
-                for (const code of statusCodes) {
-                  counts[code] = Number(row?.[`status_${code}`] || 0);
-                }
+            if (fallbackRows.length) {
+              addDrillCard({
+                drill: {
+                  type: "worst_pop",
+                  title: "POP breakdown",
+                  summary:
+                    "Per-status-code POP breakdown is not available on the latest triage result yet, so showing top POP breakdown instead.",
+                  rows: fallbackRows.slice(0, 20),
+                  metadata: {
+                    targetDimension: "pop",
+                    rowCount: fallbackRows.length,
+                  },
+                },
+                summaryText:
+                  "Per-status-code POP breakdown is not available on the latest triage result yet, so showing top POP breakdown instead.",
+              });
+              return;
+            }
 
-                return {
-                  label: String(row?.pop || "unknown"),
-                  totalRequests: Number(row?.total_requests ?? row?.totalRequests ?? 0),
-                  counts,
-                };
-              }),
-            });
+            addText(
+              "assistant",
+              "I recognized a POP-level status breakdown request, but there is no status-by-POP data or POP breakdown on the latest triage result yet."
+            );
             return;
           }
 
           if (wantsByRegion) {
-  const rows = Array.isArray(metrics.statusByRegion) ? metrics.statusByRegion : [];
+            const rows = Array.isArray(metrics.statusByRegion) ? metrics.statusByRegion : [];
 
-  if (!rows.length) {
-    addText(
-      "assistant",
-      "I recognized a region-level status breakdown request, but there is no status-by-region data on the latest triage result yet."
-    );
-    return;
-  }
+            if (rows.length) {
+              const topRows = rows.slice(0, 5);
 
-  const topRows = rows.slice(0, 5);
+              addStatusBreakdownCard({
+                mode: "region",
+                title: "Status breakdown by region",
+                summary: "Top regions ranked from the latest triage status payload.",
+                rows: topRows.map((row: any) => {
+                  const counts: Record<string, number> = {};
+                  for (const code of statusCodes) {
+                    counts[code] = Number(row?.[`status_${code}`] || 0);
+                  }
 
-  addStatusBreakdownCard({
-    mode: "region",
-    title: "Status breakdown by region",
-    summary: "Top regions ranked from the latest triage status payload.",
-    rows: topRows.map((row: any) => {
-      const counts: Record<string, number> = {};
-      for (const code of statusCodes) {
-        counts[code] = Number(row?.[`status_${code}`] || 0);
-      }
+                  return {
+                    label: String(row?.region || "unknown"),
+                    totalRequests: Number(row?.total_requests ?? row?.totalRequests ?? 0),
+                    counts,
+                  };
+                }),
+              });
+              return;
+            }
 
-      return {
-        label: String(row?.region || "unknown"),
-        totalRequests: Number(row?.total_requests ?? row?.totalRequests ?? 0),
-        counts,
-      };
-    }),
-  });
-  return;
-}
+            const fallbackRows = Array.isArray(metrics.regionBreakdown)
+              ? metrics.regionBreakdown
+              : [];
+
+            if (fallbackRows.length) {
+              addDrillCard({
+                drill: {
+                  type: "worst_region",
+                  title: "Region breakdown",
+                  summary:
+                    "Per-status-code region breakdown is not available on the latest triage result yet, so showing top region breakdown instead.",
+                  rows: fallbackRows.slice(0, 20),
+                  metadata: {
+                    targetDimension: "region",
+                    rowCount: fallbackRows.length,
+                  },
+                },
+                summaryText:
+                  "Per-status-code region breakdown is not available on the latest triage result yet, so showing top region breakdown instead.",
+              });
+              return;
+            }
+
+            addText(
+              "assistant",
+              "I recognized a region-level status breakdown request, but there is no status-by-region data or region breakdown on the latest triage result yet."
+            );
+            return;
+          }
 
           if (wantsByHost) {
             const rows = Array.isArray(metrics.statusByHost) ? metrics.statusByHost : [];
 
-            if (!rows.length) {
-              addText(
-                "assistant",
-                "I recognized a host-level status breakdown request, but there is no status-by-host data on the latest triage result yet."
-              );
+            if (rows.length) {
+              const topRows = rows.slice(0, 5);
+
+              addStatusBreakdownCard({
+                mode: "host",
+                title: "Status breakdown by host",
+                summary: "Top hosts ranked from the latest triage status payload.",
+                rows: topRows.map((row: any) => {
+                  const counts: Record<string, number> = {};
+                  for (const code of statusCodes) {
+                    counts[code] = Number(row?.[`status_${code}`] || 0);
+                  }
+
+                  return {
+                    label: String(row?.host || "unknown"),
+                    totalRequests: Number(row?.totalRequests ?? row?.total_requests ?? 0),
+                    counts,
+                  };
+                }),
+              });
               return;
             }
 
-            const topRows = rows.slice(0, 5);
+            const fallbackRows = Array.isArray(metrics.hostBreakdown)
+              ? metrics.hostBreakdown
+              : [];
 
-            addStatusBreakdownCard({
-              mode: "host",
-              title: "Status breakdown by host",
-              summary: "Top hosts ranked from the latest triage status payload.",
-              rows: topRows.map((row: any) => {
-                const counts: Record<string, number> = {};
-                for (const code of statusCodes) {
-                  counts[code] = Number(row?.[`status_${code}`] || 0);
-                }
+            if (fallbackRows.length) {
+              addDrillCard({
+                drill: {
+                  type: "worst_host",
+                  title: "Host breakdown",
+                  summary:
+                    "Per-status-code host breakdown is not available on the latest triage result yet, so showing top host breakdown instead.",
+                  rows: fallbackRows.slice(0, 20),
+                  metadata: {
+                    targetDimension: "host",
+                    rowCount: fallbackRows.length,
+                  },
+                },
+                summaryText:
+                  "Per-status-code host breakdown is not available on the latest triage result yet, so showing top host breakdown instead.",
+              });
+              return;
+            }
 
-                return {
-                  label: String(row?.host || "unknown"),
-                  totalRequests: Number(row?.totalRequests ?? row?.total_requests ?? 0),
-                  counts,
-                };
-              }),
-            });
+            addText(
+              "assistant",
+              "I recognized a host-level status breakdown request, but there is no status-by-host data or host breakdown on the latest triage result yet."
+            );
             return;
           }
 

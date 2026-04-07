@@ -17,6 +17,7 @@ export type FollowUpKind =
   | "compare_previous_window"
   | "drilldown_region"
   | "drilldown_pop"
+  | "drilldown_host"
   | "drilldown_ua"
   | "drilldown_content"
   | "drilldown_dimension"
@@ -26,6 +27,7 @@ export type FollowUpKind =
 export type DrilldownTarget =
   | "region"
   | "pop"
+  | "host"
   | "ua"
   | "content"
   | "dimension";
@@ -215,6 +217,9 @@ const FOLLOWUP_DRILLDOWN_REGION_PHRASES = [
   "which region is worst",
   "focus on worst region",
   "worst region",
+  "region breakdown",
+  "top regions",
+  "show regions",
 ];
 
 const FOLLOWUP_DRILLDOWN_POP_PHRASES = [
@@ -223,6 +228,20 @@ const FOLLOWUP_DRILLDOWN_POP_PHRASES = [
   "which pop is worst",
   "focus on worst pop",
   "worst pop",
+  "pop breakdown",
+  "top pops",
+  "show pops",
+];
+
+const FOLLOWUP_DRILLDOWN_HOST_PHRASES = [
+  "drill into worst host",
+  "show worst host",
+  "which host is worst",
+  "focus on worst host",
+  "worst host",
+  "host breakdown",
+  "top hosts",
+  "show hosts",
 ];
 
 const FOLLOWUP_DRILLDOWN_UA_PHRASES = [
@@ -241,6 +260,12 @@ const FOLLOWUP_DRILLDOWN_UA_PHRASES = [
   "which device is worst",
   "focus on worst device",
   "worst device",
+  "ua breakdown",
+  "device breakdown",
+  "top ua",
+  "top devices",
+  "show ua",
+  "show devices",
 ];
 
 const FOLLOWUP_DRILLDOWN_CONTENT_PHRASES = [
@@ -254,6 +279,10 @@ const FOLLOWUP_DRILLDOWN_CONTENT_PHRASES = [
   "which content type is worst",
   "focus on worst content type",
   "worst content type",
+  "content breakdown",
+  "content type breakdown",
+  "top content",
+  "show content",
 ];
 
 const FOLLOWUP_EXPLAIN_PHRASES = [
@@ -545,6 +574,8 @@ function buildMissingPriorContextReply(followUpKind?: FollowUpKind): string {
       return "I need a prior triage result with region evidence before I can drill into the worst region.";
     case "drilldown_pop":
       return "I need a prior triage result with POP evidence before I can drill into the worst POP.";
+    case "drilldown_host":
+      return "I need a prior triage result with host evidence before I can drill into the worst host.";
     case "drilldown_ua":
       return "I need a prior triage result with UA evidence before I can drill into the worst UA family.";
     case "drilldown_content":
@@ -593,6 +624,16 @@ function detectFollowUp(text: string): {
       shouldRerun: true,
       drilldownTarget: "pop",
       reason: `followup_drilldown_pop:${drilldownPopPhrase}`,
+    };
+  }
+
+  const drilldownHostPhrase = firstMatchingPhrase(text, FOLLOWUP_DRILLDOWN_HOST_PHRASES);
+  if (drilldownHostPhrase) {
+    return {
+      followUpKind: "drilldown_host",
+      shouldRerun: true,
+      drilldownTarget: "host",
+      reason: `followup_drilldown_host:${drilldownHostPhrase}`,
     };
   }
 
