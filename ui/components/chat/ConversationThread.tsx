@@ -9,6 +9,7 @@ type ConversationThreadProps = {
   chatScrollRef: React.RefObject<HTMLDivElement | null>;
   renderTriageCard: (run: any) => React.ReactNode;
   renderDrillCard: (drill: any, summaryText: string) => React.ReactNode;
+  renderStatusBreakdownCard: (breakdown: any) => React.ReactNode;
   renderExplainCard: (payload: {
     summary: string;
     overallState?: string;
@@ -53,6 +54,7 @@ export default function ConversationThread({
   chatScrollRef,
   renderTriageCard,
   renderDrillCard,
+  renderStatusBreakdownCard,
   renderExplainCard,
   renderCompareCard,
   renderTypingDots,
@@ -120,6 +122,9 @@ export default function ConversationThread({
 
                 {m.type === "drill" && renderDrillCard(m.drill, m.summaryText)}
 
+                {m.type === "status_breakdown" &&
+                  renderStatusBreakdownCard(m.breakdown)}
+
                 {m.type === "explain" &&
                   renderExplainCard({
                     summary: m.summary,
@@ -135,7 +140,14 @@ export default function ConversationThread({
                     compareMetrics: m.compareMetrics,
                   })}
 
-                {!["text", "triage", "drill", "explain", "compare"].includes(m.type) && (
+                {![
+                  "text",
+                  "triage",
+                  "drill",
+                  "status_breakdown",
+                  "explain",
+                  "compare",
+                ].includes(m.type) && (
                   <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
                     Unknown message type: {m.type}
                   </div>

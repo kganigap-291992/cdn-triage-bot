@@ -243,6 +243,48 @@ function normalizeContentBreakdownRow(row: any) {
   };
 }
 
+function normalizeHostBreakdownRow(row: any) {
+  const host = asString(row?.host);
+  if (!host) return null;
+
+  return {
+    host,
+    totalRequests: readUiOrSqlNumber(row, "totalRequests", "total_requests"),
+    error5xxCount: readUiOrSqlNumber(row, "error5xxCount", "error_5xx_count"),
+    errorRatePct: readUiOrSqlNumber(row, "errorRatePct", "error_rate_pct"),
+    p95TtmsMs:
+      row?.p95TtmsMs != null
+        ? safeNumberOrNull(row.p95TtmsMs)
+        : row?.p95_ttms_ms != null
+        ? safeNumberOrNull(row.p95_ttms_ms)
+        : null,
+    p99TtmsMs:
+      row?.p99TtmsMs != null
+        ? safeNumberOrNull(row.p99TtmsMs)
+        : row?.p99_ttms_ms != null
+        ? safeNumberOrNull(row.p99_ttms_ms)
+        : row?.p99_ms != null
+        ? safeNumberOrNull(row.p99_ms)
+        : null,
+    crcErrorCount:
+      row?.crcErrorCount != null
+        ? safeNumber(row.crcErrorCount, 0)
+        : row?.crc_error_count != null
+        ? safeNumber(row.crc_error_count, 0)
+        : row?.crc_errors != null
+        ? safeNumber(row.crc_errors, 0)
+        : 0,
+    cacheHitPct:
+      row?.cacheHitPct != null
+        ? safeNumberOrNull(row.cacheHitPct)
+        : row?.cache_hit_rate != null
+        ? safeNumberOrNull(row.cache_hit_rate)
+        : row?.cacheHitRate != null
+        ? safeNumberOrNull(row.cacheHitRate)
+        : null,
+  };
+}
+
 function sortBreakdownRows(a: any, b: any) {
   if (b.error5xxCount !== a.error5xxCount) {
     return b.error5xxCount - a.error5xxCount;
@@ -305,6 +347,19 @@ function normalizeContentBreakdown(rows: unknown): any[] | undefined {
   return out;
 }
 
+function normalizeHostBreakdown(rows: unknown): any[] | undefined {
+  if (!Array.isArray(rows)) return undefined;
+
+  const out = rows
+    .map((row) => normalizeHostBreakdownRow(row))
+    .filter(Boolean) as any[];
+
+  if (!out.length) return undefined;
+
+  out.sort(sortBreakdownRows);
+  return out;
+}
+
 function pickRegionBreakdown(metricsJson: any): any[] | undefined {
   return (
     normalizeRegionBreakdown(metricsJson?.regionBreakdown) ||
@@ -337,6 +392,15 @@ function pickContentBreakdown(metricsJson: any): any[] | undefined {
     normalizeContentBreakdown(metricsJson?.contentBreakdown) ||
     normalizeContentBreakdown(metricsJson?.evidenceBundle?.contentBreakdown) ||
     normalizeContentBreakdown(metricsJson?.evidence?.contentBreakdown) ||
+    undefined
+  );
+}
+
+function pickHostBreakdown(metricsJson: any): any[] | undefined {
+  return (
+    normalizeHostBreakdown(metricsJson?.hostBreakdown) ||
+    normalizeHostBreakdown(metricsJson?.evidenceBundle?.hostBreakdown) ||
+    normalizeHostBreakdown(metricsJson?.evidence?.hostBreakdown) ||
     undefined
   );
 }
@@ -698,6 +762,15 @@ function assertCanonicalMetrics(metricsJson: any) {
   const contentBreakdown = pickContentBreakdown(metricsJson);
   if (contentBreakdown) out.contentBreakdown = contentBreakdown;
 
+  const hostBreakdown = pickHostBreakdown(metricsJson);
+  if (hostBreakdown) out.hostBreakdown = hostBreakdown;
+
+  if (Array.isArray(metricsJson.statusByRegion)) out.statusByRegion = metricsJson.statusByRegion;
+  if (Array.isArray(metricsJson.statusByPop)) out.statusByPop = metricsJson.statusByPop;
+  if (Array.isArray(metricsJson.statusByContentType)) out.statusByContentType = metricsJson.statusByContentType;
+  if (Array.isArray(metricsJson.statusByUaFamily)) out.statusByUaFamily = metricsJson.statusByUaFamily;
+  if (Array.isArray(metricsJson.statusByHost)) out.statusByHost = metricsJson.statusByHost;
+
   if (metricsJson.available && typeof metricsJson.available === "object") {
     out.available = metricsJson.available;
   }
@@ -775,7 +848,19 @@ export async function runClickhouseTriage(
   const evidence = raw?.evidence ?? undefined;
 
   const baseMetrics = raw?.metricsJson ?? raw ?? {};
+  
   const metricsJson = assertCanonicalMetrics(baseMetrics);
+
+  // ✅ ADD THESE LINES RIGHT HERE
+  console.log(
+    "RUNNER DEBUG metricsJson.hostBreakdown.length",
+    metricsJson?.hostBreakdown?.length ?? 0
+  );
+
+  console.log(
+    "RUNNER DEBUG metricsJson.hostBreakdown.sample",
+    metricsJson?.hostBreakdown?.[0]
+  );
 
   metricsJson.timeseries = metricsJson.timeseries || {
     bucketSeconds: null,

@@ -20,19 +20,23 @@ export type NormalizedScope = {
 export type TimeSeriesPoint = {
   ts: string;
 
-  // Backward-compatible alias still used in some normalization paths.
+  // Backward-compatible alias
   requests?: number;
 
-  // Preferred canonical field going forward.
+  // Canonical going forward
   totalRequests?: number;
 
   error5xxCount?: number;
   crcErrorCount?: number;
+
   errorRatePct?: number;
   successRatePct?: number;
+
   p95TtmsMs?: number;
   p99TtmsMs?: number;
+
   cacheHitRate?: number;
+
   statusCountsByCode?: Record<string, number>;
 };
 
@@ -51,15 +55,24 @@ export type CrcSeriesPoint = {
   crcErrorCount?: number;
 };
 
+export type StatusOverTimePoint = {
+  ts: string;
+  statusCounts: Record<string, number>;
+};
+
 export type TimeSeries = {
   bucketSeconds: number | null;
   startTs: string | null;
   endTs: string | null;
+
   points: TimeSeriesPoint[];
+
   statusCodeSeries?: string[];
+
   hostSeries?: HostSeriesPoint[];
   crcSeries?: CrcSeriesPoint[];
-  statusOverTime?: any[];
+
+  statusOverTime?: StatusOverTimePoint[];
 };
 
 // ---------------------------------------------
@@ -80,6 +93,7 @@ export type WindowInfo = {
 export type DerivedMetrics = {
   errorRatePct?: number;
   cacheHitRate?: number;
+
   trafficDeltaPct?: number;
   latencyDeltaPct?: number;
   p99DeltaPct?: number;
@@ -151,8 +165,8 @@ export type BreakdownRow = {
   error5xxCount?: number;
   errorRatePct?: number;
   p95TtmsMs?: number | null;
-  cacheHitPct?: number | null;
   cacheHitRate?: number | null;
+
   [key: string]: unknown;
 };
 
@@ -184,18 +198,14 @@ export type EvidenceBundle = {
   derivedMetrics?: DerivedMetrics;
 
   regionBreakdown?: BreakdownRow[];
-
   popBreakdown?: BreakdownRow[];
-
   uaBreakdown?: BreakdownRow[];
-
   contentBreakdown?: BreakdownRow[];
+  hostBreakdown?: BreakdownRow[];
 
-  worstLatency?: any[];
-
-  worstErrors?: any[];
-
-  worstCache?: any[];
+  worstLatency?: BreakdownRow[];
+  worstErrors?: BreakdownRow[];
+  worstCache?: BreakdownRow[];
 
   diagnostics?: Diagnostics;
 
@@ -212,7 +222,10 @@ export type EvidenceBundle = {
 export type AgentGraph = {
   title: string;
   type: "line" | "bar";
-  series: any[];
+  series: {
+    name: string;
+    data: any[];
+  }[];
 };
 
 // ---------------------------------------------
@@ -222,10 +235,8 @@ export type AgentGraph = {
 export type AgentResult = {
   agent: AgentName;
 
-  // Calm product-facing state.
   state: UiState;
 
-  // Internal severity stays available for deterministic ranking/debug.
   severityInternal?: SeverityLevel;
 
   summary: string;
@@ -242,13 +253,10 @@ export type AgentResult = {
 // ---------------------------------------------
 
 export type IncidentAssessment = {
-  // Main UI-facing top-level state.
   overallState: UiState;
 
-  // Transitional/internal compatibility for existing backend logic.
   overallStatus?: "ok" | "warn" | "critical";
 
-  // Internal severity remains available, but is not the main outward label.
   severity?: SeverityLevel;
   severityReasons?: SeverityReason[];
   severityTopDriver?: SeverityReason | null;

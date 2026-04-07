@@ -15,6 +15,7 @@ import CompareCard from "@/components/cards/CompareCard";
 import NextActionChips from "@/components/NextActionChips";
 import { getNextActions } from "@/lib/nextActions/getNextActions";
 import UtcDateTimeInput from "@/components/filters/UtcDateTimeInput";
+import StatusBarGraph from "@/components/graphs/StatusBarGraph";
 
 // ── constants ──────────────────────────────────────────────────────────────
 const LOGO_SRC = "/cachey-logo.png";
@@ -147,7 +148,31 @@ type ChatCompare = {
   };
 };
 
-type ChatMsg = ChatText | ChatTriage | ChatDrill | ChatExplain | ChatCompare;
+type ChatStatusBreakdown = {
+  id: string;
+  type: "status_breakdown";
+  role: "assistant";
+  ts: string;
+  breakdown: {
+    mode: "aggregate" | "region" | "pop" | "host";
+    title: string;
+    summary: string;
+    rows?: Array<{
+      label: string;
+      totalRequests: number;
+      counts: Record<string, number>;
+    }>;
+    totals?: Record<string, number>;
+  };
+};
+
+type ChatMsg =
+  | ChatText
+  | ChatTriage
+  | ChatDrill
+  | ChatExplain
+  | ChatCompare
+  | ChatStatusBreakdown;
 
 type TimeseriesPoint = {
   ts: string;
@@ -3073,6 +3098,7 @@ function drillDimensionLabel(row: any): string {
   return (
     row?.region ||
     row?.pop ||
+    row?.host ||
     row?.uaFamily ||
     row?.contentType ||
     row?.dimension ||
@@ -3086,6 +3112,8 @@ function drillDimensionHeader(drill: any): string {
       return "Region";
     case "worst_pop":
       return "POP";
+    case "worst_host":
+      return "Host";
     case "worst_ua":
       return "UA Family";
     case "worst_content":
@@ -3220,6 +3248,134 @@ function DrillCard({
             )}
           </div>
         </details>
+      ) : null}
+    </div>
+  );
+}
+
+
+function StatusBreakdownCard({
+  breakdown,
+}: {
+  breakdown: ChatStatusBreakdown["breakdown"];
+}) {
+  const statusCodes = ["200", "206", "304", "403", "404", "429", "500", "502", "503", "504"];
+
+  function toStatusGraphInput(counts?: Record<string, number>) {
+    return Object.fromEntries(
+      statusCodes.map((code) => [`status_${code}`, Number(counts?.[code] ?? 0)])
+    );
+  }
+  const totalsEntries =
+    breakdown.totals
+      ? statusCodes
+          .map((code) => ({
+            code,
+            count: Number(breakdown.totals?.[code] ?? 0),
+          }))
+      : [];
+
+  return (
+    <div className="triage-enter rounded-2xl border border-white/12 bg-[#10151c] backdrop-blur p-4 shadow-xl shadow-black/20 space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs text-gray-400">Status breakdown</div>
+          <div className="text-sm font-semibold text-gray-100 truncate">
+            {breakdown.title}
+          </div>
+        </div>
+        <div className="flex flex-wrap justify-end gap-1.5 shrink-0">
+          <span className="text-[11px] px-2 py-1 rounded-full border border-cyan-400/30 bg-cyan-400/10 text-cyan-200">
+            status
+          </span>
+          <span className="text-[11px] px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
+            {breakdown.mode}
+          </span>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+        <div className="text-xs text-gray-400 mb-2">Summary</div>
+        <div className="text-sm text-gray-100/90 leading-relaxed">
+          {breakdown.summary}
+        </div>
+      </div>
+
+      {breakdown.mode === "aggregate" && breakdown.totals ? (
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 space-y-4">
+          <div>
+            <div className="text-sm font-semibold text-gray-200 mb-3">Totals</div>
+            <div className="flex flex-wrap gap-2">
+              {totalsEntries.map(({ code, count }) => (
+                <span
+                  key={code}
+                  className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200"
+                >
+                  <span className="text-gray-400 mr-1">{code}</span>
+                  <span className="font-semibold">{count.toLocaleString()}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <StatusBarGraph status={toStatusGraphInput(breakdown.totals)} />
+        </div>
+      ) : null}
+
+      {Array.isArray(breakdown.rows) && breakdown.rows.length > 0 ? (
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-semibold text-gray-200">Top results</div>
+            <div className="text-[11px] text-gray-500">
+              {breakdown.rows.length} row{breakdown.rows.length === 1 ? "" : "s"}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            {breakdown.rows.map((row, idx) => (
+              <div
+                key={`${row.label}-${idx}`}
+                className="rounded-xl border border-white/10 bg-black/30 p-3 space-y-3"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs text-gray-400">
+                      {breakdown.mode === "pop"
+                        ? "POP"
+                        : breakdown.mode === "region"
+                        ? "Region"
+                        : breakdown.mode === "host"
+                        ? "Host"
+                        : "Dimension"}
+                    </div>
+                    <div className="text-sm font-semibold text-gray-100 truncate">
+                      {row.label}
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-gray-400 shrink-0">
+                    req={formatIntOrNA(row.totalRequests)}
+                  </div>
+                </div>
+
+                <StatusBarGraph status={toStatusGraphInput(row.counts)} />
+
+                <div className="flex flex-wrap gap-2">
+                  {statusCodes.map((code) => (
+                    <span
+                      key={code}
+                      className="text-[11px] px-2 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200"
+                    >
+                      <span className="text-gray-400 mr-1">{code}</span>
+                      <span className="font-semibold">
+                        {formatIntOrNA(row.counts?.[code] ?? 0)}
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       ) : null}
     </div>
   );
@@ -3456,6 +3612,23 @@ export default function Home() {
       },
     ]);
   }
+  
+
+  function addStatusBreakdownCard(
+    payload: ChatStatusBreakdown["breakdown"]
+  ) {
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random()}`,
+        type: "status_breakdown",
+        role: "assistant",
+        ts: nowIso(),
+        breakdown: payload,
+      },
+    ]);
+  }
+
 
   function handleResetInvestigation() {
     setChatMessages([]);
@@ -3738,19 +3911,20 @@ export default function Home() {
     ].join("|");
   }
 
-  const latestActionableMsg = useMemo<ChatMsg | null>(() => {
+  const latestActionableMsg = useMemo(() => {
     for (let i = chatMessages.length - 1; i >= 0; i--) {
       const msg = chatMessages[i];
+
       if (
-        msg.role === "assistant" &&
-        (msg.type === "triage" ||
-          msg.type === "drill" ||
-          msg.type === "compare" ||
-          msg.type === "explain")
+        msg.type === "triage" ||
+        msg.type === "drill" ||
+        msg.type === "compare" ||
+        msg.type === "explain"
       ) {
         return msg;
       }
     }
+
     return null;
   }, [chatMessages]);
 
@@ -4145,7 +4319,14 @@ export default function Home() {
 
   async function runTriage(
     inputs: TriageInputs,
-    extra?: { drillIntent?: "worst_region" | "worst_pop" | "worst_ua" | "worst_content" }
+    extra?: {
+      drillIntent?:
+        | "worst_region"
+        | "worst_pop"
+        | "worst_host"
+        | "worst_ua"
+        | "worst_content";
+    }
   ) {
     const formData = new FormData();
     formData.append("dataSource", inputs.dataSource);
@@ -4188,7 +4369,12 @@ export default function Home() {
     scopeSource: "filters" | "chat",
     extra?: {
       chatContext?: ChatTriage["run"]["chatContext"];
-      drillIntent?: "worst_region" | "worst_pop" | "worst_ua" | "worst_content";
+      drillIntent?:
+        | "worst_region"
+        | "worst_pop"
+        | "worst_host"
+        | "worst_ua"
+        | "worst_content";
     }
   ) {
     if (isTriageLoading) return;
@@ -4320,6 +4506,7 @@ export default function Home() {
   function detectExplicitDrillIntent(text: string):
     | "worst_region"
     | "worst_pop"
+    | "worst_host"
     | "worst_ua"
     | "worst_content"
     | null {
@@ -4342,6 +4529,16 @@ export default function Home() {
         lowered.includes("by pop"));
 
     if (asksForPop) return "worst_pop";
+
+
+    const asksForHost =
+      lowered.includes("host") &&
+      (lowered.includes("bad") ||
+        lowered.includes("worst") ||
+        lowered.includes("which") ||
+        lowered.includes("show"));
+
+    if (asksForHost) return "worst_host";
 
     const asksForRegion =
       lowered.includes("region") &&
@@ -4434,6 +4631,184 @@ export default function Home() {
           return;
         }
 
+        if (chatIntent === "status_breakdown") {
+          if (!latestTriageRun) {
+            addText(
+              "assistant",
+              "Run a triage first, then I can show a status-code breakdown for the current investigation."
+            );
+            return;
+          }
+
+          const lowered = text.toLowerCase().replace(/what’s/g, "whats");
+          const metrics = latestTriageRun.metricsJson || {};
+
+          const statusCodes = ["200", "206", "304", "403", "404", "429", "500", "502", "503", "504"];
+
+          function readStatusCounts(row: any) {
+            return statusCodes
+              .map((code) => ({
+                code,
+                count: Number(row?.[`status_${code}`] || 0),
+              }))
+              .filter((x) => x.count > 0);
+          }
+
+          function formatStatusCounts(row: any) {
+            const counts = readStatusCounts(row);
+            if (!counts.length) return "No status counts found.";
+            return counts.map((x) => `${x.code}=${x.count.toLocaleString()}`).join(" • ");
+          }
+
+          const wantsByPop = lowered.includes("by pop") || lowered.includes("per pop");
+          const wantsByRegion = lowered.includes("by region") || lowered.includes("per region");
+          const wantsByHost = lowered.includes("by host") || lowered.includes("per host");
+
+          if (wantsByPop) {
+            const rows = Array.isArray(metrics.statusByPop) ? metrics.statusByPop : [];
+
+            if (!rows.length) {
+              addText(
+                "assistant",
+                "I recognized a POP-level status breakdown request, but there is no status-by-POP data on the latest triage result yet."
+              );
+              return;
+            }
+
+            const topRows = rows.slice(0, 5);
+
+            addStatusBreakdownCard({
+              mode: "pop",
+              title: "Status breakdown by POP",
+              summary: "Top POPs ranked from the latest triage status payload.",
+              rows: topRows.map((row: any) => {
+                const counts: Record<string, number> = {};
+                for (const code of statusCodes) {
+                  counts[code] = Number(row?.[`status_${code}`] || 0);
+                }
+
+                return {
+                  label: String(row?.pop || "unknown"),
+                  totalRequests: Number(row?.total_requests ?? row?.totalRequests ?? 0),
+                  counts,
+                };
+              }),
+            });
+            return;
+          }
+
+          if (wantsByRegion) {
+  const rows = Array.isArray(metrics.statusByRegion) ? metrics.statusByRegion : [];
+
+  if (!rows.length) {
+    addText(
+      "assistant",
+      "I recognized a region-level status breakdown request, but there is no status-by-region data on the latest triage result yet."
+    );
+    return;
+  }
+
+  const topRows = rows.slice(0, 5);
+
+  addStatusBreakdownCard({
+    mode: "region",
+    title: "Status breakdown by region",
+    summary: "Top regions ranked from the latest triage status payload.",
+    rows: topRows.map((row: any) => {
+      const counts: Record<string, number> = {};
+      for (const code of statusCodes) {
+        counts[code] = Number(row?.[`status_${code}`] || 0);
+      }
+
+      return {
+        label: String(row?.region || "unknown"),
+        totalRequests: Number(row?.total_requests ?? row?.totalRequests ?? 0),
+        counts,
+      };
+    }),
+  });
+  return;
+}
+
+          if (wantsByHost) {
+            const rows = Array.isArray(metrics.statusByHost) ? metrics.statusByHost : [];
+
+            if (!rows.length) {
+              addText(
+                "assistant",
+                "I recognized a host-level status breakdown request, but there is no status-by-host data on the latest triage result yet."
+              );
+              return;
+            }
+
+            const topRows = rows.slice(0, 5);
+
+            addStatusBreakdownCard({
+              mode: "host",
+              title: "Status breakdown by host",
+              summary: "Top hosts ranked from the latest triage status payload.",
+              rows: topRows.map((row: any) => {
+                const counts: Record<string, number> = {};
+                for (const code of statusCodes) {
+                  counts[code] = Number(row?.[`status_${code}`] || 0);
+                }
+
+                return {
+                  label: String(row?.host || "unknown"),
+                  totalRequests: Number(row?.totalRequests ?? row?.total_requests ?? 0),
+                  counts,
+                };
+              }),
+            });
+            return;
+          }
+
+          const statusTs = parseStatusOnlyTimeseries(metrics);
+
+          if (statusTs?.points?.length) {
+            const totals: Record<string, number> = {
+              "200": 0,
+              "206": 0,
+              "304": 0,
+              "403": 0,
+              "404": 0,
+              "429": 0,
+              "500": 0,
+              "502": 0,
+              "503": 0,
+              "504": 0,
+            };
+
+            for (const point of statusTs.points) {
+              const counts = point.statusCountsByCode || {};
+              for (const code of statusCodes) {
+                totals[code] += Number(counts[code] || 0);
+              }
+            }
+
+            addStatusBreakdownCard({
+              mode: "aggregate",
+              title: "Status code distribution",
+              summary: "Aggregate status totals derived from the latest status-over-time payload.",
+              totals,
+            });
+            return;
+          }
+
+          const totals: Record<string, number> = {};
+          for (const code of statusCodes) {
+            totals[code] = Number(metrics?.[`status_${code}`] || 0);
+          }
+
+          addStatusBreakdownCard({
+            mode: "aggregate",
+            title: "Status code distribution",
+            summary: "Aggregate status totals read from the latest triage payload.",
+            totals,
+          });
+          return;
+        }
+
         if (chatIntent === "triage" && !explicitDrillIntent) {
           const fallbackPartner =
             pendingChatScope.partner ||
@@ -4497,27 +4872,13 @@ export default function Home() {
           let drillIntent:
             | "worst_region"
             | "worst_pop"
+            | "worst_host"
             | "worst_ua"
             | "worst_content"
             | undefined;
           let reason = "generic drill wording";
 
           const lowered = text.toLowerCase().replace(/what’s/g, "whats");
-
-          const mentionsStatusBreakdown =
-            (lowered.includes("status") || lowered.includes("status code")) &&
-            (lowered.includes("breakdown") ||
-              lowered.includes("distribution") ||
-              lowered.includes("mix") ||
-              lowered.includes("split"));
-
-          if (mentionsStatusBreakdown) {
-            addText(
-              "assistant",
-              "Status-code breakdown routing is being added separately. For now, ask for worst region, POP, device, or content type."
-            );
-            return;
-          }
 
           if (
             lowered.includes("pop") &&
@@ -4528,6 +4889,16 @@ export default function Home() {
             drillInputs = deriveWorstPopInputs(latestInvestigationContext);
             drillIntent = "worst_pop";
             reason = "drill worst pop fallback";
+          } else if (
+            lowered.includes("host") &&
+            (lowered.includes("bad") ||
+              lowered.includes("worst") ||
+              lowered.includes("which") ||
+              lowered.includes("show"))
+          ) {
+            drillInputs = contextToTriageInputs(latestInvestigationContext);
+            drillIntent = "worst_host";
+            reason = "drill worst host fallback";
           } else if (
             lowered.includes("region") &&
             (lowered.includes("bad") ||
@@ -4667,6 +5038,7 @@ export default function Home() {
   let drillIntent:
     | "worst_region"
     | "worst_pop"
+    | "worst_host"
     | "worst_ua"
     | "worst_content"
     | undefined;
@@ -4674,6 +5046,9 @@ export default function Home() {
   if (explicitDrillIntent === "worst_pop") {
     drillInputs = deriveWorstPopInputs(latestInvestigationContext);
     drillIntent = "worst_pop";
+  } else if (explicitDrillIntent === "worst_host") {
+    drillInputs = contextToTriageInputs(latestInvestigationContext);
+    drillIntent = "worst_host";
   } else if (explicitDrillIntent === "worst_region") {
     drillInputs = deriveWorstRegionInputs(latestInvestigationContext);
     drillIntent = "worst_region";
@@ -5226,6 +5601,9 @@ return (
           renderTriageCard={(run) => <TriageCard run={run} />}
           renderDrillCard={(drill, summaryText) => (
             <DrillCard drill={drill} summaryText={summaryText} />
+          )}
+          renderStatusBreakdownCard={(breakdown) => (
+            <StatusBreakdownCard breakdown={breakdown} />
           )}
           renderExplainCard={({ summary, overallState, primarySignal }) => (
             <ExplainCard

@@ -48,7 +48,7 @@ export function detectIntent(input: string): IntentType {
   // -----------------------------
   // Status breakdown
   // Must come before drill so
-  // "status breakdown by pop/region" does not get hijacked.
+  // "status by pop/region/host" is not hijacked
   // -----------------------------
   const mentionsStatusConcept = includesAny(text, [
     "status code",
@@ -65,16 +65,22 @@ export function detectIntent(input: string): IntentType {
     "504",
   ]);
 
-  const mentionsBreakdownConcept = includesAny(text, [
+  const mentionsStatusViewIntent = includesAny(text, [
     "breakdown",
     "distribution",
     "mix",
     "split",
     "show status",
     "show me status",
+    "by pop",
+    "by region",
+    "by host",
+    "per pop",
+    "per region",
+    "per host",
   ]);
 
-  if (mentionsStatusConcept && mentionsBreakdownConcept) {
+  if (mentionsStatusConcept && mentionsStatusViewIntent) {
     return "status_breakdown";
   }
 
@@ -103,8 +109,6 @@ export function detectIntent(input: string): IntentType {
 
   // -----------------------------
   // Drill
-  // Keep this below status_breakdown.
-  // Expand to include UA/content drill asks.
   // -----------------------------
   if (
     includesAny(text, [
@@ -137,7 +141,7 @@ export function detectIntent(input: string): IntentType {
   }
 
   if (
-    includesAny(text, ["by region", "by pop", "by ua", "by device", "by content"]) &&
+    includesAny(text, ["by region", "by pop", "by host", "by ua", "by device", "by content"]) &&
     !includesAny(text, ["status", "status code", "distribution", "breakdown"])
   ) {
     return "drill";

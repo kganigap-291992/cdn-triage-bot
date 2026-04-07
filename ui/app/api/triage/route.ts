@@ -227,6 +227,48 @@ function normalizeContentBreakdownRow(row: any) {
   };
 }
 
+function normalizeHostBreakdownRow(row: any) {
+  const host = asString(row?.host);
+  if (!host) return null;
+
+  return {
+    host,
+    totalRequests: readUiOrSqlNumber(row, "totalRequests", "total_requests"),
+    error5xxCount: readUiOrSqlNumber(row, "error5xxCount", "error_5xx_count"),
+    errorRatePct: readUiOrSqlNumber(row, "errorRatePct", "error_rate_pct"),
+    p95TtmsMs:
+      row?.p95TtmsMs != null
+        ? numOrNull(row.p95TtmsMs)
+        : row?.p95_ttms_ms != null
+        ? numOrNull(row.p95_ttms_ms)
+        : null,
+    p99TtmsMs:
+      row?.p99TtmsMs != null
+        ? numOrNull(row.p99TtmsMs)
+        : row?.p99_ttms_ms != null
+        ? numOrNull(row.p99_ttms_ms)
+        : row?.p99_ms != null
+        ? numOrNull(row.p99_ms)
+        : null,
+    crcErrorCount:
+      row?.crcErrorCount != null
+        ? numOrZero(row.crcErrorCount)
+        : row?.crc_error_count != null
+        ? numOrZero(row.crc_error_count)
+        : row?.crc_errors != null
+        ? numOrZero(row.crc_errors)
+        : 0,
+    cacheHitPct:
+      row?.cacheHitPct != null
+        ? numOrNull(row.cacheHitPct)
+        : row?.cache_hit_rate != null
+        ? numOrNull(row.cache_hit_rate)
+        : row?.cacheHitRate != null
+        ? numOrNull(row.cacheHitRate)
+        : null,
+  };
+}
+
 function normalizeRegionBreakdown(rows: unknown): any[] | undefined {
   if (!Array.isArray(rows)) return undefined;
   const out = rows.map((row) => normalizeRegionBreakdownRow(row)).filter(Boolean) as any[];
@@ -254,6 +296,14 @@ function normalizeUaBreakdown(rows: unknown): any[] | undefined {
 function normalizeContentBreakdown(rows: unknown): any[] | undefined {
   if (!Array.isArray(rows)) return undefined;
   const out = rows.map((row) => normalizeContentBreakdownRow(row)).filter(Boolean) as any[];
+  if (!out.length) return undefined;
+  out.sort(sortBreakdownRows);
+  return out;
+}
+
+function normalizeHostBreakdown(rows: unknown): any[] | undefined {
+  if (!Array.isArray(rows)) return undefined;
+  const out = rows.map((row) => normalizeHostBreakdownRow(row)).filter(Boolean) as any[];
   if (!out.length) return undefined;
   out.sort(sortBreakdownRows);
   return out;
@@ -299,6 +349,17 @@ function pickContentBreakdownFromProxy(parsed: any, rawMetrics: any): any[] | un
     normalizeContentBreakdown(rawMetrics?.evidence?.contentBreakdown) ||
     normalizeContentBreakdown(parsed?.evidenceBundle?.contentBreakdown) ||
     normalizeContentBreakdown(parsed?.evidence?.contentBreakdown) ||
+    undefined
+  );
+}
+
+function pickHostBreakdownFromProxy(parsed: any, rawMetrics: any): any[] | undefined {
+  return (
+    normalizeHostBreakdown(rawMetrics?.hostBreakdown) ||
+    normalizeHostBreakdown(rawMetrics?.evidenceBundle?.hostBreakdown) ||
+    normalizeHostBreakdown(rawMetrics?.evidence?.hostBreakdown) ||
+    normalizeHostBreakdown(parsed?.evidenceBundle?.hostBreakdown) ||
+    normalizeHostBreakdown(parsed?.evidence?.hostBreakdown) ||
     undefined
   );
 }
@@ -908,6 +969,12 @@ async function maybeExecuteDrill(
     });
   }
 
+  console.log("ROUTE DEBUG drillIntent", inputs.drillIntent);
+  console.log("ROUTE DEBUG metricsJson.hostBreakdown.length", metricsJson?.hostBreakdown?.length ?? 0);
+  console.log("ROUTE DEBUG evidenceBundle.hostBreakdown.length", evidenceBundle?.hostBreakdown?.length ?? 0);
+  console.log("ROUTE DEBUG evidenceBundle.hostBreakdown.sample", evidenceBundle?.hostBreakdown?.slice?.(0, 2));
+  console.log("ROUTE DEBUG metricsJson.hostBreakdown.sample", metricsJson?.hostBreakdown?.slice?.(0, 2));
+
   const drill = await executeDrill(drillRequest, evidenceBundle);
 
   return okJson({
@@ -1087,6 +1154,9 @@ function adaptLegacyProxyMetricsToCanonical(legacyMetrics: any, parsed?: any) {
   const contentBreakdown = pickContentBreakdownFromProxy(parsed, legacyMetrics);
   if (contentBreakdown) out.contentBreakdown = contentBreakdown;
 
+  const hostBreakdown = pickHostBreakdownFromProxy(parsed, legacyMetrics);
+  if (hostBreakdown) out.hostBreakdown = hostBreakdown;
+
   return out;
 }
 
@@ -1122,6 +1192,9 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
   const contentBreakdown = pickContentBreakdownFromProxy(parsed, rawMetrics);
   if (contentBreakdown) metricsJson.contentBreakdown = contentBreakdown;
 
+  const hostBreakdown = pickHostBreakdownFromProxy(parsed, rawMetrics);
+  if (hostBreakdown) metricsJson.hostBreakdown = hostBreakdown;
+
   // status-by-dimension passthrough
   metricsJson.statusByRegion = Array.isArray(rawMetrics?.statusByRegion)
     ? rawMetrics.statusByRegion
@@ -1134,6 +1207,9 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
     : [];
   metricsJson.statusByUaFamily = Array.isArray(rawMetrics?.statusByUaFamily)
     ? rawMetrics.statusByUaFamily
+    : [];
+  metricsJson.statusByHost = Array.isArray(rawMetrics?.statusByHost)
+    ? rawMetrics.statusByHost
     : [];
 
   metricsJson.debug = {

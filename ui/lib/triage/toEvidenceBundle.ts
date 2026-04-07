@@ -321,6 +321,65 @@ function buildContentBreakdown(result: ClickhouseTriageResult) {
     : pickArray(m?.evidenceBundle, ["contentBreakdown"]);
 }
 
+function normalizeHostBreakdownRow(row: any) {
+  const host = asString(row?.host ?? row?.hostname ?? row?.host_name) || "unknown";
+
+  return {
+    host,
+    totalRequests:
+      pickNumber(row, ["totalRequests", "total_requests", "requests"]) ?? 0,
+    error5xxCount:
+      pickNumber(row, [
+        "error5xxCount",
+        "error_5xx_count",
+        "http_5xx",
+        "http_5xx_count",
+      ]) ?? 0,
+    errorRatePct: pickNumber(row, ["errorRatePct", "error_rate_pct"]) ?? 0,
+    p95TtmsMs: pickNumber(row, ["p95TtmsMs", "p95_ms", "p95_ttms_ms"]) ?? null,
+    p99TtmsMs: pickNumber(row, ["p99TtmsMs", "p99_ms", "p99_ttms_ms"]) ?? null,
+    cacheHitRate: pickNumber(row, [
+      "cacheHitRate",
+      "cacheHitPct",
+      "cache_hit_rate",
+      "cache_hit_pct",
+    ]) ?? null,
+    crcErrorCount:
+      pickNumber(row, ["crcErrorCount", "crc_error_count", "crc_errors"]) ?? 0,
+  };
+}
+
+function buildHostBreakdown(result: ClickhouseTriageResult) {
+  const m = result?.metricsJson || {};
+
+  const fromMetrics = pickArray(m, ["hostBreakdown"]);
+  const fromResult = pickArray(result, ["hostBreakdown"]);
+  const fromMetricsBundle = pickArray(m?.evidenceBundle, ["hostBreakdown"]);
+  const fromMetricsEvidence = pickArray((m as any)?.evidence, ["hostBreakdown"]);
+  const fromResultBundle = pickArray((result as any)?.evidenceBundle, ["hostBreakdown"]);
+  const fromResultEvidence = pickArray((result as any)?.evidence, ["hostBreakdown"]);
+
+  const rows = fromMetrics.length
+    ? fromMetrics
+    : fromResult.length
+    ? fromResult
+    : fromMetricsBundle.length
+    ? fromMetricsBundle
+    : fromMetricsEvidence.length
+    ? fromMetricsEvidence
+    : fromResultBundle.length
+    ? fromResultBundle
+    : fromResultEvidence.length
+    ? fromResultEvidence
+    : [];
+
+  if (!rows.length) return [];
+
+  return rows
+    .map((row: any) => normalizeHostBreakdownRow(row))
+    .filter((row: any) => Boolean(row?.host));
+}
+
 export function toEvidenceBundle(
   inputs: ClickhouseTriageInputs,
   result: ClickhouseTriageResult
@@ -341,6 +400,7 @@ export function toEvidenceBundle(
   const popBreakdown = buildPopBreakdown(result);
   const uaBreakdown = buildUABreakdown(result);
   const contentBreakdown = buildContentBreakdown(result);
+  const hostBreakdown = buildHostBreakdown(result);
 
   return {
     normalizedScope,
@@ -367,6 +427,7 @@ export function toEvidenceBundle(
     popBreakdown,
     uaBreakdown,
     contentBreakdown,
+    hostBreakdown,
     worstLatency: [],
     worstErrors: [],
     worstCache: [],

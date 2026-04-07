@@ -1237,6 +1237,29 @@ LIMIT 20
 FORMAT JSON
 `.trim();
 
+  const q36 = `
+${timeWith}
+SELECT
+  host,
+  sum(requests) AS total_requests,
+  sum(status_200) AS status_200,
+  sum(status_206) AS status_206,
+  sum(status_304) AS status_304,
+  sum(status_403) AS status_403,
+  sum(status_404) AS status_404,
+  sum(status_429) AS status_429,
+  sum(status_500) AS status_500,
+  sum(status_502) AS status_502,
+  sum(status_503) AS status_503,
+  sum(status_504) AS status_504
+FROM ${table}
+${whereSql}
+GROUP BY host
+ORDER BY total_requests DESC
+LIMIT 20
+FORMAT JSON
+`.trim();
+
   return {
     queries: [
       q0,
@@ -1275,6 +1298,7 @@ FORMAT JSON
       q33,
       q34,
       q35,
+      q36,
     ],
     params,
     meta: {

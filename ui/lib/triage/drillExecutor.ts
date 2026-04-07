@@ -142,6 +142,12 @@ export async function executeDrill(
 
   let rawRows: any[] = [];
 
+
+console.log("EXEC DEBUG request.type", request.type);
+console.log("EXEC DEBUG bundle.hostBreakdown.length", bundle?.hostBreakdown?.length ?? 0);
+console.log("EXEC DEBUG bundle.hostBreakdown.sample", bundle?.hostBreakdown?.slice?.(0, 2));
+
+
   if (request.type === "worst_region") {
     rawRows = bundle?.regionBreakdown ?? [];
   } else if (request.type === "worst_pop") {
@@ -150,6 +156,10 @@ export async function executeDrill(
     rawRows = bundle?.uaBreakdown ?? [];
   } else if (request.type === "worst_content") {
     rawRows = bundle?.contentBreakdown ?? [];
+  } else if (request.type === "worst_host") {
+    console.log("EXEC DEBUG entering worst_host branch");
+    console.log("EXEC DEBUG host rows before assign", bundle?.hostBreakdown?.slice?.(0, 2));
+    rawRows = bundle?.hostBreakdown ?? [];
   }
 
   if (!rawRows.length && deps.runQuery) {
