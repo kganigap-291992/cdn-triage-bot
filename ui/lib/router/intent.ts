@@ -47,8 +47,8 @@ export function detectIntent(input: string): IntentType {
 
   // -----------------------------
   // Status breakdown
-  // Must come before drill so
-  // "status by pop/region/host" is not hijacked
+  // Must stay before drill so
+  // "status by pop/region/host" stays status-specific
   // -----------------------------
   const mentionsStatusConcept = includesAny(text, [
     "status code",
@@ -117,6 +117,7 @@ export function detectIntent(input: string): IntentType {
       "show worst",
       "worst region",
       "worst pop",
+      "worst host",
       "worst ua",
       "worst ua family",
       "worst device",
@@ -124,16 +125,37 @@ export function detectIntent(input: string): IntentType {
       "worst content type",
       "which region",
       "which pop",
+      "which host",
       "which ua",
       "which device",
       "which content",
       "which content type",
       "bad region",
       "bad pop",
+      "bad host",
       "bad ua",
       "bad device",
       "bad content",
       "bad content type",
+      "region breakdown",
+      "pop breakdown",
+      "host breakdown",
+      "ua breakdown",
+      "device breakdown",
+      "content breakdown",
+      "content type breakdown",
+      "show regions",
+      "show pops",
+      "show hosts",
+      "show ua",
+      "show devices",
+      "show content",
+      "top regions",
+      "top pops",
+      "top hosts",
+      "top ua",
+      "top devices",
+      "top content",
       "drill deeper",
     ])
   ) {
@@ -141,8 +163,22 @@ export function detectIntent(input: string): IntentType {
   }
 
   if (
-    includesAny(text, ["by region", "by pop", "by host", "by ua", "by device", "by content"]) &&
-    !includesAny(text, ["status", "status code", "distribution", "breakdown"])
+    includesAny(text, [
+      "by region",
+      "by pop",
+      "by host",
+      "by ua",
+      "by device",
+      "by content",
+    ]) &&
+    !includesAny(text, [
+      "status",
+      "status code",
+      "distribution",
+      "breakdown",
+      "mix",
+      "split",
+    ])
   ) {
     return "drill";
   }
