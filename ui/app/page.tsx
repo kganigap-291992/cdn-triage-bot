@@ -1481,10 +1481,10 @@ function RequestsErrorRateLines({
   const reqMax = Math.max(1, ...reqVals);
   const errMax = Math.max(0.5, Math.max(0, ...errVals) * 1.2 || 0.5);
 
-  const w = 360;
+  const w = 760;
   const h = height;
   const padLeft = 54;
-  const padRight = 44;
+  const padRight = 64;
   const padTop = 12;
   const padBottom = 44;
   const plotW = w - padLeft - padRight;
@@ -1610,11 +1610,11 @@ function RequestsErrorRateLines({
             Requests
           </text>
           <text
-            x={w - padRight + 28}
+            x={w - padRight + 44}
             y={padTop + plotH / 2}
             fontSize="10"
             fill="#9ca3af"
-            transform={`rotate(90 ${w - padRight + 28} ${padTop + plotH / 2})`}
+            transform={`rotate(90 ${w - padRight + 44} ${padTop + plotH / 2})`}
           >
             Error %
           </text>
@@ -1640,7 +1640,7 @@ function RequestsErrorRateLines({
                   {formatCountTick(Math.round(reqMax * t))}
                 </text>
                 <text
-                  x={padLeft + plotW + 10}
+                  x={padLeft + plotW + 6}
                   y={yy + 3}
                   fontSize="10"
                   fill="#9ca3af"
@@ -2781,7 +2781,6 @@ function deriveScopedFollowupInputs(
 // ── TriageCard ─────────────────────────────────────────────────────────────
 function TriageCard({ run }: { run: ChatTriage["run"] }) {
   const ts = parseTimeseries(run.metricsJson);
-  const statusTs = parseStatusOnlyTimeseries(run.metricsJson);
   const effectiveWindowMinutes = windowMinutesFromRange(
     run.inputs.startTsUtc,
     run.inputs.endTsUtc,
@@ -2814,11 +2813,37 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
       : debug?.anchorToMaxTs
       ? "max(ts)"
       : "now()";
-  const answerSource = forcedLocal ? "Forced Local" : proxyEnabled ? "Proxy" : "Local";
-  const timeRangeText =
-    run.inputs.startTsUtc && run.inputs.endTsUtc
-      ? `${isoToUtcText(run.inputs.startTsUtc)} → ${isoToUtcText(run.inputs.endTsUtc)} UTC`
-      : `last ${run.inputs.windowMinutes}m`;
+    const answerSource = forcedLocal ? "Forced Local" : proxyEnabled ? "Proxy" : "Local";
+    const timeRangeText =
+      run.inputs.startTsUtc && run.inputs.endTsUtc
+        ? `${isoToUtcText(run.inputs.startTsUtc)} → ${isoToUtcText(run.inputs.endTsUtc)} UTC`
+        : `last ${run.inputs.windowMinutes}m`;
+
+    const atsSummary = run.metricsJson?.atsSummary ?? null;
+    const previousAtsSummary = run.metricsJson?.previousAtsSummary ?? null;
+
+    const hitPct = atsSummary?.hitPct ?? null;
+    const missPct = atsSummary?.missPct ?? null;
+    const refreshPct = atsSummary?.refreshPct ?? null;
+    const clientErrorPct = atsSummary?.clientErrorPct ?? null;
+    const infraErrorPct = atsSummary?.infraErrorPct ?? null;
+
+    const deliveryTrustPct =
+      clientErrorPct != null || infraErrorPct != null
+        ? Number(clientErrorPct || 0) + Number(infraErrorPct || 0)
+        : null;
+
+    const previousDeliveryTrustPct =
+      previousAtsSummary?.clientErrorPct != null ||
+      previousAtsSummary?.infraErrorPct != null
+        ? Number(previousAtsSummary?.clientErrorPct || 0) +
+          Number(previousAtsSummary?.infraErrorPct || 0)
+        : null;
+
+    const deliveryTrustDeltaPct =
+      deliveryTrustPct != null && previousDeliveryTrustPct != null
+        ? deliveryTrustPct - previousDeliveryTrustPct
+        : null;
 
   return (
     <div className="triage-enter rounded-2xl border border-white/12 bg-[#10151c] backdrop-blur p-4 shadow-xl shadow-black/20 space-y-4">
@@ -2945,35 +2970,35 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
         <div className="rounded-xl border border-white/10 bg-black/25 p-3">
           <div className="text-[11px] text-gray-400">Hit</div>
           <div className="mt-1 text-lg font-semibold text-gray-100">
-            {formatPctOrNA(76)}
+            {formatPctOrNA(hitPct)}
           </div>
         </div>
 
         <div className="rounded-xl border border-white/10 bg-black/25 p-3">
           <div className="text-[11px] text-gray-400">Miss</div>
           <div className="mt-1 text-lg font-semibold text-gray-100">
-            {formatPctOrNA(18)}
+            {formatPctOrNA(missPct)}
           </div>
         </div>
 
         <div className="rounded-xl border border-white/10 bg-black/25 p-3">
           <div className="text-[11px] text-gray-400">Refresh</div>
           <div className="mt-1 text-lg font-semibold text-gray-100">
-            {formatPctOrNA(3)}
+            {formatPctOrNA(refreshPct)}
           </div>
         </div>
 
         <div className="rounded-xl border border-white/10 bg-black/25 p-3">
           <div className="text-[11px] text-gray-400">Client Err</div>
           <div className="mt-1 text-lg font-semibold text-gray-100">
-            {formatPctOrNA(2)}
+            {formatPctOrNA(clientErrorPct)}
           </div>
         </div>
 
         <div className="rounded-xl border border-white/10 bg-black/25 p-3">
           <div className="text-[11px] text-gray-400">Infra Err</div>
           <div className="mt-1 text-lg font-semibold text-gray-100">
-            {formatPctOrNA(1)}
+            {formatPctOrNA(infraErrorPct)}
           </div>
         </div>
       </div>
@@ -2984,12 +3009,28 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
             <div className="text-[11px] text-gray-400">Delivery trust</div>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
               <span className="text-sm font-semibold text-gray-100">
-                {formatPctOrNA(2.3)}
+                {formatPctOrNA(deliveryTrustPct)}
               </span>
 
-              <span className="text-[11px] font-medium text-red-300">
-                ↑ +0.80% vs previous
-              </span>
+              {deliveryTrustDeltaPct != null ? (
+                <span
+                  className={`text-[11px] font-medium ${
+                    deliveryTrustDeltaPct > 0
+                      ? "text-red-300"
+                      : deliveryTrustDeltaPct < 0
+                      ? "text-emerald-300"
+                      : "text-gray-400"
+                  }`}
+                >
+                  {deliveryTrustDeltaPct > 0 ? "↑" : deliveryTrustDeltaPct < 0 ? "↓" : "•"}{" "}
+                  {deliveryTrustDeltaPct > 0 ? "+" : ""}
+                  {deliveryTrustDeltaPct.toFixed(2)}% vs previous
+                </span>
+              ) : (
+                <span className="text-[11px] font-medium text-gray-500">
+                  no previous ATS compare
+                </span>
+              )}
             </div>
           </div>
 
@@ -3008,31 +3049,26 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
         <div className="mt-2 relative h-2 w-full rounded-full bg-white/15 overflow-hidden">
           <div
             className="absolute left-0 top-0 h-full bg-red-400/80"
-            style={{ width: `${Math.max(1.0, 3)}%` }}
+            style={{ width: `${Math.max(0, Number(infraErrorPct || 0))}%` }}
           />
           <div
             className="absolute top-0 h-full bg-amber-400/80"
-            style={{ left: `${Math.max(1.0, 3)}%`, width: `${Math.max(2.0, 3)}%` }}
+            style={{
+              left: `${Math.max(0, Number(infraErrorPct || 0))}%`,
+              width: `${Math.max(0, Number(clientErrorPct || 0))}%`,
+            }}
           />
         </div>
       </div>
     </div>
 
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            {statusTs ? (
-              <StackedBarTimeseries
-                title="Status code distribution"
-                subtitle="Diagnostic view"
-                ts={statusTs}
-                bucketSeconds={statusTs.bucketSeconds}
-                seriesKeys={statusTs.statusCodeSeries || []}
-                getMap={(p) => p.statusCountsByCode}
-                height={190}
-                windowMinutes={effectiveWindowMinutes}
-                kind="status"
-              />
-            ) : null}
-            <HostSummaryCard hosts={ts.hostSeries || []} />
+          <div className="grid grid-cols-1 gap-4">
+            <RequestsErrorRateLines
+              points={ts.points}
+              bucketSeconds={bucketSeconds}
+              height={220}
+              windowMinutes={effectiveWindowMinutes}
+            />
           </div>
         </div>
       ) : (

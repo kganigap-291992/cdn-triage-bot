@@ -227,6 +227,79 @@ function normalizeContentBreakdownRow(row: any) {
   };
 }
 
+function normalizeAtsSummary(raw: any) {
+  if (!raw || typeof raw !== "object") return undefined;
+
+  const hitCount = numOrZero(raw.hitCount ?? raw.hit_count);
+  const missCount = numOrZero(raw.missCount ?? raw.miss_count);
+  const refreshCount = numOrZero(raw.refreshCount ?? raw.refresh_count);
+  const clientErrorCount = numOrZero(raw.clientErrorCount ?? raw.client_error_count);
+  const infraErrorCount = numOrZero(raw.infraErrorCount ?? raw.infra_error_count);
+
+  const atsTotal =
+    raw.atsTotal != null
+      ? numOrZero(raw.atsTotal)
+      : hitCount + missCount + refreshCount + clientErrorCount + infraErrorCount;
+
+  const hitPct =
+    numOrNull(raw.hitPct ?? raw.hit_pct) ??
+    (atsTotal > 0 ? (100 * hitCount) / atsTotal : 0);
+
+  const missPct =
+    numOrNull(raw.missPct ?? raw.miss_pct) ??
+    (atsTotal > 0 ? (100 * missCount) / atsTotal : 0);
+
+  const refreshPct =
+    numOrNull(raw.refreshPct ?? raw.refresh_pct) ??
+    (atsTotal > 0 ? (100 * refreshCount) / atsTotal : 0);
+
+  const clientErrorPct =
+    numOrNull(raw.clientErrorPct ?? raw.client_error_pct) ??
+    (atsTotal > 0 ? (100 * clientErrorCount) / atsTotal : 0);
+
+  const infraErrorPct =
+    numOrNull(raw.infraErrorPct ?? raw.infra_error_pct) ??
+    (atsTotal > 0 ? (100 * infraErrorCount) / atsTotal : 0);
+
+  return {
+    hitCount,
+    missCount,
+    refreshCount,
+    clientErrorCount,
+    infraErrorCount,
+    atsTotal,
+    hitPct,
+    missPct,
+    refreshPct,
+    clientErrorPct,
+    infraErrorPct,
+  };
+}
+
+function pickAtsSummaryFromProxy(parsed: any, rawMetrics: any) {
+  return (
+    normalizeAtsSummary(rawMetrics?.atsSummary) ||
+    normalizeAtsSummary(rawMetrics?.ats_summary) ||
+    normalizeAtsSummary(rawMetrics?.evidenceBundle?.atsSummary) ||
+    normalizeAtsSummary(rawMetrics?.evidence?.atsSummary) ||
+    normalizeAtsSummary(parsed?.evidenceBundle?.atsSummary) ||
+    normalizeAtsSummary(parsed?.evidence?.atsSummary) ||
+    undefined
+  );
+}
+
+function pickPreviousAtsSummaryFromProxy(parsed: any, rawMetrics: any) {
+  return (
+    normalizeAtsSummary(rawMetrics?.previousAtsSummary) ||
+    normalizeAtsSummary(rawMetrics?.previous_ats_summary) ||
+    normalizeAtsSummary(rawMetrics?.previousWindow?.atsSummary) ||
+    normalizeAtsSummary(parsed?.previousAtsSummary) ||
+    normalizeAtsSummary(parsed?.previousWindow?.atsSummary) ||
+    undefined
+  );
+}
+
+
 function normalizeHostBreakdownRow(row: any) {
   const host = asString(row?.host);
   if (!host) return null;
@@ -1008,6 +1081,13 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
   const result = await runClickhouseTriage(payload);
 
   const metricsJson = assertCanonicalMetricsJson(result.metricsJson);
+  const localAtsSummary = normalizeAtsSummary(result.metricsJson?.atsSummary);
+  if (localAtsSummary) metricsJson.atsSummary = localAtsSummary;
+
+  const localPreviousAtsSummary = normalizeAtsSummary(
+    result.metricsJson?.previousAtsSummary
+  );
+  if (localPreviousAtsSummary) metricsJson.previousAtsSummary = localPreviousAtsSummary;
   const compareMetrics = buildCompareMetrics(metricsJson);
 
   metricsJson.debug = {
@@ -1194,6 +1274,12 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
 
   const hostBreakdown = pickHostBreakdownFromProxy(parsed, rawMetrics);
   if (hostBreakdown) metricsJson.hostBreakdown = hostBreakdown;
+
+  const atsSummary = pickAtsSummaryFromProxy(parsed, rawMetrics);
+  if (atsSummary) metricsJson.atsSummary = atsSummary;
+
+  const previousAtsSummary = pickPreviousAtsSummaryFromProxy(parsed, rawMetrics);
+  if (previousAtsSummary) metricsJson.previousAtsSummary = previousAtsSummary;
 
   // status-by-dimension passthrough
   metricsJson.statusByRegion = Array.isArray(rawMetrics?.statusByRegion)
