@@ -3229,6 +3229,55 @@ function DrillCard({
   drill: any;
   summaryText: string;
 }) {
+  const hasRows = Array.isArray(drill?.rows) && drill.rows.length > 0;
+  const topRow = hasRows ? drill.rows[0] : null;
+
+    const drillTs =
+    drill?.timeseries &&
+    Array.isArray(drill.timeseries.points) &&
+    drill.timeseries.points.length > 0
+      ? {
+          bucketSeconds:
+            drill.timeseries.bucketSeconds == null
+              ? null
+              : Number(drill.timeseries.bucketSeconds),
+          startTs: drill.timeseries.startTs ? String(drill.timeseries.startTs) : null,
+          endTs: drill.timeseries.endTs ? String(drill.timeseries.endTs) : null,
+          points: drill.timeseries.points.map((p: any) => ({
+            ts: normalizeTsKey(p.ts),
+            totalRequests: Number(p.totalRequests || 0),
+            error5xxCount: Number(p.error5xxCount || 0),
+            errorRatePct: Number(p.errorRatePct || 0),
+            p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
+            p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
+            cacheHitRate: p.cacheHitRate == null ? null : Number(p.cacheHitRate),
+            crcErrorCount: Number(p.crcErrorCount || 0),
+            statusCountsByCode: p.statusCountsByCode || undefined,
+          })),
+          statusCodeSeries: undefined,
+          hostSeries: [],
+          crcSeries: [],
+        }
+      : null;
+
+  const drillWindowMinutes =
+    drillTs?.startTs && drillTs?.endTs
+      ? windowMinutesFromRange(drillTs.startTs, drillTs.endTs, 60)
+      : 60;
+
+  const topCachePct =
+    topRow?.cacheHitPct == null && topRow?.cacheHitRate == null
+      ? null
+      : Number(
+          topRow?.cacheHitPct != null ? topRow.cacheHitPct : topRow.cacheHitRate
+        ) <= 1
+      ? Number(
+          topRow?.cacheHitPct != null ? topRow.cacheHitPct : topRow.cacheHitRate
+        ) * 100
+      : Number(
+          topRow?.cacheHitPct != null ? topRow.cacheHitPct : topRow.cacheHitRate
+        );
+
   return (
       <div className="triage-enter rounded-2xl border border-white/12 bg-[#10151c] backdrop-blur p-4 shadow-xl shadow-black/20 space-y-4">
       <div className="flex items-start justify-between gap-3">
@@ -3252,7 +3301,7 @@ function DrillCard({
         </pre>
       </div>
 
-      {Array.isArray(drill?.rows) && drill.rows.length > 0 ? (
+      {hasRows ? (
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
           <div className="flex items-center justify-between gap-3">
             <div className="text-sm font-semibold text-gray-200">Top results</div>
@@ -3261,10 +3310,138 @@ function DrillCard({
             </div>
           </div>
 
+
+      {topRow ? (
+        <>
+          <div className="mt-4 rounded-xl border border-blue-400/20 bg-blue-400/[0.06] p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[11px] text-blue-200/80">Top candidate</div>
+                <div className="text-sm font-semibold text-gray-100">
+                  {drillDimensionLabel(topRow)}
+                </div>
+              </div>
+              <div className="shrink-0 text-[11px] text-blue-100/80">
+                {drill?.type === "worst_region"
+                  ? "worst region"
+                  : drill?.type === "worst_pop"
+                  ? "worst pop"
+                  : drill?.type === "worst_ua"
+                  ? "worst ua"
+                  : drill?.type === "worst_content"
+                  ? "worst content"
+                  : "top result"}
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className="text-[11px] px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
+                <span className="text-gray-400 mr-1">requests</span>
+                <span className="font-semibold">{formatIntOrNA(topRow?.totalRequests)}</span>
+              </span>
+
+              <span className="text-[11px] px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
+                <span className="text-gray-400 mr-1">5xx%</span>
+                <span className="font-semibold">{formatPctOrNA(topRow?.errorRatePct)}</span>
+              </span>
+
+              <span className="text-[11px] px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
+                <span className="text-gray-400 mr-1">p95</span>
+                <span className="font-semibold">{formatMsOrNA(topRow?.p95TtmsMs)}</span>
+              </span>
+
+              <span className="text-[11px] px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
+                <span className="text-gray-400 mr-1">cache</span>
+                <span className="font-semibold">{formatPctOrNA(topCachePct)}</span>
+              </span>
+            </div>
+          </div>
+
+          {drillTs && drillTs.points.length > 0 ? (
+            <div className="mt-4 space-y-4">
+              <div className="text-[11px] text-gray-400">
+                Over time for {drill?.timeseries?.selectedValue || drillDimensionLabel(topRow)}
+              </div>
+
+              <div className="grid grid-cols-1 gap-4">
+                <LatencyTimeseriesLines
+                  points={drillTs.points}
+                  bucketSeconds={drillTs.bucketSeconds}
+                  height={220}
+                  windowMinutes={drillWindowMinutes}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 gap-4">
+                <RequestsErrorRateLines
+                  points={drillTs.points}
+                  bucketSeconds={drillTs.bucketSeconds}
+                  height={220}
+                  windowMinutes={drillWindowMinutes}
+                />
+              </div>
+            </div>
+          ) : null}
+
+          {hasRows && drill.rows.length > 1 ? (
+            <div className="mt-4 rounded-xl border border-white/10 bg-black/30 p-3">
+              <div className="text-[11px] text-gray-400 mb-3">
+                Distribution (top {Math.min(8, drill.rows.length)})
+              </div>
+
+              <div className="space-y-2">
+                {(() => {
+                  const graphRows = drill.rows.slice(0, 8);
+
+                  const values = graphRows.map((row: any) => {
+                    const err = Number(row?.errorRatePct ?? 0);
+                    const p95 = Number(row?.p95TtmsMs ?? 0);
+                    return err > 0 ? err : p95;
+                  });
+
+                  const maxValue = Math.max(1, ...values);
+
+                  return graphRows.map((row: any, idx: number) => {
+                    const label = drillDimensionLabel(row);
+                    const err = Number(row?.errorRatePct ?? 0);
+                    const p95 = Number(row?.p95TtmsMs ?? 0);
+                    const displayValue = err > 0 ? formatPctOrNA(err) : formatMsOrNA(p95);
+                    const rawValue = err > 0 ? err : p95;
+                    const widthPct = Math.max(6, (rawValue / maxValue) * 100);
+
+                    return (
+                      <div key={`${label}-${idx}`} className="flex items-center gap-3">
+                        <div className="w-24 shrink-0 truncate text-[11px] text-gray-300">
+                          {label}
+                        </div>
+
+                        <div className="flex-1 h-2.5 rounded-full bg-white/10 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${
+                              idx === 0 ? "bg-blue-400" : "bg-gray-400/70"
+                            }`}
+                            style={{ width: `${widthPct}%` }}
+                          />
+                        </div>
+
+                        <div className="w-16 shrink-0 text-right text-[11px] text-gray-400">
+                          {displayValue}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+
           <div className="mt-4 overflow-x-auto rounded-xl border border-white/10 bg-black/30">
             <table className="min-w-full text-left text-xs text-gray-200">
               <thead className="border-b border-white/10 bg-white/[0.03] text-gray-400">
                 <tr>
+                  <th className="px-4 py-3 font-medium">#</th>
                   <th className="px-4 py-3 font-medium">
                     {drillDimensionHeader(drill)}
                   </th>
@@ -3293,8 +3470,13 @@ function DrillCard({
                   return (
                     <tr
                       key={`${drillDimensionLabel(row)}-${idx}`}
-                      className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.03]"
+                      className={`border-b border-white/5 last:border-b-0 hover:bg-white/[0.03] ${
+                        idx === 0 ? "bg-blue-400/[0.03]" : ""
+                      }`}
                     >
+                      <td className="px-4 py-3 text-gray-400 font-medium">
+                        {idx + 1}
+                      </td>
                       <td className="px-4 py-3 font-medium text-gray-100">
                         {drillDimensionLabel(row)}
                       </td>
@@ -5780,11 +5962,28 @@ return (
           <div className="min-h-[520px] flex items-center justify-center">
             <div className="w-full max-w-4xl">
               <div className="rounded-[28px] border border-white/10 bg-white/[0.04] backdrop-blur-xl shadow-2xl shadow-black/20 p-6 md:p-8">
-                <div className="text-center mb-8">
-                  <div className="text-3xl mb-3">🤖</div>
+                <div className="text-center mb-6">
+                  <div className="flex justify-center mb-3">
+                    <div className="cachey-launcher-logo">
+                      <Image
+                        src={LOGO_SRC}
+                        alt="Cachey"
+                        width={52}
+                        height={52}
+                        className="rounded-full select-none pointer-events-none"
+                        priority
+                      />
+                    </div>
+                  </div>
+
+                  <div className="text-sm text-gray-300 mb-2">
+                    Investigate CDN health, performance, and anomalies in seconds.
+                  </div>
+
                   <div className="text-2xl font-semibold text-white">
                     Start investigation
                   </div>
+
                   <div className="mt-2 text-sm text-gray-400">
                     Pick a scope and run triage against CDN health.
                   </div>
@@ -6209,6 +6408,6 @@ return (
         </div>
       </div>
     </div>
-  </main>
+</main>
 );
 }

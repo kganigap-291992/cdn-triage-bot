@@ -18,6 +18,23 @@ export type DrillTargetDimension =
   | "statusCode"
   | "endpointClass";
 
+export type DrillExecutionMode = "bundle" | "canonical_query";
+
+export type DrillEvidenceSource =
+  | "regionBreakdown"
+  | "popBreakdown"
+  | "uaBreakdown"
+  | "contentBreakdown"
+  | "hostBreakdown"
+  | "host_summary"
+  | "timeseries"
+  | "status_totals"
+  | "status_over_time"
+  | "ats_summary"
+  | "ats_timeseries"
+  | "unsupported"
+  | "unknown";
+
 export type DrillRequest = {
   type: DrillType;
   scope: {
@@ -39,9 +56,30 @@ export type DrillRequest = {
   };
   targetDimension?: DrillTargetDimension;
   anchorValue?: string;
+  executionMode?: DrillExecutionMode;
+  evidenceSource?: DrillEvidenceSource;
 };
 
 export type DrillRow = Record<string, string | number | boolean | null>;
+
+export type DrillTimeseriesPoint = {
+  ts: string;
+  totalRequests: number;
+  error5xxCount: number;
+  errorRatePct: number;
+  p95TtmsMs: number | null;
+  p99TtmsMs: number | null;
+  cacheHitRate?: number | null;
+};
+
+export type DrillTimeseries = {
+  selectedDimension: DrillTargetDimension;
+  selectedValue: string;
+  bucketSeconds: number | null;
+  startTs: string | null;
+  endTs: string | null;
+  points: DrillTimeseriesPoint[];
+};
 
 export type DrillResult = {
   type: DrillType;
@@ -52,9 +90,12 @@ export type DrillResult = {
     queries?: string[];
     params?: Record<string, any>;
   };
+  timeseries?: DrillTimeseries;
   metadata?: {
     targetDimension?: DrillTargetDimension;
     anchorValue?: string;
     rowCount?: number;
+    executionMode?: DrillExecutionMode;
+    evidenceSource?: DrillEvidenceSource;
   };
 };

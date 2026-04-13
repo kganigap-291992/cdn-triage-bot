@@ -1048,7 +1048,131 @@ async function maybeExecuteDrill(
   console.log("ROUTE DEBUG evidenceBundle.hostBreakdown.sample", evidenceBundle?.hostBreakdown?.slice?.(0, 2));
   console.log("ROUTE DEBUG metricsJson.hostBreakdown.sample", metricsJson?.hostBreakdown?.slice?.(0, 2));
 
-  const drill = await executeDrill(drillRequest, evidenceBundle);
+    const drill = await executeDrill(drillRequest, evidenceBundle, {
+    runQuery: async (queries, params) => {
+      if (!Array.isArray(queries) || !queries.length) return [];
+
+      if (mode === "local") {
+        const payload: any = {
+          partner: inputs.partner,
+          service: inputs.service,
+          region: inputs.region,
+          pop: inputs.pop,
+          contentType: inputs.contentType,
+          uaFamily: inputs.uaFamily,
+          windowMinutes: inputs.windowMinutes,
+          debug: inputs.debug,
+        };
+
+        const timeMode = metricsJson?.debug?.timeMode;
+        const startTsUtc = metricsJson?.debug?.startTsUtc;
+        const endTsUtc = metricsJson?.debug?.endTsUtc;
+
+        if (
+          timeMode === "absolute" &&
+          typeof startTsUtc === "string" &&
+          typeof endTsUtc === "string"
+        ) {
+          payload.startTsUtc = startTsUtc;
+          payload.endTsUtc = endTsUtc;
+        }
+
+        const result = await runClickhouseTriage(payload);
+
+        console.log(
+          "ROUTE TS DEBUG local payload",
+          payload
+        );
+        console.log(
+          "ROUTE TS DEBUG local result.timeseries.points.length",
+          result?.metricsJson?.timeseries?.points?.length ?? 0
+        );
+        console.log(
+          "ROUTE TS DEBUG local result.timeseries.points.sample",
+          result?.metricsJson?.timeseries?.points?.slice?.(0, 2)
+        );
+
+        const rows = result?.metricsJson?.timeseries?.points;
+        return Array.isArray(rows) ? rows : [];
+      }
+
+      if (!hasProxyEnv()) return [];
+
+      const triageUrl = proxyTriageUrl();
+
+      const upstreamBody: any = {
+        partner: params?.partner ?? inputs.partner,
+        service: params?.service ?? inputs.service,
+        region: params?.region ?? inputs.region,
+        pop: params?.pop ?? inputs.pop,
+        contentType: params?.contentType ?? inputs.contentType,
+        uaFamily: params?.uaFamily ?? inputs.uaFamily,
+        windowMinutes: params?.windowMinutes ?? inputs.windowMinutes,
+        debug: inputs.debug,
+        sql: {
+          queries,
+          params: params ?? {},
+        },
+      };
+
+      if (
+        typeof params?.startTsUtc === "string" &&
+        typeof params?.endTsUtc === "string"
+      ) {
+        upstreamBody.startTsUtc = params.startTsUtc;
+        upstreamBody.endTsUtc = params.endTsUtc;
+      }
+
+      const upstream = await fetch(triageUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(process.env.CACHEY_PROXY_TOKEN
+            ? { "x-cachey-token": process.env.CACHEY_PROXY_TOKEN }
+            : {}),
+        },
+        body: JSON.stringify(upstreamBody),
+      });
+
+      const text = await upstream.text().catch(() => "");
+      const parsed = (() => {
+        try {
+          return text ? JSON.parse(text) : null;
+        } catch {
+          return null;
+        }
+      })();
+
+      if (!upstream.ok) {
+        throw new Error(
+          parsed?.error
+            ? String(parsed.error)
+            : `proxy drill query failed (HTTP ${upstream.status})`
+        );
+      }
+
+      const tsRows =
+        parsed?.metricsJson?.timeseries?.points ??
+        parsed?.metrics?.timeseries?.points ??
+        parsed?.timeseries?.points ??
+        [];
+
+      console.log(
+        "ROUTE TS DEBUG proxy params",
+        params
+      );
+      console.log(
+        "ROUTE TS DEBUG proxy tsRows.length",
+        Array.isArray(tsRows) ? tsRows.length : -1
+      );
+      console.log(
+        "ROUTE TS DEBUG proxy tsRows.sample",
+        Array.isArray(tsRows) ? tsRows.slice(0, 2) : tsRows
+      );
+
+      return Array.isArray(tsRows) ? tsRows : [];
+    },
+  });
 
   return okJson({
     ok: true,

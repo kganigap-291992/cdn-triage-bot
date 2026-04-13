@@ -1,5 +1,9 @@
 import type { EvidenceBundle } from "@/lib/triage/types";
-import type { DrillRequest, DrillResult } from "@/lib/triage/drillTypes";
+import type {
+  DrillEvidenceSource,
+  DrillRequest,
+  DrillResult,
+} from "@/lib/triage/drillTypes";
 
 export type DrillIntent =
   | "worst_region"
@@ -53,13 +57,55 @@ function pickWorstValue(
     const bP95 = Number(b?.p95TtmsMs ?? b?.p95_ttms_ms ?? b?.p95_ms ?? 0);
     if (bP95 !== aP95) return bP95 - aP95;
 
-    const aReq = Number(a?.totalRequests ?? a?.total_requests ?? a?.requests ?? 0);
-    const bReq = Number(b?.totalRequests ?? b?.total_requests ?? b?.requests ?? 0);
+    const aReq = Number(
+      a?.totalRequests ?? a?.total_requests ?? a?.requests ?? 0
+    );
+    const bReq = Number(
+      b?.totalRequests ?? b?.total_requests ?? b?.requests ?? 0
+    );
     return bReq - aReq;
   });
 
   const val = String(sorted[0]?.[key] ?? "").trim();
   return val || undefined;
+}
+
+function buildBundleRequest(
+  type: DrillRequest["type"],
+  scope: DrillRequest["scope"],
+  window: DrillRequest["window"],
+  targetDimension: DrillRequest["targetDimension"],
+  evidenceSource: DrillEvidenceSource,
+  anchorValue?: string
+): DrillRequest {
+  return {
+    type,
+    scope,
+    window,
+    targetDimension,
+    anchorValue,
+    executionMode: "bundle",
+    evidenceSource,
+  };
+}
+
+function buildCanonicalRequest(
+  type: DrillRequest["type"],
+  scope: DrillRequest["scope"],
+  window: DrillRequest["window"],
+  targetDimension?: DrillRequest["targetDimension"],
+  evidenceSource?: DrillEvidenceSource,
+  anchorValue?: string
+): DrillRequest {
+  return {
+    type,
+    scope,
+    window,
+    targetDimension,
+    anchorValue,
+    executionMode: "canonical_query",
+    evidenceSource,
+  };
 }
 
 export function resolveDrillRequest(
@@ -72,79 +118,99 @@ export function resolveDrillRequest(
   switch (intent) {
     case "worst_region": {
       const worstRegion = pickWorstValue(bundle.regionBreakdown, "region");
-      return {
-        type: "worst_region",
+      return buildBundleRequest(
+        "worst_region",
         scope,
         window,
-        targetDimension: "region",
-        anchorValue: worstRegion,
-      };
+        "region",
+        "regionBreakdown",
+        worstRegion
+      );
     }
 
     case "worst_pop": {
       const worstPop = pickWorstValue(bundle.popBreakdown, "pop");
-      return {
-        type: "worst_pop",
+      return buildBundleRequest(
+        "worst_pop",
         scope,
         window,
-        targetDimension: "pop",
-        anchorValue: worstPop,
-      };
+        "pop",
+        "popBreakdown",
+        worstPop
+      );
     }
 
-    case "worst_ua":
-      return {
-        type: "worst_ua",
+    case "worst_ua": {
+      const worstUa = pickWorstValue(bundle.uaBreakdown, "uaFamily");
+      return buildBundleRequest(
+        "worst_ua",
         scope,
         window,
-        targetDimension: "uaFamily",
-      };
+        "uaFamily",
+        "uaBreakdown",
+        worstUa
+      );
+    }
 
-    case "worst_content":
-      return {
-        type: "worst_content",
+    case "worst_content": {
+      const worstContent = pickWorstValue(bundle.contentBreakdown, "contentType");
+      return buildBundleRequest(
+        "worst_content",
         scope,
         window,
-        targetDimension: "contentType",
-      };
+        "contentType",
+        "contentBreakdown",
+        worstContent
+      );
+    }
 
-    case "worst_host":
-      return {
-        type: "worst_host",
+    case "worst_host": {
+      const worstHost = pickWorstValue(bundle.hostBreakdown, "host");
+      return buildCanonicalRequest(
+        "worst_host",
         scope,
         window,
-        targetDimension: "host",
-      };
+        "host",
+        "host_summary",
+        worstHost
+      );
+    }
 
     case "worst_status":
-      return {
-        type: "worst_status",
+      return buildCanonicalRequest(
+        "worst_status",
         scope,
         window,
-        targetDimension: "statusCode",
-      };
+        "statusCode",
+        "status_totals"
+      );
 
     case "worst_endpoint":
-      return {
-        type: "worst_endpoint",
+      return buildCanonicalRequest(
+        "worst_endpoint",
         scope,
         window,
-        targetDimension: "endpointClass",
-      };
+        "endpointClass",
+        "unsupported"
+      );
 
     case "time_trend":
-      return {
-        type: "time_trend",
+      return buildCanonicalRequest(
+        "time_trend",
         scope,
         window,
-      };
+        undefined,
+        "timeseries"
+      );
 
     case "comparison":
-      return {
-        type: "comparison",
+      return buildCanonicalRequest(
+        "comparison",
         scope,
         window,
-      };
+        undefined,
+        "timeseries"
+      );
 
     default:
       return null;
@@ -164,6 +230,8 @@ export function buildEmptyDrillResult(
       targetDimension: request.targetDimension,
       anchorValue: request.anchorValue,
       rowCount: 0,
+      executionMode: request.executionMode,
+      evidenceSource: request.evidenceSource,
     },
   };
 }

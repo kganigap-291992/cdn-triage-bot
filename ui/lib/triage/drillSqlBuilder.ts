@@ -1,5 +1,9 @@
 import type { DrillType } from "@/lib/triage/drillTypes";
 import type { DrillPlan } from "@/lib/triage/drillPlanner";
+import {
+  buildClickhouseSql,
+  type ClickhouseFilters,
+} from "@/lib/clickhouse/sqlBuilder";
 
 export type BuiltDrillSql = {
   type: DrillType;
@@ -8,181 +12,163 @@ export type BuiltDrillSql = {
   params: Record<string, any>;
 };
 
-function quote(value: string): string {
-  return `'${String(value).replace(/'/g, "''")}'`;
+function denorm(v: string | undefined): string {
+  return v && v.trim() ? v.trim() : "all";
 }
 
-function buildWhereClause(filters: DrillPlan["filters"]): string {
-  const clauses: string[] = [];
-
-  clauses.push(`partner = ${quote(filters.partner)}`);
-  clauses.push(`service = ${quote(filters.service)}`);
-
-  if (filters.region) clauses.push(`region = ${quote(filters.region)}`);
-  if (filters.pop) clauses.push(`pop = ${quote(filters.pop)}`);
-  if (filters.uaFamily) clauses.push(`ua_family = ${quote(filters.uaFamily)}`);
-  if (filters.contentType) clauses.push(`content_type = ${quote(filters.contentType)}`);
-  if (filters.host) clauses.push(`host = ${quote(filters.host)}`);
-  if (filters.statusCode) clauses.push(`status_code = ${quote(filters.statusCode)}`);
-  if (filters.endpointClass) clauses.push(`endpoint_class = ${quote(filters.endpointClass)}`);
-
-  return clauses.join("\n  AND ");
+function toCanonicalFilters(plan: DrillPlan): ClickhouseFilters {
+  return {
+    partner: plan.filters.partner,
+    service: plan.filters.service,
+    region: denorm(plan.filters.region),
+    pop: denorm(plan.filters.pop),
+    contentType: denorm(plan.filters.contentType),
+    uaFamily: denorm(plan.filters.uaFamily),
+    windowMinutes: Math.max(1, Number(plan.window.windowMinutes || 60)),
+    startTsUtc:
+      plan.window.timeMode === "absolute"
+        ? plan.window.startTsUtc || undefined
+        : undefined,
+    endTsUtc:
+      plan.window.timeMode === "absolute"
+        ? plan.window.endTsUtc || undefined
+        : undefined,
+    anchorToMaxTs: plan.window.timeMode === "relative",
+  };
 }
 
-function buildTimeClause(window: DrillPlan["window"]): string {
-  if (
-    window.timeMode === "absolute" &&
-    window.startTsUtc &&
-    window.endTsUtc
-  ) {
-    return `ts >= toDateTime(${quote(window.startTsUtc)}) AND ts < toDateTime(${quote(window.endTsUtc)})`;
+/**
+ * Canonical sqlBuilder.ts query index map
+ *
+ * q4  = current timeseries
+ * q8  = previous timeseries
+ * q9  = current status over time
+ * q10 = previous status over time
+ * q13 = host summary
+ * q14 = current status totals
+ * q15 = previous status totals
+ * q16 = current ATS summary
+ * q17 = previous ATS summary
+ * q18 = current ATS over time
+ * q19 = previous ATS over time
+ */
+const CANONICAL_QUERY_INDEX = {
+  timeseriesCurrent: 4,
+  timeseriesPrevious: 8,
+  statusOverTimeCurrent: 9,
+  statusOverTimePrevious: 10,
+  hostSummary: 13,
+  statusTotalsCurrent: 14,
+  statusTotalsPrevious: 15,
+  atsSummaryCurrent: 16,
+  atsSummaryPrevious: 17,
+  atsTimeseriesCurrent: 18,
+  atsTimeseriesPrevious: 19,
+} as const;
+
+function isTimeseriesEnrichmentPlan(plan: DrillPlan): boolean {
+  return (
+    plan.executionMode === "canonical_query" &&
+    plan.evidenceSource === "timeseries" &&
+    plan.queryFamily === "timeline" &&
+    !!plan.anchorValue &&
+    (plan.targetDimension === "region" ||
+      plan.targetDimension === "pop" ||
+      plan.targetDimension === "uaFamily" ||
+      plan.targetDimension === "contentType")
+  );
+}
+
+export function buildDrillSql(plan: DrillPlan): BuiltDrillSql {
+  // Bundle-backed ranking drills should not generate SQL
+  // in their normal ranking path.
+  if (plan.executionMode === "bundle") {
+    return {
+      type: plan.type,
+      title: plan.title,
+      queries: [],
+      params: {
+        ...plan.filters,
+        ...plan.window,
+        targetDimension: plan.targetDimension,
+        anchorValue: plan.anchorValue,
+        executionMode: plan.executionMode,
+        evidenceSource: plan.evidenceSource,
+        enableTimeseries: plan.enableTimeseries,
+      },
+    };
   }
 
-  return `ts >= now() - INTERVAL ${Math.max(1, Number(window.windowMinutes || 0))} MINUTE`;
-}
+  const built = buildClickhouseSql(toCanonicalFilters(plan));
+  let selectedQueries: string[] = [];
 
-// -----------------------------
-// Core metric block (reusable)
-// -----------------------------
-function metricSelectBlock() {
-  return `
-  sum(requests) AS totalRequests,
-  avg(p95_ms) AS p95TtmsMs,
-  avg(p99_ms) AS p99TtmsMs,
-  sum(http_5xx_count) AS error5xxCount,
-  round(100.0 * sum(http_5xx_count) / nullIf(sum(requests), 0), 3) AS errorRatePct,
-  avg(cache_hit_rate) AS cacheHitRate
-`.trim();
-}
+  // Generic narrowed same-window drill enrichment path:
+  // worst_region / worst_pop / worst_ua / worst_content over time
+  if (isTimeseriesEnrichmentPlan(plan)) {
+    selectedQueries = [built.queries[CANONICAL_QUERY_INDEX.timeseriesCurrent]];
+  } else {
+    switch (plan.evidenceSource) {
+      case "host_summary":
+        selectedQueries = [built.queries[CANONICAL_QUERY_INDEX.hostSummary]];
+        break;
 
-// -----------------------------
-// Query builders
-// -----------------------------
-function buildPeerComparisonQuery(plan: DrillPlan): string {
-  const groupCol = plan.groupBy?.[0] || "region";
-  const whereClause = buildWhereClause(plan.filters);
-  const timeClause = buildTimeClause(plan.window);
+      case "timeseries":
+        selectedQueries = [
+          built.queries[CANONICAL_QUERY_INDEX.timeseriesCurrent],
+          built.queries[CANONICAL_QUERY_INDEX.timeseriesPrevious],
+        ];
+        break;
 
-  return `
-SELECT
-  ${groupCol} AS dimension,
-  ${metricSelectBlock()}
-FROM cachey.raw_minute
-WHERE
-  ${whereClause}
-  AND ${timeClause}
-GROUP BY ${groupCol}
-ORDER BY errorRatePct DESC, p95TtmsMs DESC, totalRequests DESC
-LIMIT 20
-`.trim();
-}
+      case "status_totals":
+        selectedQueries = [
+          built.queries[CANONICAL_QUERY_INDEX.statusTotalsCurrent],
+          built.queries[CANONICAL_QUERY_INDEX.statusTotalsPrevious],
+        ];
+        break;
 
-function buildOffenderRankingQuery(plan: DrillPlan): string {
-  const groupCol = plan.groupBy?.[0] || "host";
-  const whereClause = buildWhereClause(plan.filters);
-  const timeClause = buildTimeClause(plan.window);
+      case "status_over_time":
+        selectedQueries = [
+          built.queries[CANONICAL_QUERY_INDEX.statusOverTimeCurrent],
+          built.queries[CANONICAL_QUERY_INDEX.statusOverTimePrevious],
+        ];
+        break;
 
-  return `
-SELECT
-  ${groupCol} AS dimension,
-  ${metricSelectBlock()}
-FROM cachey.raw_minute
-WHERE
-  ${whereClause}
-  AND ${timeClause}
-GROUP BY ${groupCol}
-ORDER BY errorRatePct DESC, p95TtmsMs DESC, totalRequests DESC
-LIMIT 20
-`.trim();
-}
+      case "ats_summary":
+        selectedQueries = [
+          built.queries[CANONICAL_QUERY_INDEX.atsSummaryCurrent],
+          built.queries[CANONICAL_QUERY_INDEX.atsSummaryPrevious],
+        ];
+        break;
 
-function buildTimelineQuery(plan: DrillPlan): string {
-  const whereClause = buildWhereClause(plan.filters);
-  const timeClause = buildTimeClause(plan.window);
+      case "ats_timeseries":
+        selectedQueries = [
+          built.queries[CANONICAL_QUERY_INDEX.atsTimeseriesCurrent],
+          built.queries[CANONICAL_QUERY_INDEX.atsTimeseriesPrevious],
+        ];
+        break;
 
-  return `
-SELECT
-  ts,
-  ${metricSelectBlock()}
-FROM cachey.raw_minute
-WHERE
-  ${whereClause}
-  AND ${timeClause}
-GROUP BY ts
-ORDER BY ts ASC
-`.trim();
-}
-
-function buildComparisonQuery(plan: DrillPlan): string {
-  const whereClause = buildWhereClause(plan.filters);
-  const timeClause = buildTimeClause(plan.window);
-
-  return `
-SELECT
-  region,
-  pop,
-  ua_family,
-  content_type,
-  ${metricSelectBlock()}
-FROM cachey.raw_minute
-WHERE
-  ${whereClause}
-  AND ${timeClause}
-GROUP BY region, pop, ua_family, content_type
-ORDER BY errorRatePct DESC, p95TtmsMs DESC, totalRequests DESC
-LIMIT 50
-`.trim();
-}
-
-function buildNarrowScopeQuery(plan: DrillPlan): string {
-  const whereClause = buildWhereClause(plan.filters);
-  const timeClause = buildTimeClause(plan.window);
-
-  return `
-SELECT
-  ${metricSelectBlock()}
-FROM cachey.raw_minute
-WHERE
-  ${whereClause}
-  AND ${timeClause}
-`.trim();
-}
-
-// -----------------------------
-// Main builder
-// -----------------------------
-export function buildDrillSql(plan: DrillPlan): BuiltDrillSql {
-  let query: string;
-
-  switch (plan.queryFamily) {
-    case "peer_comparison":
-      query = buildPeerComparisonQuery(plan);
-      break;
-    case "offender_ranking":
-      query = buildOffenderRankingQuery(plan);
-      break;
-    case "timeline":
-      query = buildTimelineQuery(plan);
-      break;
-    case "comparison":
-      query = buildComparisonQuery(plan);
-      break;
-    case "narrow_scope":
-    default:
-      query = buildNarrowScopeQuery(plan);
-      break;
+      case "unsupported":
+      case "unknown":
+      default:
+        selectedQueries = [];
+        break;
+    }
   }
 
   return {
     type: plan.type,
     title: plan.title,
-    queries: [query],
+    queries: selectedQueries.filter(Boolean),
     params: {
-      ...plan.filters,
-      ...plan.window,
+      ...built.params,
       targetDimension: plan.targetDimension,
       anchorValue: plan.anchorValue,
-      queryFamily: plan.queryFamily,
+      executionMode: plan.executionMode,
+      evidenceSource: plan.evidenceSource,
+      enableTimeseries: plan.enableTimeseries,
+      canonicalTableUsed: built.meta.tableUsed,
+      canonicalBucketSeconds: built.meta.bucketSeconds,
+      canonicalAnchorToMaxTs: built.meta.anchorToMaxTs,
     },
   };
 }

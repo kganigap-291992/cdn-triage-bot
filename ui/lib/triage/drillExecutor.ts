@@ -1,5 +1,11 @@
 import type { EvidenceBundle } from "@/lib/triage/types";
-import type { DrillRequest, DrillResult } from "@/lib/triage/drillTypes";
+import type {
+  DrillRequest,
+  DrillResult,
+  DrillTargetDimension,
+  DrillTimeseries,
+  DrillTimeseriesPoint,
+} from "@/lib/triage/drillTypes";
 import { buildDrillPlan } from "@/lib/triage/drillPlanner";
 import { buildDrillSql } from "@/lib/triage/drillSqlBuilder";
 
@@ -103,7 +109,9 @@ function summarizeRows(request: DrillRequest, rows: Record<string, any>[]): stri
     p95 != null ? `p95=${Math.round(p95)}ms` : null,
     p99 != null ? `p99=${Math.round(p99)}ms` : null,
     errorRate != null ? `5xx=${errorRate.toFixed(3)}%` : null,
-    cacheHit != null ? `cache=${(cacheHit > 1 ? cacheHit : cacheHit * 100).toFixed(1)}%` : null,
+    cacheHit != null
+      ? `cache=${(cacheHit > 1 ? cacheHit : cacheHit * 100).toFixed(1)}%`
+      : null,
   ]
     .filter(Boolean)
     .join(", ");
@@ -132,56 +140,260 @@ function summarizeRows(request: DrillRequest, rows: Record<string, any>[]): stri
   }
 }
 
+function getBundleRows(bundle: EvidenceBundle, source?: string): any[] {
+  switch (source) {
+    case "regionBreakdown":
+      return bundle.regionBreakdown ?? [];
+    case "popBreakdown":
+      return bundle.popBreakdown ?? [];
+    case "uaBreakdown":
+      return bundle.uaBreakdown ?? [];
+    case "contentBreakdown":
+      return bundle.contentBreakdown ?? [];
+    case "hostBreakdown":
+      return bundle.hostBreakdown ?? [];
+    default:
+      return [];
+  }
+}
+
+function inferSelectedValueFromTopRow(
+  targetDimension: DrillTargetDimension | undefined,
+  topRow: Record<string, any> | null | undefined
+): string | null {
+  if (!targetDimension || !topRow) return null;
+
+  switch (targetDimension) {
+    case "region":
+      return String(topRow.region ?? topRow.dimension ?? "").trim() || null;
+    case "pop":
+      return String(topRow.pop ?? topRow.dimension ?? "").trim() || null;
+    case "uaFamily":
+      return (
+        String(topRow.uaFamily ?? topRow.ua_family ?? topRow.dimension ?? "").trim() || null
+      );
+    case "contentType":
+      return (
+        String(topRow.contentType ?? topRow.content_type ?? topRow.dimension ?? "").trim() || null
+      );
+    default:
+      return null;
+  }
+}
+
+function canEnrichTimeseries(
+  plan: ReturnType<typeof buildDrillPlan>,
+  rows: Record<string, any>[],
+  deps: ExecuteDrillDeps
+): boolean {
+  if (!plan.enableTimeseries) return false;
+  if (!rows.length) return false;
+  if (!deps.runQuery) return false;
+
+  return (
+    plan.targetDimension === "region" ||
+    plan.targetDimension === "pop" ||
+    plan.targetDimension === "uaFamily" ||
+    plan.targetDimension === "contentType"
+  );
+}
+
+function buildTimeseriesFilters(
+  plan: ReturnType<typeof buildDrillPlan>,
+  selectedValue: string
+) {
+  const baseFilters = {
+    ...plan.filters,
+  };
+
+  switch (plan.targetDimension) {
+    case "region":
+      return { ...baseFilters, region: selectedValue };
+    case "pop":
+      return { ...baseFilters, pop: selectedValue };
+    case "uaFamily":
+      return { ...baseFilters, uaFamily: selectedValue };
+    case "contentType":
+      return { ...baseFilters, contentType: selectedValue };
+    default:
+      return baseFilters;
+  }
+}
+
+function toDrillTimeseriesPoints(rows: any[]): DrillTimeseriesPoint[] {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row): DrillTimeseriesPoint | null => {
+      const ts = String(row?.ts ?? row?.bucket ?? "").trim();
+      if (!ts) return null;
+
+      return {
+        ts,
+        totalRequests:
+          Number(row?.totalRequests ?? row?.total_requests ?? row?.requests ?? 0) || 0,
+        error5xxCount:
+          Number(row?.error5xxCount ?? row?.error_5xx_count ?? row?.http_5xx ?? 0) || 0,
+        errorRatePct:
+          Number(row?.errorRatePct ?? row?.error_rate_pct ?? 0) || 0,
+        p95TtmsMs: toNumberOrNull(row?.p95TtmsMs ?? row?.p95_ms ?? row?.p95_ttms_ms),
+        p99TtmsMs: toNumberOrNull(row?.p99TtmsMs ?? row?.p99_ms ?? row?.p99_ttms_ms),
+        cacheHitRate: toNumberOrNull(
+          row?.cacheHitRate ?? row?.cache_hit_rate ?? row?.cacheHitPct
+        ),
+      };
+    })
+    .filter(Boolean) as DrillTimeseriesPoint[];
+}
+
+function inferBucketSecondsFromTimeseries(points: DrillTimeseriesPoint[]): number | null {
+  if (!points || points.length < 2) return null;
+
+  const t0 = new Date(points[0].ts).getTime();
+  const t1 = new Date(points[1].ts).getTime();
+
+  if (!Number.isFinite(t0) || !Number.isFinite(t1) || t1 <= t0) return null;
+
+  return Math.round((t1 - t0) / 1000);
+}
+
+async function fetchDrillTimeseries(
+  plan: ReturnType<typeof buildDrillPlan>,
+  selectedValue: string,
+  deps: ExecuteDrillDeps
+): Promise<{
+  timeseries: DrillTimeseries | undefined;
+  timeseriesSql:
+    | {
+        queries?: string[];
+        params?: Record<string, any>;
+      }
+    | undefined;
+}> {
+  if (!deps.runQuery || !plan.targetDimension) {
+    return { timeseries: undefined, timeseriesSql: undefined };
+  }
+
+  const narrowedPlan = {
+    ...plan,
+    executionMode: "canonical_query" as const,
+    evidenceSource: "timeseries" as const,
+    queryFamily: "timeline" as const,
+    filters: buildTimeseriesFilters(plan, selectedValue),
+    anchorValue: selectedValue,
+  };
+
+  const built = buildDrillSql(narrowedPlan);
+  if (!built.queries?.length) {
+    return { timeseries: undefined, timeseriesSql: undefined };
+  }
+
+  const raw = await deps.runQuery(built.queries, built.params);
+  const points = toDrillTimeseriesPoints(raw);
+
+  if (!points.length || !narrowedPlan.targetDimension) {
+    return {
+      timeseries: undefined,
+      timeseriesSql: {
+        queries: built.queries,
+        params: built.params,
+      },
+    };
+  }
+
+  const bucketSeconds = inferBucketSecondsFromTimeseries(points);
+
+  return {
+    timeseries: {
+      selectedDimension: narrowedPlan.targetDimension as DrillTargetDimension,
+      selectedValue,
+      bucketSeconds,
+      startTs: points[0]?.ts ?? null,
+      endTs: points[points.length - 1]?.ts ?? null,
+      points,
+    },
+    timeseriesSql: {
+      queries: built.queries,
+      params: built.params,
+    },
+  };
+}
+
 export async function executeDrill(
   request: DrillRequest,
   bundle: EvidenceBundle,
   deps: ExecuteDrillDeps = {}
 ): Promise<DrillResult> {
   const plan = buildDrillPlan(request);
-  const built = buildDrillSql(plan);
 
   let rawRows: any[] = [];
 
-
-console.log("EXEC DEBUG request.type", request.type);
-console.log("EXEC DEBUG bundle.hostBreakdown.length", bundle?.hostBreakdown?.length ?? 0);
-console.log("EXEC DEBUG bundle.hostBreakdown.sample", bundle?.hostBreakdown?.slice?.(0, 2));
-
-
-  if (request.type === "worst_region") {
-    rawRows = bundle?.regionBreakdown ?? [];
-  } else if (request.type === "worst_pop") {
-    rawRows = bundle?.popBreakdown ?? [];
-  } else if (request.type === "worst_ua") {
-    rawRows = bundle?.uaBreakdown ?? [];
-  } else if (request.type === "worst_content") {
-    rawRows = bundle?.contentBreakdown ?? [];
-  } else if (request.type === "worst_host") {
-    console.log("EXEC DEBUG entering worst_host branch");
-    console.log("EXEC DEBUG host rows before assign", bundle?.hostBreakdown?.slice?.(0, 2));
-    rawRows = bundle?.hostBreakdown ?? [];
+  if (request.executionMode === "bundle") {
+    rawRows = getBundleRows(bundle, request.evidenceSource);
   }
 
   if (!rawRows.length && deps.runQuery) {
+    const built = buildDrillSql(plan);
     rawRows = await deps.runQuery(built.queries, built.params);
+
+    const rows = Array.isArray(rawRows) ? rawRows.map(normalizeRow) : [];
+    const summary = summarizeRows(request, rows);
+
+    return {
+      type: request.type,
+      title: plan.title,
+      summary,
+      rows,
+      sql: {
+        queries: built.queries,
+        params: built.params,
+      },
+      metadata: {
+        targetDimension: plan.targetDimension as any,
+        anchorValue: plan.anchorValue,
+        rowCount: rows.length,
+        executionMode: request.executionMode,
+        evidenceSource: request.evidenceSource,
+      },
+    };
   }
 
   const rows = Array.isArray(rawRows) ? rawRows.map(normalizeRow) : [];
   const summary = summarizeRows(request, rows);
+
+  let timeseries: DrillTimeseries | undefined;
+  let timeseriesSql:
+    | {
+        queries?: string[];
+        params?: Record<string, any>;
+      }
+    | undefined;
+
+  if (canEnrichTimeseries(plan, rows, deps)) {
+    const topRow = rows[0] || null;
+    const selectedValue = inferSelectedValueFromTopRow(
+      plan.targetDimension as DrillTargetDimension | undefined,
+      topRow
+    );
+
+    if (selectedValue) {
+      const enriched = await fetchDrillTimeseries(plan, selectedValue, deps);
+      timeseries = enriched.timeseries;
+      timeseriesSql = enriched.timeseriesSql;
+    }
+  }
 
   return {
     type: request.type,
     title: plan.title,
     summary,
     rows,
-    sql: {
-      queries: built.queries,
-      params: built.params,
-    },
+    sql: timeseriesSql,
+    timeseries,
     metadata: {
       targetDimension: plan.targetDimension as any,
       anchorValue: plan.anchorValue,
       rowCount: rows.length,
+      executionMode: request.executionMode,
+      evidenceSource: request.evidenceSource,
     },
   };
 }
