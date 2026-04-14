@@ -295,6 +295,47 @@ function formatIntOrNA(x: number | null | undefined): string {
   if (x == null || !Number.isFinite(Number(x))) return "0";
   return `${Math.round(Number(x)).toLocaleString()}`;
 }
+
+function getAtsSummaryLine(args: {
+  hitPct: number | null;
+  missPct: number | null;
+  refreshPct: number | null;
+  clientErrorPct: number | null;
+  infraErrorPct: number | null;
+}) {
+  const hit = Number(args.hitPct ?? 0);
+  const miss = Number(args.missPct ?? 0);
+  const refresh = Number(args.refreshPct ?? 0);
+  const clientErr = Number(args.clientErrorPct ?? 0);
+  const infraErr = Number(args.infraErrorPct ?? 0);
+
+  if (infraErr >= 2) {
+    return "Infra-side cache errors are contributing to degraded delivery.";
+  }
+
+  if (clientErr >= 2) {
+    return "Client-side cache errors are contributing to failed delivery attempts.";
+  }
+
+  if (hit >= 85 && miss <= 10) {
+    return "Cache efficiency is healthy with a strong hit ratio.";
+  }
+
+  if (hit >= 75 && miss <= 20) {
+    return "Cache efficiency is stable with moderate miss pressure.";
+  }
+
+  if (miss >= 20) {
+    return "Cache pressure is elevated due to a higher-than-expected miss rate.";
+  }
+
+  if (refresh >= 12) {
+    return "Cache refresh activity is elevated and may be reducing hit efficiency.";
+  }
+
+  return "Cache behavior is mixed with mild delivery inefficiencies.";
+}
+
 function windowMinutesFromRange(
   startIso?: string | null,
   endIso?: string | null,
@@ -2828,6 +2869,14 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
     const clientErrorPct = atsSummary?.clientErrorPct ?? null;
     const infraErrorPct = atsSummary?.infraErrorPct ?? null;
 
+    const atsSummaryLine = getAtsSummaryLine({
+      hitPct,
+      missPct,
+      refreshPct,
+      clientErrorPct,
+      infraErrorPct,
+    });
+
     const deliveryTrustPct =
       clientErrorPct != null || infraErrorPct != null
         ? Number(clientErrorPct || 0) + Number(infraErrorPct || 0)
@@ -2960,8 +3009,8 @@ function TriageCard({ run }: { run: ChatTriage["run"] }) {
         <div className="min-w-0">
           <div className="text-xs text-gray-400">Cache behavior</div>
           <div className="text-sm font-semibold text-gray-100">ATS Summary</div>
-          <div className="text-[11px] text-gray-500 mt-1">
-            Cache outcome mix for the current investigation window
+          <div className="text-[11px] text-gray-300 mt-1">
+            {atsSummaryLine}
           </div>
         </div>
       </div>
