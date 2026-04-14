@@ -5281,6 +5281,29 @@ export default function Home() {
         return;
       }
 
+      if (chatIntent === "explain") {
+        if (!latestTriageRun) {
+          addText(
+            "assistant",
+            "Run a triage first, then I can explain what’s going on."
+          );
+          return;
+        }
+
+        const verdict = buildExplainVerdict(latestTriageRun);
+        const summary =
+          latestTriageRun.swarm?.assessment?.summary ||
+          latestTriageRun.summaryText ||
+          "No summary available.";
+
+        addExplainCard({
+          summary: `${verdict}\n\n${summary}`,
+          overallState: latestTriageRun.swarm?.assessment?.overallStatus,
+          primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
+        });
+        return;
+      }
+
       pushRunLog(
         `Intent parse: kind=${parseResult.intentKind} shouldTrigger=${parseResult.shouldTrigger} partner=${parseResult.partnerCanonical || "-"} service=${parseResult.serviceCanonical || "-"} time=${parseResult.timeMeta?.kind || "-"}`
       );
@@ -5290,29 +5313,6 @@ export default function Home() {
           addText(
             "assistant",
             "Hey — I can help you investigate CDN performance. Try asking something like 'how is live traffic' or 'why is cache low'."
-          );
-          return;
-        }
-
-        if (chatIntent === "explain" && latestTriageRun) {
-          const verdict = buildExplainVerdict(latestTriageRun);
-          const summary =
-            latestTriageRun.swarm?.assessment?.summary ||
-            latestTriageRun.summaryText ||
-            "No summary available.";
-
-          addExplainCard({
-            summary: `${verdict}\n\n${summary}`,
-            overallState: latestTriageRun.swarm?.assessment?.overallStatus,
-            primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
-          });
-          return;
-        }
-
-        if (chatIntent === "explain" && !latestTriageRun) {
-          addText(
-            "assistant",
-            "Run a triage first, then I can explain what’s going on."
           );
           return;
         }
