@@ -309,31 +309,31 @@ function getAtsSummaryLine(args: {
   const clientErr = Number(args.clientErrorPct ?? 0);
   const infraErr = Number(args.infraErrorPct ?? 0);
 
-  if (infraErr >= 2) {
-    return "Infra-side cache errors are contributing to degraded delivery.";
-  }
+if (infraErr >= 2) {
+  return "Delivery degradation is driven by elevated infrastructure cache errors.";
+}
 
-  if (clientErr >= 2) {
-    return "Client-side cache errors are contributing to failed delivery attempts.";
-  }
+if (clientErr >= 2) {
+  return "Client-side cache errors are impacting successful delivery.";
+}
 
-  if (hit >= 85 && miss <= 10) {
-    return "Cache efficiency is healthy with a strong hit ratio.";
-  }
+if (hit >= 85 && miss <= 10) {
+  return "Cache performance is strong with a high hit ratio.";
+}
 
-  if (hit >= 75 && miss <= 20) {
-    return "Cache efficiency is stable with moderate miss pressure.";
-  }
+if (hit >= 75 && miss <= 20) {
+  return "Cache performance is stable with moderate miss pressure.";
+}
 
-  if (miss >= 20) {
-    return "Cache pressure is elevated due to a higher-than-expected miss rate.";
-  }
+if (miss >= 20) {
+  return "Cache miss rate is elevated, indicating increased origin dependency.";
+}
 
-  if (refresh >= 12) {
-    return "Cache refresh activity is elevated and may be reducing hit efficiency.";
-  }
+if (refresh >= 12) {
+  return "Cache refresh activity is elevated and may be reducing cache efficiency.";
+}
 
-  return "Cache behavior is mixed with mild delivery inefficiencies.";
+return "Cache performance is mixed with minor delivery inefficiencies.";
 }
 
 function windowMinutesFromRange(
