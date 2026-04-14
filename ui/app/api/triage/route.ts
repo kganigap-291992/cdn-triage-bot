@@ -749,6 +749,19 @@ function buildCompareMetrics(metricsJson: any) {
   };
 }
 
+function derivePrimarySignal(metricsJson: any): string | undefined {
+  const errorRate = metricsJson?.errorRatePct ?? 0;
+  const cache = metricsJson?.cacheHitRate ?? 0;
+  const p95 = metricsJson?.p95TtmsMs ?? 0;
+
+  // simple heuristic (we refine later)
+  if (errorRate > 1) return "errors";
+  if (cache > 0 && cache < 0.8) return "cache";
+  if (p95 > 1000) return "latency";
+
+  return "traffic";
+}
+
 function assertCanonicalMetricsJson(metricsJson: any) {
   if (!metricsJson || typeof metricsJson !== "object") {
     throw new Error("route: metricsJson missing");
@@ -1213,6 +1226,7 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
   );
   if (localPreviousAtsSummary) metricsJson.previousAtsSummary = localPreviousAtsSummary;
   const compareMetrics = buildCompareMetrics(metricsJson);
+  const primarySignal = derivePrimarySignal(metricsJson);
 
   metricsJson.debug = {
     ...(metricsJson.debug || {}),
@@ -1260,6 +1274,8 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
     summary: result.summary ?? result.summaryText ?? "",
     metricsJson,
     compareMetrics,
+    primarySignal,
+    overallState: assessment?.overallStatus,
     sql,
     swarm: {
       assessment,
@@ -1383,6 +1399,7 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
   );
 
   const compareMetrics = buildCompareMetrics(metricsJson);
+  const primarySignal = derivePrimarySignal(metricsJson);
 
   const regionBreakdown = pickRegionBreakdownFromProxy(parsed, rawMetrics);
   if (regionBreakdown) metricsJson.regionBreakdown = regionBreakdown;
@@ -1483,6 +1500,8 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
     summary: parsed?.summary ?? parsed?.summaryText ?? "",
     metricsJson,
     compareMetrics,
+    primarySignal,
+    overallState: assessment?.overallStatus,
     sql,
     swarm: {
       assessment,

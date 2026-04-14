@@ -146,6 +146,11 @@ type ChatCompare = {
       delta: number | null;
     };
   };
+  compareGraph?: {
+    metricType: "cache" | "latency" | "errors" | "traffic";
+    currentSeries: Array<{ ts: string; value: number | null }>;
+    previousSeries: Array<{ ts: string; value: number | null }>;
+  };
 };
 
 type ChatStatusBreakdown = {
@@ -527,6 +532,51 @@ function detectPopOverrideFromText(text: string): {
   }
 
   return { mentioned: false, value: null, sourceText: null };
+}
+
+
+function detectCompareSignalFromText(
+  text: string
+): "cache" | "latency" | "errors" | "traffic" | null {
+  const lowered = String(text || "").toLowerCase();
+
+  if (
+    lowered.includes("latency") ||
+    lowered.includes("p95") ||
+    lowered.includes("p99") ||
+    lowered.includes("ttms")
+  ) {
+    return "latency";
+  }
+
+  if (
+    lowered.includes("error") ||
+    lowered.includes("5xx") ||
+    lowered.includes("failure") ||
+    lowered.includes("failures")
+  ) {
+    return "errors";
+  }
+
+  if (
+    lowered.includes("traffic") ||
+    lowered.includes("request") ||
+    lowered.includes("requests") ||
+    lowered.includes("volume")
+  ) {
+    return "traffic";
+  }
+
+  if (
+    lowered.includes("cache") ||
+    lowered.includes("hit") ||
+    lowered.includes("miss") ||
+    lowered.includes("refresh")
+  ) {
+    return "cache";
+  }
+
+  return null;
 }
 
 function detectUaFamilyOverrideFromText(text: string): {
@@ -3583,6 +3633,71 @@ function DrillCard({
 }
 
 
+function buildCompareGraphFromMetricsJson(args: {
+  metricsJson: any;
+  primarySignal?: string | null;
+}) {
+  const metricType =
+    args.primarySignal === "cache" ||
+    args.primarySignal === "latency" ||
+    args.primarySignal === "errors" ||
+    args.primarySignal === "traffic"
+      ? args.primarySignal
+      : null;
+
+  if (!metricType) return null;
+
+  const currentPoints = Array.isArray(args.metricsJson?.timeseries?.points)
+    ? args.metricsJson.timeseries.points
+    : [];
+
+  const previousPoints = Array.isArray(
+    args.metricsJson?.previousWindow?.timeseries?.points
+  )
+    ? args.metricsJson.previousWindow.timeseries.points
+    : [];
+
+  if (!currentPoints.length && !previousPoints.length) return null;
+
+  function toSeriesValue(point: any, type: "cache" | "latency" | "errors" | "traffic") {
+    if (type === "cache") {
+      return point?.cacheHitRate == null ? null : Number(point.cacheHitRate);
+    }
+    if (type === "latency") {
+      return point?.p95TtmsMs == null ? null : Number(point.p95TtmsMs);
+    }
+    if (type === "errors") {
+      return point?.errorRatePct == null ? null : Number(point.errorRatePct);
+    }
+    if (type === "traffic") {
+      return point?.totalRequests == null ? null : Number(point.totalRequests);
+    }
+    return null;
+  }
+
+  const currentSeries = currentPoints
+    .map((point: any) => ({
+      ts: normalizeTsKey(point?.ts),
+      value: toSeriesValue(point, metricType),
+    }))
+    .filter((point: { ts: string; value: number | null }) => point.ts);
+
+  const previousSeries = previousPoints
+    .map((point: any) => ({
+      ts: normalizeTsKey(point?.ts),
+      value: toSeriesValue(point, metricType),
+    }))
+    .filter((point: { ts: string; value: number | null }) => point.ts);
+
+  if (!currentSeries.length && !previousSeries.length) return null;
+
+  return {
+    metricType,
+    currentSeries,
+    previousSeries,
+  };
+}
+
 function StatusBreakdownCard({
   breakdown,
 }: {
@@ -3901,32 +4016,37 @@ export default function Home() {
   }
 
    function addCompareCard(payload: {
-      summary: string;
-      overallState?: string;
-      primarySignal?: string;
-      compareMetrics?: {
-        cache?: {
-          current: number | null;
-          previous: number | null;
-          delta: number | null;
-        };
-        errors?: {
-          current: number | null;
-          previous: number | null;
-          delta: number | null;
-        };
-        latency?: {
-          current: number | null;
-          previous: number | null;
-          delta: number | null;
-        };
-        traffic?: {
-          current: number | null;
-          previous: number | null;
-          delta: number | null;
-        };
+    summary: string;
+    overallState?: string;
+    primarySignal?: string;
+    compareMetrics?: {
+      cache?: {
+        current: number | null;
+        previous: number | null;
+        delta: number | null;
       };
-    }) {
+      errors?: {
+        current: number | null;
+        previous: number | null;
+        delta: number | null;
+      };
+      latency?: {
+        current: number | null;
+        previous: number | null;
+        delta: number | null;
+      };
+      traffic?: {
+        current: number | null;
+        previous: number | null;
+        delta: number | null;
+      };
+    };
+    compareGraph?: {
+      metricType: "cache" | "latency" | "errors" | "traffic";
+      currentSeries: Array<{ ts: string; value: number | null }>;
+      previousSeries: Array<{ ts: string; value: number | null }>;
+    };
+  }) {
     setChatMessages((prev) => [
       ...prev,
       {
@@ -3938,6 +4058,7 @@ export default function Home() {
         overallState: payload.overallState,
         primarySignal: payload.primarySignal,
         compareMetrics: payload.compareMetrics,
+        compareGraph: payload.compareGraph,
       },
     ]);
   }
@@ -4687,6 +4808,9 @@ export default function Home() {
       summaryText: (data as any).summaryText ?? (data as any).summary ?? "",
       metricsJson: (data as any).metricsJson ?? null,
       compareMetrics: (data as any).compareMetrics ?? null,
+      compareGraph: (data as any).compareGraph ?? null,
+      primarySignal: (data as any).primarySignal ?? null,
+      overallState: (data as any).overallState ?? null,
       sql: (data as any).sql ?? null,
       swarm: (data as any).swarm ?? null,
       drill: (data as any).drill ?? null,
@@ -4935,6 +5059,73 @@ export default function Home() {
         text,
         hasPriorContext: Boolean(latestTriageRun),
       });
+
+
+      if (chatIntent === "compare") {
+        if (!latestTriageRun || !latestInvestigationContext) {
+          addText(
+            "assistant",
+            "Run a triage first, then I can compare this window to the previous one."
+          );
+          return;
+        }
+
+        setTyping(true);
+        setIsTriageLoading(true);
+
+        try {
+          const compareInputs = derivePreviousWindowInputs(latestInvestigationContext);
+
+          const data = await runTriage(compareInputs);
+
+          const previousSummary =
+            data.swarm?.assessment?.summary ||
+            data.summaryText ||
+            "Previous window comparison completed.";
+
+          const currentSummary =
+            latestTriageRun.swarm?.assessment?.summary ||
+            latestTriageRun.summaryText ||
+            "Current window summary unavailable.";
+
+          const requestedSignal = detectCompareSignalFromText(text);
+
+          const resolvedCompareSignal =
+            requestedSignal ??
+            data.primarySignal ??
+            latestTriageRun.swarm?.assessment?.primarySignal ??
+            "cache";
+
+          const compareGraph =
+            data.compareGraph ??
+            buildCompareGraphFromMetricsJson({
+              metricsJson: data.metricsJson,
+              primarySignal: resolvedCompareSignal,
+            });
+
+          addCompareCard({
+            summary:
+              `Compared against the previous window.\n\n` +
+              `Current: ${currentSummary}\n\n` +
+              `Previous: ${previousSummary}`,
+            overallState:
+              data.overallState ??
+              latestTriageRun.swarm?.assessment?.overallStatus,
+            primarySignal: resolvedCompareSignal,
+            compareMetrics: data.compareMetrics,
+            compareGraph,
+          });
+
+          pushRunLog("Compare card created from previous-window rerun.");
+        } catch (e: any) {
+          addText("assistant", `⚠️ ${e?.message || "Compare failed."}`);
+        } finally {
+          setTyping(false);
+          setIsTriageLoading(false);
+        }
+
+        return;
+      }
 
       pushRunLog(
         `Intent parse: kind=${parseResult.intentKind} shouldTrigger=${parseResult.shouldTrigger} partner=${parseResult.partnerCanonical || "-"} service=${parseResult.serviceCanonical || "-"} time=${parseResult.timeMeta?.kind || "-"}`
@@ -5379,70 +5570,22 @@ export default function Home() {
           return;
         } 
 
-        if (chatIntent === "compare") {
-          if (!latestTriageRun || !latestInvestigationContext) {
-            addText(
-              "assistant",
-              "Run a triage first, then I can compare this window to the previous one."
-            );
-            return;
-          }
-
-          setTyping(true);
-          setIsTriageLoading(true);
-
-          try {
-            const compareInputs =
-              derivePreviousWindowInputs(latestInvestigationContext);
-
-            const data = await runTriage(compareInputs);
-
-            const previousSummary =
-              data.swarm?.assessment?.summary ||
-              data.summaryText ||
-              "Previous window comparison completed.";
-
-            const currentSummary =
-              latestTriageRun.swarm?.assessment?.summary ||
-              latestTriageRun.summaryText ||
-              "Current window summary unavailable.";
-
-            addCompareCard({
-              summary:
-                `Compared against the previous window.\n\n` +
-                `Current: ${currentSummary}\n\n` +
-                `Previous: ${previousSummary}`,
-              overallState: latestTriageRun.swarm?.assessment?.overallStatus,
-              primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
-              compareMetrics: data.compareMetrics,
-            });
-
-            pushRunLog("Compare card created from previous-window rerun.");
-          } catch (e: any) {
-            addText("assistant", `⚠️ ${e?.message || "Compare failed."}`);
-          } finally {
-            setTyping(false);
-            setIsTriageLoading(false);
-          }
-
-          return;
-        }
-
-        addText(
+          addText(
           "assistant",
           parseResult.replyText ||
             "That didn't look like a triage request. Ask about traffic, latency, errors, cache, or incidents — or click Run Triage with the current scope."
         );
         return;
       }
-        if (explicitDrillIntent) {
-  if (!latestInvestigationContext) {
-    addText(
-      "assistant",
-      "Run a triage first, then I can drill into the worst region, POP, device, or content type."
-    );
-    return;
-  }
+
+      if (explicitDrillIntent) {
+        if (!latestInvestigationContext) {
+          addText(
+            "assistant",
+            "Run a triage first, then I can drill into the worst region, POP, device, or content type."
+          );
+          return;
+        }
 
   let drillInputs: TriageInputs | null = null;
   let drillIntent:

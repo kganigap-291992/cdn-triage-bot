@@ -1,5 +1,3 @@
-// ui/components/cards/CompareCard.tsx
-
 import React from "react";
 
 type CompareMetricBlock = {
@@ -15,11 +13,23 @@ type CompareMetrics = {
   cache?: CompareMetricBlock;
 };
 
+type CompareSeriesPoint = {
+  ts: string;
+  value: number | null;
+};
+
+type CompareGraph = {
+  metricType: "cache" | "latency" | "errors" | "traffic";
+  currentSeries: CompareSeriesPoint[];
+  previousSeries: CompareSeriesPoint[];
+};
+
 type Props = {
   summary: string;
   overallState?: string;
   primarySignal?: string;
   compareMetrics?: CompareMetrics;
+  compareGraph?: CompareGraph;
 };
 
 function getStateColor(state?: string) {
@@ -165,6 +175,38 @@ function formatInteger(value: number) {
   }).format(value);
 }
 
+function normalizeCachePercent(value?: number | null): number | null {
+  if (value == null || !Number.isFinite(Number(value))) return null;
+  const n = Number(value);
+  return n <= 1 ? n * 100 : n;
+}
+
+function metricLabel(signal?: string) {
+  switch (signal) {
+    case "cache":
+      return "Cache hit";
+    case "errors":
+      return "Error rate";
+    case "latency":
+      return "p95 latency";
+    case "traffic":
+      return "Requests";
+    default:
+      return "Metric";
+  }
+}
+
+function selectMetricBlock(
+  primarySignal?: string,
+  compareMetrics?: CompareMetrics
+): CompareMetricBlock | undefined {
+  if (primarySignal === "cache") return compareMetrics?.cache;
+  if (primarySignal === "errors") return compareMetrics?.errors;
+  if (primarySignal === "latency") return compareMetrics?.latency;
+  if (primarySignal === "traffic") return compareMetrics?.traffic;
+  return undefined;
+}
+
 function buildCompareVerdictFromMetrics(args: {
   primarySignal?: string;
   compareMetrics?: CompareMetrics;
@@ -173,24 +215,23 @@ function buildCompareVerdictFromMetrics(args: {
 
   if (primarySignal === "cache") {
     const metric = compareMetrics?.cache;
-    if (
-      metric?.current != null &&
-      metric.previous != null &&
-      metric.delta != null
-    ) {
-      const deltaPctPoints = metric.delta * 100;
+    const current = normalizeCachePercent(metric?.current);
+    const previous = normalizeCachePercent(metric?.previous);
+
+    if (current != null && previous != null) {
+      const deltaPctPoints = current - previous;
       const absDelta = formatNumber(Math.abs(deltaPctPoints), 2);
 
-      if (deltaPctPoints > 0.005) {
+      if (deltaPctPoints > 0.05) {
         return {
           label: `↑ Cache +${absDelta}%`,
           className: "border-green-500/30 bg-green-500/10 text-green-200",
         };
       }
 
-      if (deltaPctPoints < -0.005) {
+      if (deltaPctPoints < -0.05) {
         return {
-          label: `↓ Cache -${absDelta}%`,
+          label: `↓ Cache ${absDelta}%`,
           className: "border-red-500/30 bg-red-500/10 text-red-200",
         };
       }
@@ -204,21 +245,18 @@ function buildCompareVerdictFromMetrics(args: {
 
   if (primarySignal === "errors") {
     const metric = compareMetrics?.errors;
-    if (
-      metric?.current != null &&
-      metric.previous != null &&
-      metric.delta != null
-    ) {
-      const absDelta = formatNumber(Math.abs(metric.delta), 3);
+    if (metric?.current != null && metric.previous != null) {
+      const delta = Number(metric.current) - Number(metric.previous);
+      const absDelta = formatNumber(Math.abs(delta), 3);
 
-      if (metric.delta > 0.0005) {
+      if (delta > 0.01) {
         return {
           label: `↑ Errors +${absDelta}%`,
           className: "border-red-500/30 bg-red-500/10 text-red-200",
         };
       }
 
-      if (metric.delta < -0.0005) {
+      if (delta < -0.01) {
         return {
           label: `↓ Errors -${absDelta}%`,
           className: "border-green-500/30 bg-green-500/10 text-green-200",
@@ -234,21 +272,18 @@ function buildCompareVerdictFromMetrics(args: {
 
   if (primarySignal === "latency") {
     const metric = compareMetrics?.latency;
-    if (
-      metric?.current != null &&
-      metric.previous != null &&
-      metric.delta != null
-    ) {
-      const absDelta = Math.abs(Math.round(metric.delta));
+    if (metric?.current != null && metric.previous != null) {
+      const delta = Number(metric.current) - Number(metric.previous);
+      const absDelta = Math.abs(Math.round(delta));
 
-      if (metric.delta > 0.5) {
+      if (delta > 0.5) {
         return {
           label: `↑ Latency +${absDelta}ms`,
           className: "border-red-500/30 bg-red-500/10 text-red-200",
         };
       }
 
-      if (metric.delta < -0.5) {
+      if (delta < -0.5) {
         return {
           label: `↓ Latency -${absDelta}ms`,
           className: "border-green-500/30 bg-green-500/10 text-green-200",
@@ -267,19 +302,21 @@ function buildCompareVerdictFromMetrics(args: {
     if (
       metric?.current != null &&
       metric.previous != null &&
-      metric.previous > 0
+      Number(metric.previous) > 0
     ) {
-      const deltaPct = ((metric.current - metric.previous) / metric.previous) * 100;
+      const deltaPct =
+        ((Number(metric.current) - Number(metric.previous)) / Number(metric.previous)) *
+        100;
       const absDelta = formatNumber(Math.abs(deltaPct), 1);
 
-      if (deltaPct > 0.05) {
+      if (deltaPct > 0.1) {
         return {
           label: `↑ Traffic +${absDelta}%`,
           className: "border-blue-500/30 bg-blue-500/10 text-blue-200",
         };
       }
 
-      if (deltaPct < -0.05) {
+      if (deltaPct < -0.1) {
         return {
           label: `↓ Traffic -${absDelta}%`,
           className: "border-yellow-500/30 bg-yellow-500/10 text-yellow-200",
@@ -312,16 +349,16 @@ function buildCompareVerdictFromText(args: {
       const delta = currentCache - previousCache;
       const absDelta = Math.abs(delta).toFixed(2);
 
-      if (delta > 0.005) {
+      if (delta > 0.05) {
         return {
           label: `↑ Cache +${absDelta}%`,
           className: "border-green-500/30 bg-green-500/10 text-green-200",
         };
       }
 
-      if (delta < -0.005) {
+      if (delta < -0.05) {
         return {
-          label: `↓ Cache -${absDelta}%`,
+          label: `↓ Cache ${absDelta}% `,
           className: "border-red-500/30 bg-red-500/10 text-red-200",
         };
       }
@@ -341,16 +378,16 @@ function buildCompareVerdictFromText(args: {
       const delta = currentErrors - previousErrors;
       const absDelta = Math.abs(delta).toFixed(2);
 
-      if (delta > 0.0005) {
+      if (delta > 0.01) {
         return {
           label: `↑ Errors +${absDelta}%`,
           className: "border-red-500/30 bg-red-500/10 text-red-200",
         };
       }
 
-      if (delta < -0.0005) {
+      if (delta < -0.01) {
         return {
-          label: `↓ Errors -${absDelta}%`,
+          label: `↓ Errors ${absDelta}% `,
           className: "border-green-500/30 bg-green-500/10 text-green-200",
         };
       }
@@ -379,7 +416,7 @@ function buildCompareVerdictFromText(args: {
 
       if (delta < -0.5) {
         return {
-          label: `↓ Latency -${absDelta}ms`,
+          label: `↓ Latency ${absDelta}ms`,
           className: "border-green-500/30 bg-green-500/10 text-green-200",
         };
       }
@@ -399,14 +436,14 @@ function buildCompareVerdictFromText(args: {
       const deltaPct = ((currentRequests - previousRequests) / previousRequests) * 100;
       const absDelta = Math.abs(deltaPct).toFixed(1);
 
-      if (deltaPct > 0.05) {
+      if (deltaPct > 0.1) {
         return {
           label: `↑ Traffic +${absDelta}%`,
           className: "border-blue-500/30 bg-blue-500/10 text-blue-200",
         };
       }
 
-      if (deltaPct < -0.05) {
+      if (deltaPct < -0.1) {
         return {
           label: `↓ Traffic -${absDelta}%`,
           className: "border-yellow-500/30 bg-yellow-500/10 text-yellow-200",
@@ -455,7 +492,8 @@ function formatCompareMetricValue(signal?: string, value?: number | null) {
   if (value == null) return "—";
 
   if (signal === "cache") {
-    return `${formatNumber(value * 100, 2)}%`;
+    const pct = normalizeCachePercent(value);
+    return pct == null ? "—" : `${formatNumber(pct, 2)}%`;
   }
 
   if (signal === "errors") {
@@ -473,11 +511,208 @@ function formatCompareMetricValue(signal?: string, value?: number | null) {
   return formatNumber(value, 2);
 }
 
+function formatGraphValue(metricType: CompareGraph["metricType"], value: number | null) {
+  if (value == null) return "—";
+
+  if (metricType === "cache") {
+    const pct = normalizeCachePercent(value);
+    return pct == null ? "—" : `${formatNumber(pct, 2)}%`;
+  }
+
+  if (metricType === "errors") {
+    return `${formatNumber(value, 3)}%`;
+  }
+
+  if (metricType === "latency") {
+    return `${formatNumber(value, 0)} ms`;
+  }
+
+  if (metricType === "traffic") {
+    return formatInteger(value);
+  }
+
+  return formatNumber(value, 2);
+}
+
+function normalizeGraphSeries(
+  metricType: CompareGraph["metricType"],
+  series: CompareSeriesPoint[]
+) {
+  return series
+    .map((point) => {
+      const raw =
+        point?.value == null || !Number.isFinite(Number(point.value))
+          ? null
+          : Number(point.value);
+
+      const normalized =
+        metricType === "cache" ? normalizeCachePercent(raw) : raw;
+
+      return {
+        ts: String(point?.ts || ""),
+        value: normalized,
+      };
+    })
+    .filter((point) => point.ts);
+}
+
+function buildPolylinePoints(
+  values: Array<number | null>,
+  width: number,
+  height: number,
+  padX: number,
+  padY: number
+) {
+  const numericValues = values.filter(
+    (value): value is number => value != null && Number.isFinite(value)
+  );
+
+  if (!numericValues.length) return "";
+
+  const min = Math.min(...numericValues);
+  const max = Math.max(...numericValues);
+  const span = max - min || 1;
+  const usableWidth = Math.max(1, width - padX * 2);
+  const usableHeight = Math.max(1, height - padY * 2);
+  const count = Math.max(1, values.length - 1);
+
+  return values
+    .map((value, index) => {
+      if (value == null || !Number.isFinite(value)) return null;
+
+      const x = padX + (index / count) * usableWidth;
+      const y = padY + (1 - (value - min) / span) * usableHeight;
+
+      return `${x},${y}`;
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
+function CompareMiniGraph({ compareGraph }: { compareGraph: CompareGraph }) {
+  const currentSeries = normalizeGraphSeries(
+    compareGraph.metricType,
+    compareGraph.currentSeries || []
+  );
+  const previousSeries = normalizeGraphSeries(
+    compareGraph.metricType,
+    compareGraph.previousSeries || []
+  );
+
+  const pointCount = Math.max(currentSeries.length, previousSeries.length);
+  if (!pointCount) return null;
+
+  const currentValues = currentSeries.map((point) => point.value);
+  const previousValues = previousSeries.map((point) => point.value);
+
+  const width = 760;
+  const height = 180;
+  const padX = 16;
+  const padY = 14;
+
+  const currentPolyline = buildPolylinePoints(
+    currentValues,
+    width,
+    height,
+    padX,
+    padY
+  );
+  const previousPolyline = buildPolylinePoints(
+    previousValues,
+    width,
+    height,
+    padX,
+    padY
+  );
+
+  const latestCurrent =
+    currentSeries.length > 0 ? currentSeries[currentSeries.length - 1]?.value ?? null : null;
+  const latestPrevious =
+    previousSeries.length > 0 ? previousSeries[previousSeries.length - 1]?.value ?? null : null;
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs text-gray-400">Compare graph</div>
+          <div className="text-sm font-semibold text-gray-100">
+            {metricLabel(compareGraph.metricType)} over time
+          </div>
+        </div>
+        <div className="text-right text-[11px] text-gray-400">
+          <div>Current: {formatGraphValue(compareGraph.metricType, latestCurrent)}</div>
+          <div>Previous: {formatGraphValue(compareGraph.metricType, latestPrevious)}</div>
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[180px]">
+          <line
+            x1={padX}
+            y1={height - padY}
+            x2={width - padX}
+            y2={height - padY}
+            stroke="rgba(255,255,255,0.08)"
+          />
+          <line
+            x1={padX}
+            y1={padY}
+            x2={padX}
+            y2={height - padY}
+            stroke="rgba(255,255,255,0.08)"
+          />
+
+          {previousPolyline ? (
+            <polyline
+              fill="none"
+              stroke="rgba(156,163,175,0.95)"
+              strokeWidth="2.25"
+              strokeDasharray="5 5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              points={previousPolyline}
+            />
+          ) : null}
+
+          {currentPolyline ? (
+            <polyline
+              fill="none"
+              stroke="rgba(59,130,246,0.95)"
+              strokeWidth="2.75"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              points={currentPolyline}
+            />
+          ) : null}
+        </svg>
+
+        <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
+          <div className="flex items-center gap-1.5">
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-full"
+              style={{ background: "rgba(59,130,246,0.95)" }}
+            />
+            <span>current</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-full"
+              style={{ background: "rgba(156,163,175,0.95)" }}
+            />
+            <span>previous</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function CompareCard({
   summary,
   overallState,
   primarySignal,
   compareMetrics,
+  compareGraph,
 }: Props) {
   const stateLabel = formatStateLabel(overallState);
   const signalLabel = formatSignalLabel(primarySignal);
@@ -495,19 +730,15 @@ export default function CompareCard({
       previousText: parts.previous,
     });
 
-  const metricBlock =
-    primarySignal === "cache"
-      ? compareMetrics?.cache
-      : primarySignal === "errors"
-      ? compareMetrics?.errors
-      : primarySignal === "latency"
-      ? compareMetrics?.latency
-      : primarySignal === "traffic"
-      ? compareMetrics?.traffic
-      : undefined;
+  const metricBlock = selectMetricBlock(primarySignal, compareMetrics);
 
   const showStructuredMetrics =
     metricBlock?.current != null || metricBlock?.previous != null;
+
+  const showCompareGraph =
+    compareGraph != null &&
+    ((compareGraph.currentSeries?.length ?? 0) > 0 ||
+      (compareGraph.previousSeries?.length ?? 0) > 0);
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 space-y-3">
@@ -573,22 +804,24 @@ export default function CompareCard({
           </div>
         )}
 
+        {showCompareGraph ? <CompareMiniGraph compareGraph={compareGraph!} /> : null}
+
         {!showStructuredMetrics && parts.current && (
-        <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+          <div className="rounded-xl border border-white/10 bg-black/20 p-3">
             <div className="text-xs text-gray-400 mb-1">Current</div>
             <div className="text-sm text-gray-100 leading-relaxed whitespace-pre-wrap">
-            {parts.current}
+              {parts.current}
             </div>
-        </div>
+          </div>
         )}
 
         {!showStructuredMetrics && parts.previous && (
-        <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+          <div className="rounded-xl border border-white/10 bg-black/20 p-3">
             <div className="text-xs text-gray-400 mb-1">Previous</div>
             <div className="text-sm text-gray-100 leading-relaxed whitespace-pre-wrap">
-            {parts.previous}
+              {parts.previous}
             </div>
-        </div>
+          </div>
         )}
       </div>
     </div>
