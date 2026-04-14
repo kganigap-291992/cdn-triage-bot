@@ -22,6 +22,8 @@ type CompareGraph = {
   metricType: "cache" | "latency" | "errors" | "traffic";
   currentSeries: CompareSeriesPoint[];
   previousSeries: CompareSeriesPoint[];
+  currentSeriesP99?: CompareSeriesPoint[];
+  previousSeriesP99?: CompareSeriesPoint[];
 };
 
 type Props = {
@@ -188,7 +190,7 @@ function metricLabel(signal?: string) {
     case "errors":
       return "Error rate";
     case "latency":
-      return "p95 latency";
+      return "Latency";
     case "traffic":
       return "Requests";
     default:
@@ -305,7 +307,8 @@ function buildCompareVerdictFromMetrics(args: {
       Number(metric.previous) > 0
     ) {
       const deltaPct =
-        ((Number(metric.current) - Number(metric.previous)) / Number(metric.previous)) *
+        ((Number(metric.current) - Number(metric.previous)) /
+          Number(metric.previous)) *
         100;
       const absDelta = formatNumber(Math.abs(deltaPct), 1);
 
@@ -358,7 +361,7 @@ function buildCompareVerdictFromText(args: {
 
       if (delta < -0.05) {
         return {
-          label: `↓ Cache ${absDelta}% `,
+          label: `↓ Cache ${absDelta}%`,
           className: "border-red-500/30 bg-red-500/10 text-red-200",
         };
       }
@@ -387,7 +390,7 @@ function buildCompareVerdictFromText(args: {
 
       if (delta < -0.01) {
         return {
-          label: `↓ Errors ${absDelta}% `,
+          label: `↓ Errors ${absDelta}%`,
           className: "border-green-500/30 bg-green-500/10 text-green-200",
         };
       }
@@ -432,8 +435,13 @@ function buildCompareVerdictFromText(args: {
     const currentRequests = extractRequests(currentText);
     const previousRequests = extractRequests(previousText);
 
-    if (currentRequests != null && previousRequests != null && previousRequests > 0) {
-      const deltaPct = ((currentRequests - previousRequests) / previousRequests) * 100;
+    if (
+      currentRequests != null &&
+      previousRequests != null &&
+      previousRequests > 0
+    ) {
+      const deltaPct =
+        ((currentRequests - previousRequests) / previousRequests) * 100;
       const absDelta = Math.abs(deltaPct).toFixed(1);
 
       if (deltaPct > 0.1) {
@@ -511,7 +519,10 @@ function formatCompareMetricValue(signal?: string, value?: number | null) {
   return formatNumber(value, 2);
 }
 
-function formatGraphValue(metricType: CompareGraph["metricType"], value: number | null) {
+function formatGraphValue(
+  metricType: CompareGraph["metricType"],
+  value: number | null
+) {
   if (value == null) return "—";
 
   if (metricType === "cache") {
@@ -538,7 +549,7 @@ function normalizeGraphSeries(
   metricType: CompareGraph["metricType"],
   series: CompareSeriesPoint[]
 ) {
-  return series
+  return (series || [])
     .map((point) => {
       const raw =
         point?.value == null || !Number.isFinite(Number(point.value))
@@ -561,19 +572,13 @@ function buildPolylinePoints(
   width: number,
   height: number,
   padX: number,
-  padY: number
+  padY: number,
+  min: number,
+  max: number
 ) {
-  const numericValues = values.filter(
-    (value): value is number => value != null && Number.isFinite(value)
-  );
-
-  if (!numericValues.length) return "";
-
-  const min = Math.min(...numericValues);
-  const max = Math.max(...numericValues);
-  const span = max - min || 1;
   const usableWidth = Math.max(1, width - padX * 2);
   const usableHeight = Math.max(1, height - padY * 2);
+  const span = max - min || 1;
   const count = Math.max(1, values.length - 1);
 
   return values
@@ -590,6 +595,36 @@ function buildPolylinePoints(
 }
 
 function CompareMiniGraph({ compareGraph }: { compareGraph: CompareGraph }) {
+  const [focusedSeries, setFocusedSeries] = React.useState<string | null>(null);
+
+  function toggleSeries(key: string) {
+    setFocusedSeries((prev) => (prev === key ? null : key));
+  }
+
+  function getOpacity(key: string) {
+    if (!focusedSeries) return 1;
+    return focusedSeries === key ? 1 : 0.15;
+  }
+
+  function getStrokeWidth(key: string, base: number) {
+    if (!focusedSeries) return base;
+    return focusedSeries === key ? base + 0.75 : base;
+  }
+
+  function getLegendClass(key: string) {
+    const active = focusedSeries === key;
+    const faded = focusedSeries != null && !active;
+
+    return [
+      "flex items-center gap-1.5 rounded-full border px-2 py-1 transition cursor-pointer select-none",
+      active
+        ? "border-white/15 bg-white/10 text-gray-100"
+        : faded
+        ? "border-white/5 bg-white/[0.02] text-gray-500"
+        : "border-transparent bg-transparent text-gray-300 hover:bg-white/[0.04]",
+    ].join(" ");
+  }
+
   const currentSeries = normalizeGraphSeries(
     compareGraph.metricType,
     compareGraph.currentSeries || []
@@ -599,12 +634,45 @@ function CompareMiniGraph({ compareGraph }: { compareGraph: CompareGraph }) {
     compareGraph.previousSeries || []
   );
 
-  const pointCount = Math.max(currentSeries.length, previousSeries.length);
+  const currentSeriesP99 =
+    compareGraph.metricType === "latency"
+      ? normalizeGraphSeries("latency", compareGraph.currentSeriesP99 || [])
+      : [];
+
+  const previousSeriesP99 =
+    compareGraph.metricType === "latency"
+      ? normalizeGraphSeries("latency", compareGraph.previousSeriesP99 || [])
+      : [];
+
+  const hasLatencyP99 =
+    compareGraph.metricType === "latency" &&
+    (currentSeriesP99.length > 0 || previousSeriesP99.length > 0);
+
+  const pointCount = Math.max(
+    currentSeries.length,
+    previousSeries.length,
+    currentSeriesP99.length,
+    previousSeriesP99.length
+  );
+
   if (!pointCount) return null;
 
   const currentValues = currentSeries.map((point) => point.value);
   const previousValues = previousSeries.map((point) => point.value);
+  const currentValuesP99 = currentSeriesP99.map((point) => point.value);
+  const previousValuesP99 = previousSeriesP99.map((point) => point.value);
 
+  const allValues = [
+    ...currentValues,
+    ...previousValues,
+    ...currentValuesP99,
+    ...previousValuesP99,
+  ].filter((value): value is number => value != null && Number.isFinite(value));
+
+  if (!allValues.length) return null;
+
+  const min = Math.min(...allValues);
+  const max = Math.max(...allValues);
   const width = 760;
   const height = 180;
   const padX = 16;
@@ -615,20 +683,61 @@ function CompareMiniGraph({ compareGraph }: { compareGraph: CompareGraph }) {
     width,
     height,
     padX,
-    padY
+    padY,
+    min,
+    max
   );
+
   const previousPolyline = buildPolylinePoints(
     previousValues,
     width,
     height,
     padX,
-    padY
+    padY,
+    min,
+    max
   );
 
+  const currentPolylineP99 = hasLatencyP99
+    ? buildPolylinePoints(
+        currentValuesP99,
+        width,
+        height,
+        padX,
+        padY,
+        min,
+        max
+      )
+    : "";
+
+  const previousPolylineP99 = hasLatencyP99
+    ? buildPolylinePoints(
+        previousValuesP99,
+        width,
+        height,
+        padX,
+        padY,
+        min,
+        max
+      )
+    : "";
+
   const latestCurrent =
-    currentSeries.length > 0 ? currentSeries[currentSeries.length - 1]?.value ?? null : null;
+    currentSeries.length > 0
+      ? currentSeries[currentSeries.length - 1]?.value ?? null
+      : null;
   const latestPrevious =
-    previousSeries.length > 0 ? previousSeries[previousSeries.length - 1]?.value ?? null : null;
+    previousSeries.length > 0
+      ? previousSeries[previousSeries.length - 1]?.value ?? null
+      : null;
+  const latestCurrentP99 =
+    currentSeriesP99.length > 0
+      ? currentSeriesP99[currentSeriesP99.length - 1]?.value ?? null
+      : null;
+  const latestPreviousP99 =
+    previousSeriesP99.length > 0
+      ? previousSeriesP99[previousSeriesP99.length - 1]?.value ?? null
+      : null;
 
   return (
     <div className="rounded-xl border border-white/10 bg-black/20 p-3">
@@ -636,17 +745,50 @@ function CompareMiniGraph({ compareGraph }: { compareGraph: CompareGraph }) {
         <div>
           <div className="text-xs text-gray-400">Compare graph</div>
           <div className="text-sm font-semibold text-gray-100">
-            {metricLabel(compareGraph.metricType)} over time
+            {compareGraph.metricType === "latency"
+              ? "Latency (p95 / p99) — current vs previous"
+              : `${metricLabel(compareGraph.metricType)} — current vs previous`}
+          </div>
+          <div className="mt-1 text-[11px] text-gray-500">
+            Click legend to focus a series • double-click graph to reset
           </div>
         </div>
+
         <div className="text-right text-[11px] text-gray-400">
-          <div>Current: {formatGraphValue(compareGraph.metricType, latestCurrent)}</div>
-          <div>Previous: {formatGraphValue(compareGraph.metricType, latestPrevious)}</div>
+          {compareGraph.metricType === "latency" ? (
+            <>
+              <div>Current p95: {formatGraphValue("latency", latestCurrent)}</div>
+              <div>Previous p95: {formatGraphValue("latency", latestPrevious)}</div>
+              {hasLatencyP99 ? (
+                <>
+                  <div>
+                    Current p99: {formatGraphValue("latency", latestCurrentP99)}
+                  </div>
+                  <div>
+                    Previous p99: {formatGraphValue("latency", latestPreviousP99)}
+                  </div>
+                </>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <div>
+                Current: {formatGraphValue(compareGraph.metricType, latestCurrent)}
+              </div>
+              <div>
+                Previous: {formatGraphValue(compareGraph.metricType, latestPrevious)}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
       <div className="mt-3">
-        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[180px]">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="w-full h-[180px]"
+          onDoubleClick={() => setFocusedSeries(null)}
+        >
           <line
             x1={padX}
             y1={height - padY}
@@ -666,7 +808,8 @@ function CompareMiniGraph({ compareGraph }: { compareGraph: CompareGraph }) {
             <polyline
               fill="none"
               stroke="rgba(156,163,175,0.95)"
-              strokeWidth="2.25"
+              strokeWidth={getStrokeWidth("previous-p95", 2.25)}
+              opacity={getOpacity("previous-p95")}
               strokeDasharray="5 5"
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -678,29 +821,122 @@ function CompareMiniGraph({ compareGraph }: { compareGraph: CompareGraph }) {
             <polyline
               fill="none"
               stroke="rgba(59,130,246,0.95)"
-              strokeWidth="2.75"
+              strokeWidth={getStrokeWidth("current-p95", 2.75)}
+              opacity={getOpacity("current-p95")}
               strokeLinecap="round"
               strokeLinejoin="round"
               points={currentPolyline}
             />
           ) : null}
+
+          {hasLatencyP99 && previousPolylineP99 ? (
+            <polyline
+              fill="none"
+              stroke="rgba(168,85,247,0.85)"
+              strokeWidth={getStrokeWidth("previous-p99", 2)}
+              opacity={getOpacity("previous-p99")}
+              strokeDasharray="4 4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              points={previousPolylineP99}
+            />
+          ) : null}
+
+          {hasLatencyP99 && currentPolylineP99 ? (
+            <polyline
+              fill="none"
+              stroke="rgba(196,181,253,0.95)"
+              strokeWidth={getStrokeWidth("current-p99", 2.25)}
+              opacity={getOpacity("current-p99")}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              points={currentPolylineP99}
+            />
+          ) : null}
         </svg>
 
-        <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
-          <div className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ background: "rgba(59,130,246,0.95)" }}
-            />
-            <span>current</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ background: "rgba(156,163,175,0.95)" }}
-            />
-            <span>previous</span>
-          </div>
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-[11px]">
+          {compareGraph.metricType === "latency" ? (
+            <>
+              <button
+                type="button"
+                className={getLegendClass("current-p95")}
+                onClick={() => toggleSeries("current-p95")}
+              >
+                <span
+                  className="inline-block h-2.5 w-2.5 rounded-full"
+                  style={{ background: "rgba(59,130,246,0.95)" }}
+                />
+                <span>current p95</span>
+              </button>
+
+              <button
+                type="button"
+                className={getLegendClass("previous-p95")}
+                onClick={() => toggleSeries("previous-p95")}
+              >
+                <span
+                  className="inline-block h-2.5 w-2.5 rounded-full"
+                  style={{ background: "rgba(156,163,175,0.95)" }}
+                />
+                <span>previous p95</span>
+              </button>
+
+              {hasLatencyP99 ? (
+                <>
+                  <button
+                    type="button"
+                    className={getLegendClass("current-p99")}
+                    onClick={() => toggleSeries("current-p99")}
+                  >
+                    <span
+                      className="inline-block h-2.5 w-2.5 rounded-full"
+                      style={{ background: "rgba(196,181,253,0.95)" }}
+                    />
+                    <span>current p99</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={getLegendClass("previous-p99")}
+                    onClick={() => toggleSeries("previous-p99")}
+                  >
+                    <span
+                      className="inline-block h-2.5 w-2.5 rounded-full"
+                      style={{ background: "rgba(168,85,247,0.85)" }}
+                    />
+                    <span>previous p99</span>
+                  </button>
+                </>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className={getLegendClass("current")}
+                onClick={() => toggleSeries("current")}
+              >
+                <span
+                  className="inline-block h-2.5 w-2.5 rounded-full"
+                  style={{ background: "rgba(59,130,246,0.95)" }}
+                />
+                <span>current</span>
+              </button>
+
+              <button
+                type="button"
+                className={getLegendClass("previous")}
+                onClick={() => toggleSeries("previous")}
+              >
+                <span
+                  className="inline-block h-2.5 w-2.5 rounded-full"
+                  style={{ background: "rgba(156,163,175,0.95)" }}
+                />
+                <span>previous</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -738,7 +974,9 @@ export default function CompareCard({
   const showCompareGraph =
     compareGraph != null &&
     ((compareGraph.currentSeries?.length ?? 0) > 0 ||
-      (compareGraph.previousSeries?.length ?? 0) > 0);
+      (compareGraph.previousSeries?.length ?? 0) > 0 ||
+      (compareGraph.currentSeriesP99?.length ?? 0) > 0 ||
+      (compareGraph.previousSeriesP99?.length ?? 0) > 0);
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 space-y-3">
@@ -804,7 +1042,9 @@ export default function CompareCard({
           </div>
         )}
 
-        {showCompareGraph ? <CompareMiniGraph compareGraph={compareGraph!} /> : null}
+        {showCompareGraph ? (
+          <CompareMiniGraph compareGraph={compareGraph!} />
+        ) : null}
 
         {!showStructuredMetrics && parts.current && (
           <div className="rounded-xl border border-white/10 bg-black/20 p-3">

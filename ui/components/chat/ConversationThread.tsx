@@ -2,6 +2,30 @@
 
 import React from "react";
 
+type CompareMetricBlock = {
+  current: number | null;
+  previous: number | null;
+  delta: number | null;
+};
+
+type CompareMetrics = {
+  cache?: CompareMetricBlock;
+  errors?: CompareMetricBlock;
+  latency?: CompareMetricBlock;
+  traffic?: CompareMetricBlock;
+};
+
+type CompareSeriesPoint = {
+  ts: string;
+  value: number | null;
+};
+
+type CompareGraph = {
+  metricType: "cache" | "latency" | "errors" | "traffic";
+  currentSeries: CompareSeriesPoint[];
+  previousSeries: CompareSeriesPoint[];
+};
+
 type ConversationThreadProps = {
   chatMessages: any[];
   typing: boolean;
@@ -19,28 +43,8 @@ type ConversationThreadProps = {
     summary: string;
     overallState?: string;
     primarySignal?: string;
-    compareMetrics?: {
-      cache?: {
-        current: number | null;
-        previous: number | null;
-        delta: number | null;
-      };
-      errors?: {
-        current: number | null;
-        previous: number | null;
-        delta: number | null;
-      };
-      latency?: {
-        current: number | null;
-        previous: number | null;
-        delta: number | null;
-      };
-      traffic?: {
-        current: number | null;
-        previous: number | null;
-        delta: number | null;
-      };
-    };
+    compareMetrics?: CompareMetrics;
+    compareGraph?: CompareGraph;
   }) => React.ReactNode;
   renderTypingDots: () => React.ReactNode;
   formatUtcYmdHm: (iso: string) => string;
@@ -138,6 +142,7 @@ export default function ConversationThread({
                     overallState: m.overallState,
                     primarySignal: m.primarySignal,
                     compareMetrics: m.compareMetrics,
+                    compareGraph: m.compareGraph,
                   })}
 
                 {![

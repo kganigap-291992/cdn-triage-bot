@@ -150,6 +150,8 @@ type ChatCompare = {
     metricType: "cache" | "latency" | "errors" | "traffic";
     currentSeries: Array<{ ts: string; value: number | null }>;
     previousSeries: Array<{ ts: string; value: number | null }>;
+    currentSeriesP99?: Array<{ ts: string; value: number | null }>;
+    previousSeriesP99?: Array<{ ts: string; value: number | null }>;
   };
 };
 
@@ -3632,7 +3634,6 @@ function DrillCard({
   );
 }
 
-
 function buildCompareGraphFromMetricsJson(args: {
   metricsJson: any;
   primarySignal?: string | null;
@@ -3659,7 +3660,10 @@ function buildCompareGraphFromMetricsJson(args: {
 
   if (!currentPoints.length && !previousPoints.length) return null;
 
-  function toSeriesValue(point: any, type: "cache" | "latency" | "errors" | "traffic") {
+  function toSeriesValue(
+    point: any,
+    type: "cache" | "latency" | "errors" | "traffic"
+  ) {
     if (type === "cache") {
       return point?.cacheHitRate == null ? null : Number(point.cacheHitRate);
     }
@@ -3673,6 +3677,10 @@ function buildCompareGraphFromMetricsJson(args: {
       return point?.totalRequests == null ? null : Number(point.totalRequests);
     }
     return null;
+  }
+
+  function toLatencyP99Value(point: any) {
+    return point?.p99TtmsMs == null ? null : Number(point.p99TtmsMs);
   }
 
   const currentSeries = currentPoints
@@ -3689,14 +3697,144 @@ function buildCompareGraphFromMetricsJson(args: {
     }))
     .filter((point: { ts: string; value: number | null }) => point.ts);
 
-  if (!currentSeries.length && !previousSeries.length) return null;
+  const currentSeriesP99 =
+    metricType === "latency"
+      ? currentPoints
+          .map((point: any) => ({
+            ts: normalizeTsKey(point?.ts),
+            value: toLatencyP99Value(point),
+          }))
+          .filter((point: { ts: string; value: number | null }) => point.ts)
+      : [];
+
+  const previousSeriesP99 =
+    metricType === "latency"
+      ? previousPoints
+          .map((point: any) => ({
+            ts: normalizeTsKey(point?.ts),
+            value: toLatencyP99Value(point),
+          }))
+          .filter((point: { ts: string; value: number | null }) => point.ts)
+      : [];
+
+  if (
+    !currentSeries.length &&
+    !previousSeries.length &&
+    !currentSeriesP99.length &&
+    !previousSeriesP99.length
+  ) {
+    return null;
+  }
 
   return {
     metricType,
     currentSeries,
     previousSeries,
+    currentSeriesP99: metricType === "latency" ? currentSeriesP99 : undefined,
+    previousSeriesP99: metricType === "latency" ? previousSeriesP99 : undefined,
   };
 }
+
+function buildCompareGraphFromTwoRuns(args: {
+  currentMetricsJson: any;
+  previousMetricsJson: any;
+  primarySignal?: string | null;
+}) {
+  const metricType =
+    args.primarySignal === "cache" ||
+    args.primarySignal === "latency" ||
+    args.primarySignal === "errors" ||
+    args.primarySignal === "traffic"
+      ? args.primarySignal
+      : null;
+
+  if (!metricType) return null;
+
+  const currentPoints = Array.isArray(args.currentMetricsJson?.timeseries?.points)
+    ? args.currentMetricsJson.timeseries.points
+    : [];
+
+  const previousPoints = Array.isArray(args.previousMetricsJson?.timeseries?.points)
+    ? args.previousMetricsJson.timeseries.points
+    : [];
+
+  if (!currentPoints.length && !previousPoints.length) return null;
+
+  function toSeriesValue(
+    point: any,
+    type: "cache" | "latency" | "errors" | "traffic"
+  ) {
+    if (type === "cache") {
+      return point?.cacheHitRate == null ? null : Number(point.cacheHitRate);
+    }
+    if (type === "latency") {
+      return point?.p95TtmsMs == null ? null : Number(point.p95TtmsMs);
+    }
+    if (type === "errors") {
+      return point?.errorRatePct == null ? null : Number(point.errorRatePct);
+    }
+    if (type === "traffic") {
+      return point?.totalRequests == null ? null : Number(point.totalRequests);
+    }
+    return null;
+  }
+
+  function toLatencyP99Value(point: any) {
+    return point?.p99TtmsMs == null ? null : Number(point.p99TtmsMs);
+  }
+
+  const currentSeries = currentPoints
+    .map((point: any) => ({
+      ts: normalizeTsKey(point?.ts),
+      value: toSeriesValue(point, metricType),
+    }))
+    .filter((point: { ts: string; value: number | null }) => point.ts);
+
+  const previousSeries = previousPoints
+    .map((point: any) => ({
+      ts: normalizeTsKey(point?.ts),
+      value: toSeriesValue(point, metricType),
+    }))
+    .filter((point: { ts: string; value: number | null }) => point.ts);
+
+  const currentSeriesP99 =
+    metricType === "latency"
+      ? currentPoints
+          .map((point: any) => ({
+            ts: normalizeTsKey(point?.ts),
+            value: toLatencyP99Value(point),
+          }))
+          .filter((point: { ts: string; value: number | null }) => point.ts)
+      : [];
+
+  const previousSeriesP99 =
+    metricType === "latency"
+      ? previousPoints
+          .map((point: any) => ({
+            ts: normalizeTsKey(point?.ts),
+            value: toLatencyP99Value(point),
+          }))
+          .filter((point: { ts: string; value: number | null }) => point.ts)
+      : [];
+
+  if (
+    !currentSeries.length &&
+    !previousSeries.length &&
+    !currentSeriesP99.length &&
+    !previousSeriesP99.length
+  ) {
+    return null;
+  }
+
+  return {
+    metricType,
+    currentSeries,
+    previousSeries,
+    currentSeriesP99: metricType === "latency" ? currentSeriesP99 : undefined,
+    previousSeriesP99: metricType === "latency" ? previousSeriesP99 : undefined,
+  };
+}
+  
 
 function StatusBreakdownCard({
   breakdown,
@@ -4045,6 +4183,8 @@ export default function Home() {
       metricType: "cache" | "latency" | "errors" | "traffic";
       currentSeries: Array<{ ts: string; value: number | null }>;
       previousSeries: Array<{ ts: string; value: number | null }>;
+      currentSeriesP99?: Array<{ ts: string; value: number | null }>;
+      previousSeriesP99?: Array<{ ts: string; value: number | null }>;
     };
   }) {
     setChatMessages((prev) => [
@@ -5098,10 +5238,24 @@ export default function Home() {
 
           const compareGraph =
             data.compareGraph ??
-            buildCompareGraphFromMetricsJson({
-              metricsJson: data.metricsJson,
+            buildCompareGraphFromTwoRuns({
+              currentMetricsJson: latestTriageRun.metricsJson,
+              previousMetricsJson: data.metricsJson,
               primarySignal: resolvedCompareSignal,
             });
+
+          console.log("COMPARE DEBUG requestedSignal", requestedSignal);
+          console.log("COMPARE DEBUG resolvedCompareSignal", resolvedCompareSignal);
+          console.log("COMPARE DEBUG data.compareGraph", data.compareGraph);
+          console.log(
+            "COMPARE DEBUG current points",
+            data.metricsJson?.timeseries?.points?.length ?? 0
+          );
+          console.log(
+            "COMPARE DEBUG previous points",
+            data.metricsJson?.previousWindow?.timeseries?.points?.length ?? 0
+          );
+          console.log("COMPARE DEBUG final compareGraph", compareGraph);
 
           addCompareCard({
             summary:
@@ -6494,12 +6648,19 @@ return (
                   primarySignal={primarySignal}
                 />
               )}
-              renderCompareCard={({ summary, overallState, primarySignal, compareMetrics }) => (
+              renderCompareCard={({
+                summary,
+                overallState,
+                primarySignal,
+                compareMetrics,
+                compareGraph,
+              }) => (
                 <CompareCard
                   summary={summary}
                   overallState={overallState}
                   primarySignal={primarySignal}
                   compareMetrics={compareMetrics}
+                  compareGraph={compareGraph}
                 />
               )}
               renderTypingDots={() => <TypingDots />}
