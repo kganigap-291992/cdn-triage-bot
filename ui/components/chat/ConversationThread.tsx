@@ -26,6 +26,19 @@ type CompareGraph = {
   previousSeries: CompareSeriesPoint[];
 };
 
+type ExplorationMessage = {
+  id: string;
+  type: "exploration";
+  role: "assistant";
+  ts: string;
+  title: string;
+  summary: string;
+  metric: string;
+  view: "timeseries" | "breakdown";
+  series?: any[];
+  rows?: any[];
+};
+
 type ConversationThreadProps = {
   chatMessages: any[];
   typing: boolean;
@@ -46,6 +59,7 @@ type ConversationThreadProps = {
     compareMetrics?: CompareMetrics;
     compareGraph?: CompareGraph;
   }) => React.ReactNode;
+  renderExplorationCard: (payload: ExplorationMessage) => React.ReactNode;
   renderTypingDots: () => React.ReactNode;
   formatUtcYmdHm: (iso: string) => string;
   nowIso: () => string;
@@ -61,6 +75,7 @@ export default function ConversationThread({
   renderStatusBreakdownCard,
   renderExplainCard,
   renderCompareCard,
+  renderExplorationCard,
   renderTypingDots,
   formatUtcYmdHm,
   nowIso,
@@ -145,6 +160,8 @@ export default function ConversationThread({
                     compareGraph: m.compareGraph,
                   })}
 
+                {m.type === "exploration" && renderExplorationCard(m)}
+
                 {![
                   "text",
                   "triage",
@@ -152,6 +169,7 @@ export default function ConversationThread({
                   "status_breakdown",
                   "explain",
                   "compare",
+                  "exploration",
                 ].includes(m.type) && (
                   <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
                     Unknown message type: {m.type}

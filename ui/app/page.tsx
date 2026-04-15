@@ -16,6 +16,9 @@ import NextActionChips from "@/components/NextActionChips";
 import { getNextActions } from "@/lib/nextActions/getNextActions";
 import UtcDateTimeInput from "@/components/filters/UtcDateTimeInput";
 import StatusBarGraph from "@/components/graphs/StatusBarGraph";
+import { evaluateGuardrails } from "@/lib/chat/guardrails";
+import { detectExplorationIntent } from "@/lib/chat/detectExplorationIntent";
+import { runExplorationAgent } from "@/lib/chat/explorationAgent";
 
 // ── constants ──────────────────────────────────────────────────────────────
 const LOGO_SRC = "/cachey-logo.png";
@@ -173,13 +176,27 @@ type ChatStatusBreakdown = {
   };
 };
 
+type ChatExploration = {
+  id: string;
+  type: "exploration";
+  role: "assistant";
+  ts: string;
+  title: string;
+  summary: string;
+  metric: string;
+  view: "timeseries" | "breakdown";
+  series?: any[];
+  rows?: any[];
+};
+
 type ChatMsg =
   | ChatText
   | ChatTriage
   | ChatDrill
   | ChatExplain
   | ChatCompare
-  | ChatStatusBreakdown;
+  | ChatStatusBreakdown
+  | ChatExploration;
 
 type TimeseriesPoint = {
   ts: string;
@@ -2069,6 +2086,271 @@ function LatencyTimeseriesLines({
     </div>
   );
 }
+
+
+function ExplorationMetricGraph({
+  metric,
+  series,
+  height = 220,
+  windowMinutes = 120,
+}: {
+  metric: string;
+  series: Array<{ ts: string; value: number | null }>;
+  height?: number;
+  windowMinutes?: number;
+}) {
+  const points: TimeseriesPoint[] = series.map((p) => {
+    const value = p?.value == null ? null : Number(p.value);
+
+    return {
+      ts: normalizeTsKey(p.ts),
+      totalRequests: metric === "requests" && value != null ? value : 0,
+      error5xxCount: 0,
+      errorRatePct: metric === "errors" && value != null ? value : 0,
+      p95TtmsMs: metric === "latency" && value != null ? value : null,
+      p99TtmsMs: metric === "latency" && value != null ? value * 1.18 : null,
+      cacheHitRate: metric === "ats" && value != null ? value : null,
+      crcErrorCount: 0,
+      statusCountsByCode: undefined,
+    };
+  });
+
+  const bucketSeconds =
+    points.length >= 2
+      ? Math.max(
+          60,
+          Math.round(
+            (new Date(points[1].ts).getTime() - new Date(points[0].ts).getTime()) / 1000
+          )
+        )
+      : null;
+
+  if (!points.length) return null;
+
+  if (metric === "latency") {
+    return (
+      <LatencyTimeseriesLines
+        points={points}
+        bucketSeconds={bucketSeconds}
+        height={height}
+        windowMinutes={windowMinutes}
+      />
+    );
+  }
+
+  if (metric === "requests" || metric === "errors") {
+    return (
+      <RequestsErrorRateLines
+        points={points}
+        bucketSeconds={bucketSeconds}
+        height={height}
+        windowMinutes={windowMinutes}
+      />
+    );
+  }
+
+  if (metric === "ats") {
+    const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
+    const base = points.slice(-maxBars);
+    const [zoom, setZoom] = React.useState<{ start: number; end: number } | null>(null);
+    const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
+    const svgRef = React.useRef<SVGSVGElement | null>(null);
+    const [drag, setDrag] = React.useState<{ active: boolean; x0: number; x1: number }>({
+      active: false,
+      x0: 0,
+      x1: 0,
+    });
+
+    const vals = slice.map((p) =>
+      p.cacheHitRate == null || !Number.isFinite(Number(p.cacheHitRate))
+        ? 0
+        : Number(p.cacheHitRate)
+    );
+    const minV = Math.min(0, ...vals, 60);
+    const maxV = Math.max(100, ...vals);
+    const span = Math.max(1, maxV - minV);
+
+    const w = 760;
+    const h = height;
+    const padLeft = 54;
+    const padRight = 12;
+    const padTop = 12;
+    const padBottom = 44;
+    const plotW = w - padLeft - padRight;
+    const plotH = h - padTop - padBottom;
+    const n = slice.length;
+    const denom = Math.max(1, n - 1);
+
+    function x(i: number) {
+      return padLeft + (i / denom) * plotW;
+    }
+
+    function y(v: number | null | undefined) {
+      if (v == null || !Number.isFinite(Number(v))) return null;
+      return padTop + (1 - (Number(v) - minV) / span) * plotH;
+    }
+
+    const pts: string[] = [];
+    slice.forEach((p, i) => {
+      const yy = y(p.cacheHitRate);
+      if (yy != null) pts.push(`${x(i)},${yy}`);
+    });
+
+    const tickVals = Array.from({ length: 5 }, (_, i) =>
+      Math.round(minV + (span * (4 - i)) / 4)
+    );
+    const xLabelEvery = Math.max(1, Math.floor(n / 6));
+    const latest = slice[slice.length - 1];
+
+    function toSvgX(clientX: number) {
+      const el = svgRef.current;
+      if (!el) return 0;
+      return (
+        ((clientX - el.getBoundingClientRect().left) /
+          Math.max(1, el.getBoundingClientRect().width)) *
+        w
+      );
+    }
+
+    function idxFromSvgX(sx: number) {
+      return clamp(
+        Math.round(((sx - padLeft) / Math.max(1, plotW)) * (base.length - 1)),
+        0,
+        Math.max(0, base.length - 1)
+      );
+    }
+
+    function commitZoom(x0: number, x1: number) {
+      const i0 = idxFromSvgX(Math.min(x0, x1));
+      const i1 = idxFromSvgX(Math.max(x0, x1));
+      if (i1 - i0 >= 2) setZoom({ start: i0, end: i1 });
+    }
+
+    const selectionX = Math.min(drag.x0, drag.x1);
+    const selectionW = Math.abs(drag.x1 - drag.x0);
+
+    return (
+      <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs text-gray-400">Cache trend</div>
+            <div className="text-sm font-semibold text-gray-100">ATS / Cache Hit Rate</div>
+            <div className="text-[11px] text-gray-400 mt-1">
+              {slice.length
+                ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
+                    slice[slice.length - 1].ts
+                  )} UTC`
+                : "UTC"}
+            </div>
+            <div className="text-[11px] text-gray-500 mt-1">
+              Drag to zoom • double-click to reset
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-xs text-gray-400">Latest</div>
+            <div className="text-[11px] text-gray-200">
+              {latest ? `${formatUtcHM(latest.ts)} UTC • ${formatPctOrNA(latest.cacheHitRate)}` : "n/a"}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
+          <svg
+            ref={svgRef}
+            viewBox={`0 0 ${w} ${h}`}
+            className="w-full"
+            style={{ height, touchAction: "none", cursor: "crosshair" }}
+            onDoubleClick={() => setZoom(null)}
+            onPointerDown={(e) => {
+              const sx = toSvgX(e.clientX);
+              setDrag({ active: true, x0: sx, x1: sx });
+              (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              if (!drag.active) return;
+              setDrag((d) => ({ ...d, x1: toSvgX(e.clientX) }));
+            }}
+            onPointerUp={() => {
+              if (!drag.active) return;
+              const { x0, x1 } = drag;
+              setDrag({ active: false, x0: 0, x1: 0 });
+              commitZoom(x0, x1);
+            }}
+            onPointerCancel={() => setDrag({ active: false, x0: 0, x1: 0 })}
+            onPointerLeave={() => {
+              if (!drag.active) return;
+              setDrag({ active: false, x0: 0, x1: 0 });
+            }}
+          >
+            <text
+              x={padLeft - 38}
+              y={padTop + plotH / 2}
+              fontSize="10"
+              fill="#9ca3af"
+              transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
+            >
+              Cache hit %
+            </text>
+
+            {tickVals.map((v, idx) => {
+              const yy = padTop + (1 - (v - minV) / span) * plotH;
+              return (
+                <g key={idx}>
+                  <line x1={padLeft} y1={yy} x2={padLeft + plotW} y2={yy} stroke={GRID_STROKE} />
+                  <text x={padLeft - 10} y={yy + 3} fontSize="10" fill="#9ca3af" textAnchor="end">
+                    {v}%
+                  </text>
+                </g>
+              );
+            })}
+
+            <polyline
+              fill="none"
+              stroke="rgba(16,185,129,0.92)"
+              strokeWidth="2.75"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              points={pts.join(" ")}
+            />
+
+            {slice.map((p, i) => {
+              if (i % xLabelEvery !== 0 && i !== slice.length - 1) return null;
+              return (
+                <text
+                  key={`xl-${p.ts}`}
+                  x={x(i)}
+                  y={padTop + plotH + 18}
+                  fontSize="10"
+                  fill="#9ca3af"
+                  textAnchor="middle"
+                >
+                  {timeLabelShort(p.ts, windowMinutes)}
+                </text>
+              );
+            })}
+
+            {drag.active && selectionW > 2 && (
+              <rect
+                x={selectionX}
+                y={padTop}
+                width={selectionW}
+                height={plotH}
+                fill="rgba(59,130,246,0.12)"
+                stroke="rgba(59,130,246,0.55)"
+                strokeWidth={1}
+                rx={6}
+              />
+            )}
+          </svg>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+
 
 // ── HostSummaryCard ────────────────────────────────────────────────────────
 function HostSummaryCard({ hosts }: { hosts: HostSeriesItem[] }) {
@@ -4120,6 +4402,15 @@ export default function Home() {
     ]);
   }
 
+  function addExplorationCard(
+    data: Omit<ChatExploration, "type">
+  ) {
+    setChatMessages((prev) => [
+      ...prev,
+      { type: "exploration", ...data },
+    ]);
+  }
+
   function addDrillCard(payload: { drill: any; summaryText: string }) {
     setChatMessages((prev) => [
       ...prev,
@@ -5186,20 +5477,81 @@ export default function Home() {
 
       addText("user", text);
 
+      const guard = evaluateGuardrails({
+        rawText: text,
+        hasActiveInvestigation: Boolean(latestTriageRun),
+        activeScope: latestTriageRun
+          ? {
+              partner: latestTriageRun.inputs.partner || "",
+              service: latestTriageRun.inputs.service || "",
+            }
+          : null,
+        detectedPartner: null,
+        detectedService: null,
+      });
+
+      if (!guard.ok) {
+        addText("assistant", guard.message);
+        return;
+      }
+
       const chatIntent = detectIntent(text);
       const explicitDrillIntent = detectExplicitDrillIntent(text);
+      const explorationIntent = detectExplorationIntent(text);
+
       console.log(
         "Detected intent:",
         chatIntent,
         "explicitDrillIntent:",
-        explicitDrillIntent
+        explicitDrillIntent,
+        "explorationIntent:",
+        explorationIntent
       );
+      
+      console.log("🔥 explorationIntent =", explorationIntent);
 
       const parseResult = parseTriageIntent({
         text,
         hasPriorContext: Boolean(latestTriageRun),
       });
 
+      if (explorationIntent) {
+        if (!latestInvestigationContext) {
+          addText(
+            "assistant",
+            "Run a triage first, then I can explore metrics within the active investigation."
+          );
+          return;
+        }
+
+        const result = await runExplorationAgent({
+          intent: explorationIntent,
+          context: {
+            partner: latestInvestigationContext.baseScope.partner,
+            service: latestInvestigationContext.baseScope.service,
+            region: latestInvestigationContext.baseScope.region,
+            pop: latestInvestigationContext.baseScope.pop,
+            contentType: latestInvestigationContext.baseScope.contentType,
+            uaFamily: latestInvestigationContext.baseScope.uaFamily,
+            windowMinutes: latestInvestigationContext.time.windowMinutes,
+            startTsUtc: latestInvestigationContext.time.startTsUtc,
+            endTsUtc: latestInvestigationContext.time.endTsUtc,
+          },
+        });
+
+        addExplorationCard({
+          id: `${Date.now()}-${Math.random()}`,
+          role: "assistant",
+          ts: nowIso(),
+          title: result.title,
+          summary: result.summary,
+          metric: result.metric,
+          view: result.view === "over_time" ? "timeseries" : "breakdown",
+          series: result.view === "over_time" ? result.series : undefined,
+          rows: result.view !== "over_time" ? result.rows : undefined,
+        });
+        return;
+      }
 
       if (chatIntent === "compare") {
         if (!latestTriageRun || !latestInvestigationContext) {
@@ -6641,27 +6993,107 @@ return (
               renderStatusBreakdownCard={(breakdown) => (
                 <StatusBreakdownCard breakdown={breakdown} />
               )}
-              renderExplainCard={({ summary, overallState, primarySignal }) => (
+              renderExplainCard={(payload) => (
                 <ExplainCard
-                  summary={summary}
-                  overallState={overallState}
-                  primarySignal={primarySignal}
+                  summary={payload.summary}
+                  overallState={payload.overallState}
+                  primarySignal={payload.primarySignal}
                 />
               )}
-              renderCompareCard={({
-                summary,
-                overallState,
-                primarySignal,
-                compareMetrics,
-                compareGraph,
-              }) => (
+              renderCompareCard={(payload) => (
                 <CompareCard
-                  summary={summary}
-                  overallState={overallState}
-                  primarySignal={primarySignal}
-                  compareMetrics={compareMetrics}
-                  compareGraph={compareGraph}
+                  summary={payload.summary}
+                  overallState={payload.overallState}
+                  primarySignal={payload.primarySignal}
+                  compareMetrics={payload.compareMetrics}
+                  compareGraph={payload.compareGraph}
                 />
+              )}
+              renderExplorationCard={(msg) => (
+                <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs text-gray-400">Exploration</div>
+                      <div className="text-sm font-semibold text-white truncate">
+                        {msg.title}
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <span className="text-[11px] px-2 py-1 rounded-full border border-indigo-400/30 bg-indigo-400/10 text-indigo-200">
+                        {msg.metric}
+                      </span>
+                      <span className="text-[11px] px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
+                        {msg.view}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="text-sm text-gray-300 whitespace-pre-wrap">
+                      {msg.summary}
+                    </div>
+
+                    {msg.view === "timeseries" && Array.isArray(msg.series) && msg.series.length > 0 && (
+                      <ExplorationMetricGraph
+                        metric={msg.metric}
+                        series={msg.series}
+                        windowMinutes={
+                          msg.series.length >= 2
+                            ? windowMinutesFromRange(
+                                String(msg.series[0]?.ts || ""),
+                                String(msg.series[msg.series.length - 1]?.ts || ""),
+                                120
+                              )
+                            : 120
+                        }
+                      />
+                    )}
+
+                    {msg.view === "breakdown" && Array.isArray(msg.rows) && msg.rows.length > 0 && (() => {
+                      const rows = msg.rows.slice(0, 8);
+                      const maxValue = Math.max(
+                        1,
+                        ...rows.map((r: any) => Number(r?.value ?? 0))
+                      );
+
+                      return (
+                        <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                          <div className="text-xs text-gray-400 mb-3">Breakdown</div>
+
+                          <div className="space-y-2">
+                            {rows.map((row: any, idx: number) => {
+                              const label = String(row?.key || row?.label || row?.dimension || "unknown");
+                              const value = Number(row?.value ?? 0);
+                              const widthPct = Math.max(6, (value / maxValue) * 100);
+
+                              return (
+                                <div key={`${label}-${idx}`} className="flex items-center gap-3">
+                                  <div className="w-28 shrink-0 truncate text-[11px] text-gray-300">
+                                    {label}
+                                  </div>
+
+                                  <div className="flex-1 h-2.5 rounded-full bg-white/10 overflow-hidden">
+                                    <div
+                                      className={`h-full rounded-full ${
+                                        idx === 0 ? "bg-blue-400" : "bg-gray-400/70"
+                                      }`}
+                                      style={{ width: `${widthPct}%` }}
+                                    />
+                                  </div>
+
+                                  <div className="w-20 shrink-0 text-right text-[11px] text-gray-400">
+                                    {Number.isFinite(value) ? value.toFixed(2) : "n/a"}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
               )}
               renderTypingDots={() => <TypingDots />}
               formatUtcYmdHm={formatUtcYmdHm}
