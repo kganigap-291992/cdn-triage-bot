@@ -4,6 +4,7 @@ import type {
   ExplorationAtsMode,
   ExplorationIntent,
   ExplorationMetric,
+  ExplorationTimeOverride,
   ExplorationView,
 } from "./explorationTypes";
 
@@ -124,8 +125,6 @@ function looksLikeFrozenIntent(text: string): boolean {
     "vs",
     "previous",
     "previous window",
-    "last hour",
-    "yesterday",
     "what changed",
     "explain",
     "why is",
@@ -144,6 +143,131 @@ function looksLikeFrozenIntent(text: string): boolean {
     "status code",
     "show status",
   ]);
+}
+
+function computeWindowMinutes(startTsUtc: string, endTsUtc: string): number {
+  const startMs = new Date(startTsUtc).getTime();
+  const endMs = new Date(endTsUtc).getTime();
+
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    return 0;
+  }
+
+  return Math.max(1, Math.round((endMs - startMs) / 60000));
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function buildUtcIso(args: {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+}): string | null {
+  const { year, month, day, hour, minute } = args;
+
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day) ||
+    !Number.isFinite(hour) ||
+    !Number.isFinite(minute)
+  ) {
+    return null;
+  }
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31 ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59
+  ) {
+    return null;
+  }
+
+  const iso = `${year}-${pad2(month)}-${pad2(day)}T${pad2(hour)}:${pad2(minute)}:00.000Z`;
+  const dt = new Date(iso);
+
+  if (Number.isNaN(dt.getTime())) return null;
+
+  return dt.toISOString();
+}
+
+function detectRelativeTimeOverride(text: string): ExplorationTimeOverride | undefined {
+  const match = text.match(
+    /\blast\s+(\d+)\s*(m|mins?|minutes?|h|hr|hrs?|hours?)\b/
+  );
+
+  if (!match) return undefined;
+
+  const rawValue = Number(match[1]);
+  const rawUnit = String(match[2] || "").toLowerCase();
+
+  if (!Number.isFinite(rawValue) || rawValue <= 0) return undefined;
+
+  const isMinutes = /^m|^min|^minute/.test(rawUnit);
+  const windowMinutes = isMinutes ? rawValue : rawValue * 60;
+
+  if (!Number.isFinite(windowMinutes) || windowMinutes <= 0) return undefined;
+
+  return {
+    mode: "relative",
+    windowMinutes,
+    sourceText: match[0],
+  };
+}
+
+function detectAbsoluteTimeOverride(text: string): ExplorationTimeOverride | undefined {
+  const betweenMatch = text.match(
+    /\bbetween\s+(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s+(?:and|-)\s+(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s*utc\b/
+  );
+
+  const fromToMatch = text.match(
+    /\bfrom\s+(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s+to\s+(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s*utc\b/
+  );
+
+  const match = betweenMatch || fromToMatch;
+  if (!match) return undefined;
+
+  const startTsUtc = buildUtcIso({
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    hour: Number(match[4]),
+    minute: Number(match[5]),
+  });
+
+  const endTsUtc = buildUtcIso({
+    year: Number(match[6]),
+    month: Number(match[7]),
+    day: Number(match[8]),
+    hour: Number(match[9]),
+    minute: Number(match[10]),
+  });
+
+  if (!startTsUtc || !endTsUtc) return undefined;
+
+  const windowMinutes = computeWindowMinutes(startTsUtc, endTsUtc);
+  if (windowMinutes <= 0) return undefined;
+
+  return {
+    mode: "absolute",
+    startTsUtc,
+    endTsUtc,
+    windowMinutes,
+    sourceText: match[0],
+  };
+}
+
+function detectTimeOverride(text: string): ExplorationTimeOverride | undefined {
+  return detectAbsoluteTimeOverride(text) || detectRelativeTimeOverride(text);
 }
 
 export function detectExplorationIntent(input: string): ExplorationIntent | null {
@@ -169,12 +293,14 @@ export function detectExplorationIntent(input: string): ExplorationIntent | null
   }
 
   const atsMode = metric === "ats" ? detectAtsMode(text) : undefined;
+  const timeOverride = detectTimeOverride(text);
 
   return {
     mode: "exploration",
     metric,
     view,
     atsMode,
+    timeOverride,
     rawText,
   };
 }

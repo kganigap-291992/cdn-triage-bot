@@ -17,11 +17,26 @@ export type ExplorationAtsMode =
   | "category"
   | "detailed";
 
+export type ExplorationTimeOverride =
+  | {
+      mode: "relative";
+      windowMinutes: number;
+      sourceText: string;
+    }
+  | {
+      mode: "absolute";
+      startTsUtc: string;
+      endTsUtc: string;
+      windowMinutes: number;
+      sourceText: string;
+    };
+
 export type ExplorationIntent = {
   mode: "exploration";
   metric: ExplorationMetric;
   view: ExplorationView;
   atsMode?: ExplorationAtsMode;
+  timeOverride?: ExplorationTimeOverride;
   rawText: string;
 };
 
@@ -37,6 +52,14 @@ export type ExplorationBreakdownRow = {
   tertiaryValue?: number | null;
 };
 
+export type ExplorationSpotlight = {
+  key: string;
+  title?: string;
+  summary?: string;
+  series: ExplorationSeriesPoint[];
+  seriesSecondary?: ExplorationSeriesPoint[];
+};
+
 export type ExplorationResult =
   | {
       type: "exploration";
@@ -45,7 +68,13 @@ export type ExplorationResult =
       atsMode?: ExplorationAtsMode;
       title: string;
       summary: string;
+
+      // Primary series (p95 for latency, or main metric)
       series: ExplorationSeriesPoint[];
+
+      // Optional secondary series (used for latency p99)
+      seriesSecondary?: ExplorationSeriesPoint[];
+
       sql?: {
         queries: string[];
         params?: Record<string, any>;
@@ -59,6 +88,10 @@ export type ExplorationResult =
       title: string;
       summary: string;
       rows: ExplorationBreakdownRow[];
+
+      // Optional spotlight trend for the worst offender in the breakdown
+      spotlight?: ExplorationSpotlight;
+
       sql?: {
         queries: string[];
         params?: Record<string, any>;
@@ -81,4 +114,34 @@ export function isExplorationView(value: string): value is ExplorationView {
 
 export function isExplorationAtsMode(value: string): value is ExplorationAtsMode {
   return value === "category" || value === "detailed";
+}
+
+export function isExplorationTimeOverride(
+  value: unknown
+): value is ExplorationTimeOverride {
+  if (!value || typeof value !== "object") return false;
+
+  const v = value as Record<string, unknown>;
+
+  if (v.mode === "relative") {
+    return (
+      typeof v.windowMinutes === "number" &&
+      Number.isFinite(v.windowMinutes) &&
+      v.windowMinutes > 0 &&
+      typeof v.sourceText === "string"
+    );
+  }
+
+  if (v.mode === "absolute") {
+    return (
+      typeof v.startTsUtc === "string" &&
+      typeof v.endTsUtc === "string" &&
+      typeof v.windowMinutes === "number" &&
+      Number.isFinite(v.windowMinutes) &&
+      v.windowMinutes > 0 &&
+      typeof v.sourceText === "string"
+    );
+  }
+
+  return false;
 }

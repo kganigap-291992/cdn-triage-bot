@@ -35,8 +35,16 @@ type ExplorationMessage = {
   summary: string;
   metric: string;
   view: "timeseries" | "breakdown";
-  series?: any[];
+  series?: Array<{ ts: string; value: number | null }>;
+  seriesSecondary?: Array<{ ts: string; value: number | null }>;
   rows?: any[];
+  spotlight?: {
+    key: string;
+    title?: string;
+    summary?: string;
+    series: Array<{ ts: string; value: number | null }>;
+    seriesSecondary?: Array<{ ts: string; value: number | null }>;
+  };
 };
 
 type ConversationThreadProps = {

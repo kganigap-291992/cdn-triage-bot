@@ -21,53 +21,32 @@ export type ExplorationAgentContext = {
   endTsUtc?: string | null;
 };
 
-function makeIsoSeries(args: {
-  startTsUtc?: string | null;
-  endTsUtc?: string | null;
-  windowMinutes: number;
-  points?: number;
-  baseValue: number;
-  waveAmplitude?: number;
-  driftPerStep?: number;
-  floor?: number;
-  ceiling?: number;
-}): Array<{ ts: string; value: number | null }> {
-  const fallbackEndMs = Date.now();
+type TriageTimeseriesPoint = {
+  ts: string;
+  totalRequests?: number | null;
+  errorRatePct?: number | null;
+  error5xxCount?: number | null;
+  p95TtmsMs?: number | null;
+  p99TtmsMs?: number | null;
+  cacheHitRate?: number | null;
+};
 
-  const parsedEndMs = args.endTsUtc ? new Date(args.endTsUtc).getTime() : NaN;
-  const endMs = Number.isFinite(parsedEndMs) ? parsedEndMs : fallbackEndMs;
-
-  const parsedStartMs = args.startTsUtc ? new Date(args.startTsUtc).getTime() : NaN;
-  const fallbackStartMs = endMs - Math.max(1, args.windowMinutes) * 60 * 1000;
-  const startMs = Number.isFinite(parsedStartMs) ? parsedStartMs : fallbackStartMs;
-
-  const totalPoints = Math.max(6, args.points ?? 12);
-  const spanMs = Math.max(1, endMs - startMs);
-  const stepMs = totalPoints > 1 ? spanMs / (totalPoints - 1) : spanMs;
-
-  const waveAmplitude = args.waveAmplitude ?? 20;
-  const driftPerStep = args.driftPerStep ?? 2;
-
-  return Array.from({ length: totalPoints }, (_, i) => {
-    const ts = new Date(startMs + i * stepMs).toISOString();
-    const wave = Math.sin(i / 2) * waveAmplitude;
-    const drift = i * driftPerStep;
-
-    let value = args.baseValue + wave + drift;
-
-    if (typeof args.floor === "number") {
-      value = Math.max(args.floor, value);
-    }
-    if (typeof args.ceiling === "number") {
-      value = Math.min(args.ceiling, value);
-    }
-
-    return {
-      ts,
-      value: Math.round(value * 100) / 100,
+type TriageResponseShape = {
+  ok?: boolean;
+  error?: string;
+  metricsJson?: {
+    timeseries?: {
+      points?: TriageTimeseriesPoint[];
+      bucketSeconds?: number | null;
+      startTs?: string | null;
+      endTs?: string | null;
     };
-  });
-}
+  };
+  sql?: {
+    queries?: string[];
+    params?: Record<string, any>;
+  } | null;
+};
 
 function buildScopeLabel(context: ExplorationAgentContext): string {
   const scopeBits = [
@@ -89,6 +68,63 @@ function humanizeView(view: ExplorationView): string {
 function titleFor(metric: ExplorationMetric, view: ExplorationView): string {
   if (view === "over_time") return `${metric} over time`;
   return `${metric} ${humanizeView(view)}`;
+}
+
+function humanizeDimensionValue(key: string): string {
+  return String(key || "").replace(/_/g, " ");
+}
+
+function makeSummaryForOverTime(args: {
+  metric: ExplorationMetric;
+  scopeLabel: string;
+  pointCount: number;
+  startTs?: string | null;
+  endTs?: string | null;
+  latestValue?: number | null;
+  latestP95?: number | null;
+  latestP99?: number | null;
+}): string {
+  const rangeText =
+    args.startTs && args.endTs
+      ? `${args.startTs} → ${args.endTs}`
+      : "active investigation window";
+
+  if (args.metric === "latency") {
+    return [
+      `Showing latency trend for ${args.scopeLabel}.`,
+      `Window: ${rangeText}.`,
+      `Points: ${args.pointCount}.`,
+      `Latest p95: ${
+        args.latestP95 == null ? "n/a" : `${Math.round(args.latestP95)} ms`
+      } • Latest p99: ${
+        args.latestP99 == null ? "n/a" : `${Math.round(args.latestP99)} ms`
+      }.`,
+    ].join(" ");
+  }
+
+  if (args.metric === "errors") {
+    return [
+      `Showing errors trend for ${args.scopeLabel}.`,
+      `Window: ${rangeText}.`,
+      `Points: ${args.pointCount}.`,
+      `Latest error rate: ${
+        args.latestValue == null ? "n/a" : `${args.latestValue.toFixed(2)}%`
+      }.`,
+    ].join(" ");
+  }
+
+  if (args.metric === "requests") {
+    return [
+      `Showing requests trend for ${args.scopeLabel}.`,
+      `Window: ${rangeText}.`,
+      `Points: ${args.pointCount}.`,
+      `Latest requests: ${
+        args.latestValue == null ? "n/a" : Math.round(args.latestValue).toLocaleString()
+      }.`,
+    ].join(" ");
+  }
+
+  return `Showing ${args.metric} trend for ${args.scopeLabel}.`;
 }
 
 function summaryFor(args: {
@@ -123,63 +159,6 @@ function breakdownKeysForView(view: ExplorationView): string[] {
     case "by_content":
       return ["manifest", "segment", "api"];
     case "over_time":
-    default:
-      return [];
-  }
-}
-
-function buildMetricSeries(
-  metric: ExplorationMetric,
-  context: ExplorationAgentContext,
-  atsMode?: ExplorationAtsMode
-): Array<{ ts: string; value: number | null }> {
-  switch (metric) {
-    case "latency":
-      return makeIsoSeries({
-        startTsUtc: context.startTsUtc,
-        endTsUtc: context.endTsUtc,
-        windowMinutes: context.windowMinutes,
-        baseValue: 220,
-        waveAmplitude: 40,
-        driftPerStep: 3,
-        floor: 80,
-      });
-
-    case "requests":
-      return makeIsoSeries({
-        startTsUtc: context.startTsUtc,
-        endTsUtc: context.endTsUtc,
-        windowMinutes: context.windowMinutes,
-        baseValue: 12000,
-        waveAmplitude: 1800,
-        driftPerStep: 150,
-        floor: 0,
-      });
-
-    case "errors":
-      return makeIsoSeries({
-        startTsUtc: context.startTsUtc,
-        endTsUtc: context.endTsUtc,
-        windowMinutes: context.windowMinutes,
-        baseValue: 0.35,
-        waveAmplitude: 0.18,
-        driftPerStep: 0.03,
-        floor: 0,
-        ceiling: 8,
-      });
-
-    case "ats":
-      return makeIsoSeries({
-        startTsUtc: context.startTsUtc,
-        endTsUtc: context.endTsUtc,
-        windowMinutes: context.windowMinutes,
-        baseValue: atsMode === "detailed" ? 8 : 82,
-        waveAmplitude: atsMode === "detailed" ? 2.5 : 6,
-        driftPerStep: atsMode === "detailed" ? 0.12 : -0.08,
-        floor: 0,
-        ceiling: atsMode === "detailed" ? 30 : 100,
-      });
-
     default:
       return [];
   }
@@ -238,12 +217,290 @@ function buildBreakdownRows(args: {
   }));
 }
 
+function pickWorstKey(
+  rows: ExplorationBreakdownRow[],
+  metric: ExplorationMetric
+): string | null {
+  if (!rows.length) return null;
+
+  if (metric === "latency" || metric === "errors") {
+    return rows.reduce((worst, row) => {
+      const worstVal = worst.value ?? Number.NEGATIVE_INFINITY;
+      const rowVal = row.value ?? Number.NEGATIVE_INFINITY;
+      return rowVal > worstVal ? row : worst;
+    }).key;
+  }
+
+  return null;
+}
+
+function cleanNumber(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function cleanTs(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function toSeriesPoint(ts: string, value: number | null) {
+  return { ts, value };
+}
+
+async function fetchExplorationTriage(
+  context: ExplorationAgentContext
+): Promise<TriageResponseShape> {
+  const payload: Record<string, any> = {
+    dataSource: "clickhouse",
+    partner: context.partner,
+    service: context.service,
+    region: context.region,
+    pop: context.pop,
+    contentType: context.contentType,
+    uaFamily: context.uaFamily,
+    windowMinutes: context.windowMinutes,
+    debug: false,
+  };
+
+  if (context.startTsUtc && context.endTsUtc) {
+    payload.startTsUtc = context.startTsUtc;
+    payload.endTsUtc = context.endTsUtc;
+  }
+
+  const resp = await fetch("/api/triage", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const json = (await resp.json().catch(() => null)) as TriageResponseShape | null;
+
+  if (!resp.ok) {
+    throw new Error(
+      json?.error || `Exploration request failed (HTTP ${resp.status})`
+    );
+  }
+
+  if (!json?.ok) {
+    throw new Error(json?.error || "Exploration request returned ok=false");
+  }
+
+  return json;
+}
+
+async function buildRealOverTimeResult(args: {
+  metric: ExplorationMetric;
+  context: ExplorationAgentContext;
+}): Promise<ExplorationResult> {
+  const { metric, context } = args;
+  const scopeLabel = buildScopeLabel(context);
+  const triage = await fetchExplorationTriage(context);
+
+  const points = Array.isArray(triage.metricsJson?.timeseries?.points)
+    ? triage.metricsJson.timeseries?.points ?? []
+    : [];
+
+  const startTs = triage.metricsJson?.timeseries?.startTs ?? context.startTsUtc ?? null;
+  const endTs = triage.metricsJson?.timeseries?.endTs ?? context.endTsUtc ?? null;
+
+  if (metric === "latency") {
+    const p95Series = points
+      .map((point) => {
+        const ts = cleanTs(point.ts);
+        const value = cleanNumber(point.p95TtmsMs);
+        return ts ? toSeriesPoint(ts, value) : null;
+      })
+      .filter(Boolean) as Array<{ ts: string; value: number | null }>;
+
+    const p99Series = points
+      .map((point) => {
+        const ts = cleanTs(point.ts);
+        const value = cleanNumber(point.p99TtmsMs);
+        return ts ? toSeriesPoint(ts, value) : null;
+      })
+      .filter(Boolean) as Array<{ ts: string; value: number | null }>;
+
+    const latest = points.length ? points[points.length - 1] : null;
+    const latestP95 = cleanNumber(latest?.p95TtmsMs);
+    const latestP99 = cleanNumber(latest?.p99TtmsMs);
+
+    return {
+      type: "exploration",
+      metric,
+      view: "over_time",
+      title: titleFor(metric, "over_time"),
+      summary: makeSummaryForOverTime({
+        metric,
+        scopeLabel,
+        pointCount: p95Series.length,
+        startTs,
+        endTs,
+        latestP95,
+        latestP99,
+      }),
+      series: p95Series,
+      seriesSecondary: p99Series,
+      sql: triage.sql
+        ? {
+            queries: Array.isArray(triage.sql.queries) ? triage.sql.queries : [],
+            params: triage.sql.params ?? undefined,
+          }
+        : null,
+    };
+  }
+
+  if (metric === "errors") {
+    const series = points
+      .map((point) => {
+        const ts = cleanTs(point.ts);
+        const value = cleanNumber(point.errorRatePct);
+        return ts ? toSeriesPoint(ts, value) : null;
+      })
+      .filter(Boolean) as Array<{ ts: string; value: number | null }>;
+
+    const latest = series.length ? series[series.length - 1] : null;
+
+    return {
+      type: "exploration",
+      metric,
+      view: "over_time",
+      title: titleFor(metric, "over_time"),
+      summary: makeSummaryForOverTime({
+        metric,
+        scopeLabel,
+        pointCount: series.length,
+        startTs,
+        endTs,
+        latestValue: latest?.value ?? null,
+      }),
+      series,
+      sql: triage.sql
+        ? {
+            queries: Array.isArray(triage.sql.queries) ? triage.sql.queries : [],
+            params: triage.sql.params ?? undefined,
+          }
+        : null,
+    };
+  }
+
+  if (metric === "requests") {
+    const series = points
+      .map((point) => {
+        const ts = cleanTs(point.ts);
+        const value = cleanNumber(point.totalRequests);
+        return ts ? toSeriesPoint(ts, value) : null;
+      })
+      .filter(Boolean) as Array<{ ts: string; value: number | null }>;
+
+    const latest = series.length ? series[series.length - 1] : null;
+
+    return {
+      type: "exploration",
+      metric,
+      view: "over_time",
+      title: titleFor(metric, "over_time"),
+      summary: makeSummaryForOverTime({
+        metric,
+        scopeLabel,
+        pointCount: series.length,
+        startTs,
+        endTs,
+        latestValue: latest?.value ?? null,
+      }),
+      series,
+      sql: triage.sql
+        ? {
+            queries: Array.isArray(triage.sql.queries) ? triage.sql.queries : [],
+            params: triage.sql.params ?? undefined,
+          }
+        : null,
+    };
+  }
+
+  throw new Error(`Unsupported real over-time metric: ${metric}`);
+}
+
+async function buildLatencyBreakdownSpotlight(args: {
+  context: ExplorationAgentContext;
+  view: Exclude<ExplorationView, "over_time">;
+  key: string;
+}) {
+  const { context, view, key } = args;
+
+  const scopedContext: ExplorationAgentContext = {
+    ...context,
+    region: view === "by_region" ? key : context.region,
+    pop: view === "by_pop" ? key : context.pop,
+    uaFamily: view === "by_ua" ? key : context.uaFamily,
+    contentType: view === "by_content" ? key : context.contentType,
+  };
+
+  const triage = await fetchExplorationTriage(scopedContext);
+
+  const points = Array.isArray(triage.metricsJson?.timeseries?.points)
+    ? triage.metricsJson.timeseries?.points ?? []
+    : [];
+
+  const p95Series = points
+    .map((point) => {
+      const ts = cleanTs(point.ts);
+      const value = cleanNumber(point.p95TtmsMs);
+      return ts ? toSeriesPoint(ts, value) : null;
+    })
+    .filter(Boolean) as Array<{ ts: string; value: number | null }>;
+
+  const p99Series = points
+    .map((point) => {
+      const ts = cleanTs(point.ts);
+      const value = cleanNumber(point.p99TtmsMs);
+      return ts ? toSeriesPoint(ts, value) : null;
+    })
+    .filter(Boolean) as Array<{ ts: string; value: number | null }>;
+
+  const latest = points.length ? points[points.length - 1] : null;
+  const latestP95 = cleanNumber(latest?.p95TtmsMs);
+  const latestP99 = cleanNumber(latest?.p99TtmsMs);
+  const startTs = triage.metricsJson?.timeseries?.startTs ?? scopedContext.startTsUtc ?? null;
+  const endTs = triage.metricsJson?.timeseries?.endTs ?? scopedContext.endTsUtc ?? null;
+
+  return {
+    key,
+    title: `Worst ${humanizeView(view).replace("by ", "")} over time`,
+    summary: makeSummaryForOverTime({
+      metric: "latency",
+      scopeLabel: buildScopeLabel(scopedContext),
+      pointCount: p95Series.length,
+      startTs,
+      endTs,
+      latestP95,
+      latestP99,
+    }),
+    series: p95Series,
+    seriesSecondary: p99Series,
+  };
+}
+
 export async function runExplorationAgent(args: {
   intent: ExplorationIntent;
   context: ExplorationAgentContext;
 }): Promise<ExplorationResult> {
   const { intent, context } = args;
   const scopeLabel = buildScopeLabel(context);
+
+  const isRealOverTimeMetric =
+    intent.view === "over_time" &&
+    (intent.metric === "latency" ||
+      intent.metric === "errors" ||
+      intent.metric === "requests");
+
+  if (isRealOverTimeMetric) {
+    return buildRealOverTimeResult({
+      metric: intent.metric,
+      context,
+    });
+  }
 
   if (intent.view === "over_time") {
     return {
@@ -258,9 +515,46 @@ export async function runExplorationAgent(args: {
         scopeLabel,
         atsMode: intent.atsMode,
       }),
-      series: buildMetricSeries(intent.metric, context, intent.atsMode),
+      series: [],
       sql: null,
     };
+  }
+
+  const rows = buildBreakdownRows({
+    metric: intent.metric,
+    view: intent.view,
+    atsMode: intent.atsMode,
+  });
+
+  if (intent.metric === "latency") {
+    const worstKey = pickWorstKey(rows, intent.metric);
+
+    if (worstKey) {
+      const spotlight = await buildLatencyBreakdownSpotlight({
+        context,
+        view: intent.view,
+        key: worstKey,
+      });
+
+      return {
+        type: "exploration",
+        metric: intent.metric,
+        view: intent.view,
+        atsMode: intent.atsMode,
+        title: titleFor(intent.metric, intent.view),
+        summary: `${summaryFor({
+          metric: intent.metric,
+          view: intent.view,
+          scopeLabel,
+          atsMode: intent.atsMode,
+        })} Spotlight: worst ${humanizeView(intent.view).replace("by ", "")} is ${humanizeDimensionValue(
+          worstKey
+        )}.`,
+        rows,
+        spotlight,
+        sql: null,
+      };
+    }
   }
 
   return {
@@ -275,11 +569,7 @@ export async function runExplorationAgent(args: {
       scopeLabel,
       atsMode: intent.atsMode,
     }),
-    rows: buildBreakdownRows({
-      metric: intent.metric,
-      view: intent.view,
-      atsMode: intent.atsMode,
-    }),
+    rows,
     sql: null,
   };
 }

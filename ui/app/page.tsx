@@ -185,8 +185,16 @@ type ChatExploration = {
   summary: string;
   metric: string;
   view: "timeseries" | "breakdown";
-  series?: any[];
+  series?: Array<{ ts: string; value: number | null }>;
+  seriesSecondary?: Array<{ ts: string; value: number | null }>;
   rows?: any[];
+  spotlight?: {
+    key: string;
+    title?: string;
+    summary?: string;
+    series: Array<{ ts: string; value: number | null }>;
+    seriesSecondary?: Array<{ ts: string; value: number | null }>;
+  };
 };
 
 type ChatMsg =
@@ -2091,29 +2099,41 @@ function LatencyTimeseriesLines({
 function ExplorationMetricGraph({
   metric,
   series,
+  seriesSecondary,
   height = 220,
   windowMinutes = 120,
 }: {
   metric: string;
   series: Array<{ ts: string; value: number | null }>;
+  seriesSecondary?: Array<{ ts: string; value: number | null }>;
   height?: number;
   windowMinutes?: number;
 }) {
-  const points: TimeseriesPoint[] = series.map((p) => {
-    const value = p?.value == null ? null : Number(p.value);
+  const secondaryMap = new Map(
+  (seriesSecondary || []).map((p) => [
+    normalizeTsKey(p.ts),
+    p?.value == null ? null : Number(p.value),
+  ])
+);
 
-    return {
-      ts: normalizeTsKey(p.ts),
-      totalRequests: metric === "requests" && value != null ? value : 0,
-      error5xxCount: 0,
-      errorRatePct: metric === "errors" && value != null ? value : 0,
-      p95TtmsMs: metric === "latency" && value != null ? value : null,
-      p99TtmsMs: metric === "latency" && value != null ? value * 1.18 : null,
-      cacheHitRate: metric === "ats" && value != null ? value : null,
-      crcErrorCount: 0,
-      statusCountsByCode: undefined,
-    };
-  });
+const points: TimeseriesPoint[] = series.map((p) => {
+  const ts = normalizeTsKey(p.ts);
+  const value = p?.value == null ? null : Number(p.value);
+  const secondaryValue = secondaryMap.has(ts) ? secondaryMap.get(ts)! : null;
+
+  return {
+    ts,
+    totalRequests: metric === "requests" && value != null ? value : 0,
+    error5xxCount: 0,
+    errorRatePct: metric === "errors" && value != null ? value : 0,
+    p95TtmsMs: metric === "latency" && value != null ? value : null,
+    p99TtmsMs:
+      metric === "latency" && secondaryValue != null ? secondaryValue : null,
+    cacheHitRate: metric === "ats" && value != null ? value : null,
+    crcErrorCount: 0,
+    statusCountsByCode: undefined,
+  };
+});
 
   const bucketSeconds =
     points.length >= 2
@@ -3048,6 +3068,62 @@ function contextToTriageInputs(ctx: InvestigationContext): TriageInputs {
     windowMinutes: time.windowMinutes,
     startTsUtc: time.mode === "absolute" ? time.startTsUtc : null,
     endTsUtc: time.mode === "absolute" ? time.endTsUtc : null,
+  };
+}
+
+
+function buildExplorationContextWithTimeOverride(
+  ctx: InvestigationContext,
+  timeOverride?: {
+    mode: "relative";
+    windowMinutes: number;
+    sourceText: string;
+  } | {
+    mode: "absolute";
+    startTsUtc: string;
+    endTsUtc: string;
+    windowMinutes: number;
+    sourceText: string;
+  }
+) {
+  if (!timeOverride) {
+    return {
+      partner: ctx.baseScope.partner,
+      service: ctx.baseScope.service,
+      region: ctx.baseScope.region,
+      pop: ctx.baseScope.pop,
+      contentType: ctx.baseScope.contentType,
+      uaFamily: ctx.baseScope.uaFamily,
+      windowMinutes: ctx.time.windowMinutes,
+      startTsUtc: ctx.time.startTsUtc,
+      endTsUtc: ctx.time.endTsUtc,
+    };
+  }
+
+  if (timeOverride.mode === "relative") {
+    return {
+      partner: ctx.baseScope.partner,
+      service: ctx.baseScope.service,
+      region: ctx.baseScope.region,
+      pop: ctx.baseScope.pop,
+      contentType: ctx.baseScope.contentType,
+      uaFamily: ctx.baseScope.uaFamily,
+      windowMinutes: timeOverride.windowMinutes,
+      startTsUtc: null,
+      endTsUtc: null,
+    };
+  }
+
+  return {
+    partner: ctx.baseScope.partner,
+    service: ctx.baseScope.service,
+    region: ctx.baseScope.region,
+    pop: ctx.baseScope.pop,
+    contentType: ctx.baseScope.contentType,
+    uaFamily: ctx.baseScope.uaFamily,
+    windowMinutes: timeOverride.windowMinutes,
+    startTsUtc: timeOverride.startTsUtc,
+    endTsUtc: timeOverride.endTsUtc,
   };
 }
 
@@ -5524,19 +5600,20 @@ export default function Home() {
           return;
         }
 
+        const explorationContext = buildExplorationContextWithTimeOverride(
+          latestInvestigationContext,
+          explorationIntent.timeOverride
+        );
+
+        console.log("EXPLORATION TIME DEBUG", {
+          inheritedTime: latestInvestigationContext.time,
+          timeOverride: explorationIntent.timeOverride ?? null,
+          effectiveContext: explorationContext,
+        });
+
         const result = await runExplorationAgent({
           intent: explorationIntent,
-          context: {
-            partner: latestInvestigationContext.baseScope.partner,
-            service: latestInvestigationContext.baseScope.service,
-            region: latestInvestigationContext.baseScope.region,
-            pop: latestInvestigationContext.baseScope.pop,
-            contentType: latestInvestigationContext.baseScope.contentType,
-            uaFamily: latestInvestigationContext.baseScope.uaFamily,
-            windowMinutes: latestInvestigationContext.time.windowMinutes,
-            startTsUtc: latestInvestigationContext.time.startTsUtc,
-            endTsUtc: latestInvestigationContext.time.endTsUtc,
-          },
+          context: explorationContext,
         });
 
         addExplorationCard({
@@ -5548,7 +5625,11 @@ export default function Home() {
           metric: result.metric,
           view: result.view === "over_time" ? "timeseries" : "breakdown",
           series: result.view === "over_time" ? result.series : undefined,
+          seriesSecondary:
+            result.view === "over_time" ? result.seriesSecondary : undefined,
           rows: result.view !== "over_time" ? result.rows : undefined,
+          spotlight:
+            result.view !== "over_time" ? result.spotlight : undefined,
         });
         return;
       }
@@ -7009,8 +7090,8 @@ return (
                   compareGraph={payload.compareGraph}
                 />
               )}
-              renderExplorationCard={(msg) => (
-                <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 space-y-3">
+                            renderExplorationCard={(msg) => (
+                <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-xs text-gray-400">Exploration</div>
@@ -7029,69 +7110,136 @@ return (
                     </div>
                   </div>
 
-                  <div className="space-y-3">
+                  <div className="mt-3 space-y-3">
                     <div className="text-sm text-gray-300 whitespace-pre-wrap">
                       {msg.summary}
                     </div>
 
-                    {msg.view === "timeseries" && Array.isArray(msg.series) && msg.series.length > 0 && (
-                      <ExplorationMetricGraph
-                        metric={msg.metric}
-                        series={msg.series}
-                        windowMinutes={
-                          msg.series.length >= 2
-                            ? windowMinutesFromRange(
-                                String(msg.series[0]?.ts || ""),
-                                String(msg.series[msg.series.length - 1]?.ts || ""),
-                                120
-                              )
-                            : 120
-                        }
-                      />
-                    )}
+                    {msg.view === "timeseries" &&
+                      Array.isArray(msg.series) &&
+                      msg.series.length > 0 && (
+                        <ExplorationMetricGraph
+                          metric={msg.metric}
+                          series={msg.series}
+                          seriesSecondary={
+                            msg.metric === "latency" && Array.isArray(msg.seriesSecondary)
+                              ? msg.seriesSecondary
+                              : undefined
+                          }
+                          windowMinutes={
+                            msg.series.length >= 2
+                              ? windowMinutesFromRange(
+                                  String(msg.series[0]?.ts || ""),
+                                  String(msg.series[msg.series.length - 1]?.ts || ""),
+                                  120
+                                )
+                              : 120
+                          }
+                        />
+                      )}
 
-                    {msg.view === "breakdown" && Array.isArray(msg.rows) && msg.rows.length > 0 && (() => {
-                      const rows = msg.rows.slice(0, 8);
-                      const maxValue = Math.max(
-                        1,
-                        ...rows.map((r: any) => Number(r?.value ?? 0))
-                      );
+                    {msg.view === "breakdown" &&
+                      Array.isArray(msg.rows) &&
+                      msg.rows.length > 0 && (
+                        <div className="space-y-3">
+                          {(() => {
+                            const rows = msg.rows.slice(0, 8);
+                            const maxValue = Math.max(
+                              1,
+                              ...rows.map((r: any) => Number(r?.value ?? 0))
+                            );
 
-                      return (
-                        <div className="rounded-xl border border-white/10 bg-black/30 p-3">
-                          <div className="text-xs text-gray-400 mb-3">Breakdown</div>
+                            return (
+                              <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                                <div className="text-xs text-gray-400 mb-3">Breakdown</div>
 
-                          <div className="space-y-2">
-                            {rows.map((row: any, idx: number) => {
-                              const label = String(row?.key || row?.label || row?.dimension || "unknown");
-                              const value = Number(row?.value ?? 0);
-                              const widthPct = Math.max(6, (value / maxValue) * 100);
+                                <div className="space-y-2">
+                                  {rows.map((row: any, idx: number) => {
+                                    const label = String(
+                                      row?.key || row?.label || row?.dimension || "unknown"
+                                    );
+                                    const value = Number(row?.value ?? 0);
+                                    const widthPct = Math.max(6, (value / maxValue) * 100);
 
-                              return (
-                                <div key={`${label}-${idx}`} className="flex items-center gap-3">
-                                  <div className="w-28 shrink-0 truncate text-[11px] text-gray-300">
-                                    {label}
-                                  </div>
+                                    return (
+                                      <div
+                                        key={`${label}-${idx}`}
+                                        className="flex items-center gap-3"
+                                      >
+                                        <div className="w-28 shrink-0 truncate text-[11px] text-gray-300">
+                                          {label}
+                                        </div>
 
-                                  <div className="flex-1 h-2.5 rounded-full bg-white/10 overflow-hidden">
-                                    <div
-                                      className={`h-full rounded-full ${
-                                        idx === 0 ? "bg-blue-400" : "bg-gray-400/70"
-                                      }`}
-                                      style={{ width: `${widthPct}%` }}
-                                    />
-                                  </div>
+                                        <div className="flex-1 h-2.5 rounded-full bg-white/10 overflow-hidden">
+                                          <div
+                                            className={`h-full rounded-full ${
+                                              idx === 0 ? "bg-blue-400" : "bg-gray-400/70"
+                                            }`}
+                                            style={{ width: `${widthPct}%` }}
+                                          />
+                                        </div>
 
-                                  <div className="w-20 shrink-0 text-right text-[11px] text-gray-400">
-                                    {Number.isFinite(value) ? value.toFixed(2) : "n/a"}
-                                  </div>
+                                        <div className="w-20 shrink-0 text-right text-[11px] text-gray-400">
+                                          {Number.isFinite(value) ? value.toFixed(2) : "n/a"}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
-                              );
-                            })}
-                          </div>
+                              </div>
+                            );
+                          })()}
+
+                          {msg.metric === "latency" &&
+                            msg.spotlight &&
+                            Array.isArray(msg.spotlight.series) &&
+                            msg.spotlight.series.length > 0 && (
+                              <div className="rounded-xl border border-white/10 bg-black/30 p-3 space-y-3">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="text-xs text-gray-400">Spotlight</div>
+                                    <div className="text-sm font-semibold text-gray-100 truncate">
+                                      {msg.spotlight.title || "Worst latency trend"}
+                                    </div>
+                                  </div>
+
+                                  <span className="text-[11px] px-2 py-1 rounded-full border border-blue-400/30 bg-blue-400/10 text-blue-200">
+                                    {msg.spotlight.key}
+                                  </span>
+                                </div>
+
+                                {msg.spotlight.summary ? (
+                                  <div className="text-sm text-gray-300 whitespace-pre-wrap">
+                                    {msg.spotlight.summary}
+                                  </div>
+                                ) : null}
+
+                                <ExplorationMetricGraph
+                                  metric="latency"
+                                  series={msg.spotlight.series}
+                                  seriesSecondary={
+                                    Array.isArray(msg.spotlight.seriesSecondary)
+                                      ? msg.spotlight.seriesSecondary
+                                      : undefined
+                                  }
+                                  windowMinutes={
+                                    msg.spotlight.series.length >= 2
+                                      ? windowMinutesFromRange(
+                                          String(msg.spotlight.series[0]?.ts || ""),
+                                          String(
+                                            msg.spotlight.series[
+                                              msg.spotlight.series.length - 1
+                                            ]?.ts || ""
+                                          ),
+                                          120
+                                        )
+                                      : 120
+                                  }
+                                />
+                              </div>
+                            )}
                         </div>
-                      );
-                    })()}
+                      )}
                   </div>
                 </div>
               )}
@@ -7099,100 +7247,100 @@ return (
               formatUtcYmdHm={formatUtcYmdHm}
               nowIso={nowIso}
             />
+
+            <div className="mt-3 space-y-2">
+              {hasTriage &&
+                suggestedActions.length > 0 &&
+                latestActionableMsg &&
+                currentSuggestionScopeKey &&
+                dismissedSuggestionScopeKey !== currentSuggestionScopeKey && (
+                  <div>
+                    <div className="px-1 text-[11px] text-gray-500">
+                      try asking this next
+                    </div>
+
+                    <NextActionChips
+                      actions={suggestedActions}
+                      onSelect={(query) => {
+                        setDismissedSuggestionScopeKey(currentSuggestionScopeKey);
+                        void processUserMessage(query);
+                      }}
+                    />
+                  </div>
+                )}
+
+              <ChatInput
+                value={chatInput}
+                onChange={setChatInput}
+                onSend={handleSend}
+                disabled={isTriageLoading}
+                isLoading={isTriageLoading}
+              />
+            </div>
+
+            {!showHomeLauncher && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleRunFromFilters}
+                  disabled={isTriageLoading || !partner || !service}
+                  className="rounded-full border border-white/10 bg-white/10 px-3 py-2 text-xs font-medium text-gray-100 hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isTriageLoading ? "Running…" : "Run Triage"}
+                </button>
+
+                {chatMessages.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleResetInvestigation}
+                    className="rounded-full border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-300/80 hover:bg-red-500/10 hover:text-red-200"
+                  >
+                    Reset Investigation
+                  </button>
+                )}
+
+                {!partner || !service && (
+                  <span className="text-xs text-gray-500">
+                    Select partner and service to run triage.
+                  </span>
+                )}
+              </div>
+            )}
+
+            <details
+              className="mt-6 rounded-2xl border border-white/10 bg-black/25 p-4"
+              open={debugOpen}
+              onToggle={(e) => setDebugOpen((e.target as HTMLDetailsElement).open)}
+            >
+              <summary className="cursor-pointer text-sm font-semibold text-gray-200 select-none">
+                Debug (internal)
+              </summary>
+              <div className="mt-3 max-h-[220px] overflow-auto rounded-xl border border-white/10 bg-black/30 p-3">
+                {runLog.length ? (
+                  <div className="space-y-2">
+                    {runLog
+                      .slice()
+                      .reverse()
+                      .map((x, idx) => (
+                        <div key={`${x.ts}-${idx}`} className="text-xs text-gray-300">
+                          <span className="text-gray-500 mr-2">{formatUtcYmdHm(x.ts)} UTC</span>
+                          {x.text}
+                        </div>
+                      ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-500">No runs yet.</div>
+                )}
+              </div>
+            </details>
+
+            <div className="mt-6 pt-4 text-[11px] text-gray-500 opacity-60">
+              Cachey • Deterministic triage assistant • ClickHouse path
+            </div>
           </>
         )}
-
-        <div className="mt-3 space-y-2">
-          {hasTriage &&
-            suggestedActions.length > 0 &&
-            latestActionableMsg &&
-            currentSuggestionScopeKey &&
-            dismissedSuggestionScopeKey !== currentSuggestionScopeKey && (
-              <div>
-                <div className="px-1 text-[11px] text-gray-500">
-                  try asking this next
-                </div>
-
-                <NextActionChips
-                  actions={suggestedActions}
-                  onSelect={(query) => {
-                    setDismissedSuggestionScopeKey(currentSuggestionScopeKey);
-                    void processUserMessage(query);
-                  }}
-                />
-              </div>
-            )}
-
-          <ChatInput
-            value={chatInput}
-            onChange={setChatInput}
-            onSend={handleSend}
-            disabled={isTriageLoading}
-            isLoading={isTriageLoading}
-          />
-        </div>
-
-        {!showHomeLauncher && (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={handleRunFromFilters}
-              disabled={isTriageLoading || !partner || !service}
-              className="rounded-full border border-white/10 bg-white/10 px-3 py-2 text-xs font-medium text-gray-100 hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isTriageLoading ? "Running…" : "Run Triage"}
-            </button>
-
-            {chatMessages.length > 0 && (
-              <button
-                type="button"
-                onClick={handleResetInvestigation}
-                className="rounded-full border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-300/80 hover:bg-red-500/10 hover:text-red-200"
-              >
-                Reset Investigation
-              </button>
-            )}
-
-            {!partner || !service && (
-              <span className="text-xs text-gray-500">
-                Select partner and service to run triage.
-              </span>
-            )}
-          </div>
-        )}
-
-        <details
-          className="mt-6 rounded-2xl border border-white/10 bg-black/25 p-4"
-          open={debugOpen}
-          onToggle={(e) => setDebugOpen((e.target as HTMLDetailsElement).open)}
-        >
-          <summary className="cursor-pointer text-sm font-semibold text-gray-200 select-none">
-            Debug (internal)
-          </summary>
-          <div className="mt-3 max-h-[220px] overflow-auto rounded-xl border border-white/10 bg-black/30 p-3">
-            {runLog.length ? (
-              <div className="space-y-2">
-                {runLog
-                  .slice()
-                  .reverse()
-                  .map((x, idx) => (
-                    <div key={`${x.ts}-${idx}`} className="text-xs text-gray-300">
-                      <span className="text-gray-500 mr-2">{formatUtcYmdHm(x.ts)} UTC</span>
-                      {x.text}
-                    </div>
-                  ))}
-              </div>
-            ) : (
-              <div className="text-xs text-gray-500">No runs yet.</div>
-            )}
-          </div>
-        </details>
-
-        <div className="mt-6 pt-4 text-[11px] text-gray-500 opacity-60">
-          Cachey • Deterministic triage assistant • ClickHouse path
-        </div>
       </div>
     </div>
-</main>
-);
+  </main>
+  );
 }
