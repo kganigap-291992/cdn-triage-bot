@@ -50,6 +50,7 @@ export type ExplorationBreakdownRow = {
   value: number | null;
   secondaryValue?: number | null;
   tertiaryValue?: number | null;
+  quaternaryValue?: number | null;
 };
 
 export type ExplorationSpotlight = {
@@ -60,6 +61,11 @@ export type ExplorationSpotlight = {
   seriesSecondary?: ExplorationSeriesPoint[];
 };
 
+export type ExplorationSqlEvidence = {
+  queries: string[];
+  params?: Record<string, any>;
+} | null;
+
 export type ExplorationResult =
   | {
       type: "exploration";
@@ -69,16 +75,16 @@ export type ExplorationResult =
       title: string;
       summary: string;
 
-      // Primary series (p95 for latency, or main metric)
+      // Primary timeseries
       series: ExplorationSeriesPoint[];
 
-      // Optional secondary series (used for latency p99)
+      // Optional comparison / secondary line
       seriesSecondary?: ExplorationSeriesPoint[];
 
-      sql?: {
-        queries: string[];
-        params?: Record<string, any>;
-      } | null;
+      // Optional delta / compare rows
+      rows?: ExplorationBreakdownRow[];
+
+      sql?: ExplorationSqlEvidence;
     }
   | {
       type: "exploration";
@@ -89,17 +95,18 @@ export type ExplorationResult =
       summary: string;
       rows: ExplorationBreakdownRow[];
 
-      // Optional spotlight trend for the worst offender in the breakdown
       spotlight?: ExplorationSpotlight;
 
-      sql?: {
-        queries: string[];
-        params?: Record<string, any>;
-      } | null;
+      sql?: ExplorationSqlEvidence;
     };
 
 export function isExplorationMetric(value: string): value is ExplorationMetric {
-  return value === "errors" || value === "latency" || value === "requests" || value === "ats";
+  return (
+    value === "errors" ||
+    value === "latency" ||
+    value === "requests" ||
+    value === "ats"
+  );
 }
 
 export function isExplorationView(value: string): value is ExplorationView {

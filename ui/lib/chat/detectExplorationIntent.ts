@@ -9,15 +9,7 @@ import type {
 } from "./explorationTypes";
 
 function normalizeText(input: string): string {
-  return String(input || "")
-    .toLowerCase()
-    .trim()
-    .replace(/what’s/g, "whats")
-    .replace(/break down/g, "breakdown")
-    .replace(/uafamily/g, "ua family")
-    .replace(/user agent/g, "ua")
-    .replace(/content type/g, "content")
-    .replace(/\s+/g, " ");
+  return String(input || "").trim().toLowerCase();
 }
 
 function includesAny(text: string, needles: string[]): boolean {
@@ -25,27 +17,51 @@ function includesAny(text: string, needles: string[]): boolean {
 }
 
 function detectMetric(text: string): ExplorationMetric | null {
+  if (
+    includesAny(text, [
+      "ats",
+      "cache hit",
+      "cache miss",
+      "refresh",
+      "infra error",
+      "client error",
+    ])
+  ) {
+    return "ats";
+  }
+
   if (includesAny(text, ["latency", "p95", "p99", "ttms"])) {
     return "latency";
   }
 
-  if (includesAny(text, ["errors", "error", "5xx", "failures", "failure"])) {
+  if (
+    includesAny(text, [
+      "errors",
+      "error",
+      "error rate",
+      "errors over time",
+      "5xx",
+      "failure",
+      "failures",
+    ])
+  ) {
     return "errors";
   }
 
-  if (includesAny(text, ["requests", "request", "traffic", "volume"])) {
+  if (includesAny(text, ["request", "requests", "traffic", "volume"])) {
     return "requests";
-  }
-
-  if (includesAny(text, ["ats", "cache"])) {
-    return "ats";
   }
 
   return null;
 }
 
 function detectView(text: string): ExplorationView | null {
-  if (includesAny(text, ["over time", "trend", "trends", "timeline"])) {
+  if (
+    includesAny(text, ["over time", "trend", "trends", "timeline"]) ||
+    /\bover\s+(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)\b/i.test(
+      text
+    )
+  ) {
     return "over_time";
   }
 
@@ -78,6 +94,8 @@ function detectAtsMode(text: string): ExplorationAtsMode | undefined {
       "detailed cache",
       "cache detailed",
       "detailed breakdown",
+      "raw ats",
+      "detailed split",
     ])
   ) {
     return "detailed";
@@ -100,32 +118,55 @@ function detectAtsMode(text: string): ExplorationAtsMode | undefined {
 }
 
 function hasExplorationShape(text: string): boolean {
-  return includesAny(text, [
-    "over time",
-    "trend",
-    "trends",
-    "timeline",
-    "by region",
-    "per region",
-    "by pop",
-    "per pop",
-    "by ua",
-    "per ua",
-    "by device",
-    "per device",
-    "by content",
-    "per content",
-  ]);
+  return (
+    includesAny(text, [
+      "over time",
+      "trend",
+      "trends",
+      "timeline",
+      "by region",
+      "per region",
+      "by pop",
+      "per pop",
+      "by ua",
+      "per ua",
+      "by device",
+      "per device",
+      "by content",
+      "per content",
+      "what changed",
+      "what increased",
+      "what decreased",
+      "previous window",
+      "vs previous",
+      "compare ats",
+    ]) ||
+    /\bover\s+(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)\b/i.test(
+      text
+    )
+  );
 }
 
 function looksLikeFrozenIntent(text: string): boolean {
+  const metric = detectMetric(text);
+
+  if (metric === "ats") {
+    const isAtsExplorationCompare = includesAny(text, [
+      "compare",
+      "vs",
+      "previous",
+      "previous window",
+      "what changed",
+      "what increased",
+      "what decreased",
+    ]);
+
+    if (isAtsExplorationCompare) {
+      return false;
+    }
+  }
+
   return includesAny(text, [
-    "compare",
-    "versus",
-    "vs",
-    "previous",
-    "previous window",
-    "what changed",
     "explain",
     "why is",
     "why are",
@@ -179,54 +220,47 @@ function buildUtcIso(args: {
     return null;
   }
 
-  if (
-    month < 1 ||
-    month > 12 ||
-    day < 1 ||
-    day > 31 ||
-    hour < 0 ||
-    hour > 23 ||
-    minute < 0 ||
-    minute > 59
-  ) {
-    return null;
-  }
-
-  const iso = `${year}-${pad2(month)}-${pad2(day)}T${pad2(hour)}:${pad2(minute)}:00.000Z`;
-  const dt = new Date(iso);
-
-  if (Number.isNaN(dt.getTime())) return null;
-
-  return dt.toISOString();
+  return `${year}-${pad2(month)}-${pad2(day)}T${pad2(hour)}:${pad2(minute)}:00.000Z`;
 }
 
 function detectRelativeTimeOverride(text: string): ExplorationTimeOverride | undefined {
-  const match = text.match(
-    /\blast\s+(\d+)\s*(m|mins?|minutes?|h|hr|hrs?|hours?)\b/
-  );
+  const patterns: Array<{
+    re: RegExp;
+    toMinutes: (n: number) => number;
+  }> = [
+    { re: /\blast\s+(\d+)\s*(m|min|mins|minute|minutes)\b/i, toMinutes: (n) => n },
+    { re: /\blast\s+(\d+)\s*(h|hr|hrs|hour|hours)\b/i, toMinutes: (n) => n * 60 },
+    { re: /\blast\s+(\d+)\s*(d|day|days)\b/i, toMinutes: (n) => n * 24 * 60 },
 
-  if (!match) return undefined;
+    { re: /\bover\s+(\d+)\s*(m|min|mins|minute|minutes)\b/i, toMinutes: (n) => n },
+    { re: /\bover\s+(\d+)\s*(h|hr|hrs|hour|hours)\b/i, toMinutes: (n) => n * 60 },
+    { re: /\bover\s+(\d+)\s*(d|day|days)\b/i, toMinutes: (n) => n * 24 * 60 },
 
-  const rawValue = Number(match[1]);
-  const rawUnit = String(match[2] || "").toLowerCase();
+    { re: /\bfor\s+(\d+)\s*(m|min|mins|minute|minutes)\b/i, toMinutes: (n) => n },
+    { re: /\bfor\s+(\d+)\s*(h|hr|hrs|hour|hours)\b/i, toMinutes: (n) => n * 60 },
+    { re: /\bfor\s+(\d+)\s*(d|day|days)\b/i, toMinutes: (n) => n * 24 * 60 },
+  ];
 
-  if (!Number.isFinite(rawValue) || rawValue <= 0) return undefined;
+  for (const pattern of patterns) {
+    const match = text.match(pattern.re);
+    if (!match) continue;
 
-  const isMinutes = /^m|^min|^minute/.test(rawUnit);
-  const windowMinutes = isMinutes ? rawValue : rawValue * 60;
+    const amount = Number(match[1]);
+    if (!Number.isFinite(amount) || amount <= 0) continue;
 
-  if (!Number.isFinite(windowMinutes) || windowMinutes <= 0) return undefined;
+    return {
+      mode: "relative",
+      windowMinutes: pattern.toMinutes(amount),
+      sourceText: match[0],
+    };
+  }
 
-  return {
-    mode: "relative",
-    windowMinutes,
-    sourceText: match[0],
-  };
+  return undefined;
 }
 
 function detectAbsoluteTimeOverride(text: string): ExplorationTimeOverride | undefined {
   const betweenMatch = text.match(
-    /\bbetween\s+(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s+(?:and|-)\s+(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s*utc\b/
+    /\bbetween\s+(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s+and\s+(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s*utc\b/
   );
 
   const fromToMatch = text.match(
@@ -276,7 +310,6 @@ export function detectExplorationIntent(input: string): ExplorationIntent | null
 
   if (!text) return null;
 
-  // Keep the current frozen rail protected.
   if (looksLikeFrozenIntent(text)) {
     return null;
   }
@@ -286,7 +319,7 @@ export function detectExplorationIntent(input: string): ExplorationIntent | null
   }
 
   const metric = detectMetric(text);
-  const view = detectView(text);
+  const view = detectView(text) ?? (metric === "ats" ? "over_time" : null);
 
   if (!metric || !view) {
     return null;

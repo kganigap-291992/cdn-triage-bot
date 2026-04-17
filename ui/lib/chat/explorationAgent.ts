@@ -31,6 +31,55 @@ type TriageTimeseriesPoint = {
   cacheHitRate?: number | null;
 };
 
+type AtsSummary = {
+  hitCount: number;
+  missCount: number;
+  refreshCount: number;
+  clientErrorCount: number;
+  infraErrorCount: number;
+  atsTotal: number;
+  hitPct: number;
+  missPct: number;
+  refreshPct: number;
+  clientErrorPct: number;
+  infraErrorPct: number;
+};
+
+type AtsSummaryTimeseriesPoint = {
+  ts: string;
+  hitCount: number;
+  missCount: number;
+  refreshCount: number;
+  clientErrorCount: number;
+  infraErrorCount: number;
+  atsTotal: number;
+  hitPct: number;
+  missPct: number;
+  refreshPct: number;
+  clientErrorPct: number;
+  infraErrorPct: number;
+};
+
+type AtsBreakdownRowRaw = {
+  region?: string;
+  pop?: string;
+  contentType?: string;
+  content_type?: string;
+  uaFamily?: string;
+  ua_family?: string;
+  totalRequests?: number | null;
+  hitCount?: number | null;
+  hit_count?: number | null;
+  missCount?: number | null;
+  miss_count?: number | null;
+  refreshCount?: number | null;
+  refresh_count?: number | null;
+  clientErrorCount?: number | null;
+  client_error_count?: number | null;
+  infraErrorCount?: number | null;
+  infra_error_count?: number | null;
+};
+
 type TriageResponseShape = {
   ok?: boolean;
   error?: string;
@@ -41,6 +90,14 @@ type TriageResponseShape = {
       startTs?: string | null;
       endTs?: string | null;
     };
+    atsSummary?: unknown;
+    previousAtsSummary?: unknown;
+    atsSummaryTimeseries?: unknown[];
+    previousAtsSummaryTimeseries?: unknown[];
+    atsByRegion?: AtsBreakdownRowRaw[];
+    atsByPop?: AtsBreakdownRowRaw[];
+    atsByContentType?: AtsBreakdownRowRaw[];
+    atsByUaFamily?: AtsBreakdownRowRaw[];
   };
   sql?: {
     queries?: string[];
@@ -74,7 +131,49 @@ function humanizeDimensionValue(key: string): string {
   return String(key || "").replace(/_/g, " ");
 }
 
-function makeSummaryForOverTime(args: {
+function numOrNull(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function numOrZero(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function cleanNumber(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function cleanTs(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function toSeriesPoint(ts: string, value: number | null) {
+  return { ts, value };
+}
+
+function normalizeBreakdownKey(value: unknown): string | null {
+  const s = String(value ?? "").trim().toLowerCase();
+  return s || null;
+}
+
+function isAtsCompareQuery(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    t.includes("what changed") ||
+    t.includes("compare") ||
+    t.includes(" vs ") ||
+    t.includes("previous") ||
+    t.includes("previous window") ||
+    t.includes("what increased") ||
+    t.includes("what decreased")
+  );
+}
+
+
+function buildSummaryForOverTime(args: {
   metric: ExplorationMetric;
   scopeLabel: string;
   pointCount: number;
@@ -119,7 +218,9 @@ function makeSummaryForOverTime(args: {
       `Window: ${rangeText}.`,
       `Points: ${args.pointCount}.`,
       `Latest requests: ${
-        args.latestValue == null ? "n/a" : Math.round(args.latestValue).toLocaleString()
+        args.latestValue == null
+          ? "n/a"
+          : Math.round(args.latestValue).toLocaleString()
       }.`,
     ].join(" ");
   }
@@ -234,17 +335,266 @@ function pickWorstKey(
   return null;
 }
 
-function cleanNumber(value: unknown): number | null {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+function normalizeAtsSummary(raw: unknown): AtsSummary | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const row = raw as Record<string, unknown>;
+
+  const hitCount = numOrZero(row.hitCount ?? row.hit_count);
+  const missCount = numOrZero(row.missCount ?? row.miss_count);
+  const refreshCount = numOrZero(row.refreshCount ?? row.refresh_count);
+  const clientErrorCount = numOrZero(
+    row.clientErrorCount ?? row.client_error_count
+  );
+  const infraErrorCount = numOrZero(
+    row.infraErrorCount ?? row.infra_error_count
+  );
+
+  const atsTotal =
+    row.atsTotal != null
+      ? numOrZero(row.atsTotal)
+      : hitCount + missCount + refreshCount + clientErrorCount + infraErrorCount;
+
+  const hitPct =
+    numOrNull(row.hitPct ?? row.hit_pct) ??
+    (atsTotal > 0 ? (100 * hitCount) / atsTotal : 0);
+
+  const missPct =
+    numOrNull(row.missPct ?? row.miss_pct) ??
+    (atsTotal > 0 ? (100 * missCount) / atsTotal : 0);
+
+  const refreshPct =
+    numOrNull(row.refreshPct ?? row.refresh_pct) ??
+    (atsTotal > 0 ? (100 * refreshCount) / atsTotal : 0);
+
+  const clientErrorPct =
+    numOrNull(row.clientErrorPct ?? row.client_error_pct) ??
+    (atsTotal > 0 ? (100 * clientErrorCount) / atsTotal : 0);
+
+  const infraErrorPct =
+    numOrNull(row.infraErrorPct ?? row.infra_error_pct) ??
+    (atsTotal > 0 ? (100 * infraErrorCount) / atsTotal : 0);
+
+  return {
+    hitCount,
+    missCount,
+    refreshCount,
+    clientErrorCount,
+    infraErrorCount,
+    atsTotal,
+    hitPct,
+    missPct,
+    refreshPct,
+    clientErrorPct,
+    infraErrorPct,
+  };
 }
 
-function cleanTs(value: unknown): string {
-  return typeof value === "string" ? value : "";
+function normalizeAtsSummaryTimeseries(
+  rows: unknown
+): AtsSummaryTimeseriesPoint[] {
+  if (!Array.isArray(rows)) return [];
+
+  return rows
+    .map((rowRaw) => {
+      const row = rowRaw as Record<string, unknown>;
+      const ts = cleanTs(row.ts ?? row.bucket);
+      if (!ts) return null;
+
+      const hitCount = numOrZero(row.hitCount ?? row.hit_count);
+      const missCount = numOrZero(row.missCount ?? row.miss_count);
+      const refreshCount = numOrZero(row.refreshCount ?? row.refresh_count);
+      const clientErrorCount = numOrZero(
+        row.clientErrorCount ?? row.client_error_count
+      );
+      const infraErrorCount = numOrZero(
+        row.infraErrorCount ?? row.infra_error_count
+      );
+
+      const atsTotal =
+        hitCount + missCount + refreshCount + clientErrorCount + infraErrorCount;
+
+      const hitPct = atsTotal > 0 ? (100 * hitCount) / atsTotal : 0;
+      const missPct = atsTotal > 0 ? (100 * missCount) / atsTotal : 0;
+      const refreshPct = atsTotal > 0 ? (100 * refreshCount) / atsTotal : 0;
+      const clientErrorPct =
+        atsTotal > 0 ? (100 * clientErrorCount) / atsTotal : 0;
+      const infraErrorPct =
+        atsTotal > 0 ? (100 * infraErrorCount) / atsTotal : 0;
+
+      return {
+        ts,
+        hitCount,
+        missCount,
+        refreshCount,
+        clientErrorCount,
+        infraErrorCount,
+        atsTotal,
+        hitPct,
+        missPct,
+        refreshPct,
+        clientErrorPct,
+        infraErrorPct,
+      };
+    })
+    .filter(Boolean) as AtsSummaryTimeseriesPoint[];
 }
 
-function toSeriesPoint(ts: string, value: number | null) {
-  return { ts, value };
+function buildAtsDeltaRows(args: {
+  current?: AtsSummary;
+  previous?: AtsSummary;
+}): ExplorationBreakdownRow[] {
+  const current = args.current;
+  const previous = args.previous;
+
+  if (!current || !previous) return [];
+
+  const rows: ExplorationBreakdownRow[] = [
+    {
+      key: "hit",
+      value: Number((current.hitPct - previous.hitPct).toFixed(2)),
+      secondaryValue: current.hitPct,
+      tertiaryValue: previous.hitPct,
+    },
+    {
+      key: "miss",
+      value: Number((current.missPct - previous.missPct).toFixed(2)),
+      secondaryValue: current.missPct,
+      tertiaryValue: previous.missPct,
+    },
+    {
+      key: "refresh",
+      value: Number((current.refreshPct - previous.refreshPct).toFixed(2)),
+      secondaryValue: current.refreshPct,
+      tertiaryValue: previous.refreshPct,
+    },
+    {
+      key: "client_error",
+      value: Number(
+        (current.clientErrorPct - previous.clientErrorPct).toFixed(2)
+      ),
+      secondaryValue: current.clientErrorPct,
+      tertiaryValue: previous.clientErrorPct,
+    },
+    {
+      key: "infra_error",
+      value: Number(
+        (current.infraErrorPct - previous.infraErrorPct).toFixed(2)
+      ),
+      secondaryValue: current.infraErrorPct,
+      tertiaryValue: previous.infraErrorPct,
+    },
+  ];
+
+  rows.sort((a, b) => Math.abs(b.value ?? 0) - Math.abs(a.value ?? 0));
+  return rows;
+}
+
+function buildAtsDriverSummary(args: {
+  current?: AtsSummary;
+  previous?: AtsSummary;
+  scopeLabel: string;
+}): string {
+  const { current, previous, scopeLabel } = args;
+
+  if (!current) {
+    return `Showing ATS trend for ${scopeLabel}.`;
+  }
+
+  if (!previous) {
+    return [
+      `Showing ATS trend for ${scopeLabel}.`,
+      `Current hit ${current.hitPct.toFixed(2)}%, miss ${current.missPct.toFixed(
+        2
+      )}%, refresh ${current.refreshPct.toFixed(2)}%, client error ${current.clientErrorPct.toFixed(
+        2
+      )}%, infra error ${current.infraErrorPct.toFixed(2)}%.`,
+    ].join(" ");
+  }
+
+  const deltaRows = buildAtsDeltaRows({ current, previous });
+  const top = deltaRows[0];
+
+  if (!top) {
+    return `Showing ATS compare for ${scopeLabel}.`;
+  }
+
+  const label = humanizeDimensionValue(top.key);
+
+  if (top.key === "miss" && (top.value ?? 0) > 0) {
+    return `Misses increased the most for ${scopeLabel}, which is the main driver of hit-rate decline.`;
+  }
+
+  if (top.key === "infra_error" && (top.value ?? 0) > 0) {
+    return `Infrastructure cache errors increased the most for ${scopeLabel}.`;
+  }
+
+  if (top.key === "client_error" && (top.value ?? 0) > 0) {
+    return `Client-side cache delivery errors increased the most for ${scopeLabel}.`;
+  }
+
+  if (top.key === "hit" && (top.value ?? 0) < 0) {
+    return `Hit rate fell versus the previous window for ${scopeLabel}.`;
+  }
+
+  return `${label} changed the most versus the previous window for ${scopeLabel}.`;
+}
+
+function buildAtsBreakdownRows(
+  rows: AtsBreakdownRowRaw[] | undefined,
+  view: Exclude<ExplorationView, "over_time">
+): ExplorationBreakdownRow[] {
+  if (!Array.isArray(rows)) return [];
+
+  return rows
+    .map((row) => {
+      const key =
+        view === "by_region"
+          ? normalizeBreakdownKey(row.region)
+          : view === "by_pop"
+          ? normalizeBreakdownKey(row.pop)
+          : view === "by_content"
+          ? normalizeBreakdownKey(row.contentType ?? row.content_type)
+          : normalizeBreakdownKey(row.uaFamily ?? row.ua_family);
+
+      if (!key) return null;
+
+      const hitCount = numOrZero(row.hitCount ?? row.hit_count);
+      const missCount = numOrZero(row.missCount ?? row.miss_count);
+      const refreshCount = numOrZero(row.refreshCount ?? row.refresh_count);
+      const clientErrorCount = numOrZero(
+        row.clientErrorCount ?? row.client_error_count
+      );
+      const infraErrorCount = numOrZero(
+        row.infraErrorCount ?? row.infra_error_count
+      );
+
+      const atsTotal =
+        hitCount + missCount + refreshCount + clientErrorCount + infraErrorCount;
+
+      if (atsTotal === 0) {
+        return {
+          key,
+          value: 0,
+          secondaryValue: 0,
+          tertiaryValue: 0,
+          quaternaryValue: 0,
+        };
+      }
+
+      const missPct = (100 * missCount) / atsTotal;
+      const refreshPct = (100 * refreshCount) / atsTotal;
+      const clientErrorPct = (100 * clientErrorCount) / atsTotal;
+      const infraErrorPct = (100 * infraErrorCount) / atsTotal;
+
+      return {
+        key,
+        value: Number(missPct.toFixed(2)),
+        secondaryValue: Number(refreshPct.toFixed(2)),
+        tertiaryValue: Number(clientErrorPct.toFixed(2)),
+        quaternaryValue: Number(infraErrorPct.toFixed(2)),
+      };
+    })
+    .filter(Boolean) as ExplorationBreakdownRow[];
 }
 
 async function fetchExplorationTriage(
@@ -299,11 +649,13 @@ async function buildRealOverTimeResult(args: {
   const triage = await fetchExplorationTriage(context);
 
   const points = Array.isArray(triage.metricsJson?.timeseries?.points)
-    ? triage.metricsJson.timeseries?.points ?? []
+    ? triage.metricsJson?.timeseries?.points ?? []
     : [];
 
-  const startTs = triage.metricsJson?.timeseries?.startTs ?? context.startTsUtc ?? null;
-  const endTs = triage.metricsJson?.timeseries?.endTs ?? context.endTsUtc ?? null;
+  const startTs =
+    triage.metricsJson?.timeseries?.startTs ?? context.startTsUtc ?? null;
+  const endTs =
+    triage.metricsJson?.timeseries?.endTs ?? context.endTsUtc ?? null;
 
   if (metric === "latency") {
     const p95Series = points
@@ -331,7 +683,7 @@ async function buildRealOverTimeResult(args: {
       metric,
       view: "over_time",
       title: titleFor(metric, "over_time"),
-      summary: makeSummaryForOverTime({
+      summary: buildSummaryForOverTime({
         metric,
         scopeLabel,
         pointCount: p95Series.length,
@@ -360,20 +712,21 @@ async function buildRealOverTimeResult(args: {
       })
       .filter(Boolean) as Array<{ ts: string; value: number | null }>;
 
-    const latest = series.length ? series[series.length - 1] : null;
+    const latest = points.length ? points[points.length - 1] : null;
+    const latestValue = cleanNumber(latest?.errorRatePct);
 
     return {
       type: "exploration",
       metric,
       view: "over_time",
       title: titleFor(metric, "over_time"),
-      summary: makeSummaryForOverTime({
+      summary: buildSummaryForOverTime({
         metric,
         scopeLabel,
         pointCount: series.length,
         startTs,
         endTs,
-        latestValue: latest?.value ?? null,
+        latestValue,
       }),
       series,
       sql: triage.sql
@@ -394,20 +747,21 @@ async function buildRealOverTimeResult(args: {
       })
       .filter(Boolean) as Array<{ ts: string; value: number | null }>;
 
-    const latest = series.length ? series[series.length - 1] : null;
+    const latest = points.length ? points[points.length - 1] : null;
+    const latestValue = cleanNumber(latest?.totalRequests);
 
     return {
       type: "exploration",
       metric,
       view: "over_time",
       title: titleFor(metric, "over_time"),
-      summary: makeSummaryForOverTime({
+      summary: buildSummaryForOverTime({
         metric,
         scopeLabel,
         pointCount: series.length,
         startTs,
         endTs,
-        latestValue: latest?.value ?? null,
+        latestValue,
       }),
       series,
       sql: triage.sql
@@ -420,6 +774,42 @@ async function buildRealOverTimeResult(args: {
   }
 
   throw new Error(`Unsupported real over-time metric: ${metric}`);
+}
+
+
+async function buildAtsTrendOnlyResult(args: {
+  context: ExplorationAgentContext;
+  atsMode?: ExplorationAtsMode;
+}): Promise<ExplorationResult> {
+  const { context, atsMode } = args;
+  const scopeLabel = buildScopeLabel(context);
+
+  const triage = await fetchExplorationTriage(context);
+
+  const currentTs = normalizeAtsSummaryTimeseries(
+    triage.metricsJson?.atsSummaryTimeseries
+  );
+
+  // For v1: just show HIT trend (clean + readable)
+  const series = currentTs.map((p) =>
+    toSeriesPoint(p.ts, Number(p.hitPct.toFixed(2)))
+  );
+
+  return {
+    type: "exploration",
+    metric: "ats",
+    view: "over_time",
+    atsMode,
+    title: "ATS over time",
+    summary: `Showing ATS trend for ${scopeLabel}.`,
+    series,
+    sql: triage.sql
+      ? {
+          queries: Array.isArray(triage.sql.queries) ? triage.sql.queries : [],
+          params: triage.sql.params ?? undefined,
+        }
+      : null,
+  };
 }
 
 async function buildLatencyBreakdownSpotlight(args: {
@@ -440,7 +830,7 @@ async function buildLatencyBreakdownSpotlight(args: {
   const triage = await fetchExplorationTriage(scopedContext);
 
   const points = Array.isArray(triage.metricsJson?.timeseries?.points)
-    ? triage.metricsJson.timeseries?.points ?? []
+    ? triage.metricsJson?.timeseries?.points ?? []
     : [];
 
   const p95Series = points
@@ -462,13 +852,15 @@ async function buildLatencyBreakdownSpotlight(args: {
   const latest = points.length ? points[points.length - 1] : null;
   const latestP95 = cleanNumber(latest?.p95TtmsMs);
   const latestP99 = cleanNumber(latest?.p99TtmsMs);
-  const startTs = triage.metricsJson?.timeseries?.startTs ?? scopedContext.startTsUtc ?? null;
-  const endTs = triage.metricsJson?.timeseries?.endTs ?? scopedContext.endTsUtc ?? null;
+  const startTs =
+    triage.metricsJson?.timeseries?.startTs ?? scopedContext.startTsUtc ?? null;
+  const endTs =
+    triage.metricsJson?.timeseries?.endTs ?? scopedContext.endTsUtc ?? null;
 
   return {
     key,
     title: `Worst ${humanizeView(view).replace("by ", "")} over time`,
-    summary: makeSummaryForOverTime({
+    summary: buildSummaryForOverTime({
       metric: "latency",
       scopeLabel: buildScopeLabel(scopedContext),
       pointCount: p95Series.length,
@@ -482,12 +874,133 @@ async function buildLatencyBreakdownSpotlight(args: {
   };
 }
 
+async function buildAtsOverTimeResult(args: {
+  context: ExplorationAgentContext;
+  atsMode?: ExplorationAtsMode;
+}): Promise<ExplorationResult> {
+  const { context, atsMode } = args;
+  const scopeLabel = buildScopeLabel(context);
+  const triage = await fetchExplorationTriage(context);
+
+  const currentSummary = normalizeAtsSummary(triage.metricsJson?.atsSummary);
+  const previousSummary = normalizeAtsSummary(
+    triage.metricsJson?.previousAtsSummary
+  );
+
+  const currentTs = normalizeAtsSummaryTimeseries(
+    triage.metricsJson?.atsSummaryTimeseries
+  );
+  const previousTs = normalizeAtsSummaryTimeseries(
+    triage.metricsJson?.previousAtsSummaryTimeseries
+  );
+
+  const currentSeries = currentTs.map((point) =>
+    toSeriesPoint(point.ts, Number(point.hitPct.toFixed(2)))
+  );
+
+  const previousSeries = previousTs.map((point) =>
+    toSeriesPoint(point.ts, Number(point.hitPct.toFixed(2)))
+  );
+
+  const deltaRows = buildAtsDeltaRows({
+    current: currentSummary,
+    previous: previousSummary,
+  });
+
+  return {
+    type: "exploration",
+    metric: "ats",
+    view: "over_time",
+    atsMode,
+    title: "ATS change vs previous window",
+    summary: buildAtsDriverSummary({
+      current: currentSummary,
+      previous: previousSummary,
+      scopeLabel,
+    }),
+    rows: deltaRows,
+    series: currentSeries,
+    seriesSecondary: previousSeries,
+    sql: triage.sql
+      ? {
+          queries: Array.isArray(triage.sql.queries) ? triage.sql.queries : [],
+          params: triage.sql.params ?? undefined,
+        }
+      : null,
+  };
+}
+
+async function buildAtsBreakdownResult(args: {
+  context: ExplorationAgentContext;
+  view: Exclude<ExplorationView, "over_time">;
+  atsMode?: ExplorationAtsMode;
+}): Promise<ExplorationResult> {
+  const { context, view, atsMode } = args;
+  const scopeLabel = buildScopeLabel(context);
+  const triage = await fetchExplorationTriage(context);
+
+  const rawRows =
+    view === "by_region"
+      ? triage.metricsJson?.atsByRegion
+      : view === "by_pop"
+      ? triage.metricsJson?.atsByPop
+      : view === "by_content"
+      ? triage.metricsJson?.atsByContentType
+      : triage.metricsJson?.atsByUaFamily;
+
+  const rows = buildAtsBreakdownRows(rawRows, view);
+
+  return {
+    type: "exploration",
+    metric: "ats",
+    view,
+    atsMode,
+    title: titleFor("ats", view),
+    summary: `Showing ATS breakdown for ${scopeLabel} ${humanizeView(view)}.`,
+    rows,
+    sql: triage.sql
+      ? {
+          queries: Array.isArray(triage.sql.queries) ? triage.sql.queries : [],
+          params: triage.sql.params ?? undefined,
+        }
+      : null,
+  };
+}
+
 export async function runExplorationAgent(args: {
   intent: ExplorationIntent;
   context: ExplorationAgentContext;
 }): Promise<ExplorationResult> {
   const { intent, context } = args;
   const scopeLabel = buildScopeLabel(context);
+
+  // ATS gets its own explicit exploration lane.
+  // This preserves old behavior for latency/errors/requests.
+  if (intent.metric === "ats" && intent.view === "over_time") {
+    const isCompare = isAtsCompareQuery(intent.rawText);
+
+    if (isCompare) {
+        // ✅ ATS COMPARE (what changed)
+        return buildAtsOverTimeResult({
+        context,
+        atsMode: intent.atsMode,
+        });
+    }
+
+    // ✅ ATS TREND ONLY
+    return buildAtsTrendOnlyResult({
+        context,
+        atsMode: intent.atsMode,
+    });
+    }   
+
+  if (intent.metric === "ats" && intent.view !== "over_time") {
+    return buildAtsBreakdownResult({
+      context,
+      view: intent.view,
+      atsMode: intent.atsMode,
+    });
+  }
 
   const isRealOverTimeMetric =
     intent.view === "over_time" &&
@@ -520,40 +1033,30 @@ export async function runExplorationAgent(args: {
     };
   }
 
-  const rows = buildBreakdownRows({
+  const breakdownRows = buildBreakdownRows({
     metric: intent.metric,
     view: intent.view,
     atsMode: intent.atsMode,
   });
 
-  if (intent.metric === "latency") {
-    const worstKey = pickWorstKey(rows, intent.metric);
+  let spotlight:
+    | {
+        key: string;
+        title?: string;
+        summary?: string;
+        series: Array<{ ts: string; value: number | null }>;
+        seriesSecondary?: Array<{ ts: string; value: number | null }>;
+      }
+    | undefined;
 
+  if (intent.metric === "latency") {
+    const worstKey = pickWorstKey(breakdownRows, intent.metric);
     if (worstKey) {
-      const spotlight = await buildLatencyBreakdownSpotlight({
+      spotlight = await buildLatencyBreakdownSpotlight({
         context,
         view: intent.view,
         key: worstKey,
       });
-
-      return {
-        type: "exploration",
-        metric: intent.metric,
-        view: intent.view,
-        atsMode: intent.atsMode,
-        title: titleFor(intent.metric, intent.view),
-        summary: `${summaryFor({
-          metric: intent.metric,
-          view: intent.view,
-          scopeLabel,
-          atsMode: intent.atsMode,
-        })} Spotlight: worst ${humanizeView(intent.view).replace("by ", "")} is ${humanizeDimensionValue(
-          worstKey
-        )}.`,
-        rows,
-        spotlight,
-        sql: null,
-      };
     }
   }
 
@@ -569,7 +1072,8 @@ export async function runExplorationAgent(args: {
       scopeLabel,
       atsMode: intent.atsMode,
     }),
-    rows,
+    rows: breakdownRows,
+    spotlight,
     sql: null,
   };
 }

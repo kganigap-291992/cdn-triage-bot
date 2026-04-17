@@ -1574,8 +1574,7 @@ function RequestsErrorRateLines({
   height?: number;
   windowMinutes: number;
 }) {
-  const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
-  const base = points.slice(-maxBars);
+  const base = points;
   const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
   const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -1850,8 +1849,7 @@ function LatencyTimeseriesLines({
   height?: number;
   windowMinutes: number;
 }) {
-  const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
-  const base = points.slice(-maxBars);
+  const base = points;
   const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
   const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -2096,30 +2094,65 @@ function LatencyTimeseriesLines({
 }
 
 
+
 function ExplorationMetricGraph({
   metric,
   series,
   seriesSecondary,
+  rows,
   height = 220,
   windowMinutes = 120,
 }: {
   metric: string;
   series: Array<{ ts: string; value: number | null }>;
   seriesSecondary?: Array<{ ts: string; value: number | null }>;
+  rows?: Array<{
+    key: string;
+    value: number | null;
+    secondaryValue?: number | null;
+    tertiaryValue?: number | null;
+    quaternaryValue?: number | null;
+  }>;
   height?: number;
   windowMinutes?: number;
 }) {
-  const secondaryMap = new Map(
-  (seriesSecondary || []).map((p) => [
-    normalizeTsKey(p.ts),
-    p?.value == null ? null : Number(p.value),
-  ])
+  const normalizedSecondary = Array.isArray(seriesSecondary)
+  ? seriesSecondary.map((p) => ({
+      ts: normalizeTsKey(p.ts),
+      value: p?.value == null ? null : Number(p.value),
+    }))
+  : [];
+
+const secondaryMap = new Map(
+  normalizedSecondary.map((p) => [p.ts, p.value])
 );
 
-const points: TimeseriesPoint[] = series.map((p) => {
+console.log("EXPLORATION GRAPH DEBUG", {
+  metric,
+  rowsLength: rows?.length,
+  seriesLength: series?.length,
+  seriesSecondaryLength: seriesSecondary?.length,
+});
+
+const isAtsCompare =
+  metric === "ats" &&
+  Array.isArray(rows) &&
+  rows.length > 0 &&
+  normalizedSecondary.length > 0;
+
+const points: Array<
+  TimeseriesPoint & {
+    previousCacheHitRate?: number | null;
+  }
+> = series.map((p, idx) => {
   const ts = normalizeTsKey(p.ts);
   const value = p?.value == null ? null : Number(p.value);
-  const secondaryValue = secondaryMap.has(ts) ? secondaryMap.get(ts)! : null;
+
+  const secondaryValue = isAtsCompare
+    ? normalizedSecondary[idx]?.value ?? null
+    : secondaryMap.has(ts)
+    ? secondaryMap.get(ts)!
+    : null;
 
   return {
     ts,
@@ -2130,6 +2163,8 @@ const points: TimeseriesPoint[] = series.map((p) => {
     p99TtmsMs:
       metric === "latency" && secondaryValue != null ? secondaryValue : null,
     cacheHitRate: metric === "ats" && value != null ? value : null,
+    previousCacheHitRate:
+      metric === "ats" && secondaryValue != null ? secondaryValue : null,
     crcErrorCount: 0,
     statusCountsByCode: undefined,
   };
@@ -2145,9 +2180,9 @@ const points: TimeseriesPoint[] = series.map((p) => {
         )
       : null;
 
-  if (!points.length) return null;
-
   if (metric === "latency") {
+    if (!points.length) return null;
+
     return (
       <LatencyTimeseriesLines
         points={points}
@@ -2159,6 +2194,8 @@ const points: TimeseriesPoint[] = series.map((p) => {
   }
 
   if (metric === "requests" || metric === "errors") {
+    if (!points.length) return null;
+
     return (
       <RequestsErrorRateLines
         points={points}
@@ -2170,8 +2207,70 @@ const points: TimeseriesPoint[] = series.map((p) => {
   }
 
   if (metric === "ats") {
-    const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
-    const base = points.slice(-maxBars);
+    const isBreakdownOnly =
+      Array.isArray(rows) &&
+      rows.length > 0 &&
+      (!series || series.length === 0);
+
+    if (isBreakdownOnly) {
+      const breakdownRows = (rows || []).slice(0, 5);
+
+      return (
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-xs text-gray-400">ATS breakdown</div>
+              <div className="text-sm font-semibold text-gray-100">
+                ATS breakdown by dimension
+              </div>
+              <div className="text-[11px] text-gray-500 mt-1">
+                Top 5 rows • backend order preserved
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3 overflow-x-auto">
+            <table className="min-w-full text-left text-xs text-gray-200">
+              <thead className="border-b border-white/10 bg-white/[0.03] text-gray-400">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Dimension</th>
+                  <th className="px-4 py-3 font-medium">Miss %</th>
+                  <th className="px-4 py-3 font-medium">Refresh %</th>
+                  <th className="px-4 py-3 font-medium">Client error %</th>
+                  <th className="px-4 py-3 font-medium">Infra error %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {breakdownRows.map((row, idx) => (
+                  <tr
+                    key={`${String(row?.key)}-${idx}`}
+                    className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.03]"
+                  >
+                    <td className="px-4 py-3 font-medium text-gray-100">
+                      {String(row?.key || "n/a")}
+                    </td>
+                    <td className="px-4 py-3 text-gray-300">
+                      {formatPctOrNA(row?.value)}
+                    </td>
+                    <td className="px-4 py-3 text-gray-300">
+                      {formatPctOrNA(row?.secondaryValue)}
+                    </td>
+                    <td className="px-4 py-3 text-gray-300">
+                      {formatPctOrNA(row?.tertiaryValue)}
+                    </td>
+                    <td className="px-4 py-3 text-gray-300">
+                      {formatPctOrNA(row?.quaternaryValue)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      );
+    }
+
+    const base = points;
     const [zoom, setZoom] = React.useState<{ start: number; end: number } | null>(null);
     const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
     const svgRef = React.useRef<SVGSVGElement | null>(null);
@@ -2181,11 +2280,19 @@ const points: TimeseriesPoint[] = series.map((p) => {
       x1: 0,
     });
 
-    const vals = slice.map((p) =>
-      p.cacheHitRate == null || !Number.isFinite(Number(p.cacheHitRate))
-        ? 0
-        : Number(p.cacheHitRate)
-    );
+    const isCompare = Array.isArray(rows) && rows.length > 0;
+
+    const vals: number[] = [];
+    slice.forEach((p) => {
+      if (p.cacheHitRate != null && Number.isFinite(Number(p.cacheHitRate))) {
+        vals.push(Number(p.cacheHitRate));
+      }
+      const prev = p.previousCacheHitRate;
+      if (prev != null && Number.isFinite(Number(prev))) {
+        vals.push(Number(prev));
+      }
+    });
+
     const minV = Math.min(0, ...vals, 60);
     const maxV = Math.max(100, ...vals);
     const span = Math.max(1, maxV - minV);
@@ -2210,10 +2317,15 @@ const points: TimeseriesPoint[] = series.map((p) => {
       return padTop + (1 - (Number(v) - minV) / span) * plotH;
     }
 
-    const pts: string[] = [];
+    const currentPts: string[] = [];
+    const previousPts: string[] = [];
+
     slice.forEach((p, i) => {
-      const yy = y(p.cacheHitRate);
-      if (yy != null) pts.push(`${x(i)},${yy}`);
+      const yyCurrent = y(p.cacheHitRate);
+      if (yyCurrent != null) currentPts.push(`${x(i)},${yyCurrent}`);
+
+      const yyPrevious = y(p.previousCacheHitRate);
+      if (yyPrevious != null) previousPts.push(`${x(i)},${yyPrevious}`);
     });
 
     const tickVals = Array.from({ length: 5 }, (_, i) =>
@@ -2221,6 +2333,7 @@ const points: TimeseriesPoint[] = series.map((p) => {
     );
     const xLabelEvery = Math.max(1, Math.floor(n / 6));
     const latest = slice[slice.length - 1];
+    const latestPrevious = latest ? latest.previousCacheHitRate : null;
 
     function toSvgX(clientX: number) {
       const el = svgRef.current;
@@ -2253,8 +2366,12 @@ const points: TimeseriesPoint[] = series.map((p) => {
       <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-xs text-gray-400">Cache trend</div>
-            <div className="text-sm font-semibold text-gray-100">ATS / Cache Hit Rate</div>
+            <div className="text-xs text-gray-400">
+              {isCompare ? "ATS compare" : "ATS trend"}
+            </div>
+            <div className="text-sm font-semibold text-gray-100">
+              {isCompare ? "ATS Hit % vs Previous Window" : "ATS Hit % Over Time"}
+            </div>
             <div className="text-[11px] text-gray-400 mt-1">
               {slice.length
                 ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
@@ -2266,13 +2383,48 @@ const points: TimeseriesPoint[] = series.map((p) => {
               Drag to zoom • double-click to reset
             </div>
           </div>
+
           <div className="text-right">
             <div className="text-xs text-gray-400">Latest</div>
             <div className="text-[11px] text-gray-200">
-              {latest ? `${formatUtcHM(latest.ts)} UTC • ${formatPctOrNA(latest.cacheHitRate)}` : "n/a"}
+              {latest
+                ? isCompare
+                  ? `${formatUtcHM(latest.ts)} UTC • current=${formatPctOrNA(
+                      latest.cacheHitRate
+                    )} • previous=${formatPctOrNA(latestPrevious)}`
+                  : `${formatUtcHM(latest.ts)} UTC • ${formatPctOrNA(latest.cacheHitRate)}`
+                : "n/a"}
             </div>
           </div>
         </div>
+
+        {isCompare ? (
+          <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-3">
+            {(rows || []).map((row) => {
+              const delta = Number(row?.value ?? 0);
+              const current = row?.secondaryValue;
+              const previous = row?.tertiaryValue;
+
+              return (
+                <div
+                  key={String(row?.key)}
+                  className="rounded-xl border border-white/10 bg-black/25 p-3"
+                >
+                  <div className="text-[11px] text-gray-400">
+                    {String(row?.key || "")}
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-gray-100">
+                    {delta > 0 ? "+" : ""}
+                    {delta.toFixed(2)}%
+                  </div>
+                  <div className="mt-1 text-[11px] text-gray-500">
+                    current {formatPctOrNA(current)} • previous {formatPctOrNA(previous)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
 
         <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
           <svg
@@ -2309,20 +2461,44 @@ const points: TimeseriesPoint[] = series.map((p) => {
               fill="#9ca3af"
               transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
             >
-              Cache hit %
+              ATS hit %
             </text>
 
             {tickVals.map((v, idx) => {
               const yy = padTop + (1 - (v - minV) / span) * plotH;
               return (
                 <g key={idx}>
-                  <line x1={padLeft} y1={yy} x2={padLeft + plotW} y2={yy} stroke={GRID_STROKE} />
-                  <text x={padLeft - 10} y={yy + 3} fontSize="10" fill="#9ca3af" textAnchor="end">
+                  <line
+                    x1={padLeft}
+                    y1={yy}
+                    x2={padLeft + plotW}
+                    y2={yy}
+                    stroke={GRID_STROKE}
+                  />
+                  <text
+                    x={padLeft - 10}
+                    y={yy + 3}
+                    fontSize="10"
+                    fill="#9ca3af"
+                    textAnchor="end"
+                  >
                     {v}%
                   </text>
                 </g>
               );
             })}
+
+            {isCompare && previousPts.length > 0 ? (
+              <polyline
+                fill="none"
+                stroke="rgba(156,163,175,0.85)"
+                strokeWidth="2"
+                strokeDasharray="6 6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                points={previousPts.join(" ")}
+              />
+            ) : null}
 
             <polyline
               fill="none"
@@ -2330,7 +2506,7 @@ const points: TimeseriesPoint[] = series.map((p) => {
               strokeWidth="2.75"
               strokeLinecap="round"
               strokeLinejoin="round"
-              points={pts.join(" ")}
+              points={currentPts.join(" ")}
             />
 
             {slice.map((p, i) => {
@@ -2349,7 +2525,7 @@ const points: TimeseriesPoint[] = series.map((p) => {
               );
             })}
 
-            {drag.active && selectionW > 2 && (
+            {drag.active && selectionW > 2 ? (
               <rect
                 x={selectionX}
                 y={padTop}
@@ -2360,8 +2536,36 @@ const points: TimeseriesPoint[] = series.map((p) => {
                 strokeWidth={1}
                 rx={6}
               />
-            )}
+            ) : null}
           </svg>
+
+          <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
+            <button
+              type="button"
+              className="flex items-center gap-1.5"
+              onClick={() => setZoom(null)}
+            >
+              <span
+                className="inline-block h-2.5 w-2.5 rounded-full"
+                style={{ background: "rgba(16,185,129,0.92)" }}
+              />
+              <span>Current</span>
+            </button>
+
+            {isCompare ? (
+              <button
+                type="button"
+                className="flex items-center gap-1.5"
+                onClick={() => setZoom(null)}
+              >
+                <span
+                  className="inline-block h-2.5 w-2.5 rounded-full"
+                  style={{ background: "rgba(156,163,175,0.85)" }}
+                />
+                <span>Previous</span>
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
     );
@@ -2369,7 +2573,6 @@ const points: TimeseriesPoint[] = series.map((p) => {
 
   return null;
 }
-
 
 
 // ── HostSummaryCard ────────────────────────────────────────────────────────
@@ -3024,21 +3227,24 @@ function buildLatestInvestigationContext(args: {
   availableUaFamilies: string[];
 }): InvestigationContext {
   const baseTime = getRunTimeContext(args.run);
-  const anchored = getRunAnchoredWindow(args.run);
 
+  // Important:
+  // Keep relative runs relative.
+  // Only preserve absolute time when the original run was explicitly absolute.
   const resolvedTime: InvestigationTimeContext =
-    anchored.startTsUtc && anchored.endTsUtc
+    baseTime.mode === "absolute"
       ? {
           mode: "absolute",
-          windowMinutes: windowMinutesFromRange(
-            anchored.startTsUtc,
-            anchored.endTsUtc,
-            baseTime.windowMinutes
-          ),
-          startTsUtc: anchored.startTsUtc,
-          endTsUtc: anchored.endTsUtc,
+          windowMinutes: baseTime.windowMinutes,
+          startTsUtc: baseTime.startTsUtc,
+          endTsUtc: baseTime.endTsUtc,
         }
-      : baseTime;
+      : {
+          mode: "relative",
+          windowMinutes: baseTime.windowMinutes,
+          startTsUtc: null,
+          endTsUtc: null,
+        };
 
   return {
     baseScope: getRunBaseScope(args.run),
@@ -3095,12 +3301,15 @@ function buildExplorationContextWithTimeOverride(
       contentType: ctx.baseScope.contentType,
       uaFamily: ctx.baseScope.uaFamily,
       windowMinutes: ctx.time.windowMinutes,
-      startTsUtc: ctx.time.startTsUtc,
-      endTsUtc: ctx.time.endTsUtc,
+      startTsUtc: ctx.time.mode === "absolute" ? ctx.time.startTsUtc : null,
+      endTsUtc: ctx.time.mode === "absolute" ? ctx.time.endTsUtc : null,
     };
   }
 
   if (timeOverride.mode === "relative") {
+    // Important:
+    // Relative exploration should mean "last X from now",
+    // not "last X from the end of some older triage result".
     return {
       partner: ctx.baseScope.partner,
       service: ctx.baseScope.service,
@@ -3108,7 +3317,7 @@ function buildExplorationContextWithTimeOverride(
       pop: ctx.baseScope.pop,
       contentType: ctx.baseScope.contentType,
       uaFamily: ctx.baseScope.uaFamily,
-      windowMinutes: timeOverride.windowMinutes,
+      windowMinutes: Math.max(1, Number(timeOverride.windowMinutes) || 120),
       startTsUtc: null,
       endTsUtc: null,
     };
@@ -5584,6 +5793,11 @@ export default function Home() {
         explorationIntent
       );
       
+
+      console.log("EXPLORATION INTENT DEBUG", {
+        text,
+        explorationIntent,
+      });
       console.log("🔥 explorationIntent =", explorationIntent);
 
       const parseResult = parseTriageIntent({
@@ -5627,7 +5841,7 @@ export default function Home() {
           series: result.view === "over_time" ? result.series : undefined,
           seriesSecondary:
             result.view === "over_time" ? result.seriesSecondary : undefined,
-          rows: result.view !== "over_time" ? result.rows : undefined,
+          rows: result.rows,
           spotlight:
             result.view !== "over_time" ? result.spotlight : undefined,
         });
@@ -7122,10 +7336,9 @@ return (
                           metric={msg.metric}
                           series={msg.series}
                           seriesSecondary={
-                            msg.metric === "latency" && Array.isArray(msg.seriesSecondary)
-                              ? msg.seriesSecondary
-                              : undefined
+                            Array.isArray(msg.seriesSecondary) ? msg.seriesSecondary : undefined
                           }
+                          rows={msg.rows}
                           windowMinutes={
                             msg.series.length >= 2
                               ? windowMinutesFromRange(
@@ -7142,53 +7355,113 @@ return (
                       Array.isArray(msg.rows) &&
                       msg.rows.length > 0 && (
                         <div className="space-y-3">
-                          {(() => {
-                            const rows = msg.rows.slice(0, 8);
-                            const maxValue = Math.max(
-                              1,
-                              ...rows.map((r: any) => Number(r?.value ?? 0))
-                            );
+                          {msg.metric === "ats" ? (
+                            <div className="rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                              <div className="text-xs text-gray-400 mb-3">
+                                Top 5 rows • backend order preserved
+                              </div>
 
-                            return (
-                              <div className="rounded-xl border border-white/10 bg-black/30 p-3">
-                                <div className="text-xs text-gray-400 mb-3">Breakdown</div>
-
-                                <div className="space-y-2">
-                                  {rows.map((row: any, idx: number) => {
+                              <table className="min-w-full text-left text-xs text-gray-200">
+                                <thead className="border-b border-white/10 bg-white/[0.03] text-gray-400">
+                                  <tr>
+                                    <th className="px-4 py-3 font-medium">
+                                      {msg.title.toLowerCase().includes("ua")
+                                        ? "Device type"
+                                        : msg.title.toLowerCase().includes("pop")
+                                        ? "POP"
+                                        : msg.title.toLowerCase().includes("region")
+                                        ? "Region"
+                                        : msg.title.toLowerCase().includes("content")
+                                        ? "Content"
+                                        : "Dimension"}
+                                    </th>
+                                    <th className="px-4 py-3 font-medium">Miss %</th>
+                                    <th className="px-4 py-3 font-medium">Refresh %</th>
+                                    <th className="px-4 py-3 font-medium">Client error %</th>
+                                    <th className="px-4 py-3 font-medium">Infra error %</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {msg.rows.slice(0, 5).map((row: any, idx: number) => {
                                     const label = String(
                                       row?.key || row?.label || row?.dimension || "unknown"
                                     );
-                                    const value = Number(row?.value ?? 0);
-                                    const widthPct = Math.max(6, (value / maxValue) * 100);
 
                                     return (
-                                      <div
+                                      <tr
                                         key={`${label}-${idx}`}
-                                        className="flex items-center gap-3"
+                                        className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.03]"
                                       >
-                                        <div className="w-28 shrink-0 truncate text-[11px] text-gray-300">
+                                        <td className="px-4 py-3 font-medium text-gray-100">
                                           {label}
-                                        </div>
-
-                                        <div className="flex-1 h-2.5 rounded-full bg-white/10 overflow-hidden">
-                                          <div
-                                            className={`h-full rounded-full ${
-                                              idx === 0 ? "bg-blue-400" : "bg-gray-400/70"
-                                            }`}
-                                            style={{ width: `${widthPct}%` }}
-                                          />
-                                        </div>
-
-                                        <div className="w-20 shrink-0 text-right text-[11px] text-gray-400">
-                                          {Number.isFinite(value) ? value.toFixed(2) : "n/a"}
-                                        </div>
-                                      </div>
+                                        </td>
+                                        <td className="px-4 py-3 text-gray-300">
+                                          {formatPctOrNA(row?.value)}
+                                        </td>
+                                        <td className="px-4 py-3 text-gray-300">
+                                          {formatPctOrNA(row?.secondaryValue)}
+                                        </td>
+                                        <td className="px-4 py-3 text-gray-300">
+                                          {formatPctOrNA(row?.tertiaryValue)}
+                                        </td>
+                                        <td className="px-4 py-3 text-gray-300">
+                                          {formatPctOrNA(row?.quaternaryValue)}
+                                        </td>
+                                      </tr>
                                     );
                                   })}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            (() => {
+                              const rows = msg.rows.slice(0, 8);
+                              const maxValue = Math.max(
+                                1,
+                                ...rows.map((r: any) => Number(r?.value ?? 0))
+                              );
+
+                              return (
+                                <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                                  <div className="text-xs text-gray-400 mb-3">Breakdown</div>
+
+                                  <div className="space-y-2">
+                                    {rows.map((row: any, idx: number) => {
+                                      const label = String(
+                                        row?.key || row?.label || row?.dimension || "unknown"
+                                      );
+                                      const value = Number(row?.value ?? 0);
+                                      const widthPct = Math.max(6, (value / maxValue) * 100);
+
+                                      return (
+                                        <div
+                                          key={`${label}-${idx}`}
+                                          className="flex items-center gap-3"
+                                        >
+                                          <div className="w-28 shrink-0 truncate text-[11px] text-gray-300">
+                                            {label}
+                                          </div>
+
+                                          <div className="flex-1 h-2.5 rounded-full bg-white/10 overflow-hidden">
+                                            <div
+                                              className={`h-full rounded-full ${
+                                                idx === 0 ? "bg-blue-400" : "bg-gray-400/70"
+                                              }`}
+                                              style={{ width: `${widthPct}%` }}
+                                            />
+                                          </div>
+
+                                          <div className="w-20 shrink-0 text-right text-[11px] text-gray-400">
+                                            {Number.isFinite(value) ? value.toFixed(2) : "n/a"}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
                                 </div>
-                              </div>
-                            );
-                          })()}
+                              );
+                            })()
+                          )}
 
                           {msg.metric === "latency" &&
                             msg.spotlight &&
@@ -7227,9 +7500,7 @@ return (
                                       ? windowMinutesFromRange(
                                           String(msg.spotlight.series[0]?.ts || ""),
                                           String(
-                                            msg.spotlight.series[
-                                              msg.spotlight.series.length - 1
-                                            ]?.ts || ""
+                                            msg.spotlight.series[msg.spotlight.series.length - 1]?.ts || ""
                                           ),
                                           120
                                         )
