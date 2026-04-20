@@ -9,7 +9,11 @@ import type {
 } from "./explorationTypes";
 
 function normalizeText(input: string): string {
-  return String(input || "").trim().toLowerCase();
+  return String(input || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
 }
 
 function includesAny(text: string, needles: string[]): boolean {
@@ -20,11 +24,30 @@ function detectMetric(text: string): ExplorationMetric | null {
   if (
     includesAny(text, [
       "ats",
+      "cache",
       "cache hit",
       "cache miss",
+      "hit",
+      "hits",
+      "miss",
+      "misses",
       "refresh",
-      "infra error",
+      "client refresh",
       "client error",
+      "client errors",
+      "client err",
+      "infra error",
+      "infra errors",
+      "infra err",
+      "tcp hit",
+      "tcp miss",
+      "tcp refresh hit",
+      "tcp ref fail hit",
+      "tcp client refresh",
+      "dns fail",
+      "connect fail",
+      "read timeout",
+      "proxy denied",
     ])
   ) {
     return "ats";
@@ -84,8 +107,61 @@ function detectView(text: string): ExplorationView | null {
   return null;
 }
 
+function detectAtsRawCode(text: string): string | null {
+  const rawCodePatterns: Array<{ pattern: string; code: string }> = [
+    { pattern: "tcp hit", code: "tcp_hit" },
+    { pattern: "tcp miss", code: "tcp_miss" },
+    { pattern: "tcp refresh hit", code: "tcp_refresh_hit" },
+    { pattern: "tcp ref fail hit", code: "tcp_ref_fail_hit" },
+    { pattern: "tcp client refresh", code: "tcp_client_refresh" },
+    { pattern: "dns fail", code: "err_dns_fail" },
+    { pattern: "connect fail", code: "err_connect_fail" },
+    { pattern: "read timeout", code: "err_read_timeout" },
+    { pattern: "proxy denied", code: "err_proxy_denied" },
+  ];
+
+  for (const entry of rawCodePatterns) {
+    if (text.includes(entry.pattern)) {
+      return entry.code;
+    }
+  }
+
+  return null;
+}
+
 function detectAtsMode(text: string): ExplorationAtsMode | undefined {
-  if (!includesAny(text, ["ats", "cache"])) return undefined;
+  if (
+    !includesAny(text, [
+      "ats",
+      "cache",
+      "hit",
+      "hits",
+      "miss",
+      "misses",
+      "refresh",
+      "client error",
+      "client errors",
+      "client err",
+      "infra error",
+      "infra errors",
+      "infra err",
+      "tcp hit",
+      "tcp miss",
+      "tcp refresh hit",
+      "tcp ref fail hit",
+      "tcp client refresh",
+      "dns fail",
+      "connect fail",
+      "read timeout",
+      "proxy denied",
+    ])
+  ) {
+    return undefined;
+  }
+
+  if (detectAtsRawCode(text)) {
+    return "detailed";
+  }
 
   if (
     includesAny(text, [
@@ -231,11 +307,9 @@ function detectRelativeTimeOverride(text: string): ExplorationTimeOverride | und
     { re: /\blast\s+(\d+)\s*(m|min|mins|minute|minutes)\b/i, toMinutes: (n) => n },
     { re: /\blast\s+(\d+)\s*(h|hr|hrs|hour|hours)\b/i, toMinutes: (n) => n * 60 },
     { re: /\blast\s+(\d+)\s*(d|day|days)\b/i, toMinutes: (n) => n * 24 * 60 },
-
     { re: /\bover\s+(\d+)\s*(m|min|mins|minute|minutes)\b/i, toMinutes: (n) => n },
     { re: /\bover\s+(\d+)\s*(h|hr|hrs|hour|hours)\b/i, toMinutes: (n) => n * 60 },
     { re: /\bover\s+(\d+)\s*(d|day|days)\b/i, toMinutes: (n) => n * 24 * 60 },
-
     { re: /\bfor\s+(\d+)\s*(m|min|mins|minute|minutes)\b/i, toMinutes: (n) => n },
     { re: /\bfor\s+(\d+)\s*(h|hr|hrs|hour|hours)\b/i, toMinutes: (n) => n * 60 },
     { re: /\bfor\s+(\d+)\s*(d|day|days)\b/i, toMinutes: (n) => n * 24 * 60 },
@@ -325,6 +399,7 @@ export function detectExplorationIntent(input: string): ExplorationIntent | null
     return null;
   }
 
+  const atsRawCode = metric === "ats" ? detectAtsRawCode(text) : null;
   const atsMode = metric === "ats" ? detectAtsMode(text) : undefined;
   const timeOverride = detectTimeOverride(text);
 
@@ -333,6 +408,7 @@ export function detectExplorationIntent(input: string): ExplorationIntent | null
     metric,
     view,
     atsMode,
+    atsRawCode,
     timeOverride,
     rawText,
   };

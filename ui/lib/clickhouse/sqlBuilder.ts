@@ -1260,6 +1260,40 @@ LIMIT 20
 FORMAT JSON
 `.trim();
 
+
+const q37 = `
+${timeWith}
+SELECT
+  toStartOfInterval(ts, INTERVAL {bucketSeconds:Int32} SECOND) AS bucket,
+
+  sum(ats_tcp_hit_count) AS ats_tcp_hit_count,
+  sum(ats_tcp_cf_hit_count) AS ats_tcp_cf_hit_count,
+  sum(ats_tcp_miss_count) AS ats_tcp_miss_count,
+  sum(ats_tcp_refresh_hit_count) AS ats_tcp_refresh_hit_count,
+  sum(ats_tcp_ref_fail_hit_count) AS ats_tcp_ref_fail_hit_count,
+  sum(ats_tcp_refresh_miss_count) AS ats_tcp_refresh_miss_count,
+  sum(ats_tcp_client_refresh_count) AS ats_tcp_client_refresh_count,
+  sum(ats_tcp_ims_hit_count) AS ats_tcp_ims_hit_count,
+  sum(ats_tcp_ims_miss_count) AS ats_tcp_ims_miss_count,
+  sum(ats_tcp_swapfail_count) AS ats_tcp_swapfail_count,
+
+  sum(ats_err_client_abort_count) AS ats_err_client_abort_count,
+  sum(ats_err_client_read_error_count) AS ats_err_client_read_error_count,
+  sum(ats_err_connect_fail_count) AS ats_err_connect_fail_count,
+  sum(ats_err_dns_fail_count) AS ats_err_dns_fail_count,
+  sum(ats_err_invalid_req_count) AS ats_err_invalid_req_count,
+  sum(ats_err_read_timeout_count) AS ats_err_read_timeout_count,
+  sum(ats_err_proxy_denied_count) AS ats_err_proxy_denied_count,
+  sum(ats_err_unknown_count) AS ats_err_unknown_count
+
+FROM ${table}
+${whereSql}
+
+GROUP BY bucket
+ORDER BY bucket ASC
+FORMAT JSON
+`.trim();
+
   return {
     queries: [
       q0,
@@ -1299,6 +1333,7 @@ FORMAT JSON
       q34,
       q35,
       q36,
+      q37,
     ],
     params,
     meta: {

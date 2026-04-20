@@ -1273,6 +1273,7 @@ async function runLocal(inputs: Inputs, tm: TimeMode) {
     summaryText: result.summaryText ?? result.summary ?? "",
     summary: result.summary ?? result.summaryText ?? "",
     metricsJson,
+    evidenceBundle,
     compareMetrics,
     primarySignal,
     overallState: assessment?.overallStatus,
@@ -1422,6 +1423,20 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
   const previousAtsSummary = pickPreviousAtsSummaryFromProxy(parsed, rawMetrics);
   if (previousAtsSummary) metricsJson.previousAtsSummary = previousAtsSummary;
 
+  metricsJson.atsRawTimeseries = Array.isArray(rawMetrics?.atsRawTimeseries)
+    ? rawMetrics.atsRawTimeseries
+    : Array.isArray(rawMetrics?.atsRawOverTime)
+    ? rawMetrics.atsRawOverTime
+    : Array.isArray(rawMetrics?.evidenceBundle?.atsRawTimeseries)
+    ? rawMetrics.evidenceBundle.atsRawTimeseries
+    : Array.isArray(rawMetrics?.evidence?.atsRawTimeseries)
+    ? rawMetrics.evidence.atsRawTimeseries
+    : Array.isArray(parsed?.evidenceBundle?.atsRawTimeseries)
+    ? parsed.evidenceBundle.atsRawTimeseries
+    : Array.isArray(parsed?.evidence?.atsRawTimeseries)
+    ? parsed.evidence.atsRawTimeseries
+    : [];
+
   // status-by-dimension passthrough
   metricsJson.statusByRegion = Array.isArray(rawMetrics?.statusByRegion)
     ? rawMetrics.statusByRegion
@@ -1499,6 +1514,7 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
     summaryText: parsed?.summaryText ?? parsed?.summary ?? "",
     summary: parsed?.summary ?? parsed?.summaryText ?? "",
     metricsJson,
+    evidenceBundle,
     compareMetrics,
     primarySignal,
     overallState: assessment?.overallStatus,

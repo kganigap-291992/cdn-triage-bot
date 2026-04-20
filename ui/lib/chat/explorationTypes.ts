@@ -1,5 +1,7 @@
 // ui/lib/chat/explorationTypes.ts
 
+import type { AtsOperationalFamily } from "@/lib/triage/atsCrcGlossary";
+
 export type ExplorationMetric =
   | "errors"
   | "latency"
@@ -36,6 +38,14 @@ export type ExplorationIntent = {
   metric: ExplorationMetric;
   view: ExplorationView;
   atsMode?: ExplorationAtsMode;
+
+  // Family-level ATS support (existing path)
+  atsFamily?: AtsOperationalFamily | null;
+
+  // Raw ATS code support (Phase 2A+)
+  // Example: "tcp_miss", "err_dns_fail"
+  atsRawCode?: string | null;
+
   timeOverride?: ExplorationTimeOverride;
   rawText: string;
 };

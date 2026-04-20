@@ -8,6 +8,7 @@ import type {
   ExplorationResult,
   ExplorationView,
 } from "./explorationTypes";
+import type { AtsOperationalFamily } from "@/lib/triage/atsCrcGlossary";
 
 export type ExplorationAgentContext = {
   partner: string;
@@ -172,6 +173,60 @@ function isAtsCompareQuery(text: string): boolean {
   );
 }
 
+function getAtsFamilyField(
+  family?: AtsOperationalFamily | null
+):
+  | "hitPct"
+  | "missPct"
+  | "refreshPct"
+  | "clientErrorPct"
+  | "infraErrorPct" {
+  switch (family) {
+    case "miss":
+      return "missPct";
+    case "refresh":
+      return "refreshPct";
+    case "client_err":
+      return "clientErrorPct";
+    case "infra_err":
+      return "infraErrorPct";
+    case "hit":
+    default:
+      return "hitPct";
+  }
+}
+
+function getAtsFamilyLabel(family?: AtsOperationalFamily | null): string {
+  switch (family) {
+    case "miss":
+      return "Miss %";
+    case "refresh":
+      return "Refresh %";
+    case "client_err":
+      return "Client Error %";
+    case "infra_err":
+      return "Infra Error %";
+    case "hit":
+    default:
+      return "Hit %";
+  }
+}
+
+function getAtsFamilySummaryLabel(family?: AtsOperationalFamily | null): string {
+  switch (family) {
+    case "miss":
+      return "miss";
+    case "refresh":
+      return "refresh";
+    case "client_err":
+      return "client error";
+    case "infra_err":
+      return "infra error";
+    case "hit":
+    default:
+      return "hit";
+  }
+}
 
 function buildSummaryForOverTime(args: {
   metric: ExplorationMetric;
@@ -780,8 +835,9 @@ async function buildRealOverTimeResult(args: {
 async function buildAtsTrendOnlyResult(args: {
   context: ExplorationAgentContext;
   atsMode?: ExplorationAtsMode;
+  atsFamily?: AtsOperationalFamily | null;
 }): Promise<ExplorationResult> {
-  const { context, atsMode } = args;
+  const { context, atsMode, atsFamily } = args;
   const scopeLabel = buildScopeLabel(context);
 
   const triage = await fetchExplorationTriage(context);
@@ -790,9 +846,12 @@ async function buildAtsTrendOnlyResult(args: {
     triage.metricsJson?.atsSummaryTimeseries
   );
 
-  // For v1: just show HIT trend (clean + readable)
+  const field = getAtsFamilyField(atsFamily);
+  const label = getAtsFamilyLabel(atsFamily);
+  const summaryLabel = getAtsFamilySummaryLabel(atsFamily);
+
   const series = currentTs.map((p) =>
-    toSeriesPoint(p.ts, Number(p.hitPct.toFixed(2)))
+    toSeriesPoint(p.ts, Number(p[field].toFixed(2)))
   );
 
   return {
@@ -800,8 +859,8 @@ async function buildAtsTrendOnlyResult(args: {
     metric: "ats",
     view: "over_time",
     atsMode,
-    title: "ATS over time",
-    summary: `Showing ATS trend for ${scopeLabel}.`,
+    title: `ATS ${label} Over Time`,
+    summary: `Showing ATS ${summaryLabel} trend for ${scopeLabel}.`,
     series,
     sql: triage.sql
       ? {
@@ -877,8 +936,9 @@ async function buildLatencyBreakdownSpotlight(args: {
 async function buildAtsOverTimeResult(args: {
   context: ExplorationAgentContext;
   atsMode?: ExplorationAtsMode;
+  atsFamily?: AtsOperationalFamily | null;
 }): Promise<ExplorationResult> {
-  const { context, atsMode } = args;
+  const { context, atsMode, atsFamily } = args;
   const scopeLabel = buildScopeLabel(context);
   const triage = await fetchExplorationTriage(context);
 
@@ -894,12 +954,16 @@ async function buildAtsOverTimeResult(args: {
     triage.metricsJson?.previousAtsSummaryTimeseries
   );
 
+  const field = getAtsFamilyField(atsFamily);
+  const label = getAtsFamilyLabel(atsFamily);
+  const summaryLabel = getAtsFamilySummaryLabel(atsFamily);
+
   const currentSeries = currentTs.map((point) =>
-    toSeriesPoint(point.ts, Number(point.hitPct.toFixed(2)))
+    toSeriesPoint(point.ts, Number(point[field].toFixed(2)))
   );
 
   const previousSeries = previousTs.map((point) =>
-    toSeriesPoint(point.ts, Number(point.hitPct.toFixed(2)))
+    toSeriesPoint(point.ts, Number(point[field].toFixed(2)))
   );
 
   const deltaRows = buildAtsDeltaRows({
@@ -912,12 +976,8 @@ async function buildAtsOverTimeResult(args: {
     metric: "ats",
     view: "over_time",
     atsMode,
-    title: "ATS change vs previous window",
-    summary: buildAtsDriverSummary({
-      current: currentSummary,
-      previous: previousSummary,
-      scopeLabel,
-    }),
+    title: `ATS ${label} vs Previous Window`,
+    summary: `Showing ATS ${summaryLabel} change vs previous window for ${scopeLabel}.`,
     rows: deltaRows,
     series: currentSeries,
     seriesSecondary: previousSeries,
@@ -930,12 +990,110 @@ async function buildAtsOverTimeResult(args: {
   };
 }
 
+async function buildAtsRawOverTimeResult(args: {
+  context: ExplorationAgentContext;
+  atsMode?: ExplorationAtsMode;
+  atsRawCode: string;
+  atsFamily?: AtsOperationalFamily | null;
+}): Promise<ExplorationResult> {
+  const { context, atsMode, atsRawCode, atsFamily } = args;
+
+  console.log("RAW ATS BRANCH HIT", { atsRawCode, atsFamily });
+
+  const scopeLabel = buildScopeLabel(context);
+  const triage = await fetchExplorationTriage(context);
+
+  const evidenceBundle =
+  (triage as any)?.evidenceBundle ??
+  (triage as any)?.data?.evidenceBundle ??
+  null;
+  const rawPoints = Array.isArray(evidenceBundle?.atsRawTimeseries)
+    ? evidenceBundle.atsRawTimeseries
+    : [];
+
+  const metricKey = `${atsRawCode}_pct`;
+
+  const series = rawPoints
+    .map((point: any) => {
+      const value = point?.[metricKey];
+      return {
+        ts: String(point?.ts || ""),
+        value:
+          typeof value === "number" && Number.isFinite(value) ? value : null,
+      };
+    })
+    .filter((point: any) => point.ts);
+
+  const familyLabel = getAtsFamilyLabel(atsFamily);
+  const summaryFamilyLabel = getAtsFamilySummaryLabel(atsFamily);
+
+  if (!series.length) {
+    return {
+      type: "exploration",
+      metric: "ats",
+      view: "over_time",
+      atsMode,
+      title: `${atsRawCode.toUpperCase()} % Over Time`,
+      summary: atsFamily
+        ? [
+            `Raw ${atsRawCode.toUpperCase()} over-time trend is not available yet in the current backend contract.`,
+            `${atsRawCode.toUpperCase()} belongs to the ${summaryFamilyLabel} family for the active scope.`,
+          ].join(" ")
+        : `Raw ${atsRawCode.toUpperCase()} over-time trend is not available yet in the current backend contract.`,
+      rows: [],
+      series: [],
+      sql: triage.sql
+        ? {
+            queries: Array.isArray(triage.sql.queries) ? triage.sql.queries : [],
+            params: triage.sql.params ?? undefined,
+          }
+        : null,
+    };
+  }
+
+  const latestPoint = [...series].reverse().find((point) => point.value != null);
+  const latestValue =
+    latestPoint && typeof latestPoint.value === "number"
+      ? latestPoint.value
+      : null;
+
+  return {
+    type: "exploration",
+    metric: "ats",
+    view: "over_time",
+    atsMode,
+    title: `${atsRawCode.toUpperCase()} % Over Time`,
+    summary:
+      latestValue != null
+        ? atsFamily
+          ? `Showing raw ${atsRawCode.toUpperCase()} trend for ${scopeLabel}. Latest value is ${latestValue.toFixed(
+              2
+            )}%. This code belongs to the ${summaryFamilyLabel} family.`
+          : `Showing raw ${atsRawCode.toUpperCase()} trend for ${scopeLabel}. Latest value is ${latestValue.toFixed(
+              2
+            )}%.`
+        : atsFamily
+        ? `Showing raw ${atsRawCode.toUpperCase()} trend for ${scopeLabel}. This code belongs to the ${summaryFamilyLabel} family.`
+        : `Showing raw ${atsRawCode.toUpperCase()} trend for ${scopeLabel}.`,
+    rows: [],
+    series,
+    sql: triage.sql
+      ? {
+          queries: Array.isArray(triage.sql.queries) ? triage.sql.queries : [],
+          params: triage.sql.params ?? undefined,
+        }
+      : null,
+  };
+}
+
+
 async function buildAtsBreakdownResult(args: {
   context: ExplorationAgentContext;
   view: Exclude<ExplorationView, "over_time">;
   atsMode?: ExplorationAtsMode;
+  atsFamily?: AtsOperationalFamily | null;
 }): Promise<ExplorationResult> {
-  const { context, view, atsMode } = args;
+  const { context, view, atsMode, atsFamily } = args;
   const scopeLabel = buildScopeLabel(context);
   const triage = await fetchExplorationTriage(context);
 
@@ -950,13 +1108,17 @@ async function buildAtsBreakdownResult(args: {
 
   const rows = buildAtsBreakdownRows(rawRows, view);
 
+  const summaryLabel = getAtsFamilySummaryLabel(atsFamily);
+
   return {
     type: "exploration",
     metric: "ats",
     view,
     atsMode,
-    title: titleFor("ats", view),
-    summary: `Showing ATS breakdown for ${scopeLabel} ${humanizeView(view)}.`,
+    title: atsFamily ? `ATS ${summaryLabel} ${humanizeView(view)}` : titleFor("ats", view),
+    summary: atsFamily
+      ? `Showing ATS ${summaryLabel} breakdown for ${scopeLabel} ${humanizeView(view)}.`
+      : `Showing ATS breakdown for ${scopeLabel} ${humanizeView(view)}.`,
     rows,
     sql: triage.sql
       ? {
@@ -967,6 +1129,7 @@ async function buildAtsBreakdownResult(args: {
   };
 }
 
+
 export async function runExplorationAgent(args: {
   intent: ExplorationIntent;
   context: ExplorationAgentContext;
@@ -974,33 +1137,41 @@ export async function runExplorationAgent(args: {
   const { intent, context } = args;
   const scopeLabel = buildScopeLabel(context);
 
-  // ATS gets its own explicit exploration lane.
-  // This preserves old behavior for latency/errors/requests.
-  if (intent.metric === "ats" && intent.view === "over_time") {
-    const isCompare = isAtsCompareQuery(intent.rawText);
-
-    if (isCompare) {
-        // ✅ ATS COMPARE (what changed)
-        return buildAtsOverTimeResult({
+  if (intent.metric === "ats") {
+    if (intent.view === "over_time" && intent.atsRawCode) {
+        return buildAtsRawOverTimeResult({
         context,
         atsMode: intent.atsMode,
+        atsRawCode: intent.atsRawCode,
+        atsFamily: intent.atsFamily ?? null,
         });
     }
 
-    // ✅ ATS TREND ONLY
-    return buildAtsTrendOnlyResult({
+    if (intent.view === "over_time") {
+        const isCompare = isAtsCompareQuery(intent.rawText);
+
+        if (isCompare) {
+        return buildAtsOverTimeResult({
+            context,
+            atsMode: intent.atsMode,
+            atsFamily: intent.atsFamily ?? null,
+        });
+        }
+
+        return buildAtsTrendOnlyResult({
         context,
         atsMode: intent.atsMode,
-    });
-    }   
+        atsFamily: intent.atsFamily ?? null,
+        });
+    }
 
-  if (intent.metric === "ats" && intent.view !== "over_time") {
     return buildAtsBreakdownResult({
-      context,
-      view: intent.view,
-      atsMode: intent.atsMode,
+        context,
+        view: intent.view,
+        atsMode: intent.atsMode,
+        atsFamily: intent.atsFamily ?? null,
     });
-  }
+    }
 
   const isRealOverTimeMetric =
     intent.view === "over_time" &&

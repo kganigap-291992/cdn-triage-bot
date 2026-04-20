@@ -19,6 +19,13 @@ import StatusBarGraph from "@/components/graphs/StatusBarGraph";
 import { evaluateGuardrails } from "@/lib/chat/guardrails";
 import { detectExplorationIntent } from "@/lib/chat/detectExplorationIntent";
 import { runExplorationAgent } from "@/lib/chat/explorationAgent";
+import {
+  detectGlossaryIntent,
+  normalizeForLexicon,
+  detectAtsCrcTerms,
+  normalizeAtsExecutionFamily,
+} from "@/lib/chat/domainLexicon";
+import { lookupAtsCrc } from "@/lib/triage/atsCrcGlossary";
 
 // ── constants ──────────────────────────────────────────────────────────────
 const LOGO_SRC = "/cachey-logo.png";
@@ -2093,13 +2100,12 @@ function LatencyTimeseriesLines({
   );
 }
 
-
-
 function ExplorationMetricGraph({
   metric,
   series,
   seriesSecondary,
   rows,
+  displayLabel,
   height = 220,
   windowMinutes = 120,
 }: {
@@ -2113,6 +2119,7 @@ function ExplorationMetricGraph({
     tertiaryValue?: number | null;
     quaternaryValue?: number | null;
   }>;
+  displayLabel?: string;
   height?: number;
   windowMinutes?: number;
 }) {
@@ -2139,6 +2146,48 @@ const isAtsCompare =
   Array.isArray(rows) &&
   rows.length > 0 &&
   normalizedSecondary.length > 0;
+
+const atsMetricLabel = (() => {
+  const explicit = String(displayLabel || "").trim();
+  if (explicit) return explicit;
+
+  const firstKey = String(rows?.[0]?.key || "").trim().toLowerCase();
+
+  if (firstKey === "hit") return "ATS Hit";
+  if (firstKey === "miss") return "ATS Miss";
+  if (firstKey === "refresh") return "ATS Refresh";
+  if (firstKey === "client_error") return "ATS Client Error";
+  if (firstKey === "infra_error") return "ATS Infra Error";
+
+  if (firstKey) return firstKey.toUpperCase();
+
+  return "ATS Hit";
+})();
+
+const atsChartEyebrow = isAtsCompare
+  ? firstKeyIsRaw(rows) ? "ATS raw compare" : "ATS compare"
+  : firstKeyIsRaw(rows) ? "ATS raw trend" : "ATS trend";
+
+const atsChartTitle = isAtsCompare
+  ? `${atsMetricLabel} % vs Previous Window`
+  : `${atsMetricLabel} % Over Time`;
+
+const atsYAxisLabel = `${atsMetricLabel} %`;
+
+function firstKeyIsRaw(
+  atsRows?: Array<{
+    key: string;
+    value: number | null;
+    secondaryValue?: number | null;
+    tertiaryValue?: number | null;
+    quaternaryValue?: number | null;
+  }>
+) {
+  const firstKey = String(atsRows?.[0]?.key || "").trim().toLowerCase();
+  if (!firstKey) return false;
+
+  return !["hit", "miss", "refresh", "client_error", "infra_error"].includes(firstKey);
+}
 
 const points: Array<
   TimeseriesPoint & {
@@ -2366,12 +2415,8 @@ const points: Array<
       <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-xs text-gray-400">
-              {isCompare ? "ATS compare" : "ATS trend"}
-            </div>
-            <div className="text-sm font-semibold text-gray-100">
-              {isCompare ? "ATS Hit % vs Previous Window" : "ATS Hit % Over Time"}
-            </div>
+            <div className="text-xs text-gray-400">{atsChartEyebrow}</div>
+            <div className="text-sm font-semibold text-gray-100">{atsChartTitle}</div>
             <div className="text-[11px] text-gray-400 mt-1">
               {slice.length
                 ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
@@ -2461,7 +2506,7 @@ const points: Array<
               fill="#9ca3af"
               transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
             >
-              ATS hit %
+              {atsYAxisLabel}
             </text>
 
             {tickVals.map((v, idx) => {
@@ -5780,25 +5825,30 @@ export default function Home() {
         return;
       }
 
+      // Step 1: glossary-first routing
+      const normalized = normalizeForLexicon(text);
+      const glossary = detectGlossaryIntent(normalized);
+
+      if (glossary.isGlossary) {
+        const entry = lookupAtsCrc(glossary.canonical);
+
+        if (entry) {
+          addText(
+            "assistant",
+            `${entry.title}\n\n${entry.meaning}${
+              entry.opsHint ? `\n\nOps hint: ${entry.opsHint}` : ""
+            }`
+          );
+          return;
+        }
+      }
+
+      const atsTerms = detectAtsCrcTerms(normalized);
+      const atsFamily = normalizeAtsExecutionFamily(normalized);
+
       const chatIntent = detectIntent(text);
       const explicitDrillIntent = detectExplicitDrillIntent(text);
       const explorationIntent = detectExplorationIntent(text);
-
-      console.log(
-        "Detected intent:",
-        chatIntent,
-        "explicitDrillIntent:",
-        explicitDrillIntent,
-        "explorationIntent:",
-        explorationIntent
-      );
-      
-
-      console.log("EXPLORATION INTENT DEBUG", {
-        text,
-        explorationIntent,
-      });
-      console.log("🔥 explorationIntent =", explorationIntent);
 
       const parseResult = parseTriageIntent({
         text,
@@ -5814,19 +5864,33 @@ export default function Home() {
           return;
         }
 
+        const effectiveExplorationIntent =
+          atsTerms.length > 0 && atsFamily
+            ? {
+                ...explorationIntent,
+                metric: "ats" as const,
+                atsFamily,
+              }
+            : explorationIntent;
+
         const explorationContext = buildExplorationContextWithTimeOverride(
           latestInvestigationContext,
-          explorationIntent.timeOverride
+          effectiveExplorationIntent.timeOverride
         );
 
         console.log("EXPLORATION TIME DEBUG", {
           inheritedTime: latestInvestigationContext.time,
-          timeOverride: explorationIntent.timeOverride ?? null,
+          timeOverride: effectiveExplorationIntent.timeOverride ?? null,
           effectiveContext: explorationContext,
+          atsTerms,
+          atsFamily,
+          effectiveExplorationIntent,
         });
 
+        console.log("PAGE -> AGENT INTENT", effectiveExplorationIntent);
+        
         const result = await runExplorationAgent({
-          intent: explorationIntent,
+          intent: effectiveExplorationIntent,
           context: explorationContext,
         });
 
@@ -7339,6 +7403,12 @@ return (
                             Array.isArray(msg.seriesSecondary) ? msg.seriesSecondary : undefined
                           }
                           rows={msg.rows}
+                          displayLabel={
+                            msg.title
+                              ?.replace(/\s*%\s*vs Previous Window$/i, "")
+                              ?.replace(/\s*%\s*Over Time$/i, "")
+                              ?.trim()
+                          }
                           windowMinutes={
                             msg.series.length >= 2
                               ? windowMinutesFromRange(

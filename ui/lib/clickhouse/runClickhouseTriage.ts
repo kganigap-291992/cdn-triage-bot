@@ -851,7 +851,37 @@ export async function runClickhouseTriage(
   
   const metricsJson = assertCanonicalMetrics(baseMetrics);
 
-  // ✅ ADD THESE LINES RIGHT HERE
+  const rawAny = raw as any;
+  const baseAny = baseMetrics as any;
+
+    const debugAts = {
+    baseKeys: Object.keys(baseAny || {}).filter((k) => /ats|raw/i.test(k)),
+    hasAtsRawTimeseries: Array.isArray(baseAny?.atsRawTimeseries),
+    hasAtsRawOverTime: Array.isArray(baseAny?.atsRawOverTime),
+    atsRawTimeseriesLen: Array.isArray(baseAny?.atsRawTimeseries)
+      ? baseAny.atsRawTimeseries.length
+      : null,
+    atsRawOverTimeLen: Array.isArray(baseAny?.atsRawOverTime)
+      ? baseAny.atsRawOverTime.length
+      : null,
+    atsSummaryTimeseriesLen: Array.isArray(baseAny?.atsSummaryTimeseries)
+      ? baseAny.atsSummaryTimeseries.length
+      : null,
+    atsBreakdownTimeseriesLen: Array.isArray(baseAny?.atsBreakdownTimeseries)
+      ? baseAny.atsBreakdownTimeseries.length
+      : null,
+  };
+
+  metricsJson.atsRawTimeseries = Array.isArray(baseAny?.atsRawTimeseries)
+    ? baseAny.atsRawTimeseries
+    : Array.isArray(baseAny?.atsRawOverTime)
+    ? baseAny.atsRawOverTime
+    : Array.isArray(rawAny?.evidenceBundle?.atsRawTimeseries)
+    ? rawAny.evidenceBundle.atsRawTimeseries
+    : Array.isArray(rawAny?.evidence?.atsRawTimeseries)
+    ? rawAny.evidence.atsRawTimeseries
+    : [];
+
   console.log(
     "RUNNER DEBUG metricsJson.hostBreakdown.length",
     metricsJson?.hostBreakdown?.length ?? 0

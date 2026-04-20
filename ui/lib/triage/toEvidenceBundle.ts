@@ -13,6 +13,26 @@ import type {
   WindowInfo,
 } from "@/lib/triage/types";
 
+type AtsRawTimeseriesPoint = {
+  ts: string;
+  requests: number;
+  tcp_hit_pct?: number;
+  tcp_cf_hit_pct?: number;
+  tcp_ims_hit_pct?: number;
+  tcp_miss_pct?: number;
+  tcp_ims_miss_pct?: number;
+  tcp_refresh_hit_pct?: number;
+  tcp_refresh_miss_pct?: number;
+  err_client_abort_pct?: number;
+  err_connect_fail_pct?: number;
+  err_dns_fail_pct?: number;
+  err_invalid_req_pct?: number;
+  err_read_timeout_pct?: number;
+  err_lost_server_conn_pct?: number;
+  err_write_timeout_pct?: number;
+  err_no_origin_pct?: number;
+};
+
 function safeNumber(v: unknown): number | undefined {
   const n = Number(v);
   return Number.isFinite(n) ? n : undefined;
@@ -61,6 +81,23 @@ function pickArray(obj: any, keys: string[]): any[] {
     if (Array.isArray(obj?.[key])) return obj[key];
   }
   return [];
+}
+
+function percentFromCount(
+  count: number | undefined,
+  requests: number | undefined
+): number | undefined {
+  if (
+    count == null ||
+    requests == null ||
+    !Number.isFinite(count) ||
+    !Number.isFinite(requests) ||
+    requests <= 0
+  ) {
+    return undefined;
+  }
+
+  return Number(((count / requests) * 100).toFixed(3));
 }
 
 function buildNormalizedScope(inputs: ClickhouseTriageInputs): NormalizedScope {
@@ -193,6 +230,168 @@ function buildTimeseries(result: ClickhouseTriageResult): TimeSeriesPoint[] {
       })
     )
     .filter((pt: TimeSeriesPoint) => Boolean(pt.ts));
+}
+
+function buildAtsRawTimeseries(
+  result: ClickhouseTriageResult
+): AtsRawTimeseriesPoint[] {
+  const m = result?.metricsJson || {};
+
+  const fromMetrics = pickArray(m, [
+    "atsRawTimeseries",
+    "atsRawOverTime",
+    "rawAtsTimeseries",
+    "rawAtsOverTime",
+  ]);
+  const fromMetricsBundle = pickArray(m?.evidenceBundle, [
+    "atsRawTimeseries",
+    "atsRawOverTime",
+    "rawAtsTimeseries",
+    "rawAtsOverTime",
+  ]);
+  const fromMetricsEvidence = pickArray((m as any)?.evidence, [
+    "atsRawTimeseries",
+    "atsRawOverTime",
+    "rawAtsTimeseries",
+    "rawAtsOverTime",
+  ]);
+  const fromResultBundle = pickArray((result as any)?.evidenceBundle, [
+    "atsRawTimeseries",
+    "atsRawOverTime",
+    "rawAtsTimeseries",
+    "rawAtsOverTime",
+  ]);
+  const fromResultEvidence = pickArray((result as any)?.evidence, [
+    "atsRawTimeseries",
+    "atsRawOverTime",
+    "rawAtsTimeseries",
+    "rawAtsOverTime",
+  ]);
+
+  const points = fromMetrics.length
+    ? fromMetrics
+    : fromMetricsBundle.length
+    ? fromMetricsBundle
+    : fromMetricsEvidence.length
+    ? fromMetricsEvidence
+    : fromResultBundle.length
+    ? fromResultBundle
+    : fromResultEvidence.length
+    ? fromResultEvidence
+    : [];
+
+  if (!points.length) return [];
+
+  return points
+    .map((p: any): AtsRawTimeseriesPoint => {
+      const requests =
+        pickNumber(p, ["requests", "totalRequests", "total_requests"]) ?? 0;
+
+      const tcpHit =
+        pickNumber(p, ["tcp_hit_count", "ats_tcp_hit_count", "tcp_hit"]) ?? 0;
+      const tcpCfHit =
+        pickNumber(p, [
+          "tcp_cf_hit_count",
+          "ats_tcp_cf_hit_count",
+          "tcp_cf_hit",
+        ]) ?? 0;
+      const tcpImsHit =
+        pickNumber(p, [
+          "tcp_ims_hit_count",
+          "ats_tcp_ims_hit_count",
+          "tcp_ims_hit",
+        ]) ?? 0;
+      const tcpMiss =
+        pickNumber(p, ["tcp_miss_count", "ats_tcp_miss_count", "tcp_miss"]) ?? 0;
+      const tcpImsMiss =
+        pickNumber(p, [
+          "tcp_ims_miss_count",
+          "ats_tcp_ims_miss_count",
+          "tcp_ims_miss",
+        ]) ?? 0;
+      const tcpRefreshHit =
+        pickNumber(p, [
+          "tcp_refresh_hit_count",
+          "ats_tcp_refresh_hit_count",
+          "tcp_refresh_hit",
+        ]) ?? 0;
+      const tcpRefreshMiss =
+        pickNumber(p, [
+          "tcp_refresh_miss_count",
+          "ats_tcp_refresh_miss_count",
+          "tcp_refresh_miss",
+        ]) ?? 0;
+
+      const errClientAbort =
+        pickNumber(p, [
+          "err_client_abort_count",
+          "ats_err_client_abort_count",
+          "err_client_abort",
+        ]) ?? 0;
+      const errConnectFail =
+        pickNumber(p, [
+          "err_connect_fail_count",
+          "ats_err_connect_fail_count",
+          "err_connect_fail",
+        ]) ?? 0;
+      const errDnsFail =
+        pickNumber(p, [
+          "err_dns_fail_count",
+          "ats_err_dns_fail_count",
+          "err_dns_fail",
+        ]) ?? 0;
+      const errInvalidReq =
+        pickNumber(p, [
+          "err_invalid_req_count",
+          "ats_err_invalid_req_count",
+          "err_invalid_req",
+        ]) ?? 0;
+      const errReadTimeout =
+        pickNumber(p, [
+          "err_read_timeout_count",
+          "ats_err_read_timeout_count",
+          "err_read_timeout",
+        ]) ?? 0;
+      const errLostServerConn =
+        pickNumber(p, [
+          "err_lost_server_conn_count",
+          "ats_err_lost_server_conn_count",
+          "err_lost_server_conn",
+        ]) ?? 0;
+      const errWriteTimeout =
+        pickNumber(p, [
+          "err_write_timeout_count",
+          "ats_err_write_timeout_count",
+          "err_write_timeout",
+        ]) ?? 0;
+      const errNoOrigin =
+        pickNumber(p, [
+          "err_no_origin_count",
+          "ats_err_no_origin_count",
+          "err_no_origin",
+        ]) ?? 0;
+
+      return {
+        ts: String(p?.ts || p?.bucket || ""),
+        requests,
+        tcp_hit_pct: percentFromCount(tcpHit, requests),
+        tcp_cf_hit_pct: percentFromCount(tcpCfHit, requests),
+        tcp_ims_hit_pct: percentFromCount(tcpImsHit, requests),
+        tcp_miss_pct: percentFromCount(tcpMiss, requests),
+        tcp_ims_miss_pct: percentFromCount(tcpImsMiss, requests),
+        tcp_refresh_hit_pct: percentFromCount(tcpRefreshHit, requests),
+        tcp_refresh_miss_pct: percentFromCount(tcpRefreshMiss, requests),
+        err_client_abort_pct: percentFromCount(errClientAbort, requests),
+        err_connect_fail_pct: percentFromCount(errConnectFail, requests),
+        err_dns_fail_pct: percentFromCount(errDnsFail, requests),
+        err_invalid_req_pct: percentFromCount(errInvalidReq, requests),
+        err_read_timeout_pct: percentFromCount(errReadTimeout, requests),
+        err_lost_server_conn_pct: percentFromCount(errLostServerConn, requests),
+        err_write_timeout_pct: percentFromCount(errWriteTimeout, requests),
+        err_no_origin_pct: percentFromCount(errNoOrigin, requests),
+      };
+    })
+    .filter((pt) => Boolean(pt.ts));
 }
 
 function buildDerivedMetrics(
@@ -389,6 +588,7 @@ export function toEvidenceBundle(
   const currentMetrics = buildCurrentMetrics(result);
   const previousMetrics = buildPreviousMetrics(result);
   const currentPoints = buildTimeseries(result);
+  const atsRawTimeseries = buildAtsRawTimeseries(result);
   const derivedMetrics = buildDerivedMetrics(
     result,
     currentMetrics,
@@ -433,5 +633,6 @@ export function toEvidenceBundle(
     worstCache: [],
     diagnostics,
     sql,
-  };
+    ...(atsRawTimeseries.length ? { atsRawTimeseries } : {}),
+  } as EvidenceBundle;
 }
