@@ -82,6 +82,7 @@ export type ExplorationResult =
       metric: ExplorationMetric;
       view: "over_time";
       atsMode?: ExplorationAtsMode;
+      displayLabel?: string;
       title: string;
       summary: string;
 
@@ -101,6 +102,7 @@ export type ExplorationResult =
       metric: ExplorationMetric;
       view: "by_region" | "by_pop" | "by_ua" | "by_content";
       atsMode?: ExplorationAtsMode;
+      displayLabel?: string;
       title: string;
       summary: string;
       rows: ExplorationBreakdownRow[];

@@ -1,5 +1,4 @@
-// ui/lib/chat/domainLexicon.ts
-
+import { normalizeInput } from "@/lib/chat/normalizeInput";
 import {
   extractTermFromDefinitionQuestion,
   getAtsCrcLexiconSeeds,
@@ -193,7 +192,7 @@ const CORE_LEXICON_SEEDS: LexiconSeed[] = [
     "ats response codes",
   ]),
 
-  // ATS family aliases — important bridge to backend 5-bucket model
+  // ATS family aliases
   makeSeed("metric", "ats", [
     "hit",
     "hits",
@@ -579,8 +578,18 @@ export function detectAtsFamilyHints(raw: string): AtsOperationalFamily[] {
   if (/\bhit\b/.test(normalized)) families.push("hit");
   if (/\bmiss\b/.test(normalized)) families.push("miss");
   if (/\brefresh\b/.test(normalized)) families.push("refresh");
-  if (/\bclient err(or)?s?\b|\bclient errors?\b/.test(normalized)) families.push("client_err");
-  if (/\binfra err(or)?s?\b|\binfra errors?\b/.test(normalized)) families.push("infra_err");
+
+  if (
+    /\bclient_err\b|\bclient err(or)?s?\b|\bclient errors?\b/.test(normalized)
+  ) {
+    families.push("client_err");
+  }
+
+  if (
+    /\binfra_err\b|\binfra err(or)?s?\b|\binfra errors?\b/.test(normalized)
+  ) {
+    families.push("infra_err");
+  }
 
   for (const term of detectAtsCrcTerms(normalized)) {
     families.push(term.family);
@@ -602,35 +611,5 @@ export function normalizeAtsExecutionFamily(
  * This does not attempt full intent parsing.
  */
 export function normalizeForLexicon(raw: string): string {
-  let text = normalizeText(raw);
-
-  const replacements: Array<[RegExp, string]> = [
-    [/\bhrs\b/g, "hours"],
-    [/\bhr\b/g, "hour"],
-    [/\bhts\b/g, "hours"],
-    [/\bmins\b/g, "minutes"],
-    [/\bmin\b/g, "minute"],
-
-    [/\bcache health\b/g, "ats"],
-    [/\bcache behavior\b/g, "ats"],
-    [/\bcache performance\b/g, "ats"],
-
-    [/\b5xx\b/g, "errors"],
-    [/\bslow\b/g, "latency"],
-    [/\btraffic\b/g, "requests"],
-
-    [/\bclient errors\b/g, "client_err"],
-    [/\bclient error\b/g, "client_err"],
-    [/\bclient err\b/g, "client_err"],
-
-    [/\binfra errors\b/g, "infra_err"],
-    [/\binfra error\b/g, "infra_err"],
-    [/\binfra err\b/g, "infra_err"],
-  ];
-
-  for (const [pattern, replacement] of replacements) {
-    text = text.replace(pattern, replacement);
-  }
-
-  return text.replace(/\s+/g, " ").trim();
+  return normalizeInput(raw).normalizedText;
 }

@@ -19,9 +19,9 @@ import StatusBarGraph from "@/components/graphs/StatusBarGraph";
 import { evaluateGuardrails } from "@/lib/chat/guardrails";
 import { detectExplorationIntent } from "@/lib/chat/detectExplorationIntent";
 import { runExplorationAgent } from "@/lib/chat/explorationAgent";
+import { normalizeInput } from "@/lib/chat/normalizeInput";
 import {
   detectGlossaryIntent,
-  normalizeForLexicon,
   detectAtsCrcTerms,
   normalizeAtsExecutionFamily,
 } from "@/lib/chat/domainLexicon";
@@ -192,6 +192,7 @@ type ChatExploration = {
   summary: string;
   metric: string;
   view: "timeseries" | "breakdown";
+  displayLabel?: string;
   series?: Array<{ ts: string; value: number | null }>;
   seriesSecondary?: Array<{ ts: string; value: number | null }>;
   rows?: any[];
@@ -5805,6 +5806,14 @@ export default function Home() {
       const text = String(rawText || "").trim();
       if (!text || isTriageLoading) return;
 
+      const normalization = normalizeInput(text);
+      const normalizedText = normalization.normalizedText;
+
+      console.log("NORMALIZATION DEBUG", {
+        rawText: text,
+        normalizedText,
+      });
+
       addText("user", text);
 
       const guard = evaluateGuardrails({
@@ -5826,8 +5835,7 @@ export default function Home() {
       }
 
       // Step 1: glossary-first routing
-      const normalized = normalizeForLexicon(text);
-      const glossary = detectGlossaryIntent(normalized);
+      const glossary = detectGlossaryIntent(normalizedText);
 
       if (glossary.isGlossary) {
         const entry = lookupAtsCrc(glossary.canonical);
@@ -5843,15 +5851,15 @@ export default function Home() {
         }
       }
 
-      const atsTerms = detectAtsCrcTerms(normalized);
-      const atsFamily = normalizeAtsExecutionFamily(normalized);
+      const atsTerms = detectAtsCrcTerms(normalizedText);
+      const atsFamily = normalizeAtsExecutionFamily(normalizedText);
 
-      const chatIntent = detectIntent(text);
-      const explicitDrillIntent = detectExplicitDrillIntent(text);
-      const explorationIntent = detectExplorationIntent(text);
+      const chatIntent = detectIntent(normalizedText);
+      const explicitDrillIntent = detectExplicitDrillIntent(normalizedText);
+      const explorationIntent = detectExplorationIntent(normalizedText);
 
       const parseResult = parseTriageIntent({
-        text,
+        text: normalizedText,
         hasPriorContext: Boolean(latestTriageRun),
       });
 
@@ -5865,7 +5873,7 @@ export default function Home() {
         }
 
         const effectiveExplorationIntent =
-          atsTerms.length > 0 && atsFamily
+          atsFamily
             ? {
                 ...explorationIntent,
                 metric: "ats" as const,
@@ -5902,6 +5910,7 @@ export default function Home() {
           summary: result.summary,
           metric: result.metric,
           view: result.view === "over_time" ? "timeseries" : "breakdown",
+          displayLabel: result.displayLabel,
           series: result.view === "over_time" ? result.series : undefined,
           seriesSecondary:
             result.view === "over_time" ? result.seriesSecondary : undefined,

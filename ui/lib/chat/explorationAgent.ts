@@ -842,33 +842,35 @@ async function buildAtsTrendOnlyResult(args: {
 
   const triage = await fetchExplorationTriage(context);
 
-  const currentTs = normalizeAtsSummaryTimeseries(
+    const currentTs = normalizeAtsSummaryTimeseries(
     triage.metricsJson?.atsSummaryTimeseries
-  );
+    );
 
-  const field = getAtsFamilyField(atsFamily);
-  const label = getAtsFamilyLabel(atsFamily);
-  const summaryLabel = getAtsFamilySummaryLabel(atsFamily);
+    const field = getAtsFamilyField(atsFamily);
+    const label = getAtsFamilyLabel(atsFamily);
+    const summaryLabel = getAtsFamilySummaryLabel(atsFamily);
+    const displayLabel = `ATS ${label}`;
 
-  const series = currentTs.map((p) =>
+    const series = currentTs.map((p) =>
     toSeriesPoint(p.ts, Number(p[field].toFixed(2)))
-  );
+    );
 
-  return {
-    type: "exploration",
-    metric: "ats",
-    view: "over_time",
-    atsMode,
-    title: `ATS ${label} Over Time`,
-    summary: `Showing ATS ${summaryLabel} trend for ${scopeLabel}.`,
-    series,
-    sql: triage.sql
-      ? {
-          queries: Array.isArray(triage.sql.queries) ? triage.sql.queries : [],
-          params: triage.sql.params ?? undefined,
-        }
-      : null,
-  };
+    return {
+        type: "exploration",
+        metric: "ats",
+        view: "over_time",
+        atsMode,
+        displayLabel: `ATS ${label}`,
+        title: `ATS ${label} Over Time`,
+        summary: `Showing ATS ${summaryLabel} trend for ${scopeLabel}.`,
+        series,
+        sql: triage.sql
+            ? {
+                queries: Array.isArray(triage.sql.queries) ? triage.sql.queries : [],
+                params: triage.sql.params ?? undefined,
+            }
+            : null,
+        };
 }
 
 async function buildLatencyBreakdownSpotlight(args: {
@@ -957,6 +959,7 @@ async function buildAtsOverTimeResult(args: {
   const field = getAtsFamilyField(atsFamily);
   const label = getAtsFamilyLabel(atsFamily);
   const summaryLabel = getAtsFamilySummaryLabel(atsFamily);
+  const displayLabel = `ATS ${label}`;
 
   const currentSeries = currentTs.map((point) =>
     toSeriesPoint(point.ts, Number(point[field].toFixed(2)))
@@ -976,18 +979,19 @@ async function buildAtsOverTimeResult(args: {
     metric: "ats",
     view: "over_time",
     atsMode,
+    displayLabel,
     title: `ATS ${label} vs Previous Window`,
     summary: `Showing ATS ${summaryLabel} change vs previous window for ${scopeLabel}.`,
     rows: deltaRows,
     series: currentSeries,
     seriesSecondary: previousSeries,
     sql: triage.sql
-      ? {
-          queries: Array.isArray(triage.sql.queries) ? triage.sql.queries : [],
-          params: triage.sql.params ?? undefined,
+        ? {
+            queries: Array.isArray(triage.sql.queries) ? triage.sql.queries : [],
+            params: triage.sql.params ?? undefined,
         }
-      : null,
-  };
+        : null,
+    };
 }
 
 async function buildAtsRawOverTimeResult(args: {
