@@ -76,6 +76,13 @@ export type ExplorationSqlEvidence = {
   params?: Record<string, any>;
 } | null;
 
+export type ExplorationCompareStat = {
+  key: string;
+  current: number | null;
+  previous: number | null;
+  delta: number | null;
+};
+
 export type ExplorationResult =
   | {
       type: "exploration";
@@ -92,8 +99,11 @@ export type ExplorationResult =
       // Optional comparison / secondary line
       seriesSecondary?: ExplorationSeriesPoint[];
 
-      // Optional delta / compare rows
+      // Optional legacy delta / compare rows
       rows?: ExplorationBreakdownRow[];
+
+      // Structured compare payload for ATS / future compare views
+      compareStats?: ExplorationCompareStat[];
 
       sql?: ExplorationSqlEvidence;
     }

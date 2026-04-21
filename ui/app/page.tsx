@@ -2167,11 +2167,15 @@ const atsMetricLabel = (() => {
 })();
 
 const atsChartEyebrow = isAtsCompare
-  ? firstKeyIsRaw(rows) ? "ATS raw compare" : "ATS compare"
-  : firstKeyIsRaw(rows) ? "ATS raw trend" : "ATS trend";
+  ? firstKeyIsRaw(rows)
+    ? "ATS raw compare"
+    : "ATS family compare"
+  : firstKeyIsRaw(rows)
+  ? "ATS raw trend"
+  : "ATS trend";
 
 const atsChartTitle = isAtsCompare
-  ? `${atsMetricLabel} % vs Previous Window`
+  ? "ATS Family Changes vs Previous Window"
   : `${atsMetricLabel} % Over Time`;
 
 const atsYAxisLabel = `${atsMetricLabel} %`;
@@ -2189,6 +2193,18 @@ function firstKeyIsRaw(
   if (!firstKey) return false;
 
   return !["hit", "miss", "refresh", "client_error", "infra_error"].includes(firstKey);
+}
+
+function formatAtsCompareKey(key: string) {
+  const k = String(key || "").trim().toLowerCase();
+
+  if (k === "hit") return "Hit";
+  if (k === "miss") return "Miss";
+  if (k === "refresh") return "Refresh";
+  if (k === "client_error") return "Client Error";
+  if (k === "infra_error") return "Infra Error";
+
+  return key;
 }
 
 const points: Array<
@@ -2458,7 +2474,7 @@ const points: Array<
                   className="rounded-xl border border-white/10 bg-black/25 p-3"
                 >
                   <div className="text-[11px] text-gray-400">
-                    {String(row?.key || "")}
+                    {formatAtsCompareKey(String(row?.key || ""))}
                   </div>
                   <div className="mt-1 text-lg font-semibold text-gray-100">
                     {delta > 0 ? "+" : ""}
