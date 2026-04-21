@@ -23,6 +23,7 @@ import { normalizeInput } from "@/lib/chat/normalizeInput";
 import {
   detectGlossaryIntent,
   detectAtsCrcTerms,
+  detectMetricHints,
   normalizeAtsExecutionFamily,
 } from "@/lib/chat/domainLexicon";
 import { lookupAtsCrc } from "@/lib/triage/atsCrcGlossary";
@@ -5858,12 +5859,43 @@ export default function Home() {
       const explicitDrillIntent = detectExplicitDrillIntent(normalizedText);
       const explorationIntent = detectExplorationIntent(normalizedText);
 
+      const metricHints = detectMetricHints(normalizedText);
+
+      const forceExploration =
+        !explorationIntent &&
+        metricHints.length > 0 &&
+        metricHints[0] !== "status_codes" &&
+        metricHints[0] !== "ats_crc" &&
+        chatIntent !== "compare" &&
+        chatIntent !== "explain";
+
+      console.log("METRIC OVERRIDE DEBUG", {
+        normalizedText,
+        chatIntent,
+        metricHints,
+        explorationIntent,
+        forceExploration,
+      });
+
+      const forcedExplorationIntent = forceExploration
+        ? {
+            mode: "exploration" as const,
+            metric: metricHints[0] as "ats" | "latency" | "errors" | "requests",
+            view: "over_time" as const,
+            rawText: normalizedText,
+            timeOverride: undefined,
+            atsMode: undefined,
+            atsFamily: undefined,
+            atsRawCode: undefined,
+          }
+        : null;
+
       const parseResult = parseTriageIntent({
         text: normalizedText,
         hasPriorContext: Boolean(latestTriageRun),
       });
 
-      if (explorationIntent) {
+      if (explorationIntent || forcedExplorationIntent) {
         if (!latestInvestigationContext) {
           addText(
             "assistant",
@@ -5872,14 +5904,17 @@ export default function Home() {
           return;
         }
 
+        const baseExplorationIntent =
+          explorationIntent ?? forcedExplorationIntent!;
+
         const effectiveExplorationIntent =
           atsFamily
             ? {
-                ...explorationIntent,
+                ...baseExplorationIntent,
                 metric: "ats" as const,
                 atsFamily,
               }
-            : explorationIntent;
+            : baseExplorationIntent;
 
         const explorationContext = buildExplorationContextWithTimeOverride(
           latestInvestigationContext,
@@ -5892,11 +5927,13 @@ export default function Home() {
           effectiveContext: explorationContext,
           atsTerms,
           atsFamily,
+          metricHints,
+          forceExploration,
           effectiveExplorationIntent,
         });
 
         console.log("PAGE -> AGENT INTENT", effectiveExplorationIntent);
-        
+
         const result = await runExplorationAgent({
           intent: effectiveExplorationIntent,
           context: explorationContext,
