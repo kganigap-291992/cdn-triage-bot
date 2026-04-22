@@ -2,11 +2,14 @@ import { normalizeInput } from "@/lib/chat/normalizeInput";
 import {
   createEmptyParserOutput,
   createEmptyScopeChanges,
+  type ParserConfidence,
   type ParserDimension,
   type ParserFamily,
   type ParserLane,
   type ParserMetric,
   type ParserOutput,
+  type ParserScopeChanges,
+  type ParserScopeMode,
   type ParserTimeOverride,
   type ParserView,
 } from "./parserContract";
@@ -31,20 +34,20 @@ function applyBoundedRepair(normalizedText: string): RepairResult {
     [
       /\bprevious window\b/g,
       "compare previous window",
-      "normalize previous window",
+      "normalize previous window phrase",
     ],
-    [/\bwhat changed\b/g, "compare", "normalize what changed"],
+    [/\bwhat changed\b/g, "compare", "normalize what changed -> compare"],
 
-    [/\btcp miss\b/g, "tcp_miss", "normalize ats raw"],
-    [/\berr dns fail\b/g, "err_dns_fail", "normalize ats raw"],
+    [/\btcp miss\b/g, "tcp_miss", "normalize ATS raw code"],
+    [/\berr dns fail\b/g, "err_dns_fail", "normalize ATS raw code"],
 
-    [/\binfra error\b/g, "infra_err", "normalize ats family"],
-    [/\binfra errors\b/g, "infra_err", "normalize ats family"],
-    [/\bclient error\b/g, "client_err", "normalize ats family"],
-    [/\bclient errors\b/g, "client_err", "normalize ats family"],
+    [/\binfra error\b/g, "infra_err", "normalize ATS family"],
+    [/\binfra errors\b/g, "infra_err", "normalize ATS family"],
+    [/\bclient error\b/g, "client_err", "normalize ATS family"],
+    [/\bclient errors\b/g, "client_err", "normalize ATS family"],
 
-    [/\bdevice type\b/g, "ua family", "normalize device type -> ua family"],
-    [/\buser agent\b/g, "ua family", "normalize user agent -> ua family"],
+    [/\bdevice type\b/g, "ua family", "normalize device type"],
+    [/\buser agent\b/g, "ua family", "normalize user agent"],
   ];
 
   for (const [pattern, replacement, reason] of replacements) {
@@ -66,7 +69,9 @@ function applyBoundedRepair(normalizedText: string): RepairResult {
 }
 
 function detectMetric(text: string): ParserMetric {
-  if (text.includes("tcp_miss") || text.includes("err_dns_fail")) return "ats";
+  if (text.includes("tcp_miss") || text.includes("err_dns_fail")) {
+    return "ats";
+  }
 
   if (
     text.includes("ats") ||
@@ -106,7 +111,9 @@ function detectMetric(text: string): ParserMetric {
     return "requests";
   }
 
-  if (text.includes("status")) return "status_codes";
+  if (text.includes("status")) {
+    return "status_codes";
+  }
 
   return null;
 }
@@ -137,10 +144,9 @@ function detectTimeOverride(text: string): ParserTimeOverride {
 
   if (!match) return null;
 
-  const value = `${match[2]} ${match[3]}`;
   return {
     type: "relative",
-    value,
+    value: `${match[2]} ${match[3]}`,
   };
 }
 
@@ -183,23 +189,14 @@ function detectDimension(text: string): ParserDimension {
 
 function detectRegionScope(text: string): string | null {
   const patterns: Array<{ re: RegExp; value: string }> = [
-    { re: /\bin\s+us-east\b/, value: "us-east" },
-    { re: /\bin\s+us-west\b/, value: "us-west" },
-    { re: /\bin\s+us-central\b/, value: "us-central" },
-    { re: /\bin\s+eu-west\b/, value: "eu-west" },
-    { re: /\bin\s+eu-central\b/, value: "eu-central" },
-    { re: /\bin\s+ap-south\b/, value: "ap-south" },
-    { re: /\bin\s+ap-northeast\b/, value: "ap-northeast" },
-    { re: /\bin\s+sa-east\b/, value: "sa-east" },
-
-    { re: /\bfor\s+us-east\b/, value: "us-east" },
-    { re: /\bfor\s+us-west\b/, value: "us-west" },
-    { re: /\bfor\s+us-central\b/, value: "us-central" },
-    { re: /\bfor\s+eu-west\b/, value: "eu-west" },
-    { re: /\bfor\s+eu-central\b/, value: "eu-central" },
-    { re: /\bfor\s+ap-south\b/, value: "ap-south" },
-    { re: /\bfor\s+ap-northeast\b/, value: "ap-northeast" },
-    { re: /\bfor\s+sa-east\b/, value: "sa-east" },
+    { re: /\b(?:in|for)\s+us-east\b/, value: "us-east" },
+    { re: /\b(?:in|for)\s+us-west\b/, value: "us-west" },
+    { re: /\b(?:in|for)\s+us-central\b/, value: "us-central" },
+    { re: /\b(?:in|for)\s+eu-west\b/, value: "eu-west" },
+    { re: /\b(?:in|for)\s+eu-central\b/, value: "eu-central" },
+    { re: /\b(?:in|for)\s+ap-south\b/, value: "ap-south" },
+    { re: /\b(?:in|for)\s+ap-northeast\b/, value: "ap-northeast" },
+    { re: /\b(?:in|for)\s+sa-east\b/, value: "sa-east" },
   ];
 
   for (const entry of patterns) {
@@ -245,7 +242,10 @@ function detectContentTypeScope(text: string): string | null {
   return null;
 }
 
-function detectScopeChanges(text: string) {
+function detectScopeChanges(text: string): {
+  scopeChanges: ParserScopeChanges;
+  scopeMode: ParserScopeMode;
+} {
   const scopeChanges = createEmptyScopeChanges();
 
   scopeChanges.region = detectRegionScope(text);
@@ -257,16 +257,34 @@ function detectScopeChanges(text: string) {
 
   return {
     scopeChanges,
-    scopeMode: hasAnyScopeChange ? "narrow" : "inherit" as "narrow" | "inherit",
+    scopeMode: hasAnyScopeChange ? "narrow" : "inherit",
   };
 }
 
-function detectView(
-  text: string,
-  hasTimeOverride: boolean,
-  dimension: ParserDimension
-): ParserView {
-  if (hasTimeOverride) return "timeseries";
+function hasCompareLanguage(text: string): boolean {
+  return (
+    text.includes("compare") ||
+    text.includes("previous window") ||
+    text.includes("vs") ||
+    text.includes("versus")
+  );
+}
+
+function detectView(args: {
+  text: string;
+  hasTimeOverride: boolean;
+  dimension: ParserDimension;
+}): ParserView {
+  const { text, hasTimeOverride, dimension } = args;
+
+  // Compare should win over time/breakdown in v1.
+  if (hasCompareLanguage(text)) {
+    return "compare";
+  }
+
+  if (hasTimeOverride) {
+    return "timeseries";
+  }
 
   if (
     text.includes("over time") ||
@@ -279,8 +297,6 @@ function detectView(
   if (dimension) {
     return "breakdown";
   }
-
-  if (text.includes("compare")) return "compare";
 
   return "summary";
 }
@@ -325,6 +341,62 @@ function detectIntentSubtype(args: {
   return null;
 }
 
+function detectConfidence(args: {
+  metric: ParserMetric;
+  rawCode: string | null;
+  family: ParserFamily;
+  dimension: ParserDimension;
+  timeOverride: ParserTimeOverride;
+  scopeChanges: ParserScopeChanges;
+}): {
+  confidence: ParserConfidence;
+  confidenceReason: string;
+} {
+  const {
+    metric,
+    rawCode,
+    family,
+    dimension,
+    timeOverride,
+    scopeChanges,
+  } = args;
+
+  const hasScope = Object.values(scopeChanges).some(Boolean);
+
+  if (rawCode) {
+    return {
+      confidence: "high",
+      confidenceReason: "raw code matched deterministically",
+    };
+  }
+
+  if (family && metric === "ats") {
+    return {
+      confidence: "high",
+      confidenceReason: "ATS family matched deterministically",
+    };
+  }
+
+  if (metric && (dimension || timeOverride || hasScope)) {
+    return {
+      confidence: "high",
+      confidenceReason: "metric matched with explicit time/dimension/scope",
+    };
+  }
+
+  if (metric) {
+    return {
+      confidence: "medium",
+      confidenceReason: "metric matched deterministically",
+    };
+  }
+
+  return {
+    confidence: "low",
+    confidenceReason: "no supported metric detected",
+  };
+}
+
 export function parseInput(input: string): ParserOutput {
   const { rawText, normalizedText } = normalizeInput(input);
   const repaired = applyBoundedRepair(normalizedText);
@@ -342,12 +414,24 @@ export function parseInput(input: string): ParserOutput {
   const timeOverride = detectTimeOverride(workingText);
   const dimension = detectDimension(workingText);
   const { scopeChanges, scopeMode } = detectScopeChanges(workingText);
-  const view = detectView(workingText, Boolean(timeOverride), dimension);
+  const view = detectView({
+    text: workingText,
+    hasTimeOverride: Boolean(timeOverride),
+    dimension,
+  });
   const lane = detectLane(metric, view);
   const intentSubtype = detectIntentSubtype({
     lane,
     view,
     dimension,
+  });
+  const { confidence, confidenceReason } = detectConfidence({
+    metric,
+    rawCode,
+    family,
+    dimension,
+    timeOverride,
+    scopeChanges,
   });
 
   result.repairedText = workingText;
@@ -368,18 +452,13 @@ export function parseInput(input: string): ParserOutput {
   result.compareTarget = lane === "compare" ? "previous_window" : null;
   result.requiresActiveContext = lane === "compare";
 
+  result.confidence = confidence;
+  result.confidenceReason = confidenceReason;
+
   if (lane === "clarification") {
-    result.confidence = "low";
-    result.confidenceReason = "no supported metric detected";
     result.clarificationRequired = true;
     result.clarificationReason = "unsupported_or_ambiguous_request";
   } else {
-    result.confidence = rawCode ? "high" : family || metric ? "medium" : "low";
-    result.confidenceReason = rawCode
-      ? "raw code matched"
-      : family
-      ? "family matched"
-      : "metric matched";
     result.clarificationRequired = false;
     result.clarificationReason = null;
   }
