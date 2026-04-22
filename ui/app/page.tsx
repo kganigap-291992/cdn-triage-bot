@@ -2187,11 +2187,38 @@ console.log("EXPLORATION GRAPH DEBUG", {
   seriesSecondaryLength: seriesSecondary?.length,
 });
 
-const isAtsCompare =
-  metric === "ats" &&
-  Array.isArray(rows) &&
-  rows.length > 0 &&
-  normalizedSecondary.length > 0;
+function resolveAtsRenderMode(args: {
+  series?: Array<{ ts: string; value: number | null }>;
+  seriesSecondary?: Array<{ ts: string; value: number | null }>;
+  rows?: Array<{
+    key: string;
+    value: number | null;
+    secondaryValue?: number | null;
+    tertiaryValue?: number | null;
+    quaternaryValue?: number | null;
+  }>;
+}) {
+  const hasSeries = Array.isArray(args.series) && args.series.length > 0;
+  const hasSecondary =
+    Array.isArray(args.seriesSecondary) && args.seriesSecondary.length > 0;
+  const hasRows = Array.isArray(args.rows) && args.rows.length > 0;
+
+  if (hasSeries && hasSecondary) return "compare" as const;
+  if (hasRows && !hasSeries) return "breakdown" as const;
+  if (hasSeries) return "trend" as const;
+  return "empty" as const;
+}
+
+const atsRenderMode =
+  metric === "ats"
+    ? resolveAtsRenderMode({
+        series,
+        seriesSecondary: normalizedSecondary,
+        rows,
+      })
+    : null;
+
+const isAtsCompare = metric === "ats" && atsRenderMode === "compare";
 
 const atsMetricLabel = (() => {
   const explicit = String(displayLabel || "").trim();
@@ -2210,17 +2237,23 @@ const atsMetricLabel = (() => {
   return "ATS Hit";
 })();
 
-const atsChartEyebrow = isAtsCompare
-  ? firstKeyIsRaw(rows)
-    ? "ATS raw compare"
-    : "ATS family compare"
-  : firstKeyIsRaw(rows)
-  ? "ATS raw trend"
-  : "ATS trend";
+const atsChartEyebrow =
+  atsRenderMode === "compare"
+    ? firstKeyIsRaw(rows)
+      ? "ATS raw compare"
+      : "ATS family compare"
+    : atsRenderMode === "breakdown"
+    ? "ATS breakdown"
+    : firstKeyIsRaw(rows)
+    ? "ATS raw trend"
+    : "ATS trend";
 
-const atsChartTitle = isAtsCompare
-  ? "ATS Family Changes vs Previous Window"
-  : `${atsMetricLabel} % Over Time`;
+const atsChartTitle =
+  atsRenderMode === "compare"
+    ? "ATS Family Changes vs Previous Window"
+    : atsRenderMode === "breakdown"
+    ? "ATS breakdown by dimension"
+    : `${atsMetricLabel} % Over Time`;
 
 const atsYAxisLabel = `${atsMetricLabel} %`;
 
@@ -2318,12 +2351,7 @@ const points: Array<
   }
 
   if (metric === "ats") {
-    const isBreakdownOnly =
-      Array.isArray(rows) &&
-      rows.length > 0 &&
-      (!series || series.length === 0);
-
-    if (isBreakdownOnly) {
+    if (atsRenderMode === "breakdown") {
       const breakdownRows = (rows || []).slice(0, 5);
 
       return (
@@ -2381,17 +2409,21 @@ const points: Array<
       );
     }
 
-    const base = points;
-    const [zoom, setZoom] = React.useState<{ start: number; end: number } | null>(null);
-    const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
-    const svgRef = React.useRef<SVGSVGElement | null>(null);
-    const [drag, setDrag] = React.useState<{ active: boolean; x0: number; x1: number }>({
-      active: false,
-      x0: 0,
-      x1: 0,
-    });
+    if (atsRenderMode === "empty") {
+      return null;
+    }
 
-    const isCompare = Array.isArray(rows) && rows.length > 0;
+  const base = points;
+  const [zoom, setZoom] = React.useState<{ start: number; end: number } | null>(null);
+  const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
+  const svgRef = React.useRef<SVGSVGElement | null>(null);
+  const [drag, setDrag] = React.useState<{ active: boolean; x0: number; x1: number }>({
+    active: false,
+    x0: 0,
+    x1: 0,
+  });
+
+    const isCompare = atsRenderMode === "compare";
 
     const vals: number[] = [];
     slice.forEach((p) => {
