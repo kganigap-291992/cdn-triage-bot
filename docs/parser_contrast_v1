@@ -1,0 +1,1356 @@
+# Cachey — Parser Contract v1
+
+## Purpose
+
+The parser contract is the **single structured request envelope** produced from user chat input before any deterministic execution happens.
+
+It exists to answer:
+
+1. **What is the user asking for?**
+2. **Which single lane should handle it?**
+3. **Did the user change time or scope?**
+4. **Is the parse trustworthy enough to execute?**
+
+This contract is shared across all current chat-driven flows:
+
+- triage
+- drill
+- compare
+- exploration
+- explain
+- clarification
+- guardrail
+- glossary
+
+---
+
+## Core Principle
+
+The parser contract describes **intent**, not UI.
+
+It must **not** describe:
+
+- which card to render
+- which graph component to use
+- what SQL to run
+- what metrics were returned
+- what deterministic lane output looked like
+
+It should only describe the user request in a stable, machine-readable way.
+
+---
+
+## Separation of Responsibilities
+
+### Domain Lexicon
+Maps messy domain words into canonical tokens.
+
+Examples:
+- `tcp miss` -> `tcp_miss`
+- `dns fail` -> `err_dns_fail`
+- `cache` -> `ats`
+- `delay` -> `latency`
+- `traffic` -> `requests`
+
+### Normalization Layer
+Cleans and standardizes raw text.
+
+Examples:
+- lowercase
+- trim spaces
+- normalize shorthand (`6hrs` -> `6 hours`)
+- apply lexicon mappings
+- normalize dimension wording (`user agent` -> `uaFamily`)
+
+### Parser
+Consumes normalized text and emits this contract.
+
+### Router
+Reads this contract and decides which deterministic lane to invoke.
+
+### Deterministic Engine
+Executes the chosen lane and returns truth.
+
+### UI
+Renders deterministic outputs.
+
+### LLM
+Optional future explanation layer only. Never source of truth.
+
+---
+
+## Product Rules for v1
+
+### Locked Scope Rule
+For this version:
+
+- **partner cannot be changed in chat**
+- **service cannot be changed in chat**
+
+They can only be changed through:
+
+- filters
+- scope launcher
+- reset / new investigation flow
+
+Chat is allowed to change or request:
+
+- region
+- pop
+- uaFamily
+- contentType
+- time
+
+If partner or service is mentioned in chat, the parser may detect it, but routing must block application and respond with a guardrail / clarification message.
+
+### One Lane Only Rule
+Exactly **one primary lane** must be selected per parse.
+
+There are **no hybrid lanes in v1**.
+
+If a request contains multiple intents, the parser must:
+
+- choose one dominant primary lane
+- ignore secondary intent for v1
+- or fall back to clarification if intent is too ambiguous
+
+### One Metric Only Rule
+v1 supports exactly **one primary metric** per parse.
+
+If a request contains multiple metrics, the parser must:
+
+- pick one only if clearly dominant
+- otherwise lower confidence and require clarification
+
+Example:
+- `"latency over time"` -> valid
+- `"latency and errors"` -> clarification unless one metric is clearly dominant
+
+---
+
+## Contract Shape
+
+Every parse must return the same shape.
+
+Even when parsing is weak:
+
+- fields stay present
+- unclear fields become `null`
+- uncertainty is expressed using confidence / clarification fields
+- the object shape never changes
+
+---
+
+## Canonical Contract Shape
+
+```ts
+type ParserLane =
+  | "triage"
+  | "drill"
+  | "compare"
+  | "exploration"
+  | "explain"
+  | "clarification"
+  | "guardrail"
+  | "glossary";
+
+type ParserMetric =
+  | "ats"
+  | "latency"
+  | "errors"
+  | "requests"
+  | "status_codes"
+  | "unknown"
+  | null;
+
+type ParserFamily =
+  | "hit"
+  | "miss"
+  | "refresh"
+  | "client_error"
+  | "infra_error"
+  | null;
+
+type ParserDimension =
+  | "region"
+  | "pop"
+  | "uaFamily"
+  | "contentType"
+  | "host"
+  | "status_code"
+  | null;
+
+type ParserView =
+  | "summary"
+  | "timeseries"
+  | "breakdown"
+  | "compare"
+  | null;
+
+type ParserScopeMode =
+  | "inherit"
+  | "narrow"
+  | "override";
+
+type ParserConfidence =
+  | "high"
+  | "medium"
+  | "low";
+
+type ParserTimeOverride =
+  | {
+      type: "relative" | "absolute";
+      value: string;
+    }
+  | null;
+
+type ParserScopeChanges = {
+  partner: string | null;
+  service: string | null;
+  region: string | null;
+  pop: string | null;
+  uaFamily: string | null;
+  contentType: string | null;
+};
+
+type ParserOutput = {
+  rawText: string;
+  normalizedText: string;
+  repairedText: string | null;
+
+  lane: ParserLane;
+  intentSubtype: string | null;
+
+  metric: ParserMetric;
+  rawCode: string | null;
+  family: ParserFamily;
+  dimension: ParserDimension;
+  view: ParserView;
+
+  scopeChanges: ParserScopeChanges;
+  blockedScopeChanges: string[];
+  scopeMode: ParserScopeMode;
+
+  timeOverride: ParserTimeOverride;
+  compareTarget: string | null;
+
+  requiresActiveContext: boolean;
+
+  confidence: ParserConfidence;
+  confidenceReason: string;
+
+  repairApplied: boolean;
+
+  clarificationRequired: boolean;
+  clarificationReason: string | null;
+};
+```
+
+---
+
+## Field Definitions
+
+### Source Text Fields
+
+#### `rawText`
+Original user message exactly as received.
+
+Example:
+- `"tcp miss over 6hrs in vod"`
+
+#### `normalizedText`
+Canonical text after cleanup and lexicon normalization.
+
+Example:
+- `"tcp_miss over 6 hours in vod"`
+
+#### `repairedText`
+Text after bounded repair, only if repair was applied.
+
+Example:
+- raw: `"ats over 24hts"`
+- normalized: `"ats over 24hts"`
+- repaired: `"ats over 24 hours"`
+
+If no repair happened:
+- `null`
+
+---
+
+### Routing Fields
+
+#### `lane`
+Top-level execution lane.
+
+Allowed values:
+- `triage`
+- `drill`
+- `compare`
+- `exploration`
+- `explain`
+- `clarification`
+- `guardrail`
+- `glossary`
+
+This is the most important field.
+
+#### `intentSubtype`
+More specific classification within a lane.
+
+Examples:
+- triage:
+  - `full_triage`
+  - `refresh`
+- drill:
+  - `worst_region`
+  - `worst_pop`
+  - `worst_ua`
+  - `worst_content`
+  - `worst_host`
+- compare:
+  - `previous_window`
+- exploration:
+  - `timeseries`
+  - `breakdown`
+- explain:
+  - `explain_current_result`
+- glossary:
+  - `define_term`
+
+If no subtype is needed:
+- `null`
+
+---
+
+### Subject Fields
+
+#### `metric`
+Primary signal or subject the user is asking about.
+
+Allowed values for v1:
+- `ats`
+- `latency`
+- `errors`
+- `requests`
+- `status_codes`
+- `unknown`
+
+Otherwise:
+- `null`
+
+#### `rawCode`
+Specific raw ATS code, if applicable.
+
+Examples:
+- `tcp_miss`
+- `err_dns_fail`
+
+Otherwise:
+- `null`
+
+#### `family`
+ATS family bucket, if applicable.
+
+Allowed values:
+- `hit`
+- `miss`
+- `refresh`
+- `client_error`
+- `infra_error`
+
+Otherwise:
+- `null`
+
+#### `dimension`
+Breakdown or drill dimension.
+
+Allowed values:
+- `region`
+- `pop`
+- `uaFamily`
+- `contentType`
+- `host`
+- `status_code`
+
+Otherwise:
+- `null`
+
+#### `view`
+Requested question shape.
+
+Allowed values:
+- `summary`
+- `timeseries`
+- `breakdown`
+- `compare`
+
+Otherwise:
+- `null`
+
+---
+
+### Scope Fields
+
+#### `scopeChanges`
+Structured scope overrides detected from chat.
+
+Fields:
+- `partner`
+- `service`
+- `region`
+- `pop`
+- `uaFamily`
+- `contentType`
+
+All fields must always exist in the object and may be `null`.
+
+Example:
+```json
+{
+  "partner": null,
+  "service": null,
+  "region": "us-east",
+  "pop": null,
+  "uaFamily": null,
+  "contentType": null
+}
+```
+
+#### `blockedScopeChanges`
+Array of scope fields detected in chat but not allowed to change in this version.
+
+Examples:
+- `["partner"]`
+- `["service"]`
+- `["partner", "service"]`
+
+If nothing is blocked:
+- `[]`
+
+#### `scopeMode`
+Describes how requested scope relates to the current active scope.
+
+Allowed values:
+- `inherit` -> use existing scope unchanged
+- `narrow` -> narrow inside allowed current scope
+- `override` -> user explicitly requested a change
+
+Notes:
+- `override` may still be blocked if it touches partner/service
+- parser only describes requested behavior; router enforces product rules
+
+---
+
+### Time and Compare Fields
+
+#### `timeOverride`
+Explicit time detected in chat.
+
+Shape:
+```ts
+{
+  type: "relative" | "absolute";
+  value: string;
+}
+```
+
+Examples:
+- `{ type: "relative", value: "6 hours" }`
+- `{ type: "absolute", value: "2026-04-20T00:00:00Z/2026-04-21T00:00:00Z" }`
+
+If no explicit time is mentioned:
+- `null`
+
+#### `compareTarget`
+What the user wants the current result compared against.
+
+Examples:
+- `previous_window`
+- `yesterday`
+- `last_week`
+
+If not a compare request:
+- `null`
+
+---
+
+### Execution Safety Fields
+
+#### `requiresActiveContext`
+Whether the request depends on an existing investigation context.
+
+Examples:
+- `"worst region"` -> `true`
+- `"what changed in ats"` -> `true`
+- `"latency over time last 6 hours"` -> usually `false`
+
+#### `confidence`
+How trustworthy the parse is.
+
+Allowed values:
+- `high`
+- `medium`
+- `low`
+
+#### `confidenceReason`
+Short human-readable reason for why the confidence was assigned.
+
+Examples:
+- `"exact raw ATS code and time matched"`
+- `"clear compare language with single metric"`
+- `"metric matched but intent ambiguous"`
+- `"missing active context"`
+- `"blocked partner/service change"`
+
+#### `repairApplied`
+Whether bounded repair was used before final parsing.
+
+Allowed values:
+- `true`
+- `false`
+
+#### `clarificationRequired`
+Whether the system should ask before executing.
+
+Allowed values:
+- `true`
+- `false`
+
+#### `clarificationReason`
+Why clarification is needed.
+
+Examples:
+- `missing_active_context`
+- `ambiguous_metric`
+- `ambiguous_intent`
+- `partner_locked_to_filters`
+- `service_locked_to_filters`
+- `partner_service_locked_to_filters`
+- `unknown_scope`
+- `multiple_metrics_requested`
+
+If no clarification is needed:
+- `null`
+
+---
+
+## Resolution Rules
+
+### Lane Selection Rule
+Exactly one primary lane must be selected per parse.
+
+If multiple intents are detected:
+- choose the dominant intent
+- or fall back to clarification
+
+Examples:
+- `"show latency over time"` -> `exploration`
+- `"why is cache bad"` -> `explain`
+- `"show latency and compare with yesterday"` -> `compare`
+
+### Compare Precedence Rule
+If compare language is present in a bundled request, compare wins over triage and exploration in v1.
+
+Example:
+- `"show latency and compare with yesterday"` -> `lane = compare`
+
+### Metric Resolution Rule
+The parser must select exactly one primary metric in v1.
+
+If multiple metrics are clearly requested:
+- select one only if dominant
+- otherwise lower confidence and require clarification
+
+Metric normalization:
+- `"traffic"` -> `requests`
+- `"cache"` -> `ats`
+
+### ATS Resolution Rule
+For ATS-related queries:
+
+1. Always set `metric = ats`
+2. If a raw code is detected:
+   - set `rawCode`
+   - also derive and set `family`
+3. If only family is detected:
+   - set `family`
+   - leave `rawCode = null`
+4. If neither is detected:
+   - treat as general ATS
+
+Priority:
+- `rawCode > family > plain ats`
+
+Examples:
+- `"tcp miss over time"` -> `metric = ats`, `rawCode = tcp_miss`, `family = miss`
+- `"miss over time"` -> `metric = ats`, `rawCode = null`, `family = miss`
+- `"ats over time"` -> `metric = ats`, `rawCode = null`, `family = null`
+
+### View Detection Rule
+Requested view is inferred from phrasing.
+
+Examples:
+- `"over time"` -> `timeseries`
+- `"by region"` -> `breakdown`
+- `"what changed"` -> `compare`
+- no specific phrasing -> `summary`
+
+### Time Override Rule
+Explicit time in chat always overrides inherited time.
+
+Rules:
+- explicit time in chat -> set `timeOverride`
+- no explicit time in chat -> `timeOverride = null` and router may inherit active time window
+- parser must not guess time
+
+Examples:
+- `"last 6 hours"` -> override
+- `"yesterday"` -> override
+- no time phrase -> inherit later in routing
+
+### Blocked Scope Change Rule
+Partner and service are locked to filters in v1.
+
+If user attempts to change either in chat:
+- detect the requested change in `scopeChanges`
+- add the locked fields to `blockedScopeChanges`
+- set `clarificationRequired = true`
+- set a guardrail-oriented clarification reason
+
+The parser must never silently ignore these requests.
+
+Examples:
+- `"show latency for partner_02"` ->
+  - `scopeChanges.partner = "partner_02"`
+  - `blockedScopeChanges = ["partner"]`
+  - `clarificationRequired = true`
+  - `clarificationReason = "partner_locked_to_filters"`
+
+- `"switch to vod"` ->
+  - `scopeChanges.service = "vod"`
+  - `blockedScopeChanges = ["service"]`
+  - `clarificationRequired = true`
+  - `clarificationReason = "service_locked_to_filters"`
+
+---
+
+## Invariants
+
+These are non-negotiable rules for v1.
+
+1. Every parse returns the same object shape.
+2. Fields may be `null`, but fields may not disappear.
+3. The parser describes intent only; it does not execute.
+4. The parser does not choose UI.
+5. The parser does not choose SQL.
+6. The parser does not mutate active partner/service.
+7. The parser always returns `confidence`.
+8. The parser always returns `clarificationRequired`.
+9. The parser never silently ignores blocked partner/service changes.
+10. The parser never invents unknown metrics, scope, or schema terms.
+11. Exactly one lane is selected in v1.
+12. Exactly one primary metric is selected in v1.
+
+---
+
+## Confidence Model
+
+Confidence answers:
+
+> "Do we understand this request well enough to act without guessing?"
+
+### High Confidence
+Use when:
+- lane is clear
+- one metric is clear
+- time and/or scope are cleanly recognized if present
+- no meaningful ambiguity remains
+
+### Medium Confidence
+Use when:
+- main intent is probably correct
+- some ambiguity exists
+- bounded repair may have been needed
+- execution may still be safe depending on lane
+
+### Low Confidence
+Use when:
+- intent is unclear
+- metric is missing or conflicting
+- required context is missing
+- blocked scope change dominates the request
+- clarification is safer than execution
+
+---
+
+## Example Parses
+
+### Example 1 — High Confidence (Raw ATS Timeseries)
+
+#### Input
+`tcp miss over 6h`
+
+#### Normalized
+`tcp_miss over 6 hours`
+
+#### Output
+```json
+{
+  "rawText": "tcp miss over 6h",
+  "normalizedText": "tcp_miss over 6 hours",
+  "repairedText": null,
+  "lane": "exploration",
+  "intentSubtype": "timeseries",
+  "metric": "ats",
+  "rawCode": "tcp_miss",
+  "family": "miss",
+  "dimension": null,
+  "view": "timeseries",
+  "scopeChanges": {
+    "partner": null,
+    "service": null,
+    "region": null,
+    "pop": null,
+    "uaFamily": null,
+    "contentType": null
+  },
+  "blockedScopeChanges": [],
+  "scopeMode": "inherit",
+  "timeOverride": {
+    "type": "relative",
+    "value": "6 hours"
+  },
+  "compareTarget": null,
+  "requiresActiveContext": false,
+  "confidence": "high",
+  "confidenceReason": "exact raw ATS code and time matched",
+  "repairApplied": false,
+  "clarificationRequired": false,
+  "clarificationReason": null
+}
+```
+
+---
+
+### Example 2 — High Confidence (Triage with Allowed Scope Narrowing)
+
+#### Input
+`how is latency doing in us-east`
+
+#### Normalized
+`how is latency doing in us-east`
+
+#### Output
+```json
+{
+  "rawText": "how is latency doing in us-east",
+  "normalizedText": "how is latency doing in us-east",
+  "repairedText": null,
+  "lane": "triage",
+  "intentSubtype": "full_triage",
+  "metric": "latency",
+  "rawCode": null,
+  "family": null,
+  "dimension": null,
+  "view": "summary",
+  "scopeChanges": {
+    "partner": null,
+    "service": null,
+    "region": "us-east",
+    "pop": null,
+    "uaFamily": null,
+    "contentType": null
+  },
+  "blockedScopeChanges": [],
+  "scopeMode": "narrow",
+  "timeOverride": null,
+  "compareTarget": null,
+  "requiresActiveContext": false,
+  "confidence": "high",
+  "confidenceReason": "clear triage intent with allowed region narrowing",
+  "repairApplied": false,
+  "clarificationRequired": false,
+  "clarificationReason": null
+}
+```
+
+---
+
+### Example 3 — Medium Confidence (Ambiguous Time)
+
+#### Input
+`latency yesterday maybe`
+
+#### Normalized
+`latency yesterday maybe`
+
+#### Output
+```json
+{
+  "rawText": "latency yesterday maybe",
+  "normalizedText": "latency yesterday maybe",
+  "repairedText": null,
+  "lane": "exploration",
+  "intentSubtype": "timeseries",
+  "metric": "latency",
+  "rawCode": null,
+  "family": null,
+  "dimension": null,
+  "view": "timeseries",
+  "scopeChanges": {
+    "partner": null,
+    "service": null,
+    "region": null,
+    "pop": null,
+    "uaFamily": null,
+    "contentType": null
+  },
+  "blockedScopeChanges": [],
+  "scopeMode": "inherit",
+  "timeOverride": {
+    "type": "relative",
+    "value": "yesterday"
+  },
+  "compareTarget": null,
+  "requiresActiveContext": false,
+  "confidence": "medium",
+  "confidenceReason": "metric matched but phrasing is hesitant",
+  "repairApplied": false,
+  "clarificationRequired": false,
+  "clarificationReason": null
+}
+```
+
+---
+
+### Example 4 — High Confidence After Repair
+
+#### Input
+`tcp misss over 6hrs`
+
+#### Normalized
+`tcp misss over 6hrs`
+
+#### Repaired
+`tcp_miss over 6 hours`
+
+#### Output
+```json
+{
+  "rawText": "tcp misss over 6hrs",
+  "normalizedText": "tcp misss over 6hrs",
+  "repairedText": "tcp_miss over 6 hours",
+  "lane": "exploration",
+  "intentSubtype": "timeseries",
+  "metric": "ats",
+  "rawCode": "tcp_miss",
+  "family": "miss",
+  "dimension": null,
+  "view": "timeseries",
+  "scopeChanges": {
+    "partner": null,
+    "service": null,
+    "region": null,
+    "pop": null,
+    "uaFamily": null,
+    "contentType": null
+  },
+  "blockedScopeChanges": [],
+  "scopeMode": "inherit",
+  "timeOverride": {
+    "type": "relative",
+    "value": "6 hours"
+  },
+  "compareTarget": null,
+  "requiresActiveContext": false,
+  "confidence": "high",
+  "confidenceReason": "bounded repair successfully resolved ATS code and time",
+  "repairApplied": true,
+  "clarificationRequired": false,
+  "clarificationReason": null
+}
+```
+
+---
+
+### Example 5 — Low Confidence (Ambiguous Request)
+
+#### Input
+`show that thing`
+
+#### Normalized
+`show that thing`
+
+#### Output
+```json
+{
+  "rawText": "show that thing",
+  "normalizedText": "show that thing",
+  "repairedText": null,
+  "lane": "clarification",
+  "intentSubtype": null,
+  "metric": "unknown",
+  "rawCode": null,
+  "family": null,
+  "dimension": null,
+  "view": null,
+  "scopeChanges": {
+    "partner": null,
+    "service": null,
+    "region": null,
+    "pop": null,
+    "uaFamily": null,
+    "contentType": null
+  },
+  "blockedScopeChanges": [],
+  "scopeMode": "inherit",
+  "timeOverride": null,
+  "compareTarget": null,
+  "requiresActiveContext": false,
+  "confidence": "low",
+  "confidenceReason": "ambiguous request with no identifiable lane or metric",
+  "repairApplied": false,
+  "clarificationRequired": true,
+  "clarificationReason": "ambiguous_intent"
+}
+```
+
+---
+
+### Example 6 — Low Confidence (Missing Active Context)
+
+#### Input
+`worst region`
+
+#### Normalized
+`worst region`
+
+#### Output
+```json
+{
+  "rawText": "worst region",
+  "normalizedText": "worst region",
+  "repairedText": null,
+  "lane": "drill",
+  "intentSubtype": "worst_region",
+  "metric": "unknown",
+  "rawCode": null,
+  "family": null,
+  "dimension": "region",
+  "view": "breakdown",
+  "scopeChanges": {
+    "partner": null,
+    "service": null,
+    "region": null,
+    "pop": null,
+    "uaFamily": null,
+    "contentType": null
+  },
+  "blockedScopeChanges": [],
+  "scopeMode": "inherit",
+  "timeOverride": null,
+  "compareTarget": null,
+  "requiresActiveContext": true,
+  "confidence": "low",
+  "confidenceReason": "drill intent detected but active investigation context is missing",
+  "repairApplied": false,
+  "clarificationRequired": true,
+  "clarificationReason": "missing_active_context"
+}
+```
+
+---
+
+### Example 7 — Guardrail (Blocked Scope Change)
+
+#### Input
+`switch to partner_02 vod`
+
+#### Normalized
+`switch to partner_02 vod`
+
+#### Output
+```json
+{
+  "rawText": "switch to partner_02 vod",
+  "normalizedText": "switch to partner_02 vod",
+  "repairedText": null,
+  "lane": "guardrail",
+  "intentSubtype": null,
+  "metric": "unknown",
+  "rawCode": null,
+  "family": null,
+  "dimension": null,
+  "view": null,
+  "scopeChanges": {
+    "partner": "partner_02",
+    "service": "vod",
+    "region": null,
+    "pop": null,
+    "uaFamily": null,
+    "contentType": null
+  },
+  "blockedScopeChanges": ["partner", "service"],
+  "scopeMode": "override",
+  "timeOverride": null,
+  "compareTarget": null,
+  "requiresActiveContext": false,
+  "confidence": "low",
+  "confidenceReason": "requested partner and service change are locked to filters",
+  "repairApplied": false,
+  "clarificationRequired": true,
+  "clarificationReason": "partner_service_locked_to_filters"
+}
+```
+
+---
+
+### Example 8 — Compare (High Confidence)
+
+#### Input
+`what changed in ats`
+
+#### Normalized
+`what changed in ats`
+
+#### Output
+```json
+{
+  "rawText": "what changed in ats",
+  "normalizedText": "what changed in ats",
+  "repairedText": null,
+  "lane": "compare",
+  "intentSubtype": "previous_window",
+  "metric": "ats",
+  "rawCode": null,
+  "family": null,
+  "dimension": null,
+  "view": "compare",
+  "scopeChanges": {
+    "partner": null,
+    "service": null,
+    "region": null,
+    "pop": null,
+    "uaFamily": null,
+    "contentType": null
+  },
+  "blockedScopeChanges": [],
+  "scopeMode": "inherit",
+  "timeOverride": null,
+  "compareTarget": "previous_window",
+  "requiresActiveContext": true,
+  "confidence": "high",
+  "confidenceReason": "clear compare language with ATS metric",
+  "repairApplied": false,
+  "clarificationRequired": false,
+  "clarificationReason": null
+}
+```
+
+---
+
+### Example 9 — Compare Precedence in Bundled Ask
+
+#### Input
+`show latency and compare with yesterday`
+
+#### Normalized
+`show latency and compare with yesterday`
+
+#### Output
+```json
+{
+  "rawText": "show latency and compare with yesterday",
+  "normalizedText": "show latency and compare with yesterday",
+  "repairedText": null,
+  "lane": "compare",
+  "intentSubtype": "previous_window",
+  "metric": "latency",
+  "rawCode": null,
+  "family": null,
+  "dimension": null,
+  "view": "compare",
+  "scopeChanges": {
+    "partner": null,
+    "service": null,
+    "region": null,
+    "pop": null,
+    "uaFamily": null,
+    "contentType": null
+  },
+  "blockedScopeChanges": [],
+  "scopeMode": "inherit",
+  "timeOverride": {
+    "type": "relative",
+    "value": "yesterday"
+  },
+  "compareTarget": "yesterday",
+  "requiresActiveContext": false,
+  "confidence": "high",
+  "confidenceReason": "compare language takes precedence over exploration phrasing",
+  "repairApplied": false,
+  "clarificationRequired": false,
+  "clarificationReason": null
+}
+```
+
+---
+
+## Summary Table
+
+| Input Type | Confidence | Action |
+|---|---|---|
+| Fully matched (lane + metric + time/scope if present) | High | Execute |
+| Minor ambiguity or bounded repair needed | Medium | Repair or cautious execute |
+| Missing info or unclear intent | Low | Clarify |
+| Blocked partner/service change | Low | Guardrail / clarify |
+
+---
+
+## One-Line Rule
+
+The parser contract answers:
+
+> "Do we understand this request well enough to act without guessing?"
+
+---
+## Confidence score calculation 
+
+This section shows how real user inputs are parsed and how confidence is calculated using the deterministic scoring model.
+
+---
+
+## Example 1 — High Confidence (Raw ATS Timeseries)
+
+### Input
+tcp miss over 6h
+
+### Normalized
+tcp_miss over 6 hours
+
+### Signals
+- Lane detected (exploration) → +2  
+- Metric recognized (ats) → +2  
+- Raw ATS code (tcp_miss) → +2  
+- Time parsed (6h) → +1  
+- Exact lexicon match → +1  
+
+### Score
+8 → **High**
+
+### Output
+- lane: exploration  
+- metric: ats  
+- rawCode: tcp_miss  
+- view: timeseries  
+- timeOverride: 6h  
+- confidence: high  
+- confidenceReason: "exact raw ATS code and time matched"  
+- clarificationRequired: false  
+
+---
+
+## Example 2 — High Confidence (Triage with Scope)
+
+### Input
+how is live doing in us-east
+
+### Normalized
+how is live doing in us-east
+
+### Signals
+- Lane detected (triage) → +2  
+- Scope recognized (region) → +1  
+- Exact phrasing match → +1  
+
+### Score
+4–6 range → upgraded to **High** due to clean triage pattern
+
+### Output
+- lane: triage  
+- scopeChanges.region: us-east  
+- confidence: high  
+- confidenceReason: "clear triage intent with region override"  
+- clarificationRequired: false  
+
+---
+
+## Example 3 — Medium Confidence (Ambiguous Time)
+
+### Input
+latency yesterday maybe
+
+### Normalized
+latency yesterday maybe
+
+### Signals
+- Lane detected → +2  
+- Metric recognized (latency) → +2  
+- Time ambiguous → 0  
+- Ambiguity penalty → -2  
+
+### Score
+2–4 → **Medium**
+
+### Output
+- lane: triage  
+- metric: latency  
+- confidence: medium  
+- confidenceReason: "metric matched but time ambiguous"  
+- clarificationRequired: false or true (based on strictness)  
+
+---
+
+## Example 4 — Medium → High via Repair
+
+### Input
+tcp misss over 6hrs
+
+### Normalized
+tcp misss over 6hrs
+
+### Repair
+tcp miss → tcp_miss  
+6hrs → 6 hours  
+
+### Signals (after repair)
+- Lane detected → +2  
+- Metric recognized (ats) → +2  
+- Raw ATS code → +2  
+- Time parsed → +1  
+- Repair penalty → -1  
+
+### Score
+6–7 → **High after repair**
+
+### Output
+- lane: exploration  
+- rawCode: tcp_miss  
+- timeOverride: 6h  
+- repairApplied: true  
+- confidence: high  
+- confidenceReason: "bounded repair applied successfully"  
+- clarificationRequired: false  
+
+---
+
+## Example 5 — Low Confidence (Ambiguous Request)
+
+### Input
+show that thing
+
+### Normalized
+show that thing
+
+### Signals
+- Lane unclear → 0  
+- Metric unknown → 0  
+- No scope → 0  
+- Ambiguity penalty → -2  
+
+### Score
+0 → **Low**
+
+### Output
+- lane: clarification  
+- confidence: low  
+- clarificationRequired: true  
+- clarificationReason: "ambiguous request with no identifiable metric or scope"  
+
+---
+
+## Example 6 — Low Confidence (Missing Context)
+
+### Input
+worst region
+
+### Normalized
+worst region
+
+### Signals
+- Lane detected (drill) → +2  
+- Dimension detected (region) → +1  
+- Requires active context but none exists → -3  
+
+### Score
+0–1 → **Low**
+
+### Output
+- lane: drill  
+- dimension: region  
+- requiresActiveContext: true  
+- confidence: low  
+- clarificationRequired: true  
+- clarificationReason: "missing_active_context"  
+
+---
+
+## Example 7 — Guardrail (Blocked Scope Change)
+
+### Input
+switch to partner_02 vod
+
+### Normalized
+switch to partner_02 vod
+
+### Signals
+- Lane detected → +2  
+- Scope change detected → +1  
+- Blocked scope penalty → -2  
+
+### Score
+~1 → **Low**
+
+### Output
+- lane: guardrail  
+- scopeChanges.partner: partner_02  
+- scopeChanges.service: vod  
+- blockedScopeChanges: ["partner", "service"]  
+- confidence: low  
+- clarificationRequired: true  
+- clarificationReason: "partner_service_locked_to_filters"  
+
+---
+
+## Example 8 — Compare (High Confidence)
+
+### Input
+what changed in ats
+
+### Normalized
+what changed in ats
+
+### Signals
+- Lane detected (compare) → +2  
+- Metric recognized (ats) → +2  
+- Compare intent → +2  
+
+### Score
+6–8 → **High**
+
+### Output
+- lane: compare  
+- metric: ats  
+- compareTarget: previous_window  
+- requiresActiveContext: true  
+- confidence: high  
+- clarificationRequired: false  
+
+---
+
+## Summary
+
+| Input Type | Confidence | Action |
+|------|--------|--------|
+| Fully matched (metric + time + lane) | High | Execute |
+| Minor ambiguity or repair needed | Medium | Repair or cautious execute |
+| Missing info or unclear intent | Low | Clarify |
+| Blocked rule (partner/service) | Low | Guardrail |
+
+---
+
+## One-Line Rule
+
+Confidence answers:
+
+> "Do we understand this request well enough to act without guessing?"
