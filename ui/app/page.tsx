@@ -20,6 +20,7 @@ import { evaluateGuardrails } from "@/lib/chat/guardrails";
 import { detectExplorationIntent } from "@/lib/chat/detectExplorationIntent";
 import { runExplorationAgent } from "@/lib/chat/explorationAgent";
 import { normalizeInput } from "@/lib/chat/normalizeInput";
+import { parseInput } from "@/lib/chat/parseInput";
 import {
   detectGlossaryIntent,
   detectAtsCrcTerms,
@@ -716,6 +717,49 @@ function detectContentTypeOverrideFromText(text: string): {
   }
 
   return { mentioned: false, value: null, sourceText: null };
+}
+
+function convertParserTimeOverride(
+  parserTime: {
+    type: "relative" | "absolute";
+    value: string;
+  } | null
+):
+  | {
+      mode: "relative";
+      windowMinutes: number;
+      sourceText: string;
+    }
+  | undefined {
+  if (!parserTime) return undefined;
+
+  if (parserTime.type !== "relative") {
+    return undefined;
+  }
+
+  const raw = String(parserTime.value || "").trim().toLowerCase();
+  const match = raw.match(/^(\d+)\s*(minute|minutes|hour|hours|day|days)$/);
+
+  if (!match) return undefined;
+
+  const amount = Number(match[1]);
+  const unit = match[2];
+
+  if (!Number.isFinite(amount) || amount <= 0) return undefined;
+
+  let windowMinutes = amount;
+
+  if (unit.startsWith("hour")) {
+    windowMinutes = amount * 60;
+  } else if (unit.startsWith("day")) {
+    windowMinutes = amount * 60 * 24;
+  }
+
+  return {
+    mode: "relative",
+    windowMinutes,
+    sourceText: parserTime.value,
+  };
 }
 
 // ── color helpers ──────────────────────────────────────────────────────────
@@ -5823,9 +5867,12 @@ export default function Home() {
       const text = String(rawText || "").trim();
       if (!text || isTriageLoading) return;
 
+      const parsed = parseInput(text);
+
       const normalization = normalizeInput(text);
       const normalizedText = normalization.normalizedText;
 
+      console.log("PARSER DEBUG", parsed);
       console.log("NORMALIZATION DEBUG", {
         rawText: text,
         normalizedText,
@@ -5923,19 +5970,63 @@ export default function Home() {
         const baseExplorationIntent =
           explorationIntent ?? forcedExplorationIntent!;
 
-        const effectiveExplorationIntent =
-          atsFamily
-            ? {
-                ...baseExplorationIntent,
-                metric: "ats" as const,
-                atsFamily,
-              }
-            : baseExplorationIntent;
+        let effectiveExplorationIntent = {
+          ...baseExplorationIntent,
+        };
 
-        const explorationContext = buildExplorationContextWithTimeOverride(
+        // 🔥 Prefer parser ATS signals if present
+        if (parsed.rawCode) {
+          effectiveExplorationIntent = {
+            ...effectiveExplorationIntent,
+            metric: "ats",
+            atsRawCode: parsed.rawCode,
+          };
+        } else if (parsed.family) {
+          effectiveExplorationIntent = {
+            ...effectiveExplorationIntent,
+            metric: "ats",
+            atsFamily: parsed.family,
+          };
+        } else if (atsFamily) {
+          effectiveExplorationIntent = {
+            ...effectiveExplorationIntent,
+            metric: "ats",
+            atsFamily,
+          };
+        }
+
+        // 🔥 Prefer parser time override if present
+        if (parsed.timeOverride) {
+          effectiveExplorationIntent = {
+            ...effectiveExplorationIntent,
+            timeOverride: convertParserTimeOverride(parsed.timeOverride),
+          };
+        }
+
+        const baseContext = buildExplorationContextWithTimeOverride(
           latestInvestigationContext,
           effectiveExplorationIntent.timeOverride
         );
+
+        // 🔥 APPLY PARSER SCOPE OVERRIDES (Bug 2 fix)
+        const explorationContext = {
+          ...baseContext,
+          region:
+            parsed.scopeChanges.region ??
+            baseContext.region,
+
+          pop:
+            parsed.scopeChanges.pop ??
+            baseContext.pop,
+
+          contentType:
+            parsed.scopeChanges.contentType ??
+            baseContext.contentType,
+
+          uaFamily:
+            parsed.scopeChanges.uaFamily ??
+            baseContext.uaFamily,
+        };
 
         console.log("EXPLORATION TIME DEBUG", {
           inheritedTime: latestInvestigationContext.time,
