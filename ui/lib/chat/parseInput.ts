@@ -274,8 +274,9 @@ function detectView(args: {
   text: string;
   hasTimeOverride: boolean;
   dimension: ParserDimension;
+  metric: ParserMetric;
 }): ParserView {
-  const { text, hasTimeOverride, dimension } = args;
+  const { text, hasTimeOverride, dimension, metric } = args;
 
   // Compare should win over time/breakdown in v1.
   if (hasCompareLanguage(text)) {
@@ -296,6 +297,16 @@ function detectView(args: {
 
   if (dimension) {
     return "breakdown";
+  }
+
+  // Broad graphable metric asks should default to exploration-style timeseries.
+  if (
+    metric === "latency" ||
+    metric === "errors" ||
+    metric === "requests" ||
+    metric === "ats"
+  ) {
+    return "timeseries";
   }
 
   return "summary";
@@ -619,7 +630,8 @@ function parseWorkingText(workingText: string): ParsedFields {
     text: workingText,
     hasTimeOverride: Boolean(timeOverride),
     dimension,
-  });
+    metric,
+    });
   const lane = detectLane(metric, view);
   const intentSubtype = detectIntentSubtype({
     lane,

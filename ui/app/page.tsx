@@ -17,14 +17,12 @@ import { getNextActions } from "@/lib/nextActions/getNextActions";
 import UtcDateTimeInput from "@/components/filters/UtcDateTimeInput";
 import StatusBarGraph from "@/components/graphs/StatusBarGraph";
 import { evaluateGuardrails } from "@/lib/chat/guardrails";
-import { detectExplorationIntent } from "@/lib/chat/detectExplorationIntent";
 import { runExplorationAgent } from "@/lib/chat/explorationAgent";
 import { normalizeInput } from "@/lib/chat/normalizeInput";
 import { parseInput } from "@/lib/chat/parseInput";
 import {
   detectGlossaryIntent,
   detectAtsCrcTerms,
-  detectMetricHints,
   normalizeAtsExecutionFamily,
 } from "@/lib/chat/domainLexicon";
 import { lookupAtsCrc } from "@/lib/triage/atsCrcGlossary";
@@ -6001,45 +5999,58 @@ export default function Home() {
 
       const chatIntent = detectIntent(normalizedText);
       const explicitDrillIntent = detectExplicitDrillIntent(normalizedText);
-      const explorationIntent = detectExplorationIntent(normalizedText);
+      
 
-      const metricHints = detectMetricHints(normalizedText);
+      const parserExplorationIntent =
+        parsed.lane === "exploration" &&
+        parsed.metric &&
+        (parsed.metric === "ats" ||
+          parsed.metric === "latency" ||
+          parsed.metric === "errors" ||
+          parsed.metric === "requests")
+          ? {
+              mode: "exploration" as const,
+              metric: parsed.metric,
+              view:
+                parsed.view === "breakdown"
+                  ? parsed.dimension === "region"
+                    ? ("by_region" as const)
+                    : parsed.dimension === "pop"
+                    ? ("by_pop" as const)
+                    : parsed.dimension === "uaFamily"
+                    ? ("by_ua" as const)
+                    : parsed.dimension === "contentType"
+                    ? ("by_content" as const)
+                    : ("over_time" as const)
+                  : ("over_time" as const),
+              rawText: normalizedText,
+              timeOverride: convertParserTimeOverride(parsed.timeOverride),
+              atsMode: undefined,
+              atsFamily: parsed.family
+                ? normalizeAtsExecutionFamily(parsed.family)
+                : undefined,
+              atsRawCode: parsed.rawCode ?? undefined,
+            }
+          : null;
 
-      const forceExploration =
-        !explorationIntent &&
-        metricHints.length > 0 &&
-        metricHints[0] !== "status_codes" &&
-        metricHints[0] !== "ats_crc" &&
-        chatIntent !== "compare" &&
-        chatIntent !== "explain";
-
-      console.log("METRIC OVERRIDE DEBUG", {
-        normalizedText,
-        chatIntent,
-        metricHints,
-        explorationIntent,
-        forceExploration,
-      });
-
-      const forcedExplorationIntent = forceExploration
-        ? {
-            mode: "exploration" as const,
-            metric: metricHints[0] as "ats" | "latency" | "errors" | "requests",
-            view: "over_time" as const,
-            rawText: normalizedText,
-            timeOverride: undefined,
-            atsMode: undefined,
-            atsFamily: undefined,
-            atsRawCode: undefined,
-          }
-        : null;
+      console.log("EXPLORATION DEBUG", {
+          normalizedText,
+          chatIntent,
+          parserLane: parsed.lane,
+          parserMetric: parsed.metric,
+          parserView: parsed.view,
+          parserDimension: parsed.dimension,
+          parserFamily: parsed.family,
+          parserRawCode: parsed.rawCode,
+          parserExplorationIntent,
+        });
 
       const parseResult = parseTriageIntent({
         text: normalizedText,
         hasPriorContext: Boolean(latestTriageRun),
       });
 
-      if (explorationIntent || forcedExplorationIntent) {
+      if (parsed.lane === "exploration") {
         if (!latestInvestigationContext) {
           addText(
             "assistant",
@@ -6048,8 +6059,7 @@ export default function Home() {
           return;
         }
 
-        const baseExplorationIntent =
-          explorationIntent ?? forcedExplorationIntent!;
+        const baseExplorationIntent = parserExplorationIntent!;
 
         let effectiveExplorationIntent = {
           ...baseExplorationIntent,
@@ -6115,8 +6125,11 @@ export default function Home() {
           effectiveContext: explorationContext,
           atsTerms,
           atsFamily,
-          metricHints,
-          forceExploration,
+          parserLane: parsed.lane,
+          parserMetric: parsed.metric,
+          parserView: parsed.view,
+          parserDimension: parsed.dimension,
+          parserExplorationIntent,
           effectiveExplorationIntent,
         });
 
