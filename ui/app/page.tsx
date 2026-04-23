@@ -4669,6 +4669,45 @@ function StatusBreakdownCard({
   );
 }
 
+function getClarificationMessage(parsed: {
+  clarificationReason: string | null;
+}) {
+  switch (parsed.clarificationReason) {
+    case "compare_requires_metric":
+      return "I can compare, but I need a metric first. Try: compare latency, compare errors, or what changed in ATS.";
+
+    case "scope_mentioned_but_unresolved":
+      return "I can narrow scope, but I need a metric too. Try: traffic in us east, latency for mobile, or errors in pop 017.";
+
+    case "time_mentioned_but_unresolved":
+      return "I can use that time window, but I need a metric first. Try: latency over 6 hours, errors last 30 minutes, or ATS over time.";
+
+    case "low_confidence_parse":
+      return "I’m not confident enough to run that yet. Add the metric you want, like latency, errors, traffic, or ATS.";
+
+    case "unsupported_or_ambiguous_request":
+    default:
+      return "That didn't look like a triage request. Ask about traffic, latency, errors, cache, or incidents — or click Run Triage with the current scope.";
+  }
+}
+
+function shouldBlockForClarification(args: {
+  parsed: {
+    clarificationRequired: boolean;
+    clarificationReason: string | null;
+    metric: string | null;
+  };
+  latestTriageRun: ChatTriage["run"] | null;
+}) {
+  const { parsed, latestTriageRun } = args;
+
+  if (!parsed.clarificationRequired) return false;
+
+  // Allow metric-less inherited followups only later if you explicitly want them.
+  // For now, block all clarification-required asks at page level.
+  return true;
+}
+
 // ── Home ───────────────────────────────────────────────────────────────────
 export default function Home() {
   const [mounted, setMounted] = useState(false);
@@ -5927,6 +5966,16 @@ export default function Home() {
 
       if (!guard.ok) {
         addText("assistant", guard.message);
+        return;
+      }
+
+      if (
+        shouldBlockForClarification({
+          parsed,
+          latestTriageRun: latestTriageRun ?? null,
+        })
+      ) {
+        addText("assistant", getClarificationMessage(parsed));
         return;
       }
 

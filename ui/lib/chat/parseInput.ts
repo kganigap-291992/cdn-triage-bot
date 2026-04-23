@@ -342,6 +342,9 @@ function detectIntentSubtype(args: {
 }
 
 function detectConfidence(args: {
+  text: string;
+  lane: ParserLane;
+  view: ParserView;
   metric: ParserMetric;
   rawCode: string | null;
   family: ParserFamily;
@@ -353,6 +356,9 @@ function detectConfidence(args: {
   confidenceReason: string;
 } {
   const {
+    text,
+    lane,
+    view,
     metric,
     rawCode,
     family,
@@ -363,51 +369,246 @@ function detectConfidence(args: {
 
   const hasScope = Object.values(scopeChanges).some(Boolean);
 
+  const hasCompareLanguage =
+    text.includes("compare") ||
+    text.includes("previous window") ||
+    text.includes("vs") ||
+    text.includes("versus");
+
+  const hasWeakScopeLanguage =
+    /\b(in|for)\b/.test(text) &&
+    !hasScope &&
+    !dimension;
+
+  const hasWeakTimeLanguage =
+    /\b(last|past|over|for)\b/.test(text) &&
+    !timeOverride &&
+    view !== "compare";
+
+  const hasMetric = Boolean(metric);
+
+  // -----------------------------
+  // HIGH confidence
+  // -----------------------------
   if (rawCode) {
     return {
       confidence: "high",
-      confidenceReason: "raw code matched deterministically",
+      confidenceReason: "strong metric match: raw ATS code matched deterministically",
     };
   }
 
   if (family && metric === "ats") {
     return {
       confidence: "high",
-      confidenceReason: "ATS family matched deterministically",
+      confidenceReason: "strong metric match: ATS family matched deterministically",
     };
   }
 
-  if (metric && (dimension || timeOverride || hasScope)) {
+  if (lane === "compare" && hasMetric) {
     return {
       confidence: "high",
-      confidenceReason: "metric matched with explicit time/dimension/scope",
+      confidenceReason: "compare intent is clear with supported metric",
     };
   }
 
-  if (metric) {
+  if (hasMetric && (timeOverride || dimension || hasScope)) {
+    const parts: string[] = ["strong metric match"];
+    if (timeOverride) parts.push("explicit time match");
+    if (dimension) parts.push("explicit dimension match");
+    if (hasScope) parts.push("explicit scope match");
+
     return {
-      confidence: "medium",
-      confidenceReason: "metric matched deterministically",
+      confidence: "high",
+      confidenceReason: parts.join(" + "),
+    };
+  }
+
+  // -----------------------------
+  // LOW confidence
+  // -----------------------------
+  if (!hasMetric && hasCompareLanguage) {
+    return {
+      confidence: "low",
+      confidenceReason: "compare ambiguity: compare language found without a supported metric",
+    };
+  }
+
+  if (!hasMetric && hasWeakScopeLanguage) {
+    return {
+      confidence: "low",
+      confidenceReason: "weak scope match: scope-like language found but no valid scope or metric resolved",
+    };
+  }
+
+  if (!hasMetric && hasWeakTimeLanguage) {
+    return {
+      confidence: "low",
+      confidenceReason: "partial time match: time-like language found but no supported metric resolved",
+    };
+  }
+
+  if (!hasMetric) {
+    return {
+      confidence: "low",
+      confidenceReason: "no supported metric detected",
+    };
+  }
+
+  // -----------------------------
+  // MEDIUM confidence
+  // -----------------------------
+  return {
+    confidence: "medium",
+    confidenceReason: "strong metric match, but no explicit time, dimension, or scope",
+  };
+}
+
+function detectClarification(args: {
+  text: string;
+  lane: ParserLane;
+  metric: ParserMetric;
+  confidence: ParserConfidence;
+  scopeChanges: ParserScopeChanges;
+  dimension: ParserDimension;
+  timeOverride: ParserTimeOverride;
+}): {
+  clarificationRequired: boolean;
+  clarificationReason: string | null;
+} {
+  const { text, lane, metric, confidence, scopeChanges, dimension, timeOverride } = args;
+
+  const hasScope = Object.values(scopeChanges).some(Boolean);
+
+  const hasCompareLanguage =
+    text.includes("compare") ||
+    text.includes("previous window") ||
+    text.includes("vs") ||
+    text.includes("versus");
+
+  const hasWeakScopeLanguage =
+    /\b(in|for)\b/.test(text) &&
+    !hasScope &&
+    !dimension;
+
+  const hasWeakTimeLanguage =
+    /\b(last|past|over|for)\b/.test(text) &&
+    !timeOverride &&
+    lane !== "compare";
+
+  if (!metric && hasCompareLanguage) {
+    return {
+      clarificationRequired: true,
+      clarificationReason: "compare_requires_metric",
+    };
+  }
+
+  if (!metric && hasWeakScopeLanguage) {
+    return {
+      clarificationRequired: true,
+      clarificationReason: "scope_mentioned_but_unresolved",
+    };
+  }
+
+  if (!metric && hasWeakTimeLanguage) {
+    return {
+      clarificationRequired: true,
+      clarificationReason: "time_mentioned_but_unresolved",
+    };
+  }
+
+  if (!metric) {
+    return {
+      clarificationRequired: true,
+      clarificationReason: "unsupported_or_ambiguous_request",
+    };
+  }
+
+  if (confidence === "low") {
+    return {
+      clarificationRequired: true,
+      clarificationReason: "low_confidence_parse",
     };
   }
 
   return {
-    confidence: "low",
-    confidenceReason: "no supported metric detected",
+    clarificationRequired: false,
+    clarificationReason: null,
   };
 }
 
-export function parseInput(input: string): ParserOutput {
-  const { rawText, normalizedText } = normalizeInput(input);
-  const repaired = applyBoundedRepair(normalizedText);
 
-  const result = createEmptyParserOutput({
-    rawText,
-    normalizedText,
-  });
+type ParsedFields = {
+  workingText: string;
+  rawCode: string | null;
+  family: ParserFamily;
+  metric: ParserMetric;
+  timeOverride: ParserTimeOverride;
+  dimension: ParserDimension;
+  scopeChanges: ParserScopeChanges;
+  scopeMode: ParserScopeMode;
+  view: ParserView;
+  lane: ParserLane;
+  intentSubtype: string | null;
+  confidence: ParserConfidence;
+  confidenceReason: string;
+  clarificationRequired: boolean;
+  clarificationReason: string | null;
+};
 
-  const workingText = repaired.repairedText;
+function confidenceRank(confidence: ParserConfidence): number {
+  if (confidence === "high") return 3;
+  if (confidence === "medium") return 2;
+  return 1;
+}
 
+function applyLowConfidenceRepair(text: string): {
+  repairedText: string;
+  repairApplied: boolean;
+  repairReason: string | null;
+} {
+  let repairedText = String(text || "").trim();
+  let repairApplied = false;
+  const reasons: string[] = [];
+
+  const replacements: Array<[RegExp, string, string]> = [
+    [/\blatncy\b/g, "latency", "fixed latency typo"],
+    [/\btrafic\b/g, "traffic", "fixed traffic typo"],
+    [/\berors\b/g, "errors", "fixed errors typo"],
+    [/\berrots\b/g, "errors", "fixed errors typo"],
+    [/\bregon\b/g, "region", "fixed region typo"],
+    [/\bregoin\b/g, "region", "fixed region typo"],
+    [/\bmanifset\b/g, "manifest", "fixed manifest typo"],
+
+    [/\b(\d+)\s*h\b/g, "$1 hours", "expanded hour shorthand"],
+    [/\b(\d+)\s*hr\b/g, "$1 hour", "expanded hour shorthand"],
+    [/\b(\d+)\s*hrs\b/g, "$1 hours", "expanded hour shorthand"],
+    [/\b(\d+)\s*m\b/g, "$1 minutes", "expanded minute shorthand"],
+    [/\b(\d+)\s*min\b/g, "$1 minute", "expanded minute shorthand"],
+    [/\b(\d+)\s*mins\b/g, "$1 minutes", "expanded minute shorthand"],
+
+    [/\btcp miss\b/g, "tcp_miss", "normalized ATS raw code wording"],
+    [/\bdns fail\b/g, "err_dns_fail", "normalized ATS raw code wording"],
+  ];
+
+  for (const [pattern, replacement, reason] of replacements) {
+    const next = repairedText.replace(pattern, replacement);
+    if (next !== repairedText) {
+      repairedText = next;
+      repairApplied = true;
+      reasons.push(reason);
+    }
+  }
+
+  repairedText = repairedText.replace(/\s+/g, " ").trim();
+
+  return {
+    repairedText,
+    repairApplied,
+    repairReason: reasons.length ? reasons.join("; ") : null,
+  };
+}
+
+function parseWorkingText(workingText: string): ParsedFields {
   const rawCode = detectRawCode(workingText);
   const family = detectFamily(workingText, rawCode);
   const metric = detectMetric(workingText);
@@ -425,7 +626,11 @@ export function parseInput(input: string): ParserOutput {
     view,
     dimension,
   });
+
   const { confidence, confidenceReason } = detectConfidence({
+    text: workingText,
+    lane,
+    view,
     metric,
     rawCode,
     family,
@@ -434,8 +639,123 @@ export function parseInput(input: string): ParserOutput {
     scopeChanges,
   });
 
+  const { clarificationRequired, clarificationReason } = detectClarification({
+    text: workingText,
+    lane,
+    metric,
+    confidence,
+    scopeChanges,
+    dimension,
+    timeOverride,
+  });
+
+  return {
+    workingText,
+    rawCode,
+    family,
+    metric,
+    timeOverride,
+    dimension,
+    scopeChanges,
+    scopeMode,
+    view,
+    lane,
+    intentSubtype,
+    confidence,
+    confidenceReason,
+    clarificationRequired,
+    clarificationReason,
+  };
+}
+
+function chooseBestParse(args: {
+  original: ParsedFields;
+  repaired: ParsedFields;
+  repairedTextChanged: boolean;
+}): ParsedFields {
+  const { original, repaired, repairedTextChanged } = args;
+
+  if (!repairedTextChanged) return original;
+
+  const originalRank = confidenceRank(original.confidence);
+  const repairedRank = confidenceRank(repaired.confidence);
+
+  if (repairedRank > originalRank) return repaired;
+
+  if (
+    original.clarificationRequired &&
+    !repaired.clarificationRequired &&
+    repairedRank >= originalRank
+  ) {
+    return repaired;
+  }
+
+  return original;
+}
+
+
+export function parseInput(input: string): ParserOutput {
+  const { rawText, normalizedText } = normalizeInput(input);
+  const repaired = applyBoundedRepair(normalizedText);
+
+  const result = createEmptyParserOutput({
+    rawText,
+    normalizedText,
+  });
+
+  const firstPass = parseWorkingText(repaired.repairedText);
+
+    let finalPass = firstPass;
+    let finalRepairApplied = repaired.repairApplied;
+    let finalRepairText = repaired.repairedText;
+
+    const shouldAttemptRepair =
+        firstPass.confidence === "low" ||
+        (
+            firstPass.confidence === "medium" &&
+            Boolean(firstPass.metric) &&
+            !firstPass.dimension &&
+            !firstPass.timeOverride &&
+            firstPass.scopeMode === "inherit" &&
+            /\b(by|in|for)\b/.test(firstPass.workingText)
+        );
+
+        if (shouldAttemptRepair) {
+        const lowConfidenceRepair = applyLowConfidenceRepair(firstPass.workingText);
+
+        if (lowConfidenceRepair.repairApplied) {
+            const repairedPass = parseWorkingText(lowConfidenceRepair.repairedText);
+
+            finalPass = chooseBestParse({
+                original: firstPass,
+                repaired: repairedPass,
+                repairedTextChanged:
+                lowConfidenceRepair.repairedText !== firstPass.workingText,
+            });
+            }
+        }
+
+    const {
+    workingText,
+    rawCode,
+    family,
+    metric,
+    timeOverride,
+    dimension,
+    scopeChanges,
+    scopeMode,
+    view,
+    lane,
+    intentSubtype,
+    confidence,
+    confidenceReason,
+    clarificationRequired,
+    clarificationReason,
+    } = finalPass;
+
   result.repairedText = workingText;
-  result.repairApplied = repaired.repairApplied;
+  result.repairApplied =
+    String(workingText || "").trim() !== String(normalizedText || "").trim();
 
   result.metric = metric;
   result.rawCode = rawCode;
@@ -455,13 +775,8 @@ export function parseInput(input: string): ParserOutput {
   result.confidence = confidence;
   result.confidenceReason = confidenceReason;
 
-  if (lane === "clarification") {
-    result.clarificationRequired = true;
-    result.clarificationReason = "unsupported_or_ambiguous_request";
-  } else {
-    result.clarificationRequired = false;
-    result.clarificationReason = null;
-  }
+    result.clarificationRequired = clarificationRequired;
+    result.clarificationReason = clarificationReason;
 
   console.log("🧠 PARSER OUTPUT", result);
 
