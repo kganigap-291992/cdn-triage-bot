@@ -1,1269 +1,1173 @@
-"use client";
+  "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import Image from "next/image";
-import type { TriageResponse } from "@/lib/triage/contracts";
-import { CANON } from "@/lib/schema/canonical";
-import { parseTriageIntent } from "@/lib/triage/intent";
-import { resolveNamedTimeWindow } from "@/lib/triage/resolveNamedTimeWindow";
-import ChatInput from "@/components/chat/ChatInput";
-import ConversationThread from "@/components/chat/ConversationThread";
-import ExplainCard from "@/components/cards/ExplainCard";
-import MissionStrip from "@/components/mission/MissionStrip";
-import { detectIntent } from "@/lib/router/intent";
-import CompareCard from "@/components/cards/CompareCard";
-import NextActionChips from "@/components/NextActionChips";
-import { getNextActions } from "@/lib/nextActions/getNextActions";
-import UtcDateTimeInput from "@/components/filters/UtcDateTimeInput";
-import StatusBarGraph from "@/components/graphs/StatusBarGraph";
-import { evaluateGuardrails } from "@/lib/chat/guardrails";
-import { runExplorationAgent } from "@/lib/chat/explorationAgent";
-import { normalizeInput } from "@/lib/chat/normalizeInput";
-import { parseInput } from "@/lib/chat/parseInput";
-import {
-  detectGlossaryIntent,
-  detectAtsCrcTerms,
-  normalizeAtsExecutionFamily,
-} from "@/lib/chat/domainLexicon";
-import { lookupAtsCrc } from "@/lib/triage/atsCrcGlossary";
+  import React, { useEffect, useMemo, useRef, useState } from "react";
+  import Image from "next/image";
+  import type { TriageResponse } from "@/lib/triage/contracts";
+  import { CANON } from "@/lib/schema/canonical";
+  import { parseTriageIntent } from "@/lib/triage/intent";
+  import { resolveNamedTimeWindow } from "@/lib/triage/resolveNamedTimeWindow";
+  import ChatInput from "@/components/chat/ChatInput";
+  import ConversationThread from "@/components/chat/ConversationThread";
+  import ExplainCard from "@/components/cards/ExplainCard";
+  import MissionStrip from "@/components/mission/MissionStrip";
+  import { detectIntent } from "@/lib/router/intent";
+  import CompareCard from "@/components/cards/CompareCard";
+  import NextActionChips from "@/components/NextActionChips";
+  import { getNextActions } from "@/lib/nextActions/getNextActions";
+  import UtcDateTimeInput from "@/components/filters/UtcDateTimeInput";
+  import StatusBarGraph from "@/components/graphs/StatusBarGraph";
+  import { evaluateGuardrails } from "@/lib/chat/guardrails";
+  import { runExplorationAgent } from "@/lib/chat/explorationAgent";
+  import { normalizeInput } from "@/lib/chat/normalizeInput";
+  import { parseInput } from "@/lib/chat/parseInput";
+  import {
+    detectGlossaryIntent,
+    detectAtsCrcTerms,
+    normalizeAtsExecutionFamily,
+  } from "@/lib/chat/domainLexicon";
+  import { lookupAtsCrc } from "@/lib/triage/atsCrcGlossary";
 
-// ── constants ──────────────────────────────────────────────────────────────
-const LOGO_SRC = "/cachey-logo.png";
-const PARTNER_KEY = "cachey:partner";
-const SERVICE_KEY = "cachey:service";
-const FILTERS_KEY = "cachey:filters";
-const FILTERS_TTL_MS = 10 * 60 * 1000;
-const PARTNER_OPTIONS = CANON.partners;
-const SERVICE_OPTIONS = CANON.services;
-const GRID_STROKE = "rgba(255,255,255,0.06)";
+  // ── constants ──────────────────────────────────────────────────────────────
+  const LOGO_SRC = "/cachey-logo.png";
+  const PARTNER_KEY = "cachey:partner";
+  const SERVICE_KEY = "cachey:service";
+  const FILTERS_KEY = "cachey:filters";
+  const FILTERS_TTL_MS = 10 * 60 * 1000;
+  const PARTNER_OPTIONS = CANON.partners;
+  const SERVICE_OPTIONS = CANON.services;
+  const GRID_STROKE = "rgba(255,255,255,0.06)";
 
-// ── types ──────────────────────────────────────────────────────────────────
-type Partner = (typeof CANON.partners)[number];
-type PartnerOrMissing = Partner | "";
-type DataSource = "clickhouse";
-type TimeMode = "relative" | "absolute";
+  // ── types ──────────────────────────────────────────────────────────────────
+  type Partner = (typeof CANON.partners)[number];
+  type PartnerOrMissing = Partner | "";
+  type DataSource = "clickhouse";
+  type TimeMode = "relative" | "absolute";
 
-type TriageInputs = {
-  dataSource: DataSource;
-  partner: PartnerOrMissing;
-  service: string;
-  region: string;
-  pop: string;
-  windowMinutes: number;
-  startTsUtc?: string | null;
-  endTsUtc?: string | null;
-  contentType: string;
-  uaFamily: string;
-};
+  type TriageInputs = {
+    dataSource: DataSource;
+    partner: PartnerOrMissing;
+    service: string;
+    region: string;
+    pop: string;
+    windowMinutes: number;
+    startTsUtc?: string | null;
+    endTsUtc?: string | null;
+    contentType: string;
+    uaFamily: string;
+  };
 
-type ChatText = {
-  id: string;
-  type: "text";
-  role: "system" | "user" | "assistant";
-  ts: string;
-  text: string;
-};
+  type ChatText = {
+    id: string;
+    type: "text";
+    role: "system" | "user" | "assistant";
+    ts: string;
+    text: string;
+  };
 
-type ChatTriage = {
-  id: string;
-  type: "triage";
-  role: "assistant";
-  ts: string;
-  run: {
-    inputs: TriageInputs;
-    summaryText: string;
-    metricsJson: any;
-    sql?: { queries: string[]; params?: Record<string, any> } | null;
-    swarm?: {
-      assessment?: {
-        overallStatus?: "ok" | "warn" | "critical";
-        primarySignal?: "traffic" | "latency" | "errors" | "cache" | "mixed";
-        summary?: string;
-        keyFindings?: string[];
-        metadata?: {
-          table?: string;
-          bucketSeconds?: number;
-          timeMode?: "relative" | "absolute";
-          startTs?: string;
-          endTs?: string;
-          compareStartTs?: string;
-          compareEndTs?: string;
+  type ChatTriage = {
+    id: string;
+    type: "triage";
+    role: "assistant";
+    ts: string;
+    run: {
+      inputs: TriageInputs;
+      summaryText: string;
+      metricsJson: any;
+      sql?: { queries: string[]; params?: Record<string, any> } | null;
+      swarm?: {
+        assessment?: {
+          overallStatus?: "ok" | "warn" | "critical";
+          primarySignal?: "traffic" | "latency" | "errors" | "cache" | "mixed";
+          summary?: string;
+          keyFindings?: string[];
+          metadata?: {
+            table?: string;
+            bucketSeconds?: number;
+            timeMode?: "relative" | "absolute";
+            startTs?: string;
+            endTs?: string;
+            compareStartTs?: string;
+            compareEndTs?: string;
+          };
         };
+        agents?: Array<{
+          agentId?: "scope" | "traffic" | "latency" | "errors" | "cache";
+          agent?: "scope" | "traffic" | "latency" | "errors" | "cache";
+          title?: string;
+          status: "ok" | "warn" | "critical";
+          summary: string;
+        }>;
+      } | null;
+      scopeSource?: "filters" | "chat";
+      chatContext?: {
+        rawText: string;
+        parseMode: "filters-default" | "chat-overrides";
+        detected: Record<string, any>;
+      } | null;
+    };
+  };
+
+  type ChatDrill = {
+    id: string;
+    type: "drill";
+    role: "assistant";
+    ts: string;
+    drill: any;
+    summaryText: string;
+  };
+
+  type ChatExplain = {
+    id: string;
+    type: "explain";
+    role: "assistant";
+    ts: string;
+    summary: string;
+    overallState?: string;
+    primarySignal?: string;
+  };
+
+  type ChatCompare = {
+    id: string;
+    type: "compare";
+    role: "assistant";
+    ts: string;
+    summary: string;
+    overallState?: string;
+    primarySignal?: string;
+    compareMetrics?: {
+      cache?: {
+        current: number | null;
+        previous: number | null;
+        delta: number | null;
       };
-      agents?: Array<{
-        agentId?: "scope" | "traffic" | "latency" | "errors" | "cache";
-        agent?: "scope" | "traffic" | "latency" | "errors" | "cache";
-        title?: string;
-        status: "ok" | "warn" | "critical";
-        summary: string;
+      errors?: {
+        current: number | null;
+        previous: number | null;
+        delta: number | null;
+      };
+      latency?: {
+        current: number | null;
+        previous: number | null;
+        delta: number | null;
+      };
+      traffic?: {
+        current: number | null;
+        previous: number | null;
+        delta: number | null;
+      };
+    };
+    compareGraph?: {
+      metricType: "cache" | "latency" | "errors" | "traffic";
+      currentSeries: Array<{ ts: string; value: number | null }>;
+      previousSeries: Array<{ ts: string; value: number | null }>;
+      currentSeriesP99?: Array<{ ts: string; value: number | null }>;
+      previousSeriesP99?: Array<{ ts: string; value: number | null }>;
+    };
+  };
+
+  type ChatStatusBreakdown = {
+    id: string;
+    type: "status_breakdown";
+    role: "assistant";
+    ts: string;
+    breakdown: {
+      mode: "aggregate" | "region" | "pop" | "host";
+      title: string;
+      summary: string;
+      rows?: Array<{
+        label: string;
+        totalRequests: number;
+        counts: Record<string, number>;
       }>;
-    } | null;
-    scopeSource?: "filters" | "chat";
-    chatContext?: {
-      rawText: string;
-      parseMode: "filters-default" | "chat-overrides";
-      detected: Record<string, any>;
-    } | null;
-  };
-};
-
-type ChatDrill = {
-  id: string;
-  type: "drill";
-  role: "assistant";
-  ts: string;
-  drill: any;
-  summaryText: string;
-};
-
-type ChatExplain = {
-  id: string;
-  type: "explain";
-  role: "assistant";
-  ts: string;
-  summary: string;
-  overallState?: string;
-  primarySignal?: string;
-};
-
-type ChatCompare = {
-  id: string;
-  type: "compare";
-  role: "assistant";
-  ts: string;
-  summary: string;
-  overallState?: string;
-  primarySignal?: string;
-  compareMetrics?: {
-    cache?: {
-      current: number | null;
-      previous: number | null;
-      delta: number | null;
-    };
-    errors?: {
-      current: number | null;
-      previous: number | null;
-      delta: number | null;
-    };
-    latency?: {
-      current: number | null;
-      previous: number | null;
-      delta: number | null;
-    };
-    traffic?: {
-      current: number | null;
-      previous: number | null;
-      delta: number | null;
+      totals?: Record<string, number>;
     };
   };
-  compareGraph?: {
-    metricType: "cache" | "latency" | "errors" | "traffic";
-    currentSeries: Array<{ ts: string; value: number | null }>;
-    previousSeries: Array<{ ts: string; value: number | null }>;
-    currentSeriesP99?: Array<{ ts: string; value: number | null }>;
-    previousSeriesP99?: Array<{ ts: string; value: number | null }>;
-  };
-};
 
-type ChatStatusBreakdown = {
-  id: string;
-  type: "status_breakdown";
-  role: "assistant";
-  ts: string;
-  breakdown: {
-    mode: "aggregate" | "region" | "pop" | "host";
+  type ChatExploration = {
+    id: string;
+    type: "exploration";
+    role: "assistant";
+    ts: string;
     title: string;
     summary: string;
-    rows?: Array<{
-      label: string;
-      totalRequests: number;
-      counts: Record<string, number>;
-    }>;
-    totals?: Record<string, number>;
-  };
-};
-
-type ChatExploration = {
-  id: string;
-  type: "exploration";
-  role: "assistant";
-  ts: string;
-  title: string;
-  summary: string;
-  metric: string;
-  view: "timeseries" | "breakdown";
-  displayLabel?: string;
-  series?: Array<{ ts: string; value: number | null }>;
-  seriesSecondary?: Array<{ ts: string; value: number | null }>;
-  rows?: any[];
-  spotlight?: {
-    key: string;
-    title?: string;
-    summary?: string;
-    series: Array<{ ts: string; value: number | null }>;
+    metric: string;
+    view: "timeseries" | "breakdown";
+    displayLabel?: string;
+    series?: Array<{ ts: string; value: number | null }>;
     seriesSecondary?: Array<{ ts: string; value: number | null }>;
+    rows?: any[];
+    spotlight?: {
+      key: string;
+      title?: string;
+      summary?: string;
+      series: Array<{ ts: string; value: number | null }>;
+      seriesSecondary?: Array<{ ts: string; value: number | null }>;
+    };
   };
-};
 
-type ChatMsg =
-  | ChatText
-  | ChatTriage
-  | ChatDrill
-  | ChatExplain
-  | ChatCompare
-  | ChatStatusBreakdown
-  | ChatExploration;
+  type ChatMsg =
+    | ChatText
+    | ChatTriage
+    | ChatDrill
+    | ChatExplain
+    | ChatCompare
+    | ChatStatusBreakdown
+    | ChatExploration;
 
-type TimeseriesPoint = {
-  ts: string;
-  totalRequests: number;
-  error5xxCount: number;
-  errorRatePct: number;
-  p95TtmsMs: number | null;
-  p99TtmsMs: number | null;
-  cacheHitRate?: number | null;
-  crcErrorCount?: number;
-  statusCountsByCode?: Record<string, number>;
-};
+  type TimeseriesPoint = {
+    ts: string;
+    totalRequests: number;
+    error5xxCount: number;
+    errorRatePct: number;
+    p95TtmsMs: number | null;
+    p99TtmsMs: number | null;
+    cacheHitRate?: number | null;
+    crcErrorCount?: number;
+    statusCountsByCode?: Record<string, number>;
+  };
 
-type HostSeriesItem = {
-  host: string;
-  totalRequests: number;
-  error5xxCount: number;
-  crcErrorCount: number;
-  errorRatePct: number;
-  p95TtmsMs: number | null;
-  p99TtmsMs: number | null;
-};
+  type HostSeriesItem = {
+    host: string;
+    totalRequests: number;
+    error5xxCount: number;
+    crcErrorCount: number;
+    errorRatePct: number;
+    p95TtmsMs: number | null;
+    p99TtmsMs: number | null;
+  };
 
-type CrcSeriesItem = {
-  ts: string;
-  crcErrorCount: number;
-};
+  type CrcSeriesItem = {
+    ts: string;
+    crcErrorCount: number;
+  };
 
-type TimeseriesData = {
-  bucketSeconds: number | null;
-  startTs: string | null;
-  endTs: string | null;
-  points: TimeseriesPoint[];
-  statusCodeSeries?: string[];
-  hostSeries?: HostSeriesItem[];
-  crcSeries?: CrcSeriesItem[];
-};
+  type TimeseriesData = {
+    bucketSeconds: number | null;
+    startTs: string | null;
+    endTs: string | null;
+    points: TimeseriesPoint[];
+    statusCodeSeries?: string[];
+    hostSeries?: HostSeriesItem[];
+    crcSeries?: CrcSeriesItem[];
+  };
 
-type SchemaState = {
-  partners: string[];
-  services: string[];
-  regions: string[];
-  pops: string[];
-  contentTypes: string[];
-  uaFamilies: string[];
-};
-
-type InvestigationScope = {
-  partner: PartnerOrMissing;
-  service: string;
-  region: string;
-  pop: string;
-  contentType: string;
-  uaFamily: string;
-};
-
-type InvestigationTimeContext = {
-  mode: "relative" | "absolute";
-  windowMinutes: number;
-  startTsUtc: string | null;
-  endTsUtc: string | null;
-};
-
-type InvestigationWorstCandidate = {
-  value: string;
-  errorRatePct: number | null;
-  p95TtmsMs: number | null;
-  cacheHitRate: number | null;
-  totalRequests: number | null;
-  source: string;
-};
-
-type InvestigationContext = {
-  baseScope: InvestigationScope;
-  time: InvestigationTimeContext;
-  worstRegion: InvestigationWorstCandidate | null;
-  worstPop: InvestigationWorstCandidate | null;
-  availableDimensions: {
+  type SchemaState = {
+    partners: string[];
+    services: string[];
     regions: string[];
     pops: string[];
     contentTypes: string[];
     uaFamilies: string[];
   };
-};
 
-// ── pure helpers ───────────────────────────────────────────────────────────
+  type InvestigationScope = {
+    partner: PartnerOrMissing;
+    service: string;
+    region: string;
+    pop: string;
+    contentType: string;
+    uaFamily: string;
+  };
 
-function nowIso() {
-  return new Date().toISOString();
-}
-function safeGetLS(key: string) {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
+  type InvestigationTimeContext = {
+    mode: "relative" | "absolute";
+    windowMinutes: number;
+    startTsUtc: string | null;
+    endTsUtc: string | null;
+  };
+
+  type InvestigationWorstCandidate = {
+    value: string;
+    errorRatePct: number | null;
+    p95TtmsMs: number | null;
+    cacheHitRate: number | null;
+    totalRequests: number | null;
+    source: string;
+  };
+
+  type InvestigationContext = {
+    baseScope: InvestigationScope;
+    time: InvestigationTimeContext;
+    worstRegion: InvestigationWorstCandidate | null;
+    worstPop: InvestigationWorstCandidate | null;
+    availableDimensions: {
+      regions: string[];
+      pops: string[];
+      contentTypes: string[];
+      uaFamilies: string[];
+    };
+  };
+
+  // ── pure helpers ───────────────────────────────────────────────────────────
+
+  function nowIso() {
+    return new Date().toISOString();
   }
-}
-function safeSetLS(key: string, val: string) {
-  try {
-    localStorage.setItem(key, val);
-  } catch {}
-}
-function safeDelLS(key: string) {
-  try {
-    localStorage.removeItem(key);
-  } catch {}
-}
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
-function formatMsOrNA(x: number | null | undefined): string {
-  if (x == null || !Number.isFinite(Number(x))) return "n/a";
-  return `${Math.round(Number(x))} ms`;
-}
-function formatPctOrNA(x: number | null | undefined): string {
-  if (x == null || !Number.isFinite(Number(x))) return "n/a";
-  return `${Number(x).toFixed(2)}%`;
-}
-function formatIntOrNA(x: number | null | undefined): string {
-  if (x == null || !Number.isFinite(Number(x))) return "0";
-  return `${Math.round(Number(x)).toLocaleString()}`;
-}
+  function safeGetLS(key: string) {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+  function safeSetLS(key: string, val: string) {
+    try {
+      localStorage.setItem(key, val);
+    } catch {}
+  }
+  function safeDelLS(key: string) {
+    try {
+      localStorage.removeItem(key);
+    } catch {}
+  }
+  function clamp(n: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, n));
+  }
+  function formatMsOrNA(x: number | null | undefined): string {
+    if (x == null || !Number.isFinite(Number(x))) return "n/a";
+    return `${Math.round(Number(x))} ms`;
+  }
+  function formatPctOrNA(x: number | null | undefined): string {
+    if (x == null || !Number.isFinite(Number(x))) return "n/a";
+    return `${Number(x).toFixed(2)}%`;
+  }
+  function formatIntOrNA(x: number | null | undefined): string {
+    if (x == null || !Number.isFinite(Number(x))) return "0";
+    return `${Math.round(Number(x)).toLocaleString()}`;
+  }
 
-function getAtsSummaryLine(args: {
-  hitPct: number | null;
-  missPct: number | null;
-  refreshPct: number | null;
-  clientErrorPct: number | null;
-  infraErrorPct: number | null;
-}) {
-  const hit = Number(args.hitPct ?? 0);
-  const miss = Number(args.missPct ?? 0);
-  const refresh = Number(args.refreshPct ?? 0);
-  const clientErr = Number(args.clientErrorPct ?? 0);
-  const infraErr = Number(args.infraErrorPct ?? 0);
+  function getAtsSummaryLine(args: {
+    hitPct: number | null;
+    missPct: number | null;
+    refreshPct: number | null;
+    clientErrorPct: number | null;
+    infraErrorPct: number | null;
+  }) {
+    const hit = Number(args.hitPct ?? 0);
+    const miss = Number(args.missPct ?? 0);
+    const refresh = Number(args.refreshPct ?? 0);
+    const clientErr = Number(args.clientErrorPct ?? 0);
+    const infraErr = Number(args.infraErrorPct ?? 0);
 
-if (infraErr >= 2) {
-  return "Delivery degradation is driven by elevated infrastructure cache errors.";
-}
+  if (infraErr >= 2) {
+    return "Delivery degradation is driven by elevated infrastructure cache errors.";
+  }
 
-if (clientErr >= 2) {
-  return "Client-side cache errors are impacting successful delivery.";
-}
+  if (clientErr >= 2) {
+    return "Client-side cache errors are impacting successful delivery.";
+  }
 
-if (hit >= 85 && miss <= 10) {
-  return "Cache performance is strong with a high hit ratio.";
-}
+  if (hit >= 85 && miss <= 10) {
+    return "Cache performance is strong with a high hit ratio.";
+  }
 
-if (hit >= 75 && miss <= 20) {
-  return "Cache performance is stable with moderate miss pressure.";
-}
+  if (hit >= 75 && miss <= 20) {
+    return "Cache performance is stable with moderate miss pressure.";
+  }
 
-if (miss >= 20) {
-  return "Cache miss rate is elevated, indicating increased origin dependency.";
-}
+  if (miss >= 20) {
+    return "Cache miss rate is elevated, indicating increased origin dependency.";
+  }
 
-if (refresh >= 12) {
-  return "Cache refresh activity is elevated and may be reducing cache efficiency.";
-}
+  if (refresh >= 12) {
+    return "Cache refresh activity is elevated and may be reducing cache efficiency.";
+  }
 
-return "Cache performance is mixed with minor delivery inefficiencies.";
-}
+  return "Cache performance is mixed with minor delivery inefficiencies.";
+  }
 
-function windowMinutesFromRange(
-  startIso?: string | null,
-  endIso?: string | null,
-  fallback = 120
-) {
-  if (!startIso || !endIso) return fallback;
-  const s = new Date(startIso).getTime();
-  const e = new Date(endIso).getTime();
-  if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) return fallback;
-  return Math.max(1, Math.round((e - s) / 60000));
-}
-function bucketLabel(bucketSeconds: number | null | undefined) {
-  const s = Number(bucketSeconds || 0);
-  if (!Number.isFinite(s) || s <= 0) return "bucket";
-  if (s % 3600 === 0) return `${s / 3600}h`;
-  if (s % 60 === 0) return `${s / 60}m`;
-  return `${s}s`;
-}
-function formatCountTick(v: number): string {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "";
-  const abs = Math.abs(n);
-  if (abs >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
-  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return Math.round(n).toString();
-}
-function formatUtcHM(iso: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(
-    d.getUTCMinutes()
-  ).padStart(2, "0")}`;
-}
-function formatUtcYmdHm(iso: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const y = d.getUTCFullYear();
-  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const da = String(d.getUTCDate()).padStart(2, "0");
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  return `${y}-${mo}-${da} ${hh}:${mm}`;
-}
-function timeLabelShort(tsIso: string, spanMinutes: number) {
-  if (spanMinutes <= 180) return formatUtcHM(tsIso);
-  if (spanMinutes <= 1440) {
-    const d = new Date(tsIso);
-    if (Number.isNaN(d.getTime())) return tsIso;
+  function windowMinutesFromRange(
+    startIso?: string | null,
+    endIso?: string | null,
+    fallback = 120
+  ) {
+    if (!startIso || !endIso) return fallback;
+    const s = new Date(startIso).getTime();
+    const e = new Date(endIso).getTime();
+    if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) return fallback;
+    return Math.max(1, Math.round((e - s) / 60000));
+  }
+  function bucketLabel(bucketSeconds: number | null | undefined) {
+    const s = Number(bucketSeconds || 0);
+    if (!Number.isFinite(s) || s <= 0) return "bucket";
+    if (s % 3600 === 0) return `${s / 3600}h`;
+    if (s % 60 === 0) return `${s / 60}m`;
+    return `${s}s`;
+  }
+  function formatCountTick(v: number): string {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "";
+    const abs = Math.abs(n);
+    if (abs >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+    if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+    return Math.round(n).toString();
+  }
+  function formatUtcHM(iso: string): string {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return `${String(d.getUTCHours()).padStart(2, "0")}:${String(
+      d.getUTCMinutes()
+    ).padStart(2, "0")}`;
+  }
+  function formatUtcYmdHm(iso: string): string {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const y = d.getUTCFullYear();
     const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
     const da = String(d.getUTCDate()).padStart(2, "0");
     const hh = String(d.getUTCHours()).padStart(2, "0");
     const mm = String(d.getUTCMinutes()).padStart(2, "0");
-    return `${mo}-${da} ${hh}:${mm}`;
+    return `${y}-${mo}-${da} ${hh}:${mm}`;
   }
-  const d = new Date(tsIso);
-  if (Number.isNaN(d.getTime())) return tsIso;
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(
-    2,
-    "0"
-  )}-${String(d.getUTCDate()).padStart(2, "0")}`;
-}
-function isoToDatetimeLocalUtc(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const y = d.getUTCFullYear();
-  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const da = String(d.getUTCDate()).padStart(2, "0");
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  return `${y}-${mo}-${da}T${hh}:${mm}`;
-}
-function parseDatetimeLocalAsUtcToIso(v: string): string | null {
-  const raw = String(v || "").trim();
-  if (!raw) return null;
-  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
-  if (!m) return null;
-  const dt = new Date(
-    Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], 0, 0)
-  );
-  return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
-}
-function isoToUtcText(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const y = d.getUTCFullYear();
-  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const da = String(d.getUTCDate()).padStart(2, "0");
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  return `${y}-${mo}-${da} ${hh}:${mm}`;
-}
-function computeWindowPreview(startLocal: string, endLocal: string): string {
-  const s = parseDatetimeLocalAsUtcToIso(startLocal);
-  const e = parseDatetimeLocalAsUtcToIso(endLocal);
-  if (!s || !e) return "";
-  const mins = windowMinutesFromRange(s, e, 0);
-  if (mins <= 0) return "invalid range";
-  if (mins < 60) return `${mins}m window`;
-  if (mins % 60 === 0) return `${mins / 60}h window`;
-  return `${Math.floor(mins / 60)}h ${mins % 60}m window`;
-}
-
-function detectRegionOverrideFromText(text: string): {
-  mentioned: boolean;
-  value: string | null;
-  sourceText: string | null;
-} {
-  const raw = String(text || "").toLowerCase().trim();
-  if (!raw) {
-    return { mentioned: false, value: null, sourceText: null };
+  function timeLabelShort(tsIso: string, spanMinutes: number) {
+    if (spanMinutes <= 180) return formatUtcHM(tsIso);
+    if (spanMinutes <= 1440) {
+      const d = new Date(tsIso);
+      if (Number.isNaN(d.getTime())) return tsIso;
+      const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+      const da = String(d.getUTCDate()).padStart(2, "0");
+      const hh = String(d.getUTCHours()).padStart(2, "0");
+      const mm = String(d.getUTCMinutes()).padStart(2, "0");
+      return `${mo}-${da} ${hh}:${mm}`;
+    }
+    const d = new Date(tsIso);
+    if (Number.isNaN(d.getTime())) return tsIso;
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(
+      2,
+      "0"
+    )}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  }
+  function isoToDatetimeLocalUtc(iso: string | null | undefined): string {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const y = d.getUTCFullYear();
+    const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const da = String(d.getUTCDate()).padStart(2, "0");
+    const hh = String(d.getUTCHours()).padStart(2, "0");
+    const mm = String(d.getUTCMinutes()).padStart(2, "0");
+    return `${y}-${mo}-${da}T${hh}:${mm}`;
+  }
+  function parseDatetimeLocalAsUtcToIso(v: string): string | null {
+    const raw = String(v || "").trim();
+    if (!raw) return null;
+    const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+    if (!m) return null;
+    const dt = new Date(
+      Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], 0, 0)
+    );
+    return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
+  }
+  function isoToUtcText(iso: string | null | undefined): string {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const y = d.getUTCFullYear();
+    const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const da = String(d.getUTCDate()).padStart(2, "0");
+    const hh = String(d.getUTCHours()).padStart(2, "0");
+    const mm = String(d.getUTCMinutes()).padStart(2, "0");
+    return `${y}-${mo}-${da} ${hh}:${mm}`;
+  }
+  function computeWindowPreview(startLocal: string, endLocal: string): string {
+    const s = parseDatetimeLocalAsUtcToIso(startLocal);
+    const e = parseDatetimeLocalAsUtcToIso(endLocal);
+    if (!s || !e) return "";
+    const mins = windowMinutesFromRange(s, e, 0);
+    if (mins <= 0) return "invalid range";
+    if (mins < 60) return `${mins}m window`;
+    if (mins % 60 === 0) return `${mins / 60}h window`;
+    return `${Math.floor(mins / 60)}h ${mins % 60}m window`;
   }
 
-  const patterns: Array<{ re: RegExp; value: string; sourceText: string }> = [
-    { re: /\bus[\s-]*east\b/, value: "us-east", sourceText: "us east" },
-    { re: /\bus[\s-]*west\b/, value: "us-west", sourceText: "us west" },
-    { re: /\bus[\s-]*central\b/, value: "us-central", sourceText: "us central" },
-    { re: /\beu[\s-]*west\b/, value: "eu-west", sourceText: "eu west" },
-    { re: /\beu[\s-]*central\b/, value: "eu-central", sourceText: "eu central" },
-    { re: /\bap[\s-]*south\b/, value: "ap-south", sourceText: "ap south" },
-    { re: /\bap[\s-]*northeast\b/, value: "ap-northeast", sourceText: "ap northeast" },
-    { re: /\bsa[\s-]*east\b/, value: "sa-east", sourceText: "sa east" },
-  ];
+  function detectRegionOverrideFromText(text: string): {
+    mentioned: boolean;
+    value: string | null;
+    sourceText: string | null;
+  } {
+    const raw = String(text || "").toLowerCase().trim();
+    if (!raw) {
+      return { mentioned: false, value: null, sourceText: null };
+    }
 
-  for (const entry of patterns) {
-    if (entry.re.test(raw)) {
+    const patterns: Array<{ re: RegExp; value: string; sourceText: string }> = [
+      { re: /\bus[\s-]*east\b/, value: "us-east", sourceText: "us east" },
+      { re: /\bus[\s-]*west\b/, value: "us-west", sourceText: "us west" },
+      { re: /\bus[\s-]*central\b/, value: "us-central", sourceText: "us central" },
+      { re: /\beu[\s-]*west\b/, value: "eu-west", sourceText: "eu west" },
+      { re: /\beu[\s-]*central\b/, value: "eu-central", sourceText: "eu central" },
+      { re: /\bap[\s-]*south\b/, value: "ap-south", sourceText: "ap south" },
+      { re: /\bap[\s-]*northeast\b/, value: "ap-northeast", sourceText: "ap northeast" },
+      { re: /\bsa[\s-]*east\b/, value: "sa-east", sourceText: "sa east" },
+    ];
+
+    for (const entry of patterns) {
+      if (entry.re.test(raw)) {
+        return {
+          mentioned: true,
+          value: entry.value,
+          sourceText: entry.sourceText,
+        };
+      }
+    }
+
+    const explicitRegionMatch = raw.match(
+      /\bregion\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\b/i
+    );
+    if (explicitRegionMatch) {
       return {
         mentioned: true,
-        value: entry.value,
-        sourceText: entry.sourceText,
+        value: null,
+        sourceText: explicitRegionMatch[1]?.trim() || "unknown region",
       };
     }
-  }
 
-  const explicitRegionMatch = raw.match(
-    /\bregion\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\b/i
-  );
-  if (explicitRegionMatch) {
-    return {
-      mentioned: true,
-      value: null,
-      sourceText: explicitRegionMatch[1]?.trim() || "unknown region",
-    };
-  }
-
-  return { mentioned: false, value: null, sourceText: null };
-}
-
-function detectPopOverrideFromText(text: string): {
-  mentioned: boolean;
-  value: string | null;
-  sourceText: string | null;
-} {
-  const raw = String(text || "").toLowerCase().trim();
-  if (!raw) {
     return { mentioned: false, value: null, sourceText: null };
   }
 
-  const explicitPop = raw.match(/\bpop[_\s-]?(\d{1,3})\b/i);
-  if (explicitPop) {
-    const num = explicitPop[1].padStart(3, "0");
-    return {
-      mentioned: true,
-      value: `pop_${num}`,
-      sourceText: explicitPop[0],
-    };
-  }
+  function detectPopOverrideFromText(text: string): {
+    mentioned: boolean;
+    value: string | null;
+    sourceText: string | null;
+  } {
+    const raw = String(text || "").toLowerCase().trim();
+    if (!raw) {
+      return { mentioned: false, value: null, sourceText: null };
+    }
 
-  const directional = raw.match(/\b(?:east|west|central|south|northeast)\s+(\d{1,2})\b/);
-  if (directional) {
-    const num = directional[1].padStart(3, "0");
-    return {
-      mentioned: true,
-      value: `pop_${num}`,
-      sourceText: directional[0],
-    };
-  }
-
-  if (/\bpop\b/i.test(raw)) {
-    return {
-      mentioned: true,
-      value: null,
-      sourceText: "pop",
-    };
-  }
-
-  return { mentioned: false, value: null, sourceText: null };
-}
-
-
-function detectCompareSignalFromText(
-  text: string
-): "cache" | "latency" | "errors" | "traffic" | null {
-  const lowered = String(text || "").toLowerCase();
-
-  if (
-    lowered.includes("latency") ||
-    lowered.includes("p95") ||
-    lowered.includes("p99") ||
-    lowered.includes("ttms")
-  ) {
-    return "latency";
-  }
-
-  if (
-    lowered.includes("error") ||
-    lowered.includes("5xx") ||
-    lowered.includes("failure") ||
-    lowered.includes("failures")
-  ) {
-    return "errors";
-  }
-
-  if (
-    lowered.includes("traffic") ||
-    lowered.includes("request") ||
-    lowered.includes("requests") ||
-    lowered.includes("volume")
-  ) {
-    return "traffic";
-  }
-
-  if (
-    lowered.includes("cache") ||
-    lowered.includes("hit") ||
-    lowered.includes("miss") ||
-    lowered.includes("refresh")
-  ) {
-    return "cache";
-  }
-
-  return null;
-}
-
-function detectUaFamilyOverrideFromText(text: string): {
-  mentioned: boolean;
-  value: string | null;
-  sourceText: string | null;
-} {
-  const raw = String(text || "").toLowerCase().trim();
-  if (!raw) {
-    return { mentioned: false, value: null, sourceText: null };
-  }
-
-  const patterns: Array<{ re: RegExp; value: string; sourceText: string }> = [
-    { re: /\bmobile\b/i, value: "mobile", sourceText: "mobile" },
-    { re: /\bweb\b/i, value: "web", sourceText: "web" },
-    { re: /\bstb\b/i, value: "stb", sourceText: "stb" },
-    { re: /\bsmart[\s_:-]*tv\b/i, value: "smart_tv", sourceText: "smart tv" },
-    { re: /\bconsole\b/i, value: "console", sourceText: "console" },
-  ];
-
-  for (const entry of patterns) {
-    if (entry.re.test(raw)) {
+    const explicitPop = raw.match(/\bpop[_\s-]?(\d{1,3})\b/i);
+    if (explicitPop) {
+      const num = explicitPop[1].padStart(3, "0");
       return {
         mentioned: true,
-        value: entry.value,
-        sourceText: entry.sourceText,
+        value: `pop_${num}`,
+        sourceText: explicitPop[0],
       };
     }
-  }
 
-  const explicitUaMatch = raw.match(
-    /\b(?:ua|ua family|device|device type)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+){0,2})\b/i
-  );
-  if (explicitUaMatch) {
-    return {
-      mentioned: true,
-      value: null,
-      sourceText: explicitUaMatch[1]?.trim() || "unknown ua family",
-    };
-  }
+    const directional = raw.match(/\b(?:east|west|central|south|northeast)\s+(\d{1,2})\b/);
+    if (directional) {
+      const num = directional[1].padStart(3, "0");
+      return {
+        mentioned: true,
+        value: `pop_${num}`,
+        sourceText: directional[0],
+      };
+    }
 
-  return { mentioned: false, value: null, sourceText: null };
-}
+    if (/\bpop\b/i.test(raw)) {
+      return {
+        mentioned: true,
+        value: null,
+        sourceText: "pop",
+      };
+    }
 
-function detectContentTypeOverrideFromText(text: string): {
-  mentioned: boolean;
-  value: string | null;
-  sourceText: string | null;
-} {
-  const raw = String(text || "").toLowerCase().trim();
-  if (!raw) {
     return { mentioned: false, value: null, sourceText: null };
   }
 
-  const patterns: Array<{ re: RegExp; value: string; sourceText: string }> = [
-    { re: /\bmanifest(?:s)?\b/i, value: "manifest", sourceText: "manifest" },
-    { re: /\bsegment(?:s)?\b/i, value: "segment", sourceText: "segment" },
-    { re: /\bapi\b/i, value: "api", sourceText: "api" },
-  ];
 
-  for (const entry of patterns) {
-    if (entry.re.test(raw)) {
+  function detectCompareSignalFromText(
+    text: string
+  ): "cache" | "latency" | "errors" | "traffic" | null {
+    const lowered = String(text || "").toLowerCase();
+
+    if (
+      lowered.includes("latency") ||
+      lowered.includes("p95") ||
+      lowered.includes("p99") ||
+      lowered.includes("ttms")
+    ) {
+      return "latency";
+    }
+
+    if (
+      lowered.includes("error") ||
+      lowered.includes("5xx") ||
+      lowered.includes("failure") ||
+      lowered.includes("failures")
+    ) {
+      return "errors";
+    }
+
+    if (
+      lowered.includes("traffic") ||
+      lowered.includes("request") ||
+      lowered.includes("requests") ||
+      lowered.includes("volume")
+    ) {
+      return "traffic";
+    }
+
+    if (
+      lowered.includes("cache") ||
+      lowered.includes("hit") ||
+      lowered.includes("miss") ||
+      lowered.includes("refresh")
+    ) {
+      return "cache";
+    }
+
+    return null;
+  }
+
+  function detectUaFamilyOverrideFromText(text: string): {
+    mentioned: boolean;
+    value: string | null;
+    sourceText: string | null;
+  } {
+    const raw = String(text || "").toLowerCase().trim();
+    if (!raw) {
+      return { mentioned: false, value: null, sourceText: null };
+    }
+
+    const patterns: Array<{ re: RegExp; value: string; sourceText: string }> = [
+      { re: /\bmobile\b/i, value: "mobile", sourceText: "mobile" },
+      { re: /\bweb\b/i, value: "web", sourceText: "web" },
+      { re: /\bstb\b/i, value: "stb", sourceText: "stb" },
+      { re: /\bsmart[\s_:-]*tv\b/i, value: "smart_tv", sourceText: "smart tv" },
+      { re: /\bconsole\b/i, value: "console", sourceText: "console" },
+    ];
+
+    for (const entry of patterns) {
+      if (entry.re.test(raw)) {
+        return {
+          mentioned: true,
+          value: entry.value,
+          sourceText: entry.sourceText,
+        };
+      }
+    }
+
+    const explicitUaMatch = raw.match(
+      /\b(?:ua|ua family|device|device type)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+){0,2})\b/i
+    );
+    if (explicitUaMatch) {
       return {
         mentioned: true,
-        value: entry.value,
-        sourceText: entry.sourceText,
+        value: null,
+        sourceText: explicitUaMatch[1]?.trim() || "unknown ua family",
       };
     }
+
+    return { mentioned: false, value: null, sourceText: null };
   }
 
-  // generic dimension mention: "content" / "content type"
-  // should mean the user is talking about the dimension,
-  // not requesting a literal value named "type".
-  if (/\bcontent\s*type\b/i.test(raw)) {
-    return {
-      mentioned: true,
-      value: null,
-      sourceText: "content type",
-    };
-  }
-
-  if (/\bcontent\b/i.test(raw)) {
-    return {
-      mentioned: true,
-      value: null,
-      sourceText: "content",
-    };
-  }
-
-  const explicitContentMatch = raw.match(
-    /\b(?:content\s*type|content)\s+(manifest|segment|api)\b/i
-  );
-
-  if (explicitContentMatch) {
-    const resolved = explicitContentMatch[1].toLowerCase();
-    return {
-      mentioned: true,
-      value: resolved,
-      sourceText: resolved,
-    };
-  }
-
-  return { mentioned: false, value: null, sourceText: null };
-}
-
-function convertParserTimeOverride(
-  parserTime: {
-    type: "relative" | "absolute";
-    value: string;
-  } | null
-):
-  | {
-      mode: "relative";
-      windowMinutes: number;
-      sourceText: string;
+  function detectContentTypeOverrideFromText(text: string): {
+    mentioned: boolean;
+    value: string | null;
+    sourceText: string | null;
+  } {
+    const raw = String(text || "").toLowerCase().trim();
+    if (!raw) {
+      return { mentioned: false, value: null, sourceText: null };
     }
-  | undefined {
-  if (!parserTime) return undefined;
 
-  if (parserTime.type !== "relative") {
-    return undefined;
+    const patterns: Array<{ re: RegExp; value: string; sourceText: string }> = [
+      { re: /\bmanifest(?:s)?\b/i, value: "manifest", sourceText: "manifest" },
+      { re: /\bsegment(?:s)?\b/i, value: "segment", sourceText: "segment" },
+      { re: /\bapi\b/i, value: "api", sourceText: "api" },
+    ];
+
+    for (const entry of patterns) {
+      if (entry.re.test(raw)) {
+        return {
+          mentioned: true,
+          value: entry.value,
+          sourceText: entry.sourceText,
+        };
+      }
+    }
+
+    // generic dimension mention: "content" / "content type"
+    // should mean the user is talking about the dimension,
+    // not requesting a literal value named "type".
+    if (/\bcontent\s*type\b/i.test(raw)) {
+      return {
+        mentioned: true,
+        value: null,
+        sourceText: "content type",
+      };
+    }
+
+    if (/\bcontent\b/i.test(raw)) {
+      return {
+        mentioned: true,
+        value: null,
+        sourceText: "content",
+      };
+    }
+
+    const explicitContentMatch = raw.match(
+      /\b(?:content\s*type|content)\s+(manifest|segment|api)\b/i
+    );
+
+    if (explicitContentMatch) {
+      const resolved = explicitContentMatch[1].toLowerCase();
+      return {
+        mentioned: true,
+        value: resolved,
+        sourceText: resolved,
+      };
+    }
+
+    return { mentioned: false, value: null, sourceText: null };
   }
 
-  const raw = String(parserTime.value || "").trim().toLowerCase();
-  const match = raw.match(/^(\d+)\s*(minute|minutes|hour|hours|day|days)$/);
+  function convertParserTimeOverride(
+    parserTime: {
+      type: "relative" | "absolute";
+      value: string;
+    } | null
+  ):
+    | {
+        mode: "relative";
+        windowMinutes: number;
+        sourceText: string;
+      }
+    | undefined {
+    if (!parserTime) return undefined;
 
-  if (!match) return undefined;
+    if (parserTime.type !== "relative") {
+      return undefined;
+    }
 
-  const amount = Number(match[1]);
-  const unit = match[2];
+    const raw = String(parserTime.value || "").trim().toLowerCase();
+    const match = raw.match(/^(\d+)\s*(minute|minutes|hour|hours|day|days)$/);
 
-  if (!Number.isFinite(amount) || amount <= 0) return undefined;
+    if (!match) return undefined;
 
-  let windowMinutes = amount;
+    const amount = Number(match[1]);
+    const unit = match[2];
 
-  if (unit.startsWith("hour")) {
-    windowMinutes = amount * 60;
-  } else if (unit.startsWith("day")) {
-    windowMinutes = amount * 60 * 24;
+    if (!Number.isFinite(amount) || amount <= 0) return undefined;
+
+    let windowMinutes = amount;
+
+    if (unit.startsWith("hour")) {
+      windowMinutes = amount * 60;
+    } else if (unit.startsWith("day")) {
+      windowMinutes = amount * 60 * 24;
+    }
+
+    return {
+      mode: "relative",
+      windowMinutes,
+      sourceText: parserTime.value,
+    };
   }
 
-  return {
-    mode: "relative",
-    windowMinutes,
-    sourceText: parserTime.value,
-  };
-}
+  // ── color helpers ──────────────────────────────────────────────────────────
+  function stableColorForKey(key: string) {
+    const palette = [
+      "#2563eb",
+      "#60a5fa",
+      "#9ca3af",
+      "#f59e0b",
+      "#f97316",
+      "#f43f5e",
+      "#ef4444",
+      "#fb7185",
+      "#dc2626",
+      "#7f1d1d",
+      "#10b981",
+      "#22c55e",
+      "#0ea5e9",
+      "#a78bfa",
+      "#facc15",
+      "#14b8a6",
+    ];
+    let h = 0;
+    for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+    return palette[h % palette.length];
+  }
+  function statusColorForCode(code: string) {
+    switch (code) {
+      case "200":
+      case "206":
+        return "#22c55e";
+      case "304":
+        return "#14b8a6";
+      case "403":
+      case "404":
+      case "429":
+        return "#f59e0b";
+      case "500":
+        return "#ef4444";
+      case "502":
+        return "#dc2626";
+      case "503":
+        return "#f43f5e";
+      case "504":
+        return "#7f1d1d";
+      default:
+        return stableColorForKey(code);
+    }
+  }
+  function seriesColor(kind: "status" | "host" | "crc", key: string) {
+    if (kind === "status") return statusColorForCode(key);
+    return stableColorForKey(key);
+  }
+  function severityPillClass(status?: "ok" | "warn" | "critical") {
+    switch (status) {
+      case "ok":
+        return "border-emerald-400/30 bg-emerald-400/10 text-emerald-200";
+      case "warn":
+        return "border-amber-400/30 bg-amber-400/10 text-amber-200";
+      case "critical":
+        return "border-red-400/30 bg-red-400/10 text-red-200";
+      default:
+        return "border-white/10 bg-white/10 text-gray-200";
+    }
+  }
+  function signalLabel(
+    signal?: "traffic" | "latency" | "errors" | "cache" | "mixed"
+  ) {
+    if (!signal) return "n/a";
+    return String(signal);
+  }
+  function uiStatusLabel(status?: "ok" | "warn" | "critical", isLoading?: boolean) {
+    if (isLoading) return "Running triage…";
+    switch (status) {
+      case "ok":
+        return "OK";
+      case "warn":
+        return "WARN";
+      case "critical":
+        return "CRITICAL";
+      default:
+        return "Idle";
+    }
+  }
+  function uiStatusClass(status?: "ok" | "warn" | "critical", isLoading?: boolean) {
+    if (isLoading) return "text-blue-300";
+    switch (status) {
+      case "ok":
+        return "text-emerald-300";
+      case "warn":
+        return "text-amber-300";
+      case "critical":
+        return "text-red-300";
+      default:
+        return "text-gray-300";
+    }
+  }
 
-// ── color helpers ──────────────────────────────────────────────────────────
-function stableColorForKey(key: string) {
-  const palette = [
-    "#2563eb",
-    "#60a5fa",
-    "#9ca3af",
-    "#f59e0b",
-    "#f97316",
-    "#f43f5e",
-    "#ef4444",
-    "#fb7185",
-    "#dc2626",
-    "#7f1d1d",
-    "#10b981",
-    "#22c55e",
-    "#0ea5e9",
-    "#a78bfa",
-    "#facc15",
-    "#14b8a6",
-  ];
-  let h = 0;
-  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
-  return palette[h % palette.length];
-}
-function statusColorForCode(code: string) {
-  switch (code) {
-    case "200":
-    case "206":
-      return "#22c55e";
-    case "304":
-      return "#14b8a6";
-    case "403":
-    case "404":
-    case "429":
-      return "#f59e0b";
-    case "500":
-      return "#ef4444";
-    case "502":
-      return "#dc2626";
-    case "503":
-      return "#f43f5e";
-    case "504":
-      return "#7f1d1d";
-    default:
-      return stableColorForKey(code);
-  }
-}
-function seriesColor(kind: "status" | "host" | "crc", key: string) {
-  if (kind === "status") return statusColorForCode(key);
-  return stableColorForKey(key);
-}
-function severityPillClass(status?: "ok" | "warn" | "critical") {
-  switch (status) {
-    case "ok":
-      return "border-emerald-400/30 bg-emerald-400/10 text-emerald-200";
-    case "warn":
-      return "border-amber-400/30 bg-amber-400/10 text-amber-200";
-    case "critical":
-      return "border-red-400/30 bg-red-400/10 text-red-200";
-    default:
-      return "border-white/10 bg-white/10 text-gray-200";
-  }
-}
-function signalLabel(
-  signal?: "traffic" | "latency" | "errors" | "cache" | "mixed"
-) {
-  if (!signal) return "n/a";
-  return String(signal);
-}
-function uiStatusLabel(status?: "ok" | "warn" | "critical", isLoading?: boolean) {
-  if (isLoading) return "Running triage…";
-  switch (status) {
-    case "ok":
-      return "OK";
-    case "warn":
-      return "WARN";
-    case "critical":
-      return "CRITICAL";
-    default:
-      return "Idle";
-  }
-}
-function uiStatusClass(status?: "ok" | "warn" | "critical", isLoading?: boolean) {
-  if (isLoading) return "text-blue-300";
-  switch (status) {
-    case "ok":
-      return "text-emerald-300";
-    case "warn":
-      return "text-amber-300";
-    case "critical":
-      return "text-red-300";
-    default:
-      return "text-gray-300";
-  }
-}
+  function buildChatInputsFromIntent(args: {
+    parseResult: ReturnType<typeof parseTriageIntent>;
+    resolvedPartner: PartnerOrMissing;
+    resolvedService: string;
+    region: string;
+    pop: string;
+    windowMinutes: number;
+    contentType: string;
+    uaFamily: string;
+    allowedRegions: string[];
+    allowedPops: string[];
+    allowedContentTypes: string[];
+    allowedUaFamilies: string[];
+    now?: Date;
+  }):
+    | {
+        ok: true;
+        inputs: TriageInputs;
+        chatContext: {
+          rawText: string;
+          parseMode: "filters-default" | "chat-overrides";
+          detected: Record<string, any>;
+        };
+      }
+    | { ok: false; error: string } {
+    const { parseResult } = args;
 
-function buildChatInputsFromIntent(args: {
-  parseResult: ReturnType<typeof parseTriageIntent>;
-  resolvedPartner: PartnerOrMissing;
-  resolvedService: string;
-  region: string;
-  pop: string;
-  windowMinutes: number;
-  contentType: string;
-  uaFamily: string;
-  allowedRegions: string[];
-  allowedPops: string[];
-  allowedContentTypes: string[];
-  allowedUaFamilies: string[];
-  now?: Date;
-}):
-  | {
-      ok: true;
-      inputs: TriageInputs;
+    const detected: Record<string, any> = {
+      intentKind: parseResult.intentKind,
+      shouldTrigger: parseResult.shouldTrigger,
+      requiresPriorContext: parseResult.requiresPriorContext,
+      confidence: parseResult.confidence,
+      debug: parseResult.debug ?? null,
+      metricHints: parseResult.metricHints ?? [],
+      timeMeta: parseResult.timeMeta ?? null,
+      missingPartner: parseResult.missingPartner,
+      missingService: parseResult.missingService,
+    };
+
+    let parseMode: "filters-default" | "chat-overrides" = "filters-default";
+
+    const partner = args.resolvedPartner;
+    const service = args.resolvedService || "";
+
+    const regionDetection = detectRegionOverrideFromText(parseResult.rawText);
+    const popDetection = detectPopOverrideFromText(parseResult.rawText);
+    const uaDetection = detectUaFamilyOverrideFromText(parseResult.rawText);
+    const contentTypeDetection = detectContentTypeOverrideFromText(parseResult.rawText);
+
+    const detectedRegion =
+      regionDetection.value && (args.allowedRegions || []).includes(regionDetection.value)
+        ? regionDetection.value
+        : null;
+
+    const detectedPop =
+      popDetection.value && (args.allowedPops || []).includes(popDetection.value)
+        ? popDetection.value
+        : null;
+
+    const detectedUaFamily =
+      uaDetection.value && (args.allowedUaFamilies || []).includes(uaDetection.value)
+        ? uaDetection.value
+        : null;
+
+    const detectedContentType =
+      contentTypeDetection.value &&
+      (args.allowedContentTypes || []).includes(contentTypeDetection.value)
+        ? contentTypeDetection.value
+        : null;
+
+    const region = detectedRegion || args.region || "all";
+    const pop = detectedPop || args.pop || "all";
+    const contentType = detectedContentType || args.contentType || "all";
+    const uaFamily = detectedUaFamily || args.uaFamily || "all";
+
+    if (parseResult.partnerCanonical) {
+      detected.partnerCanonical = parseResult.partnerCanonical;
+      parseMode = "chat-overrides";
+    }
+
+    if (parseResult.serviceCanonical) {
+      detected.serviceCanonical = parseResult.serviceCanonical;
+      parseMode = "chat-overrides";
+    }
+
+    if (regionDetection.mentioned) {
+      detected.regionMentioned = regionDetection.sourceText;
+
+      if (!regionDetection.value) {
+        return {
+          ok: false,
+          error: `I couldn't resolve region "${regionDetection.sourceText || "unknown"}". Use one of: ${(args.allowedRegions || []).join(", ")}.`,
+        };
+      }
+
+      if (!(args.allowedRegions || []).includes(regionDetection.value)) {
+        return {
+          ok: false,
+          error: `Region "${regionDetection.value}" is valid, but it is not available in the current scope. Available regions: ${(args.allowedRegions || []).join(", ")}.`,
+        };
+      }
+
+      detected.region = regionDetection.value;
+      parseMode = "chat-overrides";
+    }
+
+    if (popDetection.mentioned) {
+      detected.popMentioned = popDetection.sourceText;
+
+      if (!popDetection.value) {
+        return {
+          ok: false,
+          error: `I couldn't resolve POP "${popDetection.sourceText || "unknown"}". Use one of: ${(args.allowedPops || []).join(", ")}.`,
+        };
+      }
+
+      if (!(args.allowedPops || []).includes(popDetection.value)) {
+        return {
+          ok: false,
+          error: `POP "${popDetection.value}" is valid, but it is not available in the current scope. Available POPs: ${(args.allowedPops || []).join(", ")}.`,
+        };
+      }
+
+      detected.pop = popDetection.value;
+      parseMode = "chat-overrides";
+    }
+
+    if (uaDetection.mentioned) {
+      detected.uaFamilyMentioned = uaDetection.sourceText;
+
+      if (!uaDetection.value) {
+        return {
+          ok: false,
+          error: `I couldn't resolve device type "${uaDetection.sourceText || "unknown"}". Use one of: ${(args.allowedUaFamilies || []).join(", ")}.`,
+        };
+      }
+
+      if (!(args.allowedUaFamilies || []).includes(uaDetection.value)) {
+        return {
+          ok: false,
+          error: `Device type "${uaDetection.value}" is valid, but it is not available in the current scope. Available device types: ${(args.allowedUaFamilies || []).join(", ")}.`,
+        };
+      }
+
+      detected.uaFamily = uaDetection.value;
+      parseMode = "chat-overrides";
+    }
+
+    if (contentTypeDetection.mentioned) {
+      detected.contentTypeMentioned = contentTypeDetection.sourceText;
+
+      if (!contentTypeDetection.value) {
+        return {
+          ok: false,
+          error: `I couldn't resolve content type "${contentTypeDetection.sourceText || "unknown"}". Use one of: ${(args.allowedContentTypes || []).join(", ")}.`,
+        };
+      }
+
+      if (!(args.allowedContentTypes || []).includes(contentTypeDetection.value)) {
+        return {
+          ok: false,
+          error: `Content type "${contentTypeDetection.value}" is valid, but it is not available in the current scope. Available content types: ${(args.allowedContentTypes || []).join(", ")}.`,
+        };
+      }
+
+      detected.contentType = contentTypeDetection.value;
+      parseMode = "chat-overrides";
+    }
+    
+    if (!partner) {
+      return {
+        ok: false,
+        error: `Pick a partner first. (${PARTNER_OPTIONS.join(", ")})`,
+      };
+    }
+
+    if (!service) {
+      return {
+        ok: false,
+        error: `Pick a service first. (${SERVICE_OPTIONS.join(", ")})`,
+      };
+    }
+
+    let startTsUtc: string | null = null;
+    let endTsUtc: string | null = null;
+    let effectiveWindowMinutes = args.windowMinutes;
+
+    if (parseResult.timeMeta?.kind === "absolute") {
+      startTsUtc = parseResult.timeMeta.startTsUtc;
+      endTsUtc = parseResult.timeMeta.endTsUtc;
+      effectiveWindowMinutes = windowMinutesFromRange(
+        startTsUtc,
+        endTsUtc,
+        args.windowMinutes
+      );
+      detected.startTsUtc = startTsUtc;
+      detected.endTsUtc = endTsUtc;
+      parseMode = "chat-overrides";
+    } else if (parseResult.timeMeta?.kind === "relative") {
+      effectiveWindowMinutes = parseResult.timeMeta.windowMinutes;
+      detected.windowMinutes = effectiveWindowMinutes;
+      parseMode = "chat-overrides";
+    } else if (parseResult.timeMeta?.kind === "named") {
+      const resolvedNamedTime = resolveNamedTimeWindow({
+        key: parseResult.timeMeta.key,
+        label: parseResult.timeMeta.label,
+        matchedText: parseResult.timeMeta.sourceText,
+        now: args.now ?? new Date(),
+      });
+
+      detected.namedTime = parseResult.timeMeta.label;
+      detected.namedTimeKey = parseResult.timeMeta.key;
+      detected.namedTimeSourceText = parseResult.timeMeta.sourceText;
+
+      if (!resolvedNamedTime.ok) {
+        detected.namedTimeResolution = resolvedNamedTime;
+        return {
+          ok: false,
+          error: resolvedNamedTime.message,
+        };
+      }
+
+      startTsUtc = resolvedNamedTime.startUtcIso;
+      endTsUtc = resolvedNamedTime.endUtcIso;
+      effectiveWindowMinutes = windowMinutesFromRange(
+        startTsUtc,
+        endTsUtc,
+        args.windowMinutes
+      );
+
+      detected.namedTimeResolution = {
+        key: resolvedNamedTime.key,
+        label: resolvedNamedTime.label,
+        timezone: resolvedNamedTime.timezone,
+        startLocalIso: resolvedNamedTime.startLocalIso,
+        endLocalIso: resolvedNamedTime.endLocalIso,
+        startUtcIso: resolvedNamedTime.startUtcIso,
+        endUtcIso: resolvedNamedTime.endUtcIso,
+        timeMode: resolvedNamedTime.timeMode,
+        source: resolvedNamedTime.source,
+      };
+      detected.startTsUtc = startTsUtc;
+      detected.endTsUtc = endTsUtc;
+      detected.windowMinutes = effectiveWindowMinutes;
+      parseMode = "chat-overrides";
+    }
+
+    return {
+      ok: true,
+      inputs: {
+        dataSource: "clickhouse",
+        partner,
+        service,
+        region,
+        pop,
+        windowMinutes: effectiveWindowMinutes,
+        startTsUtc,
+        endTsUtc,
+        contentType,
+        uaFamily,
+      },
       chatContext: {
-        rawText: string;
-        parseMode: "filters-default" | "chat-overrides";
-        detected: Record<string, any>;
-      };
-    }
-  | { ok: false; error: string } {
-  const { parseResult } = args;
-
-  const detected: Record<string, any> = {
-    intentKind: parseResult.intentKind,
-    shouldTrigger: parseResult.shouldTrigger,
-    requiresPriorContext: parseResult.requiresPriorContext,
-    confidence: parseResult.confidence,
-    debug: parseResult.debug ?? null,
-    metricHints: parseResult.metricHints ?? [],
-    timeMeta: parseResult.timeMeta ?? null,
-    missingPartner: parseResult.missingPartner,
-    missingService: parseResult.missingService,
-  };
-
-  let parseMode: "filters-default" | "chat-overrides" = "filters-default";
-
-  const partner = args.resolvedPartner;
-  const service = args.resolvedService || "";
-
-  const regionDetection = detectRegionOverrideFromText(parseResult.rawText);
-  const popDetection = detectPopOverrideFromText(parseResult.rawText);
-  const uaDetection = detectUaFamilyOverrideFromText(parseResult.rawText);
-  const contentTypeDetection = detectContentTypeOverrideFromText(parseResult.rawText);
-
-  const detectedRegion =
-    regionDetection.value && (args.allowedRegions || []).includes(regionDetection.value)
-      ? regionDetection.value
-      : null;
-
-  const detectedPop =
-    popDetection.value && (args.allowedPops || []).includes(popDetection.value)
-      ? popDetection.value
-      : null;
-
-  const detectedUaFamily =
-    uaDetection.value && (args.allowedUaFamilies || []).includes(uaDetection.value)
-      ? uaDetection.value
-      : null;
-
-  const detectedContentType =
-    contentTypeDetection.value &&
-    (args.allowedContentTypes || []).includes(contentTypeDetection.value)
-      ? contentTypeDetection.value
-      : null;
-
-  const region = detectedRegion || args.region || "all";
-  const pop = detectedPop || args.pop || "all";
-  const contentType = detectedContentType || args.contentType || "all";
-  const uaFamily = detectedUaFamily || args.uaFamily || "all";
-
-  if (parseResult.partnerCanonical) {
-    detected.partnerCanonical = parseResult.partnerCanonical;
-    parseMode = "chat-overrides";
-  }
-
-  if (parseResult.serviceCanonical) {
-    detected.serviceCanonical = parseResult.serviceCanonical;
-    parseMode = "chat-overrides";
-  }
-
-  if (regionDetection.mentioned) {
-    detected.regionMentioned = regionDetection.sourceText;
-
-    if (!regionDetection.value) {
-      return {
-        ok: false,
-        error: `I couldn't resolve region "${regionDetection.sourceText || "unknown"}". Use one of: ${(args.allowedRegions || []).join(", ")}.`,
-      };
-    }
-
-    if (!(args.allowedRegions || []).includes(regionDetection.value)) {
-      return {
-        ok: false,
-        error: `Region "${regionDetection.value}" is valid, but it is not available in the current scope. Available regions: ${(args.allowedRegions || []).join(", ")}.`,
-      };
-    }
-
-    detected.region = regionDetection.value;
-    parseMode = "chat-overrides";
-  }
-
-  if (popDetection.mentioned) {
-    detected.popMentioned = popDetection.sourceText;
-
-    if (!popDetection.value) {
-      return {
-        ok: false,
-        error: `I couldn't resolve POP "${popDetection.sourceText || "unknown"}". Use one of: ${(args.allowedPops || []).join(", ")}.`,
-      };
-    }
-
-    if (!(args.allowedPops || []).includes(popDetection.value)) {
-      return {
-        ok: false,
-        error: `POP "${popDetection.value}" is valid, but it is not available in the current scope. Available POPs: ${(args.allowedPops || []).join(", ")}.`,
-      };
-    }
-
-    detected.pop = popDetection.value;
-    parseMode = "chat-overrides";
-  }
-
-  if (uaDetection.mentioned) {
-    detected.uaFamilyMentioned = uaDetection.sourceText;
-
-    if (!uaDetection.value) {
-      return {
-        ok: false,
-        error: `I couldn't resolve device type "${uaDetection.sourceText || "unknown"}". Use one of: ${(args.allowedUaFamilies || []).join(", ")}.`,
-      };
-    }
-
-    if (!(args.allowedUaFamilies || []).includes(uaDetection.value)) {
-      return {
-        ok: false,
-        error: `Device type "${uaDetection.value}" is valid, but it is not available in the current scope. Available device types: ${(args.allowedUaFamilies || []).join(", ")}.`,
-      };
-    }
-
-    detected.uaFamily = uaDetection.value;
-    parseMode = "chat-overrides";
-  }
-
-  if (contentTypeDetection.mentioned) {
-    detected.contentTypeMentioned = contentTypeDetection.sourceText;
-
-    if (!contentTypeDetection.value) {
-      return {
-        ok: false,
-        error: `I couldn't resolve content type "${contentTypeDetection.sourceText || "unknown"}". Use one of: ${(args.allowedContentTypes || []).join(", ")}.`,
-      };
-    }
-
-    if (!(args.allowedContentTypes || []).includes(contentTypeDetection.value)) {
-      return {
-        ok: false,
-        error: `Content type "${contentTypeDetection.value}" is valid, but it is not available in the current scope. Available content types: ${(args.allowedContentTypes || []).join(", ")}.`,
-      };
-    }
-
-    detected.contentType = contentTypeDetection.value;
-    parseMode = "chat-overrides";
-  }
-  
-  if (!partner) {
-    return {
-      ok: false,
-      error: `Pick a partner first. (${PARTNER_OPTIONS.join(", ")})`,
+        rawText: parseResult.rawText,
+        parseMode,
+        detected,
+      },
     };
   }
 
-  if (!service) {
-    return {
-      ok: false,
-      error: `Pick a service first. (${SERVICE_OPTIONS.join(", ")})`,
-    };
+  function normalizeTsKey(raw: unknown): string {
+    const s = String(raw || "").trim();
+    if (!s) return "";
+
+    const iso = s.includes("T") ? s : `${s.replace(" ", "T")}Z`;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+
+    return d.toISOString().replace(".000Z", "Z");
   }
 
-  let startTsUtc: string | null = null;
-  let endTsUtc: string | null = null;
-  let effectiveWindowMinutes = args.windowMinutes;
 
-  if (parseResult.timeMeta?.kind === "absolute") {
-    startTsUtc = parseResult.timeMeta.startTsUtc;
-    endTsUtc = parseResult.timeMeta.endTsUtc;
-    effectiveWindowMinutes = windowMinutesFromRange(
-      startTsUtc,
-      endTsUtc,
-      args.windowMinutes
-    );
-    detected.startTsUtc = startTsUtc;
-    detected.endTsUtc = endTsUtc;
-    parseMode = "chat-overrides";
-  } else if (parseResult.timeMeta?.kind === "relative") {
-    effectiveWindowMinutes = parseResult.timeMeta.windowMinutes;
-    detected.windowMinutes = effectiveWindowMinutes;
-    parseMode = "chat-overrides";
-  } else if (parseResult.timeMeta?.kind === "named") {
-    const resolvedNamedTime = resolveNamedTimeWindow({
-      key: parseResult.timeMeta.key,
-      label: parseResult.timeMeta.label,
-      matchedText: parseResult.timeMeta.sourceText,
-      now: args.now ?? new Date(),
-    });
+  // ── parseTimeseries ────────────────────────────────────────────────────────
+  function parseTimeseries(metricsJson: any): TimeseriesData | null {
+    const t = metricsJson?.timeseries;
+    if (!t) return null;
 
-    detected.namedTime = parseResult.timeMeta.label;
-    detected.namedTimeKey = parseResult.timeMeta.key;
-    detected.namedTimeSourceText = parseResult.timeMeta.sourceText;
+    const basePoints: TimeseriesPoint[] = Array.isArray(t.points)
+      ? t.points
+          .map(
+            (p: any): TimeseriesPoint => ({
+              ts: normalizeTsKey(p.ts),
+              totalRequests: Number(p.totalRequests) || 0,
+              error5xxCount: Number(p.error5xxCount) || 0,
+              errorRatePct: Number(p.errorRatePct) || 0,
+              p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
+              p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
+              cacheHitRate: p.cacheHitRate == null ? null : Number(p.cacheHitRate),
+              crcErrorCount: Number(p.crcErrorCount || 0),
+              statusCountsByCode: p.statusCountsByCode || undefined,
+            })
+          )
+          .filter((pt: TimeseriesPoint) => Boolean(pt.ts))
+      : [];
 
-    if (!resolvedNamedTime.ok) {
-      detected.namedTimeResolution = resolvedNamedTime;
-      return {
-        ok: false,
-        error: resolvedNamedTime.message,
-      };
-    }
+    const statusRows = Array.isArray(t.statusOverTime) ? t.statusOverTime : [];
 
-    startTsUtc = resolvedNamedTime.startUtcIso;
-    endTsUtc = resolvedNamedTime.endUtcIso;
-    effectiveWindowMinutes = windowMinutesFromRange(
-      startTsUtc,
-      endTsUtc,
-      args.windowMinutes
-    );
+    const statusMap = new Map<string, Record<string, number>>();
+    for (const row of statusRows) {
+      const ts = normalizeTsKey(row.bucket || row.ts);
+        if (!ts) continue;
 
-    detected.namedTimeResolution = {
-      key: resolvedNamedTime.key,
-      label: resolvedNamedTime.label,
-      timezone: resolvedNamedTime.timezone,
-      startLocalIso: resolvedNamedTime.startLocalIso,
-      endLocalIso: resolvedNamedTime.endLocalIso,
-      startUtcIso: resolvedNamedTime.startUtcIso,
-      endUtcIso: resolvedNamedTime.endUtcIso,
-      timeMode: resolvedNamedTime.timeMode,
-      source: resolvedNamedTime.source,
-    };
-    detected.startTsUtc = startTsUtc;
-    detected.endTsUtc = endTsUtc;
-    detected.windowMinutes = effectiveWindowMinutes;
-    parseMode = "chat-overrides";
-  }
-
-  return {
-    ok: true,
-    inputs: {
-      dataSource: "clickhouse",
-      partner,
-      service,
-      region,
-      pop,
-      windowMinutes: effectiveWindowMinutes,
-      startTsUtc,
-      endTsUtc,
-      contentType,
-      uaFamily,
-    },
-    chatContext: {
-      rawText: parseResult.rawText,
-      parseMode,
-      detected,
-    },
-  };
-}
-
-function normalizeTsKey(raw: unknown): string {
-  const s = String(raw || "").trim();
-  if (!s) return "";
-
-  const iso = s.includes("T") ? s : `${s.replace(" ", "T")}Z`;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-
-  return d.toISOString().replace(".000Z", "Z");
-}
-
-
-// ── parseTimeseries ────────────────────────────────────────────────────────
-function parseTimeseries(metricsJson: any): TimeseriesData | null {
-  const t = metricsJson?.timeseries;
-  if (!t) return null;
-
-  const basePoints: TimeseriesPoint[] = Array.isArray(t.points)
-    ? t.points
-        .map(
-          (p: any): TimeseriesPoint => ({
-            ts: normalizeTsKey(p.ts),
-            totalRequests: Number(p.totalRequests) || 0,
-            error5xxCount: Number(p.error5xxCount) || 0,
-            errorRatePct: Number(p.errorRatePct) || 0,
-            p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
-            p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
-            cacheHitRate: p.cacheHitRate == null ? null : Number(p.cacheHitRate),
-            crcErrorCount: Number(p.crcErrorCount || 0),
-            statusCountsByCode: p.statusCountsByCode || undefined,
-          })
-        )
-        .filter((pt: TimeseriesPoint) => Boolean(pt.ts))
-    : [];
-
-  const statusRows = Array.isArray(t.statusOverTime) ? t.statusOverTime : [];
-
-  const statusMap = new Map<string, Record<string, number>>();
-  for (const row of statusRows) {
-    const ts = normalizeTsKey(row.bucket || row.ts);
-      if (!ts) continue;
-
-    statusMap.set(ts, {
-      "200": Number(row.status_200 || 0),
-      "206": Number(row.status_206 || 0),
-      "304": Number(row.status_304 || 0),
-      "403": Number(row.status_403 || 0),
-      "404": Number(row.status_404 || 0),
-      "429": Number(row.status_429 || 0),
-      "500": Number(row.status_500 || 0),
-      "502": Number(row.status_502 || 0),
-      "503": Number(row.status_503 || 0),
-      "504": Number(row.status_504 || 0),
-    });
-  }
-
-  const points: TimeseriesPoint[] =
-    basePoints.length > 0
-      ? basePoints.map((pt) => ({
-          ...pt,
-          statusCountsByCode:
-            pt.statusCountsByCode || statusMap.get(pt.ts) || undefined,
-        }))
-      : Array.from(statusMap.entries()).map(([ts, counts]) => ({
-          ts,
-          totalRequests: 0,
-          error5xxCount: 0,
-          errorRatePct: 0,
-          p95TtmsMs: null,
-          p99TtmsMs: null,
-          cacheHitRate: null,
-          crcErrorCount: 0,
-          statusCountsByCode: counts,
-        }));
-
-  const hostSeries: HostSeriesItem[] = Array.isArray(t.hostSeries)
-    ? t.hostSeries.map((h: any) => ({
-        host: String(h.host || ""),
-        totalRequests: Number(h.totalRequests || 0),
-        error5xxCount: Number(h.error5xxCount || 0),
-        crcErrorCount: Number(h.crcErrorCount || 0),
-        errorRatePct: Number(h.errorRatePct || 0),
-        p95TtmsMs: h.p95TtmsMs == null ? null : Number(h.p95TtmsMs),
-        p99TtmsMs: h.p99TtmsMs == null ? null : Number(h.p99TtmsMs),
-      }))
-    : [];
-
-  const crcSeries: CrcSeriesItem[] = Array.isArray(t.crcSeries)
-    ? t.crcSeries
-        .map((c: any) => ({
-          ts: normalizeTsKey(c.ts),
-          crcErrorCount: Number(c.crcErrorCount || 0),
-        }))
-        .filter((x: CrcSeriesItem) => Boolean(x.ts))
-    : [];
-
-  return {
-    bucketSeconds: t.bucketSeconds == null ? null : Number(t.bucketSeconds),
-    startTs: t.startTs ? String(t.startTs) : null,
-    endTs: t.endTs ? String(t.endTs) : null,
-    points,
-    statusCodeSeries: Array.isArray(t.statusCodeSeries)
-      ? t.statusCodeSeries.map(String)
-      : undefined,
-    hostSeries,
-    crcSeries,
-  };
-}
-
-
-function parseStatusOnlyTimeseries(metricsJson: any): TimeseriesData | null {
-  const t = metricsJson?.timeseries;
-  if (!t || !Array.isArray(t.statusOverTime) || !t.statusOverTime.length) return null;
-
-  const points: TimeseriesPoint[] = t.statusOverTime
-    .map((row: any): TimeseriesPoint => ({
-      ts: normalizeTsKey(row.bucket || row.ts),
-      totalRequests:
-        Number(row.status_200 || 0) +
-        Number(row.status_206 || 0) +
-        Number(row.status_304 || 0) +
-        Number(row.status_403 || 0) +
-        Number(row.status_404 || 0) +
-        Number(row.status_429 || 0) +
-        Number(row.status_500 || 0) +
-        Number(row.status_502 || 0) +
-        Number(row.status_503 || 0) +
-        Number(row.status_504 || 0),
-      error5xxCount:
-        Number(row.status_500 || 0) +
-        Number(row.status_502 || 0) +
-        Number(row.status_503 || 0) +
-        Number(row.status_504 || 0),
-      errorRatePct: 0,
-      p95TtmsMs: null,
-      p99TtmsMs: null,
-      cacheHitRate: null,
-      crcErrorCount: 0,
-      statusCountsByCode: {
+      statusMap.set(ts, {
         "200": Number(row.status_200 || 0),
         "206": Number(row.status_206 || 0),
         "304": Number(row.status_304 || 0),
@@ -1274,1171 +1178,195 @@ function parseStatusOnlyTimeseries(metricsJson: any): TimeseriesData | null {
         "502": Number(row.status_502 || 0),
         "503": Number(row.status_503 || 0),
         "504": Number(row.status_504 || 0),
-      },
-    }))
-    .filter((pt: TimeseriesPoint) => Boolean(pt.ts));
-
-  if (!points.length) return null;
-
-  return {
-    bucketSeconds: t.bucketSeconds == null ? null : Number(t.bucketSeconds),
-    startTs: points[0]?.ts || null,
-    endTs: points[points.length - 1]?.ts || null,
-    points,
-    statusCodeSeries: ["200", "206", "304", "403", "404", "429", "500", "502", "503", "504"],
-    hostSeries: [],
-    crcSeries: [],
-  };
-}
-
-// ── TypingDots ─────────────────────────────────────────────────────────────
-function TypingDots() {
-  return (
-    <div className="inline-flex items-center gap-1">
-      <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-300/70 animate-bounce [animation-delay:-0.2s]" />
-      <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-300/70 animate-bounce [animation-delay:-0.1s]" />
-      <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-300/70 animate-bounce" />
-    </div>
-  );
-}
-
-// ── StackedBarTimeseries ───────────────────────────────────────────────────
-function StackedBarTimeseries({
-  title,
-  subtitle,
-  ts,
-  bucketSeconds,
-  seriesKeys,
-  getMap,
-  height = 190,
-  windowMinutes,
-  kind,
-}: {
-  title: string;
-  subtitle: string;
-  ts: TimeseriesData;
-  bucketSeconds: number | null;
-  seriesKeys: string[];
-  getMap: (p: TimeseriesPoint) => Record<string, number> | undefined;
-  height?: number;
-  windowMinutes: number;
-  kind: "status" | "host" | "crc";
-}) {
-  const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
-  const basePoints = (ts.points || []).slice(-maxBars);
-  const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
-  const [focusedKey, setFocusedKey] = useState<string | null>(null);
-  const points =
-    zoom && zoom.end > zoom.start
-      ? basePoints.slice(zoom.start, zoom.end + 1)
-      : basePoints;
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({
-    active: false,
-    x0: 0,
-    x1: 0,
-  });
-
-  if (!points.length) return null;
-
-  const present = new Map<string, number>();
-  for (const p of points) {
-    const m = getMap(p) || {};
-    for (const k of Object.keys(m)) {
-      present.set(k, (present.get(k) ?? 0) + Number(m[k] ?? 0));
+      });
     }
+
+    const points: TimeseriesPoint[] =
+      basePoints.length > 0
+        ? basePoints.map((pt) => ({
+            ...pt,
+            statusCountsByCode:
+              pt.statusCountsByCode || statusMap.get(pt.ts) || undefined,
+          }))
+        : Array.from(statusMap.entries()).map(([ts, counts]) => ({
+            ts,
+            totalRequests: 0,
+            error5xxCount: 0,
+            errorRatePct: 0,
+            p95TtmsMs: null,
+            p99TtmsMs: null,
+            cacheHitRate: null,
+            crcErrorCount: 0,
+            statusCountsByCode: counts,
+          }));
+
+    const hostSeries: HostSeriesItem[] = Array.isArray(t.hostSeries)
+      ? t.hostSeries.map((h: any) => ({
+          host: String(h.host || ""),
+          totalRequests: Number(h.totalRequests || 0),
+          error5xxCount: Number(h.error5xxCount || 0),
+          crcErrorCount: Number(h.crcErrorCount || 0),
+          errorRatePct: Number(h.errorRatePct || 0),
+          p95TtmsMs: h.p95TtmsMs == null ? null : Number(h.p95TtmsMs),
+          p99TtmsMs: h.p99TtmsMs == null ? null : Number(h.p99TtmsMs),
+        }))
+      : [];
+
+    const crcSeries: CrcSeriesItem[] = Array.isArray(t.crcSeries)
+      ? t.crcSeries
+          .map((c: any) => ({
+            ts: normalizeTsKey(c.ts),
+            crcErrorCount: Number(c.crcErrorCount || 0),
+          }))
+          .filter((x: CrcSeriesItem) => Boolean(x.ts))
+      : [];
+
+    return {
+      bucketSeconds: t.bucketSeconds == null ? null : Number(t.bucketSeconds),
+      startTs: t.startTs ? String(t.startTs) : null,
+      endTs: t.endTs ? String(t.endTs) : null,
+      points,
+      statusCodeSeries: Array.isArray(t.statusCodeSeries)
+        ? t.statusCodeSeries.map(String)
+        : undefined,
+      hostSeries,
+      crcSeries,
+    };
   }
 
-  const ordered = [
-    ...seriesKeys.filter((k) => present.has(k)),
-    ...Array.from(present.keys()).filter((k) => !seriesKeys.includes(k)),
-  ];
-  const allKeys = ordered.slice(0, 10);
-  if (!allKeys.length) return null;
 
-  const keys = focusedKey && allKeys.includes(focusedKey) ? [focusedKey] : allKeys;
+  function parseStatusOnlyTimeseries(metricsJson: any): TimeseriesData | null {
+    const t = metricsJson?.timeseries;
+    if (!t || !Array.isArray(t.statusOverTime) || !t.statusOverTime.length) return null;
 
-  const totals = points.map((p) => {
-    const m = getMap(p) || {};
-    let sum = 0;
-    for (const k of keys) sum += Number(m[k] ?? 0);
-    return sum;
-  });
-  const maxTotal = Math.max(1, ...totals);
+    const points: TimeseriesPoint[] = t.statusOverTime
+      .map((row: any): TimeseriesPoint => ({
+        ts: normalizeTsKey(row.bucket || row.ts),
+        totalRequests:
+          Number(row.status_200 || 0) +
+          Number(row.status_206 || 0) +
+          Number(row.status_304 || 0) +
+          Number(row.status_403 || 0) +
+          Number(row.status_404 || 0) +
+          Number(row.status_429 || 0) +
+          Number(row.status_500 || 0) +
+          Number(row.status_502 || 0) +
+          Number(row.status_503 || 0) +
+          Number(row.status_504 || 0),
+        error5xxCount:
+          Number(row.status_500 || 0) +
+          Number(row.status_502 || 0) +
+          Number(row.status_503 || 0) +
+          Number(row.status_504 || 0),
+        errorRatePct: 0,
+        p95TtmsMs: null,
+        p99TtmsMs: null,
+        cacheHitRate: null,
+        crcErrorCount: 0,
+        statusCountsByCode: {
+          "200": Number(row.status_200 || 0),
+          "206": Number(row.status_206 || 0),
+          "304": Number(row.status_304 || 0),
+          "403": Number(row.status_403 || 0),
+          "404": Number(row.status_404 || 0),
+          "429": Number(row.status_429 || 0),
+          "500": Number(row.status_500 || 0),
+          "502": Number(row.status_502 || 0),
+          "503": Number(row.status_503 || 0),
+          "504": Number(row.status_504 || 0),
+        },
+      }))
+      .filter((pt: TimeseriesPoint) => Boolean(pt.ts));
 
-  const w = 360;
-  const h = height;
-  const padLeft = 54;
-  const padRight = 12;
-  const padTop = 12;
-  const padBottom = 44;
-  const plotW = w - padLeft - padRight;
-  const plotH = h - padTop - padBottom;
+    if (!points.length) return null;
 
-  const barCount = points.length;
-  const gap = clamp(Math.round(plotW / (Math.max(1, barCount) * 10)), 2, 6);
-  const barW = Math.max(
-    4,
-    Math.floor((plotW - gap * Math.max(0, barCount - 1)) / Math.max(1, barCount))
-  );
-
-  const yTicks = 4;
-  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
-    Math.round((maxTotal * (yTicks - i)) / yTicks)
-  );
-  const xLabelEvery = Math.max(1, Math.floor(points.length / 6));
-  const latest = points[points.length - 1];
-  const latestTotal = totals[totals.length - 1] || 0;
-
-  function toSvgX(clientX: number) {
-    const el = svgRef.current;
-    if (!el) return 0;
-    const r = el.getBoundingClientRect();
-    return ((clientX - r.left) / Math.max(1, r.width)) * w;
+    return {
+      bucketSeconds: t.bucketSeconds == null ? null : Number(t.bucketSeconds),
+      startTs: points[0]?.ts || null,
+      endTs: points[points.length - 1]?.ts || null,
+      points,
+      statusCodeSeries: ["200", "206", "304", "403", "404", "429", "500", "502", "503", "504"],
+      hostSeries: [],
+      crcSeries: [],
+    };
   }
 
-  function idxFromSvgX(sx: number) {
-    return clamp(
-      Math.floor((sx - padLeft) / Math.max(1, barW + gap)),
-      0,
-      Math.max(0, basePoints.length - 1)
+  // ── TypingDots ─────────────────────────────────────────────────────────────
+  function TypingDots() {
+    return (
+      <div className="inline-flex items-center gap-1">
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-300/70 animate-bounce [animation-delay:-0.2s]" />
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-300/70 animate-bounce [animation-delay:-0.1s]" />
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-300/70 animate-bounce" />
+      </div>
     );
   }
 
-  function commitZoom(x0: number, x1: number) {
-    const i0 = idxFromSvgX(Math.min(x0, x1));
-    const i1 = idxFromSvgX(Math.max(x0, x1));
-    if (i1 - i0 >= 2) setZoom({ start: i0, end: i1 });
-  }
-
-  const selectionX = Math.min(drag.x0, drag.x1);
-  const selectionW = Math.abs(drag.x1 - drag.x0);
-
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-xs text-gray-400">{subtitle}</div>
-          <div className="text-sm font-semibold text-gray-100">{title}</div>
-          <div className="text-[11px] text-gray-400 mt-1">
-            {ts.startTs && ts.endTs
-              ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(
-                  ts.endTs
-                )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
-              : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
-          </div>
-          <div className="text-[11px] text-gray-500 mt-1">
-            {focusedKey ? (
-              <>
-                Focused: <span className="text-gray-200">{focusedKey}</span>
-                <button
-                  type="button"
-                  className="ml-2 underline hover:text-gray-300"
-                  onClick={() => setFocusedKey(null)}
-                >
-                  reset focus
-                </button>
-              </>
-            ) : (
-              <>Click legend to isolate • Drag to zoom • double-click to reset</>
-            )}
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="text-xs text-gray-400">Latest</div>
-          <div className="text-[11px] text-gray-200">
-            {latest
-              ? `${formatUtcHM(latest.ts)} UTC • ${latestTotal.toLocaleString()} events`
-              : "n/a"}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
-        <svg
-          viewBox={`0 0 ${w} ${h}`}
-          className="w-full"
-          style={{ height, touchAction: "none", cursor: "crosshair" }}
-          ref={svgRef}
-          onDoubleClick={() => setZoom(null)}
-          onPointerDown={(e) => {
-            const sx = toSvgX(e.clientX);
-            setDrag({ active: true, x0: sx, x1: sx });
-            (e.currentTarget as any).setPointerCapture?.(e.pointerId);
-          }}
-          onPointerMove={(e) => {
-            if (!drag.active) return;
-            setDrag((d) => ({ ...d, x1: toSvgX(e.clientX) }));
-          }}
-          onPointerUp={() => {
-            if (!drag.active) return;
-            const { x0, x1 } = drag;
-            setDrag({ active: false, x0: 0, x1: 0 });
-            commitZoom(x0, x1);
-          }}
-          onPointerCancel={() => setDrag({ active: false, x0: 0, x1: 0 })}
-          onPointerLeave={() => {
-            if (!drag.active) return;
-            setDrag({ active: false, x0: 0, x1: 0 });
-          }}
-        >
-          <text
-            x={padLeft - 38}
-            y={padTop + plotH / 2}
-            fontSize="10"
-            fill="#9ca3af"
-            transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
-          >
-            Events
-          </text>
-          <text
-            x={padLeft + plotW / 2}
-            y={h - 10}
-            fontSize="10"
-            fill="#9ca3af"
-            textAnchor="middle"
-          >
-            Time (UTC, {bucketLabel(bucketSeconds)} buckets)
-          </text>
-
-          {tickVals.map((v, idx) => {
-            const y = padTop + (1 - v / maxTotal) * plotH;
-            return (
-              <g key={idx}>
-                <line
-                  x1={padLeft}
-                  y1={y}
-                  x2={padLeft + plotW}
-                  y2={y}
-                  stroke={GRID_STROKE}
-                />
-                <text
-                  x={padLeft - 10}
-                  y={y + 3}
-                  fontSize="10"
-                  fill="#9ca3af"
-                  textAnchor="end"
-                  opacity={0.95}
-                >
-                  {formatCountTick(v)}
-                </text>
-              </g>
-            );
-          })}
-
-          {points.map((p, i) => {
-            const x = padLeft + i * (barW + gap);
-            const m = getMap(p) || {};
-            let yTop = padTop + plotH;
-            return (
-              <g key={p.ts}>
-                {keys.map((k) => {
-                  const val = Number(m[k] ?? 0);
-                  if (!val) return null;
-                  const segH = (val / maxTotal) * plotH;
-                  const y = yTop - segH;
-                  yTop = y;
-                  return (
-                    <rect
-                      key={`${p.ts}-${k}`}
-                      x={x}
-                      y={y}
-                      width={barW}
-                      height={Math.max(0, segH)}
-                      rx={2}
-                      fill={seriesColor(kind, k)}
-                      opacity={0.9}
-                    />
-                  );
-                })}
-              </g>
-            );
-          })}
-
-          {points.map((p, i) => {
-            if (i % xLabelEvery !== 0 && i !== points.length - 1) return null;
-            return (
-              <text
-                key={`xl-${p.ts}`}
-                x={padLeft + i * (barW + gap) + barW / 2}
-                y={padTop + plotH + 18}
-                fontSize="10"
-                fill="#9ca3af"
-                textAnchor="middle"
-              >
-                {timeLabelShort(p.ts, windowMinutes)}
-              </text>
-            );
-          })}
-
-          {drag.active && selectionW > 2 && (
-            <rect
-              x={selectionX}
-              y={padTop}
-              width={selectionW}
-              height={plotH}
-              fill="rgba(59,130,246,0.12)"
-              stroke="rgba(59,130,246,0.55)"
-              strokeWidth={1}
-              rx={6}
-            />
-          )}
-        </svg>
-
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-300">
-          {allKeys.map((k) => {
-            const active = focusedKey ? focusedKey === k : true;
-            return (
-              <button
-                key={k}
-                type="button"
-                onClick={() => setFocusedKey((prev) => (prev === k ? null : k))}
-                className={`flex items-center gap-1.5 rounded-full border px-2 py-1 transition ${
-                  active
-                    ? "border-white/10 bg-white/5 text-gray-100"
-                    : "border-white/5 bg-white/[0.02] text-gray-500"
-                }`}
-              >
-                <span
-                  className="inline-block h-2.5 w-2.5 rounded-full"
-                  style={{ background: seriesColor(kind, k) }}
-                />
-                <span className="truncate max-w-[220px]">{k}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── RequestsErrorRateLines ─────────────────────────────────────────────────
-function RequestsErrorRateLines({
-  points,
-  bucketSeconds,
-  height = 190,
-  windowMinutes,
-}: {
-  points: TimeseriesPoint[];
-  bucketSeconds: number | null;
-  height?: number;
-  windowMinutes: number;
-}) {
-  const base = points;
-  const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
-  const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({
-    active: false,
-    x0: 0,
-    x1: 0,
-  });
-
-  if (!slice.length) return null;
-
-  const reqVals = slice.map((p) => Number(p.totalRequests || 0));
-  const errVals = slice.map((p) =>
-    Number.isFinite(Number(p.errorRatePct))
-      ? Number(p.errorRatePct)
-      : p.totalRequests > 0
-      ? (Number(p.error5xxCount || 0) / Number(p.totalRequests)) * 100
-      : 0
-  );
-
-  const reqMax = Math.max(1, ...reqVals);
-  const errMax = Math.max(0.5, Math.max(0, ...errVals) * 1.2 || 0.5);
-
-  const w = 760;
-  const h = height;
-  const padLeft = 54;
-  const padRight = 64;
-  const padTop = 12;
-  const padBottom = 44;
-  const plotW = w - padLeft - padRight;
-  const plotH = h - padTop - padBottom;
-  const n = slice.length;
-  const denom = Math.max(1, n - 1);
-
-  function x(i: number) {
-    return padLeft + (i / denom) * plotW;
-  }
-  function yReq(v: number) {
-    return padTop + (1 - v / reqMax) * plotH;
-  }
-  function yErr(v: number) {
-    return padTop + (1 - v / errMax) * plotH;
-  }
-
-  const reqPts: string[] = [];
-  const errPts: string[] = [];
-  slice.forEach((p, i) => {
-    reqPts.push(`${x(i)},${yReq(Number(p.totalRequests || 0))}`);
-    const err = Number.isFinite(Number(p.errorRatePct))
-      ? Number(p.errorRatePct)
-      : p.totalRequests > 0
-      ? (Number(p.error5xxCount || 0) / Number(p.totalRequests)) * 100
-      : 0;
-    errPts.push(`${x(i)},${yErr(err)}`);
-  });
-
-  const xLabelEvery = Math.max(1, Math.floor(n / 6));
-  const latest = slice[slice.length - 1];
-  const latestErr =
-    latest && Number.isFinite(Number(latest.errorRatePct))
-      ? Number(latest.errorRatePct)
-      : latest && latest.totalRequests > 0
-      ? (Number(latest.error5xxCount || 0) / Number(latest.totalRequests)) * 100
-      : 0;
-
-  function toSvgX(clientX: number) {
-    const el = svgRef.current;
-    if (!el) return 0;
-    return ((clientX - el.getBoundingClientRect().left) / Math.max(1, el.getBoundingClientRect().width)) * w;
-  }
-  function idxFromSvgX(sx: number) {
-    return clamp(
-      Math.round(((sx - padLeft) / Math.max(1, plotW)) * (base.length - 1)),
-      0,
-      Math.max(0, base.length - 1)
-    );
-  }
-  function commitZoom(x0: number, x1: number) {
-    const i0 = idxFromSvgX(Math.min(x0, x1));
-    const i1 = idxFromSvgX(Math.max(x0, x1));
-    if (i1 - i0 >= 2) setZoom({ start: i0, end: i1 });
-  }
-  const selectionX = Math.min(drag.x0, drag.x1);
-  const selectionW = Math.abs(drag.x1 - drag.x0);
-
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-xs text-gray-400">Traffic + incident signal</div>
-          <div className="text-sm font-semibold text-gray-100">Requests / Error Rate</div>
-          <div className="text-[11px] text-gray-400 mt-1">
-            {slice.length
-              ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
-                  slice[slice.length - 1].ts
-                )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
-              : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
-          </div>
-          <div className="text-[11px] text-gray-500 mt-1">
-            Drag to zoom • double-click to reset
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="text-xs text-gray-400">Latest</div>
-          <div className="text-[11px] text-gray-200">
-            {latest
-              ? `${formatUtcHM(latest.ts)} UTC • req=${formatIntOrNA(
-                  latest.totalRequests
-                )} • err=${formatPctOrNA(latestErr)}`
-              : "n/a"}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
-        <svg
-          ref={svgRef}
-          viewBox={`0 0 ${w} ${h}`}
-          className="w-full"
-          style={{ height, touchAction: "none", cursor: "crosshair" }}
-          onDoubleClick={() => setZoom(null)}
-          onPointerDown={(e) => {
-            const sx = toSvgX(e.clientX);
-            setDrag({ active: true, x0: sx, x1: sx });
-            (e.currentTarget as any).setPointerCapture?.(e.pointerId);
-          }}
-          onPointerMove={(e) => {
-            if (!drag.active) return;
-            setDrag((d) => ({ ...d, x1: toSvgX(e.clientX) }));
-          }}
-          onPointerUp={() => {
-            if (!drag.active) return;
-            const { x0, x1 } = drag;
-            setDrag({ active: false, x0: 0, x1: 0 });
-            commitZoom(x0, x1);
-          }}
-          onPointerCancel={() => setDrag({ active: false, x0: 0, x1: 0 })}
-          onPointerLeave={() => {
-            if (!drag.active) return;
-            setDrag({ active: false, x0: 0, x1: 0 });
-          }}
-        >
-          <text
-            x={padLeft - 38}
-            y={padTop + plotH / 2}
-            fontSize="10"
-            fill="#9ca3af"
-            transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
-          >
-            Requests
-          </text>
-          <text
-            x={w - padRight + 44}
-            y={padTop + plotH / 2}
-            fontSize="10"
-            fill="#9ca3af"
-            transform={`rotate(90 ${w - padRight + 44} ${padTop + plotH / 2})`}
-          >
-            Error %
-          </text>
-
-          {[0, 0.25, 0.5, 0.75, 1].map((t, idx) => {
-            const yy = padTop + (1 - t) * plotH;
-            return (
-              <g key={idx}>
-                <line
-                  x1={padLeft}
-                  y1={yy}
-                  x2={padLeft + plotW}
-                  y2={yy}
-                  stroke={GRID_STROKE}
-                />
-                <text
-                  x={padLeft - 10}
-                  y={yy + 3}
-                  fontSize="10"
-                  fill="#9ca3af"
-                  textAnchor="end"
-                >
-                  {formatCountTick(Math.round(reqMax * t))}
-                </text>
-                <text
-                  x={padLeft + plotW + 6}
-                  y={yy + 3}
-                  fontSize="10"
-                  fill="#9ca3af"
-                  textAnchor="start"
-                >
-                  {(errMax * t).toFixed(2)}%
-                </text>
-              </g>
-            );
-          })}
-
-          <polyline
-            fill="none"
-            stroke="rgba(59,130,246,0.88)"
-            strokeWidth="2.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            points={reqPts.join(" ")}
-          />
-          <polyline
-            fill="none"
-            stroke="rgba(239,68,68,0.88)"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            points={errPts.join(" ")}
-          />
-
-          {slice.map((p, i) => {
-            if (i % xLabelEvery !== 0 && i !== slice.length - 1) return null;
-            return (
-              <text
-                key={`xl-${p.ts}`}
-                x={x(i)}
-                y={padTop + plotH + 18}
-                fontSize="10"
-                fill="#9ca3af"
-                textAnchor="middle"
-              >
-                {timeLabelShort(p.ts, windowMinutes)}
-              </text>
-            );
-          })}
-
-          {drag.active && selectionW > 2 && (
-            <rect
-              x={selectionX}
-              y={padTop}
-              width={selectionW}
-              height={plotH}
-              fill="rgba(59,130,246,0.12)"
-              stroke="rgba(59,130,246,0.55)"
-              strokeWidth={1}
-              rx={6}
-            />
-          )}
-        </svg>
-
-        <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
-          <div className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ background: "rgba(59,130,246,0.88)" }}
-            />
-            <span>requests</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ background: "rgba(239,68,68,0.88)" }}
-            />
-            <span>error rate</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── LatencyTimeseriesLines ─────────────────────────────────────────────────
-function LatencyTimeseriesLines({
-  points,
-  bucketSeconds,
-  height = 190,
-  windowMinutes,
-}: {
-  points: TimeseriesPoint[];
-  bucketSeconds: number | null;
-  height?: number;
-  windowMinutes: number;
-}) {
-  const base = points;
-  const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
-  const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({
-    active: false,
-    x0: 0,
-    x1: 0,
-  });
-
-  if (!slice.length) return null;
-
-  const vals: number[] = [];
-  for (const p of slice) {
-    if (p.p95TtmsMs != null && Number.isFinite(p.p95TtmsMs)) vals.push(Number(p.p95TtmsMs));
-    if (p.p99TtmsMs != null && Number.isFinite(p.p99TtmsMs)) vals.push(Number(p.p99TtmsMs));
-  }
-
-  const minV = vals.length ? Math.min(...vals) : 0;
-  const maxV = vals.length ? Math.max(...vals) : 1;
-  const span = maxV - minV || 1;
-
-  const w = 760;
-  const h = height;
-  const padLeft = 54;
-  const padRight = 12;
-  const padTop = 12;
-  const padBottom = 44;
-  const plotW = w - padLeft - padRight;
-  const plotH = h - padTop - padBottom;
-  const n = slice.length;
-  const denom = Math.max(1, n - 1);
-
-  function x(i: number) {
-    return padLeft + (i / denom) * plotW;
-  }
-  function y(v: number | null) {
-    if (v == null || !Number.isFinite(Number(v))) return null;
-    return padTop + (1 - (Number(v) - minV) / span) * plotH;
-  }
-
-  const p95Pts: string[] = [];
-  const p99Pts: string[] = [];
-  slice.forEach((p, i) => {
-    const yy95 = y(p.p95TtmsMs);
-    const yy99 = y(p.p99TtmsMs);
-    if (yy95 != null) p95Pts.push(`${x(i)},${yy95}`);
-    if (yy99 != null) p99Pts.push(`${x(i)},${yy99}`);
-  });
-
-  const tickVals = Array.from({ length: 5 }, (_, i) =>
-    Math.round(minV + (span * (4 - i)) / 4)
-  );
-  const xLabelEvery = Math.max(1, Math.floor(n / 6));
-  const latest = slice[slice.length - 1];
-
-  function toSvgX(clientX: number) {
-    const el = svgRef.current;
-    if (!el) return 0;
-    return ((clientX - el.getBoundingClientRect().left) / Math.max(1, el.getBoundingClientRect().width)) * w;
-  }
-  function idxFromSvgX(sx: number) {
-    return clamp(
-      Math.round(((sx - padLeft) / Math.max(1, plotW)) * (base.length - 1)),
-      0,
-      Math.max(0, base.length - 1)
-    );
-  }
-  function commitZoom(x0: number, x1: number) {
-    const i0 = idxFromSvgX(Math.min(x0, x1));
-    const i1 = idxFromSvgX(Math.max(x0, x1));
-    if (i1 - i0 >= 2) setZoom({ start: i0, end: i1 });
-  }
-  const selectionX = Math.min(drag.x0, drag.x1);
-  const selectionW = Math.abs(drag.x1 - drag.x0);
-
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-xs text-gray-400">Latency trend</div>
-          <div className="text-sm font-semibold text-gray-100">p95 / p99 TTMS</div>
-          <div className="text-[11px] text-gray-400 mt-1">
-            {slice.length
-              ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
-                  slice[slice.length - 1].ts
-                )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
-              : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
-          </div>
-          <div className="text-[11px] text-gray-500 mt-1">
-            Drag to zoom • double-click to reset
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="text-xs text-gray-400">Latest</div>
-          <div className="text-[11px] text-gray-200">
-            {latest
-              ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(
-                  latest.p95TtmsMs
-                )} • p99=${formatMsOrNA(latest.p99TtmsMs)}`
-              : "n/a"}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
-        <svg
-          ref={svgRef}
-          viewBox={`0 0 ${w} ${h}`}
-          className="w-full"
-          style={{ height, touchAction: "none", cursor: "crosshair" }}
-          onDoubleClick={() => setZoom(null)}
-          onPointerDown={(e) => {
-            const sx = toSvgX(e.clientX);
-            setDrag({ active: true, x0: sx, x1: sx });
-            (e.currentTarget as any).setPointerCapture?.(e.pointerId);
-          }}
-          onPointerMove={(e) => {
-            if (!drag.active) return;
-            setDrag((d) => ({ ...d, x1: toSvgX(e.clientX) }));
-          }}
-          onPointerUp={() => {
-            if (!drag.active) return;
-            const { x0, x1 } = drag;
-            setDrag({ active: false, x0: 0, x1: 0 });
-            commitZoom(x0, x1);
-          }}
-          onPointerCancel={() => setDrag({ active: false, x0: 0, x1: 0 })}
-          onPointerLeave={() => {
-            if (!drag.active) return;
-            setDrag({ active: false, x0: 0, x1: 0 });
-          }}
-        >
-          <text
-            x={padLeft - 38}
-            y={padTop + plotH / 2}
-            fontSize="10"
-            fill="#9ca3af"
-            transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
-          >
-            Latency (ms)
-          </text>
-          <text
-            x={padLeft + plotW / 2}
-            y={h - 10}
-            fontSize="10"
-            fill="#9ca3af"
-            textAnchor="middle"
-          >
-            Time (UTC, {bucketLabel(bucketSeconds)} buckets)
-          </text>
-
-          {tickVals.map((v, idx) => {
-            const yy = padTop + (1 - (v - minV) / span) * plotH;
-            return (
-              <g key={idx}>
-                <line
-                  x1={padLeft}
-                  y1={yy}
-                  x2={padLeft + plotW}
-                  y2={yy}
-                  stroke={GRID_STROKE}
-                />
-                <text
-                  x={padLeft - 10}
-                  y={yy + 3}
-                  fontSize="10"
-                  fill="#9ca3af"
-                  textAnchor="end"
-                >
-                  {v}
-                </text>
-              </g>
-            );
-          })}
-
-          <polyline
-            fill="none"
-            stroke="rgba(59,130,246,0.88)"
-            strokeWidth="2.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            points={p95Pts.join(" ")}
-          />
-          <polyline
-            fill="none"
-            stroke="rgba(139,92,246,0.88)"
-            strokeWidth="2.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            points={p99Pts.join(" ")}
-          />
-
-          {slice.map((p, i) => {
-            if (i % xLabelEvery !== 0 && i !== slice.length - 1) return null;
-            return (
-              <text
-                key={`xl-${p.ts}`}
-                x={x(i)}
-                y={padTop + plotH + 18}
-                fontSize="10"
-                fill="#9ca3af"
-                textAnchor="middle"
-              >
-                {timeLabelShort(p.ts, windowMinutes)}
-              </text>
-            );
-          })}
-
-          {drag.active && selectionW > 2 && (
-            <rect
-              x={selectionX}
-              y={padTop}
-              width={selectionW}
-              height={plotH}
-              fill="rgba(59,130,246,0.12)"
-              stroke="rgba(59,130,246,0.55)"
-              strokeWidth={1}
-              rx={6}
-            />
-          )}
-        </svg>
-
-        <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
-          <div className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ background: "rgba(59,130,246,0.88)" }}
-            />
-            <span>p95</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ background: "rgba(139,92,246,0.88)" }}
-            />
-            <span>p99</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ExplorationMetricGraph({
-  metric,
-  series,
-  seriesSecondary,
-  rows,
-  displayLabel,
-  height = 220,
-  windowMinutes = 120,
-}: {
-  metric: string;
-  series: Array<{ ts: string; value: number | null }>;
-  seriesSecondary?: Array<{ ts: string; value: number | null }>;
-  rows?: Array<{
-    key: string;
-    value: number | null;
-    secondaryValue?: number | null;
-    tertiaryValue?: number | null;
-    quaternaryValue?: number | null;
-  }>;
-  displayLabel?: string;
-  height?: number;
-  windowMinutes?: number;
-}) {
-  const normalizedSecondary = Array.isArray(seriesSecondary)
-  ? seriesSecondary.map((p) => ({
-      ts: normalizeTsKey(p.ts),
-      value: p?.value == null ? null : Number(p.value),
-    }))
-  : [];
-
-const secondaryMap = new Map(
-  normalizedSecondary.map((p) => [p.ts, p.value])
-);
-
-console.log("EXPLORATION GRAPH DEBUG", {
-  metric,
-  rowsLength: rows?.length,
-  seriesLength: series?.length,
-  seriesSecondaryLength: seriesSecondary?.length,
-});
-
-function resolveAtsRenderMode(args: {
-  series?: Array<{ ts: string; value: number | null }>;
-  seriesSecondary?: Array<{ ts: string; value: number | null }>;
-  rows?: Array<{
-    key: string;
-    value: number | null;
-    secondaryValue?: number | null;
-    tertiaryValue?: number | null;
-    quaternaryValue?: number | null;
-  }>;
-}) {
-  const hasSeries = Array.isArray(args.series) && args.series.length > 0;
-  const hasSecondary =
-    Array.isArray(args.seriesSecondary) && args.seriesSecondary.length > 0;
-  const hasRows = Array.isArray(args.rows) && args.rows.length > 0;
-
-  if (hasSeries && hasSecondary) return "compare" as const;
-  if (hasRows && !hasSeries) return "breakdown" as const;
-  if (hasSeries) return "trend" as const;
-  return "empty" as const;
-}
-
-const atsRenderMode =
-  metric === "ats"
-    ? resolveAtsRenderMode({
-        series,
-        seriesSecondary: normalizedSecondary,
-        rows,
-      })
-    : null;
-
-const isAtsCompare = metric === "ats" && atsRenderMode === "compare";
-
-const atsMetricLabel = (() => {
-  const explicit = String(displayLabel || "").trim();
-  if (explicit) return explicit;
-
-  const firstKey = String(rows?.[0]?.key || "").trim().toLowerCase();
-
-  if (firstKey === "hit") return "ATS Hit";
-  if (firstKey === "miss") return "ATS Miss";
-  if (firstKey === "refresh") return "ATS Refresh";
-  if (firstKey === "client_error") return "ATS Client Error";
-  if (firstKey === "infra_error") return "ATS Infra Error";
-
-  if (firstKey) return firstKey.toUpperCase();
-
-  return "ATS Hit";
-})();
-
-const atsChartEyebrow =
-  atsRenderMode === "compare"
-    ? firstKeyIsRaw(rows)
-      ? "ATS raw compare"
-      : "ATS family compare"
-    : atsRenderMode === "breakdown"
-    ? "ATS breakdown"
-    : firstKeyIsRaw(rows)
-    ? "ATS raw trend"
-    : "ATS trend";
-
-const atsChartTitle =
-  atsRenderMode === "compare"
-    ? "ATS Family Changes vs Previous Window"
-    : atsRenderMode === "breakdown"
-    ? "ATS breakdown by dimension"
-    : `${atsMetricLabel} % Over Time`;
-
-const atsYAxisLabel = `${atsMetricLabel} %`;
-
-function firstKeyIsRaw(
-  atsRows?: Array<{
-    key: string;
-    value: number | null;
-    secondaryValue?: number | null;
-    tertiaryValue?: number | null;
-    quaternaryValue?: number | null;
-  }>
-) {
-  const firstKey = String(atsRows?.[0]?.key || "").trim().toLowerCase();
-  if (!firstKey) return false;
-
-  return !["hit", "miss", "refresh", "client_error", "infra_error"].includes(firstKey);
-}
-
-function formatAtsCompareKey(key: string) {
-  const k = String(key || "").trim().toLowerCase();
-
-  if (k === "hit") return "Hit";
-  if (k === "miss") return "Miss";
-  if (k === "refresh") return "Refresh";
-  if (k === "client_error") return "Client Error";
-  if (k === "infra_error") return "Infra Error";
-
-  return key;
-}
-
-const points: Array<
-  TimeseriesPoint & {
-    previousCacheHitRate?: number | null;
-  }
-> = series.map((p, idx) => {
-  const ts = normalizeTsKey(p.ts);
-  const value = p?.value == null ? null : Number(p.value);
-
-  const secondaryValue = isAtsCompare
-    ? normalizedSecondary[idx]?.value ?? null
-    : secondaryMap.has(ts)
-    ? secondaryMap.get(ts)!
-    : null;
-
-  return {
+  // ── StackedBarTimeseries ───────────────────────────────────────────────────
+  function StackedBarTimeseries({
+    title,
+    subtitle,
     ts,
-    totalRequests: metric === "requests" && value != null ? value : 0,
-    error5xxCount: 0,
-    errorRatePct: metric === "errors" && value != null ? value : 0,
-    p95TtmsMs: metric === "latency" && value != null ? value : null,
-    p99TtmsMs:
-      metric === "latency" && secondaryValue != null ? secondaryValue : null,
-    cacheHitRate: metric === "ats" && value != null ? value : null,
-    previousCacheHitRate:
-      metric === "ats" && secondaryValue != null ? secondaryValue : null,
-    crcErrorCount: 0,
-    statusCountsByCode: undefined,
-  };
-});
-
-  const bucketSeconds =
-    points.length >= 2
-      ? Math.max(
-          60,
-          Math.round(
-            (new Date(points[1].ts).getTime() - new Date(points[0].ts).getTime()) / 1000
-          )
-        )
-      : null;
-
-  if (metric === "latency") {
-    if (!points.length) return null;
-
-    return (
-      <LatencyTimeseriesLines
-        points={points}
-        bucketSeconds={bucketSeconds}
-        height={height}
-        windowMinutes={windowMinutes}
-      />
-    );
-  }
-
-  if (metric === "requests" || metric === "errors") {
-    if (!points.length) return null;
-
-    return (
-      <RequestsErrorRateLines
-        points={points}
-        bucketSeconds={bucketSeconds}
-        height={height}
-        windowMinutes={windowMinutes}
-      />
-    );
-  }
-
-  if (metric === "ats") {
-    if (atsRenderMode === "breakdown") {
-      const breakdownRows = (rows || []).slice(0, 5);
-
-      return (
-        <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-xs text-gray-400">ATS breakdown</div>
-              <div className="text-sm font-semibold text-gray-100">
-                ATS breakdown by dimension
-              </div>
-              <div className="text-[11px] text-gray-500 mt-1">
-                Top 5 rows • backend order preserved
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3 overflow-x-auto">
-            <table className="min-w-full text-left text-xs text-gray-200">
-              <thead className="border-b border-white/10 bg-white/[0.03] text-gray-400">
-                <tr>
-                  <th className="px-4 py-3 font-medium">Dimension</th>
-                  <th className="px-4 py-3 font-medium">Miss %</th>
-                  <th className="px-4 py-3 font-medium">Refresh %</th>
-                  <th className="px-4 py-3 font-medium">Client error %</th>
-                  <th className="px-4 py-3 font-medium">Infra error %</th>
-                </tr>
-              </thead>
-              <tbody>
-                {breakdownRows.map((row, idx) => (
-                  <tr
-                    key={`${String(row?.key)}-${idx}`}
-                    className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.03]"
-                  >
-                    <td className="px-4 py-3 font-medium text-gray-100">
-                      {String(row?.key || "n/a")}
-                    </td>
-                    <td className="px-4 py-3 text-gray-300">
-                      {formatPctOrNA(row?.value)}
-                    </td>
-                    <td className="px-4 py-3 text-gray-300">
-                      {formatPctOrNA(row?.secondaryValue)}
-                    </td>
-                    <td className="px-4 py-3 text-gray-300">
-                      {formatPctOrNA(row?.tertiaryValue)}
-                    </td>
-                    <td className="px-4 py-3 text-gray-300">
-                      {formatPctOrNA(row?.quaternaryValue)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      );
-    }
-
-    if (atsRenderMode === "empty") {
-      return null;
-    }
-
-  const base = points;
-  const [zoom, setZoom] = React.useState<{ start: number; end: number } | null>(null);
-  const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
-  const svgRef = React.useRef<SVGSVGElement | null>(null);
-  const [drag, setDrag] = React.useState<{ active: boolean; x0: number; x1: number }>({
-    active: false,
-    x0: 0,
-    x1: 0,
-  });
-
-    const isCompare = atsRenderMode === "compare";
-
-    const vals: number[] = [];
-    slice.forEach((p) => {
-      if (p.cacheHitRate != null && Number.isFinite(Number(p.cacheHitRate))) {
-        vals.push(Number(p.cacheHitRate));
-      }
-      const prev = p.previousCacheHitRate;
-      if (prev != null && Number.isFinite(Number(prev))) {
-        vals.push(Number(prev));
-      }
+    bucketSeconds,
+    seriesKeys,
+    getMap,
+    height = 190,
+    windowMinutes,
+    kind,
+  }: {
+    title: string;
+    subtitle: string;
+    ts: TimeseriesData;
+    bucketSeconds: number | null;
+    seriesKeys: string[];
+    getMap: (p: TimeseriesPoint) => Record<string, number> | undefined;
+    height?: number;
+    windowMinutes: number;
+    kind: "status" | "host" | "crc";
+  }) {
+    const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
+    const basePoints = (ts.points || []).slice(-maxBars);
+    const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
+    const [focusedKey, setFocusedKey] = useState<string | null>(null);
+    const points =
+      zoom && zoom.end > zoom.start
+        ? basePoints.slice(zoom.start, zoom.end + 1)
+        : basePoints;
+    const svgRef = useRef<SVGSVGElement | null>(null);
+    const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({
+      active: false,
+      x0: 0,
+      x1: 0,
     });
 
-    const minV = Math.min(0, ...vals, 60);
-    const maxV = Math.max(100, ...vals);
-    const span = Math.max(1, maxV - minV);
+    if (!points.length) return null;
 
-    const w = 760;
+    const present = new Map<string, number>();
+    for (const p of points) {
+      const m = getMap(p) || {};
+      for (const k of Object.keys(m)) {
+        present.set(k, (present.get(k) ?? 0) + Number(m[k] ?? 0));
+      }
+    }
+
+    const ordered = [
+      ...seriesKeys.filter((k) => present.has(k)),
+      ...Array.from(present.keys()).filter((k) => !seriesKeys.includes(k)),
+    ];
+    const allKeys = ordered.slice(0, 10);
+    if (!allKeys.length) return null;
+
+    const keys = focusedKey && allKeys.includes(focusedKey) ? [focusedKey] : allKeys;
+
+    const totals = points.map((p) => {
+      const m = getMap(p) || {};
+      let sum = 0;
+      for (const k of keys) sum += Number(m[k] ?? 0);
+      return sum;
+    });
+    const maxTotal = Math.max(1, ...totals);
+
+    const w = 360;
     const h = height;
     const padLeft = 54;
     const padRight = 12;
@@ -2446,51 +1374,34 @@ const points: Array<
     const padBottom = 44;
     const plotW = w - padLeft - padRight;
     const plotH = h - padTop - padBottom;
-    const n = slice.length;
-    const denom = Math.max(1, n - 1);
 
-    function x(i: number) {
-      return padLeft + (i / denom) * plotW;
-    }
-
-    function y(v: number | null | undefined) {
-      if (v == null || !Number.isFinite(Number(v))) return null;
-      return padTop + (1 - (Number(v) - minV) / span) * plotH;
-    }
-
-    const currentPts: string[] = [];
-    const previousPts: string[] = [];
-
-    slice.forEach((p, i) => {
-      const yyCurrent = y(p.cacheHitRate);
-      if (yyCurrent != null) currentPts.push(`${x(i)},${yyCurrent}`);
-
-      const yyPrevious = y(p.previousCacheHitRate);
-      if (yyPrevious != null) previousPts.push(`${x(i)},${yyPrevious}`);
-    });
-
-    const tickVals = Array.from({ length: 5 }, (_, i) =>
-      Math.round(minV + (span * (4 - i)) / 4)
+    const barCount = points.length;
+    const gap = clamp(Math.round(plotW / (Math.max(1, barCount) * 10)), 2, 6);
+    const barW = Math.max(
+      4,
+      Math.floor((plotW - gap * Math.max(0, barCount - 1)) / Math.max(1, barCount))
     );
-    const xLabelEvery = Math.max(1, Math.floor(n / 6));
-    const latest = slice[slice.length - 1];
-    const latestPrevious = latest ? latest.previousCacheHitRate : null;
+
+    const yTicks = 4;
+    const tickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
+      Math.round((maxTotal * (yTicks - i)) / yTicks)
+    );
+    const xLabelEvery = Math.max(1, Math.floor(points.length / 6));
+    const latest = points[points.length - 1];
+    const latestTotal = totals[totals.length - 1] || 0;
 
     function toSvgX(clientX: number) {
       const el = svgRef.current;
       if (!el) return 0;
-      return (
-        ((clientX - el.getBoundingClientRect().left) /
-          Math.max(1, el.getBoundingClientRect().width)) *
-        w
-      );
+      const r = el.getBoundingClientRect();
+      return ((clientX - r.left) / Math.max(1, r.width)) * w;
     }
 
     function idxFromSvgX(sx: number) {
       return clamp(
-        Math.round(((sx - padLeft) / Math.max(1, plotW)) * (base.length - 1)),
+        Math.floor((sx - padLeft) / Math.max(1, barW + gap)),
         0,
-        Math.max(0, base.length - 1)
+        Math.max(0, basePoints.length - 1)
       );
     }
 
@@ -2507,61 +1418,327 @@ const points: Array<
       <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-xs text-gray-400">{atsChartEyebrow}</div>
-            <div className="text-sm font-semibold text-gray-100">{atsChartTitle}</div>
+            <div className="text-xs text-gray-400">{subtitle}</div>
+            <div className="text-sm font-semibold text-gray-100">{title}</div>
             <div className="text-[11px] text-gray-400 mt-1">
-              {slice.length
-                ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
-                    slice[slice.length - 1].ts
-                  )} UTC`
-                : "UTC"}
+              {ts.startTs && ts.endTs
+                ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(
+                    ts.endTs
+                  )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
+                : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
             </div>
             <div className="text-[11px] text-gray-500 mt-1">
-              Drag to zoom • double-click to reset
+              {focusedKey ? (
+                <>
+                  Focused: <span className="text-gray-200">{focusedKey}</span>
+                  <button
+                    type="button"
+                    className="ml-2 underline hover:text-gray-300"
+                    onClick={() => setFocusedKey(null)}
+                  >
+                    reset focus
+                  </button>
+                </>
+              ) : (
+                <>Click legend to isolate • Drag to zoom • double-click to reset</>
+              )}
             </div>
           </div>
-
           <div className="text-right">
             <div className="text-xs text-gray-400">Latest</div>
             <div className="text-[11px] text-gray-200">
               {latest
-                ? isCompare
-                  ? `${formatUtcHM(latest.ts)} UTC • current=${formatPctOrNA(
-                      latest.cacheHitRate
-                    )} • previous=${formatPctOrNA(latestPrevious)}`
-                  : `${formatUtcHM(latest.ts)} UTC • ${formatPctOrNA(latest.cacheHitRate)}`
+                ? `${formatUtcHM(latest.ts)} UTC • ${latestTotal.toLocaleString()} events`
                 : "n/a"}
             </div>
           </div>
         </div>
 
-        {isCompare ? (
-          <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-3">
-            {(rows || []).map((row) => {
-              const delta = Number(row?.value ?? 0);
-              const current = row?.secondaryValue;
-              const previous = row?.tertiaryValue;
+        <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
+          <svg
+            viewBox={`0 0 ${w} ${h}`}
+            className="w-full"
+            style={{ height, touchAction: "none", cursor: "crosshair" }}
+            ref={svgRef}
+            onDoubleClick={() => setZoom(null)}
+            onPointerDown={(e) => {
+              const sx = toSvgX(e.clientX);
+              setDrag({ active: true, x0: sx, x1: sx });
+              (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              if (!drag.active) return;
+              setDrag((d) => ({ ...d, x1: toSvgX(e.clientX) }));
+            }}
+            onPointerUp={() => {
+              if (!drag.active) return;
+              const { x0, x1 } = drag;
+              setDrag({ active: false, x0: 0, x1: 0 });
+              commitZoom(x0, x1);
+            }}
+            onPointerCancel={() => setDrag({ active: false, x0: 0, x1: 0 })}
+            onPointerLeave={() => {
+              if (!drag.active) return;
+              setDrag({ active: false, x0: 0, x1: 0 });
+            }}
+          >
+            <text
+              x={padLeft - 38}
+              y={padTop + plotH / 2}
+              fontSize="10"
+              fill="#9ca3af"
+              transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
+            >
+              Events
+            </text>
+            <text
+              x={padLeft + plotW / 2}
+              y={h - 10}
+              fontSize="10"
+              fill="#9ca3af"
+              textAnchor="middle"
+            >
+              Time (UTC, {bucketLabel(bucketSeconds)} buckets)
+            </text>
 
+            {tickVals.map((v, idx) => {
+              const y = padTop + (1 - v / maxTotal) * plotH;
               return (
-                <div
-                  key={String(row?.key)}
-                  className="rounded-xl border border-white/10 bg-black/25 p-3"
+                <g key={idx}>
+                  <line
+                    x1={padLeft}
+                    y1={y}
+                    x2={padLeft + plotW}
+                    y2={y}
+                    stroke={GRID_STROKE}
+                  />
+                  <text
+                    x={padLeft - 10}
+                    y={y + 3}
+                    fontSize="10"
+                    fill="#9ca3af"
+                    textAnchor="end"
+                    opacity={0.95}
+                  >
+                    {formatCountTick(v)}
+                  </text>
+                </g>
+              );
+            })}
+
+            {points.map((p, i) => {
+              const x = padLeft + i * (barW + gap);
+              const m = getMap(p) || {};
+              let yTop = padTop + plotH;
+              return (
+                <g key={p.ts}>
+                  {keys.map((k) => {
+                    const val = Number(m[k] ?? 0);
+                    if (!val) return null;
+                    const segH = (val / maxTotal) * plotH;
+                    const y = yTop - segH;
+                    yTop = y;
+                    return (
+                      <rect
+                        key={`${p.ts}-${k}`}
+                        x={x}
+                        y={y}
+                        width={barW}
+                        height={Math.max(0, segH)}
+                        rx={2}
+                        fill={seriesColor(kind, k)}
+                        opacity={0.9}
+                      />
+                    );
+                  })}
+                </g>
+              );
+            })}
+
+            {points.map((p, i) => {
+              if (i % xLabelEvery !== 0 && i !== points.length - 1) return null;
+              return (
+                <text
+                  key={`xl-${p.ts}`}
+                  x={padLeft + i * (barW + gap) + barW / 2}
+                  y={padTop + plotH + 18}
+                  fontSize="10"
+                  fill="#9ca3af"
+                  textAnchor="middle"
                 >
-                  <div className="text-[11px] text-gray-400">
-                    {formatAtsCompareKey(String(row?.key || ""))}
-                  </div>
-                  <div className="mt-1 text-lg font-semibold text-gray-100">
-                    {delta > 0 ? "+" : ""}
-                    {delta.toFixed(2)}%
-                  </div>
-                  <div className="mt-1 text-[11px] text-gray-500">
-                    current {formatPctOrNA(current)} • previous {formatPctOrNA(previous)}
-                  </div>
-                </div>
+                  {timeLabelShort(p.ts, windowMinutes)}
+                </text>
+              );
+            })}
+
+            {drag.active && selectionW > 2 && (
+              <rect
+                x={selectionX}
+                y={padTop}
+                width={selectionW}
+                height={plotH}
+                fill="rgba(59,130,246,0.12)"
+                stroke="rgba(59,130,246,0.55)"
+                strokeWidth={1}
+                rx={6}
+              />
+            )}
+          </svg>
+
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-300">
+            {allKeys.map((k) => {
+              const active = focusedKey ? focusedKey === k : true;
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setFocusedKey((prev) => (prev === k ? null : k))}
+                  className={`flex items-center gap-1.5 rounded-full border px-2 py-1 transition ${
+                    active
+                      ? "border-white/10 bg-white/5 text-gray-100"
+                      : "border-white/5 bg-white/[0.02] text-gray-500"
+                  }`}
+                >
+                  <span
+                    className="inline-block h-2.5 w-2.5 rounded-full"
+                    style={{ background: seriesColor(kind, k) }}
+                  />
+                  <span className="truncate max-w-[220px]">{k}</span>
+                </button>
               );
             })}
           </div>
-        ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  // ── RequestsErrorRateLines ─────────────────────────────────────────────────
+  function RequestsErrorRateLines({
+    points,
+    bucketSeconds,
+    height = 190,
+    windowMinutes,
+  }: {
+    points: TimeseriesPoint[];
+    bucketSeconds: number | null;
+    height?: number;
+    windowMinutes: number;
+  }) {
+    const base = points;
+    const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
+    const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
+    const svgRef = useRef<SVGSVGElement | null>(null);
+    const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({
+      active: false,
+      x0: 0,
+      x1: 0,
+    });
+
+    if (!slice.length) return null;
+
+    const reqVals = slice.map((p) => Number(p.totalRequests || 0));
+    const errVals = slice.map((p) =>
+      Number.isFinite(Number(p.errorRatePct))
+        ? Number(p.errorRatePct)
+        : p.totalRequests > 0
+        ? (Number(p.error5xxCount || 0) / Number(p.totalRequests)) * 100
+        : 0
+    );
+
+    const reqMax = Math.max(1, ...reqVals);
+    const errMax = Math.max(0.5, Math.max(0, ...errVals) * 1.2 || 0.5);
+
+    const w = 760;
+    const h = height;
+    const padLeft = 54;
+    const padRight = 64;
+    const padTop = 12;
+    const padBottom = 44;
+    const plotW = w - padLeft - padRight;
+    const plotH = h - padTop - padBottom;
+    const n = slice.length;
+    const denom = Math.max(1, n - 1);
+
+    function x(i: number) {
+      return padLeft + (i / denom) * plotW;
+    }
+    function yReq(v: number) {
+      return padTop + (1 - v / reqMax) * plotH;
+    }
+    function yErr(v: number) {
+      return padTop + (1 - v / errMax) * plotH;
+    }
+
+    const reqPts: string[] = [];
+    const errPts: string[] = [];
+    slice.forEach((p, i) => {
+      reqPts.push(`${x(i)},${yReq(Number(p.totalRequests || 0))}`);
+      const err = Number.isFinite(Number(p.errorRatePct))
+        ? Number(p.errorRatePct)
+        : p.totalRequests > 0
+        ? (Number(p.error5xxCount || 0) / Number(p.totalRequests)) * 100
+        : 0;
+      errPts.push(`${x(i)},${yErr(err)}`);
+    });
+
+    const xLabelEvery = Math.max(1, Math.floor(n / 6));
+    const latest = slice[slice.length - 1];
+    const latestErr =
+      latest && Number.isFinite(Number(latest.errorRatePct))
+        ? Number(latest.errorRatePct)
+        : latest && latest.totalRequests > 0
+        ? (Number(latest.error5xxCount || 0) / Number(latest.totalRequests)) * 100
+        : 0;
+
+    function toSvgX(clientX: number) {
+      const el = svgRef.current;
+      if (!el) return 0;
+      return ((clientX - el.getBoundingClientRect().left) / Math.max(1, el.getBoundingClientRect().width)) * w;
+    }
+    function idxFromSvgX(sx: number) {
+      return clamp(
+        Math.round(((sx - padLeft) / Math.max(1, plotW)) * (base.length - 1)),
+        0,
+        Math.max(0, base.length - 1)
+      );
+    }
+    function commitZoom(x0: number, x1: number) {
+      const i0 = idxFromSvgX(Math.min(x0, x1));
+      const i1 = idxFromSvgX(Math.max(x0, x1));
+      if (i1 - i0 >= 2) setZoom({ start: i0, end: i1 });
+    }
+    const selectionX = Math.min(drag.x0, drag.x1);
+    const selectionW = Math.abs(drag.x1 - drag.x0);
+
+    return (
+      <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs text-gray-400">Traffic + incident signal</div>
+            <div className="text-sm font-semibold text-gray-100">Requests / Error Rate</div>
+            <div className="text-[11px] text-gray-400 mt-1">
+              {slice.length
+                ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
+                    slice[slice.length - 1].ts
+                  )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
+                : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
+            </div>
+            <div className="text-[11px] text-gray-500 mt-1">
+              Drag to zoom • double-click to reset
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-xs text-gray-400">Latest</div>
+            <div className="text-[11px] text-gray-200">
+              {latest
+                ? `${formatUtcHM(latest.ts)} UTC • req=${formatIntOrNA(
+                    latest.totalRequests
+                  )} • err=${formatPctOrNA(latestErr)}`
+                : "n/a"}
+            </div>
+          </div>
+        </div>
 
         <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
           <svg
@@ -2598,7 +1775,281 @@ const points: Array<
               fill="#9ca3af"
               transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
             >
-              {atsYAxisLabel}
+              Requests
+            </text>
+            <text
+              x={w - padRight + 44}
+              y={padTop + plotH / 2}
+              fontSize="10"
+              fill="#9ca3af"
+              transform={`rotate(90 ${w - padRight + 44} ${padTop + plotH / 2})`}
+            >
+              Error %
+            </text>
+
+            {[0, 0.25, 0.5, 0.75, 1].map((t, idx) => {
+              const yy = padTop + (1 - t) * plotH;
+              return (
+                <g key={idx}>
+                  <line
+                    x1={padLeft}
+                    y1={yy}
+                    x2={padLeft + plotW}
+                    y2={yy}
+                    stroke={GRID_STROKE}
+                  />
+                  <text
+                    x={padLeft - 10}
+                    y={yy + 3}
+                    fontSize="10"
+                    fill="#9ca3af"
+                    textAnchor="end"
+                  >
+                    {formatCountTick(Math.round(reqMax * t))}
+                  </text>
+                  <text
+                    x={padLeft + plotW + 6}
+                    y={yy + 3}
+                    fontSize="10"
+                    fill="#9ca3af"
+                    textAnchor="start"
+                  >
+                    {(errMax * t).toFixed(2)}%
+                  </text>
+                </g>
+              );
+            })}
+
+            <polyline
+              fill="none"
+              stroke="rgba(59,130,246,0.88)"
+              strokeWidth="2.75"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              points={reqPts.join(" ")}
+            />
+            <polyline
+              fill="none"
+              stroke="rgba(239,68,68,0.88)"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              points={errPts.join(" ")}
+            />
+
+            {slice.map((p, i) => {
+              if (i % xLabelEvery !== 0 && i !== slice.length - 1) return null;
+              return (
+                <text
+                  key={`xl-${p.ts}`}
+                  x={x(i)}
+                  y={padTop + plotH + 18}
+                  fontSize="10"
+                  fill="#9ca3af"
+                  textAnchor="middle"
+                >
+                  {timeLabelShort(p.ts, windowMinutes)}
+                </text>
+              );
+            })}
+
+            {drag.active && selectionW > 2 && (
+              <rect
+                x={selectionX}
+                y={padTop}
+                width={selectionW}
+                height={plotH}
+                fill="rgba(59,130,246,0.12)"
+                stroke="rgba(59,130,246,0.55)"
+                strokeWidth={1}
+                rx={6}
+              />
+            )}
+          </svg>
+
+          <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
+            <div className="flex items-center gap-1.5">
+              <span
+                className="inline-block h-2.5 w-2.5 rounded-full"
+                style={{ background: "rgba(59,130,246,0.88)" }}
+              />
+              <span>requests</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span
+                className="inline-block h-2.5 w-2.5 rounded-full"
+                style={{ background: "rgba(239,68,68,0.88)" }}
+              />
+              <span>error rate</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── LatencyTimeseriesLines ─────────────────────────────────────────────────
+  function LatencyTimeseriesLines({
+    points,
+    bucketSeconds,
+    height = 190,
+    windowMinutes,
+  }: {
+    points: TimeseriesPoint[];
+    bucketSeconds: number | null;
+    height?: number;
+    windowMinutes: number;
+  }) {
+    const base = points;
+    const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
+    const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
+    const svgRef = useRef<SVGSVGElement | null>(null);
+    const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({
+      active: false,
+      x0: 0,
+      x1: 0,
+    });
+
+    if (!slice.length) return null;
+
+    const vals: number[] = [];
+    for (const p of slice) {
+      if (p.p95TtmsMs != null && Number.isFinite(p.p95TtmsMs)) vals.push(Number(p.p95TtmsMs));
+      if (p.p99TtmsMs != null && Number.isFinite(p.p99TtmsMs)) vals.push(Number(p.p99TtmsMs));
+    }
+
+    const minV = vals.length ? Math.min(...vals) : 0;
+    const maxV = vals.length ? Math.max(...vals) : 1;
+    const span = maxV - minV || 1;
+
+    const w = 760;
+    const h = height;
+    const padLeft = 54;
+    const padRight = 12;
+    const padTop = 12;
+    const padBottom = 44;
+    const plotW = w - padLeft - padRight;
+    const plotH = h - padTop - padBottom;
+    const n = slice.length;
+    const denom = Math.max(1, n - 1);
+
+    function x(i: number) {
+      return padLeft + (i / denom) * plotW;
+    }
+    function y(v: number | null) {
+      if (v == null || !Number.isFinite(Number(v))) return null;
+      return padTop + (1 - (Number(v) - minV) / span) * plotH;
+    }
+
+    const p95Pts: string[] = [];
+    const p99Pts: string[] = [];
+    slice.forEach((p, i) => {
+      const yy95 = y(p.p95TtmsMs);
+      const yy99 = y(p.p99TtmsMs);
+      if (yy95 != null) p95Pts.push(`${x(i)},${yy95}`);
+      if (yy99 != null) p99Pts.push(`${x(i)},${yy99}`);
+    });
+
+    const tickVals = Array.from({ length: 5 }, (_, i) =>
+      Math.round(minV + (span * (4 - i)) / 4)
+    );
+    const xLabelEvery = Math.max(1, Math.floor(n / 6));
+    const latest = slice[slice.length - 1];
+
+    function toSvgX(clientX: number) {
+      const el = svgRef.current;
+      if (!el) return 0;
+      return ((clientX - el.getBoundingClientRect().left) / Math.max(1, el.getBoundingClientRect().width)) * w;
+    }
+    function idxFromSvgX(sx: number) {
+      return clamp(
+        Math.round(((sx - padLeft) / Math.max(1, plotW)) * (base.length - 1)),
+        0,
+        Math.max(0, base.length - 1)
+      );
+    }
+    function commitZoom(x0: number, x1: number) {
+      const i0 = idxFromSvgX(Math.min(x0, x1));
+      const i1 = idxFromSvgX(Math.max(x0, x1));
+      if (i1 - i0 >= 2) setZoom({ start: i0, end: i1 });
+    }
+    const selectionX = Math.min(drag.x0, drag.x1);
+    const selectionW = Math.abs(drag.x1 - drag.x0);
+
+    return (
+      <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs text-gray-400">Latency trend</div>
+            <div className="text-sm font-semibold text-gray-100">p95 / p99 TTMS</div>
+            <div className="text-[11px] text-gray-400 mt-1">
+              {slice.length
+                ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
+                    slice[slice.length - 1].ts
+                  )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
+                : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
+            </div>
+            <div className="text-[11px] text-gray-500 mt-1">
+              Drag to zoom • double-click to reset
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-xs text-gray-400">Latest</div>
+            <div className="text-[11px] text-gray-200">
+              {latest
+                ? `${formatUtcHM(latest.ts)} UTC • p95=${formatMsOrNA(
+                    latest.p95TtmsMs
+                  )} • p99=${formatMsOrNA(latest.p99TtmsMs)}`
+                : "n/a"}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
+          <svg
+            ref={svgRef}
+            viewBox={`0 0 ${w} ${h}`}
+            className="w-full"
+            style={{ height, touchAction: "none", cursor: "crosshair" }}
+            onDoubleClick={() => setZoom(null)}
+            onPointerDown={(e) => {
+              const sx = toSvgX(e.clientX);
+              setDrag({ active: true, x0: sx, x1: sx });
+              (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              if (!drag.active) return;
+              setDrag((d) => ({ ...d, x1: toSvgX(e.clientX) }));
+            }}
+            onPointerUp={() => {
+              if (!drag.active) return;
+              const { x0, x1 } = drag;
+              setDrag({ active: false, x0: 0, x1: 0 });
+              commitZoom(x0, x1);
+            }}
+            onPointerCancel={() => setDrag({ active: false, x0: 0, x1: 0 })}
+            onPointerLeave={() => {
+              if (!drag.active) return;
+              setDrag({ active: false, x0: 0, x1: 0 });
+            }}
+          >
+            <text
+              x={padLeft - 38}
+              y={padTop + plotH / 2}
+              fontSize="10"
+              fill="#9ca3af"
+              transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
+            >
+              Latency (ms)
+            </text>
+            <text
+              x={padLeft + plotW / 2}
+              y={h - 10}
+              fontSize="10"
+              fill="#9ca3af"
+              textAnchor="middle"
+            >
+              Time (UTC, {bucketLabel(bucketSeconds)} buckets)
             </text>
 
             {tickVals.map((v, idx) => {
@@ -2619,31 +2070,27 @@ const points: Array<
                     fill="#9ca3af"
                     textAnchor="end"
                   >
-                    {v}%
+                    {v}
                   </text>
                 </g>
               );
             })}
 
-            {isCompare && previousPts.length > 0 ? (
-              <polyline
-                fill="none"
-                stroke="rgba(156,163,175,0.85)"
-                strokeWidth="2"
-                strokeDasharray="6 6"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                points={previousPts.join(" ")}
-              />
-            ) : null}
-
             <polyline
               fill="none"
-              stroke="rgba(16,185,129,0.92)"
+              stroke="rgba(59,130,246,0.88)"
               strokeWidth="2.75"
               strokeLinecap="round"
               strokeLinejoin="round"
-              points={currentPts.join(" ")}
+              points={p95Pts.join(" ")}
+            />
+            <polyline
+              fill="none"
+              stroke="rgba(139,92,246,0.88)"
+              strokeWidth="2.75"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              points={p99Pts.join(" ")}
             />
 
             {slice.map((p, i) => {
@@ -2662,7 +2109,7 @@ const points: Array<
               );
             })}
 
-            {drag.active && selectionW > 2 ? (
+            {drag.active && selectionW > 2 && (
               <rect
                 x={selectionX}
                 y={padTop}
@@ -2673,23 +2120,563 @@ const points: Array<
                 strokeWidth={1}
                 rx={6}
               />
-            ) : null}
+            )}
           </svg>
 
           <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
-            <button
-              type="button"
-              className="flex items-center gap-1.5"
-              onClick={() => setZoom(null)}
-            >
+            <div className="flex items-center gap-1.5">
               <span
                 className="inline-block h-2.5 w-2.5 rounded-full"
-                style={{ background: "rgba(16,185,129,0.92)" }}
+                style={{ background: "rgba(59,130,246,0.88)" }}
               />
-              <span>Current</span>
-            </button>
+              <span>p95</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span
+                className="inline-block h-2.5 w-2.5 rounded-full"
+                style={{ background: "rgba(139,92,246,0.88)" }}
+              />
+              <span>p99</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-            {isCompare ? (
+  function ExplorationMetricGraph({
+    metric,
+    series,
+    seriesSecondary,
+    rows,
+    displayLabel,
+    height = 220,
+    windowMinutes = 120,
+  }: {
+    metric: string;
+    series: Array<{ ts: string; value: number | null }>;
+    seriesSecondary?: Array<{ ts: string; value: number | null }>;
+    rows?: Array<{
+      key: string;
+      value: number | null;
+      secondaryValue?: number | null;
+      tertiaryValue?: number | null;
+      quaternaryValue?: number | null;
+    }>;
+    displayLabel?: string;
+    height?: number;
+    windowMinutes?: number;
+  }) {
+    const normalizedSecondary = Array.isArray(seriesSecondary)
+    ? seriesSecondary.map((p) => ({
+        ts: normalizeTsKey(p.ts),
+        value: p?.value == null ? null : Number(p.value),
+      }))
+    : [];
+
+  const secondaryMap = new Map(
+    normalizedSecondary.map((p) => [p.ts, p.value])
+  );
+
+  console.log("EXPLORATION GRAPH DEBUG", {
+    metric,
+    rowsLength: rows?.length,
+    seriesLength: series?.length,
+    seriesSecondaryLength: seriesSecondary?.length,
+  });
+
+  function resolveAtsRenderMode(args: {
+    series?: Array<{ ts: string; value: number | null }>;
+    seriesSecondary?: Array<{ ts: string; value: number | null }>;
+    rows?: Array<{
+      key: string;
+      value: number | null;
+      secondaryValue?: number | null;
+      tertiaryValue?: number | null;
+      quaternaryValue?: number | null;
+    }>;
+  }) {
+    const hasSeries = Array.isArray(args.series) && args.series.length > 0;
+    const hasSecondary =
+      Array.isArray(args.seriesSecondary) && args.seriesSecondary.length > 0;
+    const hasRows = Array.isArray(args.rows) && args.rows.length > 0;
+
+    if (hasSeries && hasSecondary) return "compare" as const;
+    if (hasRows && !hasSeries) return "breakdown" as const;
+    if (hasSeries) return "trend" as const;
+    return "empty" as const;
+  }
+
+  const atsRenderMode =
+    metric === "ats"
+      ? resolveAtsRenderMode({
+          series,
+          seriesSecondary: normalizedSecondary,
+          rows,
+        })
+      : null;
+
+  const isAtsCompare = metric === "ats" && atsRenderMode === "compare";
+
+  const atsMetricLabel = (() => {
+    const explicit = String(displayLabel || "").trim();
+    if (explicit) return explicit;
+
+    const firstKey = String(rows?.[0]?.key || "").trim().toLowerCase();
+
+    if (firstKey === "hit") return "ATS Hit";
+    if (firstKey === "miss") return "ATS Miss";
+    if (firstKey === "refresh") return "ATS Refresh";
+    if (firstKey === "client_error") return "ATS Client Error";
+    if (firstKey === "infra_error") return "ATS Infra Error";
+
+    if (firstKey) return firstKey.toUpperCase();
+
+    return "ATS Hit";
+  })();
+
+  const atsChartEyebrow =
+    atsRenderMode === "compare"
+      ? firstKeyIsRaw(rows)
+        ? "ATS raw compare"
+        : "ATS family compare"
+      : atsRenderMode === "breakdown"
+      ? "ATS breakdown"
+      : firstKeyIsRaw(rows)
+      ? "ATS raw trend"
+      : "ATS trend";
+
+  const atsChartTitle =
+    atsRenderMode === "compare"
+      ? "ATS Family Changes vs Previous Window"
+      : atsRenderMode === "breakdown"
+      ? "ATS breakdown by dimension"
+      : `${atsMetricLabel} % Over Time`;
+
+  const atsYAxisLabel = `${atsMetricLabel} %`;
+
+  function firstKeyIsRaw(
+    atsRows?: Array<{
+      key: string;
+      value: number | null;
+      secondaryValue?: number | null;
+      tertiaryValue?: number | null;
+      quaternaryValue?: number | null;
+    }>
+  ) {
+    const firstKey = String(atsRows?.[0]?.key || "").trim().toLowerCase();
+    if (!firstKey) return false;
+
+    return !["hit", "miss", "refresh", "client_error", "infra_error"].includes(firstKey);
+  }
+
+  function formatAtsCompareKey(key: string) {
+    const k = String(key || "").trim().toLowerCase();
+
+    if (k === "hit") return "Hit";
+    if (k === "miss") return "Miss";
+    if (k === "refresh") return "Refresh";
+    if (k === "client_error") return "Client Error";
+    if (k === "infra_error") return "Infra Error";
+
+    return key;
+  }
+
+  const points: Array<
+    TimeseriesPoint & {
+      previousCacheHitRate?: number | null;
+    }
+  > = series.map((p, idx) => {
+    const ts = normalizeTsKey(p.ts);
+    const value = p?.value == null ? null : Number(p.value);
+
+    const secondaryValue = isAtsCompare
+      ? normalizedSecondary[idx]?.value ?? null
+      : secondaryMap.has(ts)
+      ? secondaryMap.get(ts)!
+      : null;
+
+    return {
+      ts,
+      totalRequests: metric === "requests" && value != null ? value : 0,
+      error5xxCount: 0,
+      errorRatePct: metric === "errors" && value != null ? value : 0,
+      p95TtmsMs: metric === "latency" && value != null ? value : null,
+      p99TtmsMs:
+        metric === "latency" && secondaryValue != null ? secondaryValue : null,
+      cacheHitRate: metric === "ats" && value != null ? value : null,
+      previousCacheHitRate:
+        metric === "ats" && secondaryValue != null ? secondaryValue : null,
+      crcErrorCount: 0,
+      statusCountsByCode: undefined,
+    };
+  });
+
+    const bucketSeconds =
+      points.length >= 2
+        ? Math.max(
+            60,
+            Math.round(
+              (new Date(points[1].ts).getTime() - new Date(points[0].ts).getTime()) / 1000
+            )
+          )
+        : null;
+
+    if (metric === "latency") {
+      if (!points.length) return null;
+
+      return (
+        <LatencyTimeseriesLines
+          points={points}
+          bucketSeconds={bucketSeconds}
+          height={height}
+          windowMinutes={windowMinutes}
+        />
+      );
+    }
+
+    if (metric === "requests" || metric === "errors") {
+      if (!points.length) return null;
+
+      return (
+        <RequestsErrorRateLines
+          points={points}
+          bucketSeconds={bucketSeconds}
+          height={height}
+          windowMinutes={windowMinutes}
+        />
+      );
+    }
+
+    if (metric === "ats") {
+      if (atsRenderMode === "breakdown") {
+        const breakdownRows = (rows || []).slice(0, 5);
+
+        return (
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400">ATS breakdown</div>
+                <div className="text-sm font-semibold text-gray-100">
+                  ATS breakdown by dimension
+                </div>
+                <div className="text-[11px] text-gray-500 mt-1">
+                  Top 5 rows • backend order preserved
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3 overflow-x-auto">
+              <table className="min-w-full text-left text-xs text-gray-200">
+                <thead className="border-b border-white/10 bg-white/[0.03] text-gray-400">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">Dimension</th>
+                    <th className="px-4 py-3 font-medium">Miss %</th>
+                    <th className="px-4 py-3 font-medium">Refresh %</th>
+                    <th className="px-4 py-3 font-medium">Client error %</th>
+                    <th className="px-4 py-3 font-medium">Infra error %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {breakdownRows.map((row, idx) => (
+                    <tr
+                      key={`${String(row?.key)}-${idx}`}
+                      className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.03]"
+                    >
+                      <td className="px-4 py-3 font-medium text-gray-100">
+                        {String(row?.key || "n/a")}
+                      </td>
+                      <td className="px-4 py-3 text-gray-300">
+                        {formatPctOrNA(row?.value)}
+                      </td>
+                      <td className="px-4 py-3 text-gray-300">
+                        {formatPctOrNA(row?.secondaryValue)}
+                      </td>
+                      <td className="px-4 py-3 text-gray-300">
+                        {formatPctOrNA(row?.tertiaryValue)}
+                      </td>
+                      <td className="px-4 py-3 text-gray-300">
+                        {formatPctOrNA(row?.quaternaryValue)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      }
+
+      if (atsRenderMode === "empty") {
+        return null;
+      }
+
+    const base = points;
+    const [zoom, setZoom] = React.useState<{ start: number; end: number } | null>(null);
+    const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
+    const svgRef = React.useRef<SVGSVGElement | null>(null);
+    const [drag, setDrag] = React.useState<{ active: boolean; x0: number; x1: number }>({
+      active: false,
+      x0: 0,
+      x1: 0,
+    });
+
+      const isCompare = atsRenderMode === "compare";
+
+      const vals: number[] = [];
+      slice.forEach((p) => {
+        if (p.cacheHitRate != null && Number.isFinite(Number(p.cacheHitRate))) {
+          vals.push(Number(p.cacheHitRate));
+        }
+        const prev = p.previousCacheHitRate;
+        if (prev != null && Number.isFinite(Number(prev))) {
+          vals.push(Number(prev));
+        }
+      });
+
+      const minV = Math.min(0, ...vals, 60);
+      const maxV = Math.max(100, ...vals);
+      const span = Math.max(1, maxV - minV);
+
+      const w = 760;
+      const h = height;
+      const padLeft = 54;
+      const padRight = 12;
+      const padTop = 12;
+      const padBottom = 44;
+      const plotW = w - padLeft - padRight;
+      const plotH = h - padTop - padBottom;
+      const n = slice.length;
+      const denom = Math.max(1, n - 1);
+
+      function x(i: number) {
+        return padLeft + (i / denom) * plotW;
+      }
+
+      function y(v: number | null | undefined) {
+        if (v == null || !Number.isFinite(Number(v))) return null;
+        return padTop + (1 - (Number(v) - minV) / span) * plotH;
+      }
+
+      const currentPts: string[] = [];
+      const previousPts: string[] = [];
+
+      slice.forEach((p, i) => {
+        const yyCurrent = y(p.cacheHitRate);
+        if (yyCurrent != null) currentPts.push(`${x(i)},${yyCurrent}`);
+
+        const yyPrevious = y(p.previousCacheHitRate);
+        if (yyPrevious != null) previousPts.push(`${x(i)},${yyPrevious}`);
+      });
+
+      const tickVals = Array.from({ length: 5 }, (_, i) =>
+        Math.round(minV + (span * (4 - i)) / 4)
+      );
+      const xLabelEvery = Math.max(1, Math.floor(n / 6));
+      const latest = slice[slice.length - 1];
+      const latestPrevious = latest ? latest.previousCacheHitRate : null;
+
+      function toSvgX(clientX: number) {
+        const el = svgRef.current;
+        if (!el) return 0;
+        return (
+          ((clientX - el.getBoundingClientRect().left) /
+            Math.max(1, el.getBoundingClientRect().width)) *
+          w
+        );
+      }
+
+      function idxFromSvgX(sx: number) {
+        return clamp(
+          Math.round(((sx - padLeft) / Math.max(1, plotW)) * (base.length - 1)),
+          0,
+          Math.max(0, base.length - 1)
+        );
+      }
+
+      function commitZoom(x0: number, x1: number) {
+        const i0 = idxFromSvgX(Math.min(x0, x1));
+        const i1 = idxFromSvgX(Math.max(x0, x1));
+        if (i1 - i0 >= 2) setZoom({ start: i0, end: i1 });
+      }
+
+      const selectionX = Math.min(drag.x0, drag.x1);
+      const selectionW = Math.abs(drag.x1 - drag.x0);
+
+      return (
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-xs text-gray-400">{atsChartEyebrow}</div>
+              <div className="text-sm font-semibold text-gray-100">{atsChartTitle}</div>
+              <div className="text-[11px] text-gray-400 mt-1">
+                {slice.length
+                  ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
+                      slice[slice.length - 1].ts
+                    )} UTC`
+                  : "UTC"}
+              </div>
+              <div className="text-[11px] text-gray-500 mt-1">
+                Drag to zoom • double-click to reset
+              </div>
+            </div>
+
+            <div className="text-right">
+              <div className="text-xs text-gray-400">Latest</div>
+              <div className="text-[11px] text-gray-200">
+                {latest
+                  ? isCompare
+                    ? `${formatUtcHM(latest.ts)} UTC • current=${formatPctOrNA(
+                        latest.cacheHitRate
+                      )} • previous=${formatPctOrNA(latestPrevious)}`
+                    : `${formatUtcHM(latest.ts)} UTC • ${formatPctOrNA(latest.cacheHitRate)}`
+                  : "n/a"}
+              </div>
+            </div>
+          </div>
+
+          {isCompare ? (
+            <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-3">
+              {(rows || []).map((row) => {
+                const delta = Number(row?.value ?? 0);
+                const current = row?.secondaryValue;
+                const previous = row?.tertiaryValue;
+
+                return (
+                  <div
+                    key={String(row?.key)}
+                    className="rounded-xl border border-white/10 bg-black/25 p-3"
+                  >
+                    <div className="text-[11px] text-gray-400">
+                      {formatAtsCompareKey(String(row?.key || ""))}
+                    </div>
+                    <div className="mt-1 text-lg font-semibold text-gray-100">
+                      {delta > 0 ? "+" : ""}
+                      {delta.toFixed(2)}%
+                    </div>
+                    <div className="mt-1 text-[11px] text-gray-500">
+                      current {formatPctOrNA(current)} • previous {formatPctOrNA(previous)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+
+          <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
+            <svg
+              ref={svgRef}
+              viewBox={`0 0 ${w} ${h}`}
+              className="w-full"
+              style={{ height, touchAction: "none", cursor: "crosshair" }}
+              onDoubleClick={() => setZoom(null)}
+              onPointerDown={(e) => {
+                const sx = toSvgX(e.clientX);
+                setDrag({ active: true, x0: sx, x1: sx });
+                (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+              }}
+              onPointerMove={(e) => {
+                if (!drag.active) return;
+                setDrag((d) => ({ ...d, x1: toSvgX(e.clientX) }));
+              }}
+              onPointerUp={() => {
+                if (!drag.active) return;
+                const { x0, x1 } = drag;
+                setDrag({ active: false, x0: 0, x1: 0 });
+                commitZoom(x0, x1);
+              }}
+              onPointerCancel={() => setDrag({ active: false, x0: 0, x1: 0 })}
+              onPointerLeave={() => {
+                if (!drag.active) return;
+                setDrag({ active: false, x0: 0, x1: 0 });
+              }}
+            >
+              <text
+                x={padLeft - 38}
+                y={padTop + plotH / 2}
+                fontSize="10"
+                fill="#9ca3af"
+                transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
+              >
+                {atsYAxisLabel}
+              </text>
+
+              {tickVals.map((v, idx) => {
+                const yy = padTop + (1 - (v - minV) / span) * plotH;
+                return (
+                  <g key={idx}>
+                    <line
+                      x1={padLeft}
+                      y1={yy}
+                      x2={padLeft + plotW}
+                      y2={yy}
+                      stroke={GRID_STROKE}
+                    />
+                    <text
+                      x={padLeft - 10}
+                      y={yy + 3}
+                      fontSize="10"
+                      fill="#9ca3af"
+                      textAnchor="end"
+                    >
+                      {v}%
+                    </text>
+                  </g>
+                );
+              })}
+
+              {isCompare && previousPts.length > 0 ? (
+                <polyline
+                  fill="none"
+                  stroke="rgba(156,163,175,0.85)"
+                  strokeWidth="2"
+                  strokeDasharray="6 6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  points={previousPts.join(" ")}
+                />
+              ) : null}
+
+              <polyline
+                fill="none"
+                stroke="rgba(16,185,129,0.92)"
+                strokeWidth="2.75"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                points={currentPts.join(" ")}
+              />
+
+              {slice.map((p, i) => {
+                if (i % xLabelEvery !== 0 && i !== slice.length - 1) return null;
+                return (
+                  <text
+                    key={`xl-${p.ts}`}
+                    x={x(i)}
+                    y={padTop + plotH + 18}
+                    fontSize="10"
+                    fill="#9ca3af"
+                    textAnchor="middle"
+                  >
+                    {timeLabelShort(p.ts, windowMinutes)}
+                  </text>
+                );
+              })}
+
+              {drag.active && selectionW > 2 ? (
+                <rect
+                  x={selectionX}
+                  y={padTop}
+                  width={selectionW}
+                  height={plotH}
+                  fill="rgba(59,130,246,0.12)"
+                  stroke="rgba(59,130,246,0.55)"
+                  strokeWidth={1}
+                  rx={6}
+                />
+              ) : null}
+            </svg>
+
+            <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
               <button
                 type="button"
                 className="flex items-center gap-1.5"
@@ -2697,2378 +2684,2325 @@ const points: Array<
               >
                 <span
                   className="inline-block h-2.5 w-2.5 rounded-full"
-                  style={{ background: "rgba(156,163,175,0.85)" }}
+                  style={{ background: "rgba(16,185,129,0.92)" }}
                 />
-                <span>Previous</span>
+                <span>Current</span>
               </button>
-            ) : null}
-          </div>
-        </div>
-      </div>
-    );
-  }
 
-  return null;
-}
-
-
-// ── HostSummaryCard ────────────────────────────────────────────────────────
-function HostSummaryCard({ hosts }: { hosts: HostSeriesItem[] }) {
-  const rows = (hosts || []).slice(0, 10);
-  if (!rows.length) return null;
-  const maxReq = Math.max(1, ...rows.map((r) => Number(r.totalRequests || 0)));
-
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-xs text-gray-400">Diagnostic view</div>
-          <div className="text-sm font-semibold text-gray-100">Host distribution</div>
-          <div className="text-[11px] text-gray-500 mt-1">
-            Top hosts by request volume in the current window
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="text-xs text-gray-400">Hosts</div>
-          <div className="text-[11px] text-gray-200">{rows.length}</div>
-        </div>
-      </div>
-
-      <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
-        <div className="space-y-3">
-          {rows.map((row) => (
-            <div key={row.host} className="space-y-1.5">
-              <div className="flex items-center justify-between gap-3 text-[11px]">
-                <div className="truncate text-gray-200 font-medium">{row.host}</div>
-                <div className="shrink-0 text-gray-400">
-                  req={formatIntOrNA(row.totalRequests)} • 5xx={formatPctOrNA(
-                    row.errorRatePct
-                  )} • crc={formatIntOrNA(row.crcErrorCount)}
-                </div>
-              </div>
-              <div className="h-2.5 rounded-full bg-white/5 overflow-hidden">
-                <div
-                  className="h-full rounded-full"
-                  style={{
-                    width: `${Math.max(
-                      4,
-                      (Number(row.totalRequests || 0) / maxReq) * 100
-                    )}%`,
-                    background: stableColorForKey(row.host),
-                  }}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── CrcTimeseriesBars ──────────────────────────────────────────────────────
-function CrcTimeseriesBars({
-  crcSeries,
-  bucketSeconds,
-  height = 190,
-  windowMinutes,
-}: {
-  crcSeries: CrcSeriesItem[];
-  bucketSeconds: number | null;
-  height?: number;
-  windowMinutes: number;
-}) {
-  const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
-  const base = (crcSeries || []).slice(-maxBars);
-  const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
-  const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({
-    active: false,
-    x0: 0,
-    x1: 0,
-  });
-
-  if (!slice.length) return null;
-
-  const maxVal = Math.max(1, ...slice.map((p) => Number(p.crcErrorCount || 0)));
-  const w = 360;
-  const h = height;
-  const padLeft = 54;
-  const padRight = 12;
-  const padTop = 12;
-  const padBottom = 44;
-  const plotW = w - padLeft - padRight;
-  const plotH = h - padTop - padBottom;
-  const count = slice.length;
-  const gap = clamp(Math.round(plotW / (Math.max(1, count) * 10)), 2, 6);
-  const barW = Math.max(4, Math.floor((plotW - gap * Math.max(0, count - 1)) / Math.max(1, count)));
-  const xLabelEvery = Math.max(1, Math.floor(slice.length / 6));
-  const latest = slice[slice.length - 1];
-
-  function toSvgX(clientX: number) {
-    const el = svgRef.current;
-    if (!el) return 0;
-    return ((clientX - el.getBoundingClientRect().left) / Math.max(1, el.getBoundingClientRect().width)) * w;
-  }
-  function idxFromSvgX(sx: number) {
-    return clamp(
-      Math.floor((sx - padLeft) / Math.max(1, barW + gap)),
-      0,
-      Math.max(0, base.length - 1)
-    );
-  }
-  function commitZoom(x0: number, x1: number) {
-    const i0 = idxFromSvgX(Math.min(x0, x1));
-    const i1 = idxFromSvgX(Math.max(x0, x1));
-    if (i1 - i0 >= 2) setZoom({ start: i0, end: i1 });
-  }
-  const selectionX = Math.min(drag.x0, drag.x1);
-  const selectionW = Math.abs(drag.x1 - drag.x0);
-
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-xs text-gray-400">Diagnostic view</div>
-          <div className="text-sm font-semibold text-gray-100">CRC / response classification</div>
-          <div className="text-[11px] text-gray-400 mt-1">
-            {slice.length
-              ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
-                  slice[slice.length - 1].ts
-                )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
-              : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
-          </div>
-          <div className="text-[11px] text-gray-500 mt-1">
-            Drag to zoom • double-click to reset
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="text-xs text-gray-400">Latest</div>
-          <div className="text-[11px] text-gray-200">
-            {latest
-              ? `${formatUtcHM(latest.ts)} UTC • crc=${formatIntOrNA(
-                  latest.crcErrorCount
-                )}`
-              : "n/a"}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
-        <svg
-          viewBox={`0 0 ${w} ${h}`}
-          className="w-full"
-          style={{ height, touchAction: "none", cursor: "crosshair" }}
-          ref={svgRef}
-          onDoubleClick={() => setZoom(null)}
-          onPointerDown={(e) => {
-            const sx = toSvgX(e.clientX);
-            setDrag({ active: true, x0: sx, x1: sx });
-            (e.currentTarget as any).setPointerCapture?.(e.pointerId);
-          }}
-          onPointerMove={(e) => {
-            if (!drag.active) return;
-            setDrag((d) => ({ ...d, x1: toSvgX(e.clientX) }));
-          }}
-          onPointerUp={() => {
-            if (!drag.active) return;
-            const { x0, x1 } = drag;
-            setDrag({ active: false, x0: 0, x1: 0 });
-            commitZoom(x0, x1);
-          }}
-          onPointerCancel={() => setDrag({ active: false, x0: 0, x1: 0 })}
-          onPointerLeave={() => {
-            if (!drag.active) return;
-            setDrag({ active: false, x0: 0, x1: 0 });
-          }}
-        >
-          <text
-            x={padLeft - 38}
-            y={padTop + plotH / 2}
-            fontSize="10"
-            fill="#9ca3af"
-            transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
-          >
-            CRC count
-          </text>
-          <text
-            x={padLeft + plotW / 2}
-            y={h - 10}
-            fontSize="10"
-            fill="#9ca3af"
-            textAnchor="middle"
-          >
-            Time (UTC, {bucketLabel(bucketSeconds)} buckets)
-          </text>
-
-          {[0, 0.25, 0.5, 0.75, 1].map((t, idx) => {
-            const y = padTop + (1 - t) * plotH;
-            return (
-              <g key={idx}>
-                <line
-                  x1={padLeft}
-                  y1={y}
-                  x2={padLeft + plotW}
-                  y2={y}
-                  stroke={GRID_STROKE}
-                />
-                <text
-                  x={padLeft - 10}
-                  y={y + 3}
-                  fontSize="10"
-                  fill="#9ca3af"
-                  textAnchor="end"
+              {isCompare ? (
+                <button
+                  type="button"
+                  className="flex items-center gap-1.5"
+                  onClick={() => setZoom(null)}
                 >
-                  {formatCountTick(Math.round(maxVal * t))}
-                </text>
-              </g>
-            );
-          })}
-
-          {slice.map((p, i) => {
-            const x = padLeft + i * (barW + gap);
-            const barH = (Number(p.crcErrorCount || 0) / maxVal) * plotH;
-            return (
-              <rect
-                key={p.ts}
-                x={x}
-                y={padTop + plotH - barH}
-                width={barW}
-                height={Math.max(0, barH)}
-                rx={2}
-                fill="rgba(245,158,11,0.88)"
-                opacity={0.92}
-              />
-            );
-          })}
-
-          {slice.map((p, i) => {
-            if (i % xLabelEvery !== 0 && i !== slice.length - 1) return null;
-            return (
-              <text
-                key={`xl-${p.ts}`}
-                x={padLeft + i * (barW + gap) + barW / 2}
-                y={padTop + plotH + 18}
-                fontSize="10"
-                fill="#9ca3af"
-                textAnchor="middle"
-              >
-                {timeLabelShort(p.ts, windowMinutes)}
-              </text>
-            );
-          })}
-
-          {drag.active && selectionW > 2 && (
-            <rect
-              x={selectionX}
-              y={padTop}
-              width={selectionW}
-              height={plotH}
-              fill="rgba(59,130,246,0.12)"
-              stroke="rgba(59,130,246,0.55)"
-              strokeWidth={1}
-              rx={6}
-            />
-          )}
-        </svg>
-
-        <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
-          <div className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ background: "rgba(245,158,11,0.88)" }}
-            />
-            <span>crc errors</span>
+                  <span
+                    className="inline-block h-2.5 w-2.5 rounded-full"
+                    style={{ background: "rgba(156,163,175,0.85)" }}
+                  />
+                  <span>Previous</span>
+                </button>
+              ) : null}
+            </div>
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
+      );
+    }
 
-// ── SwarmAgentCards ────────────────────────────────────────────────────────
-function SwarmAgentCards({
-  agents,
-}: {
-  agents?: Array<{
-    agentId?: "scope" | "traffic" | "latency" | "errors" | "cache";
-    agent?: "scope" | "traffic" | "latency" | "errors" | "cache";
-    title?: string;
-    status: "ok" | "warn" | "critical";
-    summary: string;
-  }> | null;
-}) {
-  if (!agents?.length) return null;
-  return (
-    <div>
-      <div className="text-xs text-gray-400 mb-2">Agent findings</div>
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        {agents.map((agent, idx) => {
-          const agentKey = agent.agentId || agent.agent || `agent-${idx}`;
-          const agentTitle = agent.title || agent.agentId || agent.agent || "agent";
-          return (
-            <div key={agentKey} className="rounded-xl border border-white/10 bg-black/25 p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-400">{agentKey}</div>
-                  <div className="text-sm font-semibold text-gray-100 truncate">
-                    {agentTitle}
+    return null;
+  }
+
+
+  // ── HostSummaryCard ────────────────────────────────────────────────────────
+  function HostSummaryCard({ hosts }: { hosts: HostSeriesItem[] }) {
+    const rows = (hosts || []).slice(0, 10);
+    if (!rows.length) return null;
+    const maxReq = Math.max(1, ...rows.map((r) => Number(r.totalRequests || 0)));
+
+    return (
+      <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs text-gray-400">Diagnostic view</div>
+            <div className="text-sm font-semibold text-gray-100">Host distribution</div>
+            <div className="text-[11px] text-gray-500 mt-1">
+              Top hosts by request volume in the current window
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-xs text-gray-400">Hosts</div>
+            <div className="text-[11px] text-gray-200">{rows.length}</div>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
+          <div className="space-y-3">
+            {rows.map((row) => (
+              <div key={row.host} className="space-y-1.5">
+                <div className="flex items-center justify-between gap-3 text-[11px]">
+                  <div className="truncate text-gray-200 font-medium">{row.host}</div>
+                  <div className="shrink-0 text-gray-400">
+                    req={formatIntOrNA(row.totalRequests)} • 5xx={formatPctOrNA(
+                      row.errorRatePct
+                    )} • crc={formatIntOrNA(row.crcErrorCount)}
                   </div>
                 </div>
-                <span
-                  className={`shrink-0 rounded-full border px-2 py-1 text-[11px] font-semibold ${severityPillClass(
-                    agent.status
-                  )}`}
-                >
-                  {agent.status}
-                </span>
+                <div className="h-2.5 rounded-full bg-white/5 overflow-hidden">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${Math.max(
+                        4,
+                        (Number(row.totalRequests || 0) / maxReq) * 100
+                      )}%`,
+                      background: stableColorForKey(row.host),
+                    }}
+                  />
+                </div>
               </div>
-              <div className="mt-3 text-xs leading-relaxed text-gray-300 whitespace-pre-wrap">
-                {agent.summary || "No summary."}
-              </div>
-            </div>
-          );
-        })}
+            ))}
+          </div>
+        </div>
       </div>
-    </div>
-  );
-}
-
-// ── MetricChips ────────────────────────────────────────────────────────────
-function MetricChips({ metricsJson }: { metricsJson: any }) {
-  if (!metricsJson) return null;
-  const totalRequests = Number(metricsJson.totalRequests) || 0;
-  const p95 = metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs);
-  const p99 = metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs);
-  const err5xx = metricsJson.error5xxCount == null ? null : Number(metricsJson.error5xxCount);
-  const errPct = metricsJson.errorRatePct == null ? null : Number(metricsJson.errorRatePct);
-  const rawCache =
-    metricsJson.cacheHitRate != null
-      ? Number(metricsJson.cacheHitRate)
-      : metricsJson.cacheHitPct != null
-      ? Number(metricsJson.cacheHitPct)
-      : null;
-  const cachePct = rawCache == null ? null : rawCache <= 1 ? rawCache * 100 : rawCache;
-  const chips = [
-    { k: "requests", v: formatIntOrNA(totalRequests) },
-    { k: "p95", v: formatMsOrNA(p95) },
-    { k: "p99", v: formatMsOrNA(p99) },
-    { k: "5xx", v: err5xx == null ? "n/a" : formatIntOrNA(err5xx) },
-    { k: "5xx%", v: formatPctOrNA(errPct) },
-    { k: "cache", v: formatPctOrNA(cachePct) },
-  ];
-  return (
-    <div className="flex flex-wrap gap-2">
-      {chips.map((c) => (
-        <span
-          key={c.k}
-          className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200"
-        >
-          <span className="text-gray-400 mr-1">{c.k}</span>
-          <span className="font-semibold">{c.v}</span>
-        </span>
-      ))}
-    </div>
-  );
-}
-
-// ── buildSummaryFallback ───────────────────────────────────────────────────
-
-function buildSummaryFallback(run: ChatTriage["run"]): string {
-  const m = run.metricsJson || {};
-  const totalRequests = Number(m.totalRequests) || 0;
-  const p95 = m.p95TtmsMs == null ? null : Number(m.p95TtmsMs);
-  const p99 = m.p99TtmsMs == null ? null : Number(m.p99TtmsMs);
-  const err5xx = m.error5xxCount == null ? null : Number(m.error5xxCount);
-  const errPct =
-    m.errorRatePct != null && Number.isFinite(Number(m.errorRatePct))
-      ? Number(m.errorRatePct)
-      : totalRequests > 0 && err5xx != null
-      ? (Number(err5xx) / totalRequests) * 100
-      : null;
-
-  let health = "GREEN";
-  if ((errPct != null && errPct >= 1.0) || (p95 != null && p95 >= 1500)) health = "RED";
-  else if ((errPct != null && errPct >= 0.2) || (p95 != null && p95 >= 500)) health = "AMBER";
-
-  return [
-    `Scope: ${run.inputs.partner || "—"} / ${run.inputs.service} / region=${run.inputs.region} / pop=${run.inputs.pop} / win=${run.inputs.windowMinutes}m / ct=${run.inputs.contentType} / ua=${run.inputs.uaFamily}`,
-    `Traffic: ${formatIntOrNA(totalRequests)} requests`,
-    `Latency: p95=${formatMsOrNA(p95)} • p99=${formatMsOrNA(p99)}`,
-    `Errors: 5xx=${err5xx == null ? "n/a" : formatIntOrNA(err5xx)} • 5xx%=${formatPctOrNA(
-      errPct
-    )}`,
-    `Health: ${health}`,
-  ].join("\n");
-}
-
-function buildExplainVerdict(run: ChatTriage["run"]): string {
-  const assessment = run.swarm?.assessment;
-  const primarySignal = assessment?.primarySignal || "mixed";
-  const status = assessment?.overallStatus || "warn";
-
-  const m = run.metricsJson || {};
-  const cacheRaw =
-    m.cacheHitRate != null
-      ? Number(m.cacheHitRate)
-      : m.cacheHitPct != null
-      ? Number(m.cacheHitPct)
-      : null;
-  const cachePct =
-    cacheRaw == null ? null : cacheRaw <= 1 ? cacheRaw * 100 : cacheRaw;
-
-  const errPct =
-    m.errorRatePct != null && Number.isFinite(Number(m.errorRatePct))
-      ? Number(m.errorRatePct)
-      : null;
-
-  const p95 =
-    m.p95TtmsMs != null && Number.isFinite(Number(m.p95TtmsMs))
-      ? Number(m.p95TtmsMs)
-      : null;
-
-  if (status === "ok") {
-    return "We look healthy right now. Traffic, latency, errors, and cache all look normal.";
+    );
   }
 
-  if (primarySignal === "cache") {
-    return `We’re mostly okay, but cache is degraded${
-      cachePct != null ? ` at ${cachePct.toFixed(2)}%` : ""
-    }. Traffic, latency, and errors look normal.`;
+  // ── CrcTimeseriesBars ──────────────────────────────────────────────────────
+  function CrcTimeseriesBars({
+    crcSeries,
+    bucketSeconds,
+    height = 190,
+    windowMinutes,
+  }: {
+    crcSeries: CrcSeriesItem[];
+    bucketSeconds: number | null;
+    height?: number;
+    windowMinutes: number;
+  }) {
+    const maxBars = windowMinutes <= 180 ? 60 : windowMinutes <= 1440 ? 144 : 180;
+    const base = (crcSeries || []).slice(-maxBars);
+    const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null);
+    const slice = zoom && zoom.end > zoom.start ? base.slice(zoom.start, zoom.end + 1) : base;
+    const svgRef = useRef<SVGSVGElement | null>(null);
+    const [drag, setDrag] = useState<{ active: boolean; x0: number; x1: number }>({
+      active: false,
+      x0: 0,
+      x1: 0,
+    });
+
+    if (!slice.length) return null;
+
+    const maxVal = Math.max(1, ...slice.map((p) => Number(p.crcErrorCount || 0)));
+    const w = 360;
+    const h = height;
+    const padLeft = 54;
+    const padRight = 12;
+    const padTop = 12;
+    const padBottom = 44;
+    const plotW = w - padLeft - padRight;
+    const plotH = h - padTop - padBottom;
+    const count = slice.length;
+    const gap = clamp(Math.round(plotW / (Math.max(1, count) * 10)), 2, 6);
+    const barW = Math.max(4, Math.floor((plotW - gap * Math.max(0, count - 1)) / Math.max(1, count)));
+    const xLabelEvery = Math.max(1, Math.floor(slice.length / 6));
+    const latest = slice[slice.length - 1];
+
+    function toSvgX(clientX: number) {
+      const el = svgRef.current;
+      if (!el) return 0;
+      return ((clientX - el.getBoundingClientRect().left) / Math.max(1, el.getBoundingClientRect().width)) * w;
+    }
+    function idxFromSvgX(sx: number) {
+      return clamp(
+        Math.floor((sx - padLeft) / Math.max(1, barW + gap)),
+        0,
+        Math.max(0, base.length - 1)
+      );
+    }
+    function commitZoom(x0: number, x1: number) {
+      const i0 = idxFromSvgX(Math.min(x0, x1));
+      const i1 = idxFromSvgX(Math.max(x0, x1));
+      if (i1 - i0 >= 2) setZoom({ start: i0, end: i1 });
+    }
+    const selectionX = Math.min(drag.x0, drag.x1);
+    const selectionW = Math.abs(drag.x1 - drag.x0);
+
+    return (
+      <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 min-w-0">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs text-gray-400">Diagnostic view</div>
+            <div className="text-sm font-semibold text-gray-100">CRC / response classification</div>
+            <div className="text-[11px] text-gray-400 mt-1">
+              {slice.length
+                ? `${formatUtcYmdHm(slice[0].ts)} → ${formatUtcYmdHm(
+                    slice[slice.length - 1].ts
+                  )} UTC (bucket: ${bucketLabel(bucketSeconds)})`
+                : `bucket: ${bucketLabel(bucketSeconds)} (UTC)`}
+            </div>
+            <div className="text-[11px] text-gray-500 mt-1">
+              Drag to zoom • double-click to reset
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-xs text-gray-400">Latest</div>
+            <div className="text-[11px] text-gray-200">
+              {latest
+                ? `${formatUtcHM(latest.ts)} UTC • crc=${formatIntOrNA(
+                    latest.crcErrorCount
+                  )}`
+                : "n/a"}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
+          <svg
+            viewBox={`0 0 ${w} ${h}`}
+            className="w-full"
+            style={{ height, touchAction: "none", cursor: "crosshair" }}
+            ref={svgRef}
+            onDoubleClick={() => setZoom(null)}
+            onPointerDown={(e) => {
+              const sx = toSvgX(e.clientX);
+              setDrag({ active: true, x0: sx, x1: sx });
+              (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              if (!drag.active) return;
+              setDrag((d) => ({ ...d, x1: toSvgX(e.clientX) }));
+            }}
+            onPointerUp={() => {
+              if (!drag.active) return;
+              const { x0, x1 } = drag;
+              setDrag({ active: false, x0: 0, x1: 0 });
+              commitZoom(x0, x1);
+            }}
+            onPointerCancel={() => setDrag({ active: false, x0: 0, x1: 0 })}
+            onPointerLeave={() => {
+              if (!drag.active) return;
+              setDrag({ active: false, x0: 0, x1: 0 });
+            }}
+          >
+            <text
+              x={padLeft - 38}
+              y={padTop + plotH / 2}
+              fontSize="10"
+              fill="#9ca3af"
+              transform={`rotate(-90 ${padLeft - 38} ${padTop + plotH / 2})`}
+            >
+              CRC count
+            </text>
+            <text
+              x={padLeft + plotW / 2}
+              y={h - 10}
+              fontSize="10"
+              fill="#9ca3af"
+              textAnchor="middle"
+            >
+              Time (UTC, {bucketLabel(bucketSeconds)} buckets)
+            </text>
+
+            {[0, 0.25, 0.5, 0.75, 1].map((t, idx) => {
+              const y = padTop + (1 - t) * plotH;
+              return (
+                <g key={idx}>
+                  <line
+                    x1={padLeft}
+                    y1={y}
+                    x2={padLeft + plotW}
+                    y2={y}
+                    stroke={GRID_STROKE}
+                  />
+                  <text
+                    x={padLeft - 10}
+                    y={y + 3}
+                    fontSize="10"
+                    fill="#9ca3af"
+                    textAnchor="end"
+                  >
+                    {formatCountTick(Math.round(maxVal * t))}
+                  </text>
+                </g>
+              );
+            })}
+
+            {slice.map((p, i) => {
+              const x = padLeft + i * (barW + gap);
+              const barH = (Number(p.crcErrorCount || 0) / maxVal) * plotH;
+              return (
+                <rect
+                  key={p.ts}
+                  x={x}
+                  y={padTop + plotH - barH}
+                  width={barW}
+                  height={Math.max(0, barH)}
+                  rx={2}
+                  fill="rgba(245,158,11,0.88)"
+                  opacity={0.92}
+                />
+              );
+            })}
+
+            {slice.map((p, i) => {
+              if (i % xLabelEvery !== 0 && i !== slice.length - 1) return null;
+              return (
+                <text
+                  key={`xl-${p.ts}`}
+                  x={padLeft + i * (barW + gap) + barW / 2}
+                  y={padTop + plotH + 18}
+                  fontSize="10"
+                  fill="#9ca3af"
+                  textAnchor="middle"
+                >
+                  {timeLabelShort(p.ts, windowMinutes)}
+                </text>
+              );
+            })}
+
+            {drag.active && selectionW > 2 && (
+              <rect
+                x={selectionX}
+                y={padTop}
+                width={selectionW}
+                height={plotH}
+                fill="rgba(59,130,246,0.12)"
+                stroke="rgba(59,130,246,0.55)"
+                strokeWidth={1}
+                rx={6}
+              />
+            )}
+          </svg>
+
+          <div className="mt-3 flex items-center justify-center gap-5 text-[11px] text-gray-300">
+            <div className="flex items-center gap-1.5">
+              <span
+                className="inline-block h-2.5 w-2.5 rounded-full"
+                style={{ background: "rgba(245,158,11,0.88)" }}
+              />
+              <span>crc errors</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
-  if (primarySignal === "latency") {
-    return `We’re seeing elevated latency${
-      p95 != null ? ` with p95 around ${Math.round(p95)} ms` : ""
-    }, but the rest of the system looks mostly stable.`;
+  // ── SwarmAgentCards ────────────────────────────────────────────────────────
+  function SwarmAgentCards({
+    agents,
+  }: {
+    agents?: Array<{
+      agentId?: "scope" | "traffic" | "latency" | "errors" | "cache";
+      agent?: "scope" | "traffic" | "latency" | "errors" | "cache";
+      title?: string;
+      status: "ok" | "warn" | "critical";
+      summary: string;
+    }> | null;
+  }) {
+    if (!agents?.length) return null;
+    return (
+      <div>
+        <div className="text-xs text-gray-400 mb-2">Agent findings</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+          {agents.map((agent, idx) => {
+            const agentKey = agent.agentId || agent.agent || `agent-${idx}`;
+            const agentTitle = agent.title || agent.agentId || agent.agent || "agent";
+            return (
+              <div key={agentKey} className="rounded-xl border border-white/10 bg-black/25 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs text-gray-400">{agentKey}</div>
+                    <div className="text-sm font-semibold text-gray-100 truncate">
+                      {agentTitle}
+                    </div>
+                  </div>
+                  <span
+                    className={`shrink-0 rounded-full border px-2 py-1 text-[11px] font-semibold ${severityPillClass(
+                      agent.status
+                    )}`}
+                  >
+                    {agent.status}
+                  </span>
+                </div>
+                <div className="mt-3 text-xs leading-relaxed text-gray-300 whitespace-pre-wrap">
+                  {agent.summary || "No summary."}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
   }
 
-  if (primarySignal === "errors") {
-    return `We’re seeing elevated error activity${
-      errPct != null ? ` at ${errPct.toFixed(2)}% 5xx` : ""
-    }, while other signals look less concerning.`;
+  // ── MetricChips ────────────────────────────────────────────────────────────
+  function MetricChips({ metricsJson }: { metricsJson: any }) {
+    if (!metricsJson) return null;
+    const totalRequests = Number(metricsJson.totalRequests) || 0;
+    const p95 = metricsJson.p95TtmsMs == null ? null : Number(metricsJson.p95TtmsMs);
+    const p99 = metricsJson.p99TtmsMs == null ? null : Number(metricsJson.p99TtmsMs);
+    const err5xx = metricsJson.error5xxCount == null ? null : Number(metricsJson.error5xxCount);
+    const errPct = metricsJson.errorRatePct == null ? null : Number(metricsJson.errorRatePct);
+    const rawCache =
+      metricsJson.cacheHitRate != null
+        ? Number(metricsJson.cacheHitRate)
+        : metricsJson.cacheHitPct != null
+        ? Number(metricsJson.cacheHitPct)
+        : null;
+    const cachePct = rawCache == null ? null : rawCache <= 1 ? rawCache * 100 : rawCache;
+    const chips = [
+      { k: "requests", v: formatIntOrNA(totalRequests) },
+      { k: "p95", v: formatMsOrNA(p95) },
+      { k: "p99", v: formatMsOrNA(p99) },
+      { k: "5xx", v: err5xx == null ? "n/a" : formatIntOrNA(err5xx) },
+      { k: "5xx%", v: formatPctOrNA(errPct) },
+      { k: "cache", v: formatPctOrNA(cachePct) },
+    ];
+    return (
+      <div className="flex flex-wrap gap-2">
+        {chips.map((c) => (
+          <span
+            key={c.k}
+            className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200"
+          >
+            <span className="text-gray-400 mr-1">{c.k}</span>
+            <span className="font-semibold">{c.v}</span>
+          </span>
+        ))}
+      </div>
+    );
   }
 
-  if (primarySignal === "traffic") {
-    return "Traffic looks unusual right now, while latency, errors, and cache look less concerning.";
+  // ── buildSummaryFallback ───────────────────────────────────────────────────
+
+  function buildSummaryFallback(run: ChatTriage["run"]): string {
+    const m = run.metricsJson || {};
+    const totalRequests = Number(m.totalRequests) || 0;
+    const p95 = m.p95TtmsMs == null ? null : Number(m.p95TtmsMs);
+    const p99 = m.p99TtmsMs == null ? null : Number(m.p99TtmsMs);
+    const err5xx = m.error5xxCount == null ? null : Number(m.error5xxCount);
+    const errPct =
+      m.errorRatePct != null && Number.isFinite(Number(m.errorRatePct))
+        ? Number(m.errorRatePct)
+        : totalRequests > 0 && err5xx != null
+        ? (Number(err5xx) / totalRequests) * 100
+        : null;
+
+    let health = "GREEN";
+    if ((errPct != null && errPct >= 1.0) || (p95 != null && p95 >= 1500)) health = "RED";
+    else if ((errPct != null && errPct >= 0.2) || (p95 != null && p95 >= 500)) health = "AMBER";
+
+    return [
+      `Scope: ${run.inputs.partner || "—"} / ${run.inputs.service} / region=${run.inputs.region} / pop=${run.inputs.pop} / win=${run.inputs.windowMinutes}m / ct=${run.inputs.contentType} / ua=${run.inputs.uaFamily}`,
+      `Traffic: ${formatIntOrNA(totalRequests)} requests`,
+      `Latency: p95=${formatMsOrNA(p95)} • p99=${formatMsOrNA(p99)}`,
+      `Errors: 5xx=${err5xx == null ? "n/a" : formatIntOrNA(err5xx)} • 5xx%=${formatPctOrNA(
+        errPct
+      )}`,
+      `Health: ${health}`,
+    ].join("\n");
   }
 
-  return (
-    assessment?.summary ||
-    run.summaryText ||
-    "There’s a degraded signal right now, but I need a deeper look to say more."
-  );
-}
+  function buildExplainVerdict(run: ChatTriage["run"]): string {
+    const assessment = run.swarm?.assessment;
+    const primarySignal = assessment?.primarySignal || "mixed";
+    const status = assessment?.overallStatus || "warn";
 
-function getRunBaseScope(run: ChatTriage["run"]): InvestigationScope {
-  return {
-    partner: run.inputs.partner || "",
-    service: run.inputs.service || "",
-    region: run.inputs.region || "all",
-    pop: run.inputs.pop || "all",
-    contentType: run.inputs.contentType || "all",
-    uaFamily: run.inputs.uaFamily || "all",
-  };
-}
+    const m = run.metricsJson || {};
+    const cacheRaw =
+      m.cacheHitRate != null
+        ? Number(m.cacheHitRate)
+        : m.cacheHitPct != null
+        ? Number(m.cacheHitPct)
+        : null;
+    const cachePct =
+      cacheRaw == null ? null : cacheRaw <= 1 ? cacheRaw * 100 : cacheRaw;
 
-function getRunTimeContext(run: ChatTriage["run"]): InvestigationTimeContext {
-  const startTsUtc = run.inputs.startTsUtc ?? null;
-  const endTsUtc = run.inputs.endTsUtc ?? null;
+    const errPct =
+      m.errorRatePct != null && Number.isFinite(Number(m.errorRatePct))
+        ? Number(m.errorRatePct)
+        : null;
 
-  return {
-    mode: startTsUtc && endTsUtc ? "absolute" : "relative",
-    windowMinutes: windowMinutesFromRange(
+    const p95 =
+      m.p95TtmsMs != null && Number.isFinite(Number(m.p95TtmsMs))
+        ? Number(m.p95TtmsMs)
+        : null;
+
+    if (status === "ok") {
+      return "We look healthy right now. Traffic, latency, errors, and cache all look normal.";
+    }
+
+    if (primarySignal === "cache") {
+      return `We’re mostly okay, but cache is degraded${
+        cachePct != null ? ` at ${cachePct.toFixed(2)}%` : ""
+      }. Traffic, latency, and errors look normal.`;
+    }
+
+    if (primarySignal === "latency") {
+      return `We’re seeing elevated latency${
+        p95 != null ? ` with p95 around ${Math.round(p95)} ms` : ""
+      }, but the rest of the system looks mostly stable.`;
+    }
+
+    if (primarySignal === "errors") {
+      return `We’re seeing elevated error activity${
+        errPct != null ? ` at ${errPct.toFixed(2)}% 5xx` : ""
+      }, while other signals look less concerning.`;
+    }
+
+    if (primarySignal === "traffic") {
+      return "Traffic looks unusual right now, while latency, errors, and cache look less concerning.";
+    }
+
+    return (
+      assessment?.summary ||
+      run.summaryText ||
+      "There’s a degraded signal right now, but I need a deeper look to say more."
+    );
+  }
+
+  function getRunBaseScope(run: ChatTriage["run"]): InvestigationScope {
+    return {
+      partner: run.inputs.partner || "",
+      service: run.inputs.service || "",
+      region: run.inputs.region || "all",
+      pop: run.inputs.pop || "all",
+      contentType: run.inputs.contentType || "all",
+      uaFamily: run.inputs.uaFamily || "all",
+    };
+  }
+
+  function getRunTimeContext(run: ChatTriage["run"]): InvestigationTimeContext {
+    const startTsUtc = run.inputs.startTsUtc ?? null;
+    const endTsUtc = run.inputs.endTsUtc ?? null;
+
+    return {
+      mode: startTsUtc && endTsUtc ? "absolute" : "relative",
+      windowMinutes: windowMinutesFromRange(
+        startTsUtc,
+        endTsUtc,
+        run.inputs.windowMinutes || 120
+      ),
       startTsUtc,
       endTsUtc,
-      run.inputs.windowMinutes || 120
-    ),
-    startTsUtc,
-    endTsUtc,
-  };
-}
-
-function getRunAnchoredWindow(run: ChatTriage["run"]): {
-  startTsUtc: string | null;
-  endTsUtc: string | null;
-} {
-  const ts = parseTimeseries(run.metricsJson);
-  const statusTs = parseStatusOnlyTimeseries(run.metricsJson);
-  if (ts?.startTs && ts?.endTs) {
-    return {
-      startTsUtc: ts.startTs,
-      endTsUtc: ts.endTs,
     };
   }
 
-  const meta = run.swarm?.assessment?.metadata;
-  if (meta?.startTs && meta?.endTs) {
-    return {
-      startTsUtc: String(meta.startTs),
-      endTsUtc: String(meta.endTs),
-    };
-  }
-
-  if (run.inputs.startTsUtc && run.inputs.endTsUtc) {
-    return {
-      startTsUtc: run.inputs.startTsUtc,
-      endTsUtc: run.inputs.endTsUtc,
-    };
-  }
-
-  return {
-    startTsUtc: null,
-    endTsUtc: null,
-  };
-}
-
-function toNumOrNull(v: unknown): number | null {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-function normalizePctMaybe(v: unknown): number | null {
-  const n = toNumOrNull(v);
-  if (n == null) return null;
-  return n <= 1 ? n * 100 : n;
-}
-
-function normalizeCachePctMaybe(v: unknown): number | null {
-  const n = toNumOrNull(v);
-  if (n == null) return null;
-  return n <= 1 ? n * 100 : n;
-}
-
-function scoreWorstCandidate(x: {
-  errorRatePct: number | null;
-  p95TtmsMs: number | null;
-  cacheHitRate: number | null;
-  totalRequests: number | null;
-}): number {
-  const err = x.errorRatePct ?? 0;
-  const p95 = x.p95TtmsMs ?? 0;
-  const cachePenalty = x.cacheHitRate == null ? 0 : Math.max(0, 100 - x.cacheHitRate);
-  const reqWeight = x.totalRequests == null ? 0 : Math.min(x.totalRequests / 1000, 100);
-
-  return err * 1000 + p95 + cachePenalty * 10 + reqWeight;
-}
-
-function coerceBreakdownCandidate(
-  raw: any,
-  keyField: "region" | "pop",
-  source: string
-): InvestigationWorstCandidate | null {
-  const value = String(raw?.[keyField] || "").trim();
-  if (!value || value === "all") return null;
-
-  return {
-    value,
-    errorRatePct: normalizePctMaybe(raw?.errorRatePct ?? raw?.errorRate),
-    p95TtmsMs: toNumOrNull(raw?.p95TtmsMs ?? raw?.p95Ms ?? raw?.latencyP95Ms),
-    cacheHitRate: normalizeCachePctMaybe(raw?.cacheHitRate ?? raw?.cacheHitPct),
-    totalRequests: toNumOrNull(raw?.totalRequests ?? raw?.requests),
-    source,
-  };
-}
-
-function pickWorstFromBreakdown(
-  items: any[],
-  keyField: "region" | "pop",
-  source: string
-): InvestigationWorstCandidate | null {
-  const candidates = items
-    .map((item) => coerceBreakdownCandidate(item, keyField, source))
-    .filter(Boolean) as InvestigationWorstCandidate[];
-
-  if (!candidates.length) return null;
-
-  candidates.sort((a, b) => scoreWorstCandidate(b) - scoreWorstCandidate(a));
-  return candidates[0] ?? null;
-}
-
-function extractWorstRegionCandidate(run: ChatTriage["run"]): InvestigationWorstCandidate | null {
-  const m = run.metricsJson || {};
-
-  const candidateSources: Array<{ items: any[]; source: string }> = [
-    {
-      items:
-        Array.isArray(m?.regionBreakdown) && m.regionBreakdown.length > 0
-          ? m.regionBreakdown
-          : [],
-      source: "metricsJson.regionBreakdown",
-    },
-    {
-      items:
-        Array.isArray(m?.evidenceBundle?.regionBreakdown) &&
-        m.evidenceBundle.regionBreakdown.length > 0
-          ? m.evidenceBundle.regionBreakdown
-          : [],
-      source: "metricsJson.evidenceBundle.regionBreakdown",
-    },
-  ];
-
-  for (const entry of candidateSources) {
-    if (entry.items.length) {
-      const safeItems = entry.items.filter(
-        (x) => x && typeof x === "object" && x.region
-      );
-
-      const picked = pickWorstFromBreakdown(safeItems, "region", entry.source);
-      if (picked) return picked;
+  function getRunAnchoredWindow(run: ChatTriage["run"]): {
+    startTsUtc: string | null;
+    endTsUtc: string | null;
+  } {
+    const ts = parseTimeseries(run.metricsJson);
+    const statusTs = parseStatusOnlyTimeseries(run.metricsJson);
+    if (ts?.startTs && ts?.endTs) {
+      return {
+        startTsUtc: ts.startTs,
+        endTsUtc: ts.endTs,
+      };
     }
-  }
 
-  return null;
-}
-
-function extractWorstPopCandidate(run: ChatTriage["run"]): InvestigationWorstCandidate | null {
-  const m = run.metricsJson || {};
-
-  const candidateSources: Array<{ items: any[]; source: string }> = [
-    {
-      items:
-        Array.isArray(m?.popBreakdown) && m.popBreakdown.length > 0
-          ? m.popBreakdown
-          : [],
-      source: "metricsJson.popBreakdown",
-    },
-    {
-      items:
-        Array.isArray(m?.evidenceBundle?.popBreakdown) &&
-        m.evidenceBundle.popBreakdown.length > 0
-          ? m.evidenceBundle.popBreakdown
-          : [],
-      source: "metricsJson.evidenceBundle.popBreakdown",
-    },
-  ];
-
-  for (const entry of candidateSources) {
-    if (entry.items.length) {
-      const safeItems = entry.items.filter(
-        (x) => x && typeof x === "object" && x.pop
-      );
-
-      const picked = pickWorstFromBreakdown(safeItems, "pop", entry.source);
-      if (picked) return picked;
+    const meta = run.swarm?.assessment?.metadata;
+    if (meta?.startTs && meta?.endTs) {
+      return {
+        startTsUtc: String(meta.startTs),
+        endTsUtc: String(meta.endTs),
+      };
     }
-  }
 
-  return null;
-}
+    if (run.inputs.startTsUtc && run.inputs.endTsUtc) {
+      return {
+        startTsUtc: run.inputs.startTsUtc,
+        endTsUtc: run.inputs.endTsUtc,
+      };
+    }
 
-function buildLatestInvestigationContext(args: {
-  run: ChatTriage["run"];
-  availableRegions: string[];
-  availablePops: string[];
-  availableContentTypes: string[];
-  availableUaFamilies: string[];
-}): InvestigationContext {
-  const baseTime = getRunTimeContext(args.run);
-
-  // Important:
-  // Keep relative runs relative.
-  // Only preserve absolute time when the original run was explicitly absolute.
-  const resolvedTime: InvestigationTimeContext =
-    baseTime.mode === "absolute"
-      ? {
-          mode: "absolute",
-          windowMinutes: baseTime.windowMinutes,
-          startTsUtc: baseTime.startTsUtc,
-          endTsUtc: baseTime.endTsUtc,
-        }
-      : {
-          mode: "relative",
-          windowMinutes: baseTime.windowMinutes,
-          startTsUtc: null,
-          endTsUtc: null,
-        };
-
-  return {
-    baseScope: getRunBaseScope(args.run),
-    time: resolvedTime,
-    worstRegion: extractWorstRegionCandidate(args.run),
-    worstPop: extractWorstPopCandidate(args.run),
-    availableDimensions: {
-      regions: (args.availableRegions || []).filter((x) => x && x !== "all"),
-      pops: (args.availablePops || []).filter((x) => x && x !== "all"),
-      contentTypes: (args.availableContentTypes || []).filter((x) => x && x !== "all"),
-      uaFamilies: (args.availableUaFamilies || []).filter((x) => x && x !== "all"),
-    },
-  };
-}
-
-function contextToTriageInputs(ctx: InvestigationContext): TriageInputs {
-  const { baseScope, time } = ctx;
-
-  return {
-    dataSource: "clickhouse",
-    partner: baseScope.partner,
-    service: baseScope.service,
-    region: baseScope.region,
-    pop: baseScope.pop,
-    contentType: baseScope.contentType,
-    uaFamily: baseScope.uaFamily,
-    windowMinutes: time.windowMinutes,
-    startTsUtc: time.mode === "absolute" ? time.startTsUtc : null,
-    endTsUtc: time.mode === "absolute" ? time.endTsUtc : null,
-  };
-}
-
-
-function buildExplorationContextWithTimeOverride(
-  ctx: InvestigationContext,
-  timeOverride?: {
-    mode: "relative";
-    windowMinutes: number;
-    sourceText: string;
-  } | {
-    mode: "absolute";
-    startTsUtc: string;
-    endTsUtc: string;
-    windowMinutes: number;
-    sourceText: string;
-  }
-) {
-  if (!timeOverride) {
     return {
-      partner: ctx.baseScope.partner,
-      service: ctx.baseScope.service,
-      region: ctx.baseScope.region,
-      pop: ctx.baseScope.pop,
-      contentType: ctx.baseScope.contentType,
-      uaFamily: ctx.baseScope.uaFamily,
-      windowMinutes: ctx.time.windowMinutes,
-      startTsUtc: ctx.time.mode === "absolute" ? ctx.time.startTsUtc : null,
-      endTsUtc: ctx.time.mode === "absolute" ? ctx.time.endTsUtc : null,
-    };
-  }
-
-  if (timeOverride.mode === "relative") {
-    // Important:
-    // Relative exploration should mean "last X from now",
-    // not "last X from the end of some older triage result".
-    return {
-      partner: ctx.baseScope.partner,
-      service: ctx.baseScope.service,
-      region: ctx.baseScope.region,
-      pop: ctx.baseScope.pop,
-      contentType: ctx.baseScope.contentType,
-      uaFamily: ctx.baseScope.uaFamily,
-      windowMinutes: Math.max(1, Number(timeOverride.windowMinutes) || 120),
       startTsUtc: null,
       endTsUtc: null,
     };
   }
 
-  return {
-    partner: ctx.baseScope.partner,
-    service: ctx.baseScope.service,
-    region: ctx.baseScope.region,
-    pop: ctx.baseScope.pop,
-    contentType: ctx.baseScope.contentType,
-    uaFamily: ctx.baseScope.uaFamily,
-    windowMinutes: timeOverride.windowMinutes,
-    startTsUtc: timeOverride.startTsUtc,
-    endTsUtc: timeOverride.endTsUtc,
-  };
-}
-
-function deriveRefreshInputs(ctx: InvestigationContext): TriageInputs {
-  return contextToTriageInputs(ctx);
-}
-
-function derivePreviousWindowInputs(
-  ctx: InvestigationContext,
-  now: Date = new Date()
-): TriageInputs {
-  const base = contextToTriageInputs(ctx);
-  const windowMs = Math.max(1, ctx.time.windowMinutes) * 60 * 1000;
-
-  if (ctx.time.mode === "absolute" && ctx.time.startTsUtc && ctx.time.endTsUtc) {
-    const startMs = new Date(ctx.time.startTsUtc).getTime();
-    const endMs = new Date(ctx.time.endTsUtc).getTime();
-
-    if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
-      const spanMs = endMs - startMs;
-      const prevStart = new Date(startMs - spanMs).toISOString();
-      const prevEnd = new Date(startMs).toISOString();
-
-      return {
-        ...base,
-        windowMinutes: Math.max(1, Math.round(spanMs / 60000)),
-        startTsUtc: prevStart,
-        endTsUtc: prevEnd,
-      };
-    }
+  function toNumOrNull(v: unknown): number | null {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
   }
 
-  const endMs = now.getTime() - windowMs;
-  const startMs = endMs - windowMs;
-
-  return {
-    ...base,
-    windowMinutes: ctx.time.windowMinutes,
-    startTsUtc: new Date(startMs).toISOString(),
-    endTsUtc: new Date(endMs).toISOString(),
-  };
-}
-
-function deriveWorstRegionInputs(ctx: InvestigationContext): TriageInputs | null {
-  if (!ctx.worstRegion?.value) return null;
-
-  const base = contextToTriageInputs(ctx);
-
-  return {
-    ...base,
-    region: ctx.worstRegion.value,
-    pop: "all",
-  };
-}
-
-function deriveWorstPopInputs(ctx: InvestigationContext): TriageInputs | null {
-  if (!ctx.worstPop?.value) return null;
-
-  const base = contextToTriageInputs(ctx);
-
-  return {
-    ...base,
-    pop: ctx.worstPop.value,
-  };
-}
-
-function deriveScopedFollowupInputs(
-  ctx: InvestigationContext,
-  overrides: {
-    region?: string;
-    pop?: string;
-    contentType?: string;
-    uaFamily?: string;
-    service?: string;
+  function normalizePctMaybe(v: unknown): number | null {
+    const n = toNumOrNull(v);
+    if (n == null) return null;
+    return n <= 1 ? n * 100 : n;
   }
-): TriageInputs {
-  const base = contextToTriageInputs(ctx);
 
-  const nextRegion =
-    overrides.region != null
-      ? overrides.region
-      : overrides.pop != null
-      ? "all"
-      : base.region;
-
-  const nextPop =
-    overrides.pop != null
-      ? overrides.pop
-      : overrides.region != null
-      ? "all"
-      : base.pop;
-
-  return {
-    ...base,
-    service: overrides.service ?? base.service,
-    region: nextRegion,
-    pop: nextPop,
-    contentType: overrides.contentType ?? base.contentType,
-    uaFamily: overrides.uaFamily ?? base.uaFamily,
-  };
-}
-
-
-
-
-// ── TriageCard ─────────────────────────────────────────────────────────────
-function TriageCard({ run }: { run: ChatTriage["run"] }) {
-  const ts = parseTimeseries(run.metricsJson);
-  const effectiveWindowMinutes = windowMinutesFromRange(
-    run.inputs.startTsUtc,
-    run.inputs.endTsUtc,
-    run.inputs.windowMinutes
-  );
-  const bucketSeconds = ts?.bucketSeconds ?? run.metricsJson?.timeseries?.bucketSeconds ?? null;
-  const assessment = run.swarm?.assessment ?? null;
-  const agents = run.swarm?.agents ?? null;
-  const swarmSummary = String(assessment?.summary || "").trim();
-  const classicSummary = String(run.summaryText || "").trim();
-  const summaryText = swarmSummary || classicSummary || buildSummaryFallback(run);
-  const keyFindings = Array.isArray(assessment?.keyFindings)
-    ? assessment!.keyFindings!.map((x) => String(x || "").trim()).filter(Boolean)
-    : [];
-  const pointsCount = ts?.points?.length ?? 0;
-  const debug = run.metricsJson?.debug ?? null;
-  const runnerVersion = debug?.__runnerVersion
-    ? String(debug.__runnerVersion)
-    : debug?.proxyVersion
-    ? String(debug.proxyVersion)
-    : "unknown";
-  const scopeSource = run.scopeSource || "filters";
-  const forcedLocal = Boolean(debug?.forcedLocal);
-  const proxyEnabled = Boolean(debug?.hasProxyEnv);
-  const tableUsed = debug?.tableUsed ? String(debug.tableUsed) : "unknown";
-  const debugBucketSeconds = debug?.bucketSeconds != null ? Number(debug.bucketSeconds) : null;
-  const anchorMode =
-    run.inputs.startTsUtc && run.inputs.endTsUtc
-      ? "absolute"
-      : debug?.anchorToMaxTs
-      ? "max(ts)"
-      : "now()";
-    const answerSource = forcedLocal ? "Forced Local" : proxyEnabled ? "Proxy" : "Local";
-    const timeRangeText =
-      run.inputs.startTsUtc && run.inputs.endTsUtc
-        ? `${isoToUtcText(run.inputs.startTsUtc)} → ${isoToUtcText(run.inputs.endTsUtc)} UTC`
-        : `last ${run.inputs.windowMinutes}m`;
-
-    const atsSummary = run.metricsJson?.atsSummary ?? null;
-    const previousAtsSummary = run.metricsJson?.previousAtsSummary ?? null;
-
-    const hitPct = atsSummary?.hitPct ?? null;
-    const missPct = atsSummary?.missPct ?? null;
-    const refreshPct = atsSummary?.refreshPct ?? null;
-    const clientErrorPct = atsSummary?.clientErrorPct ?? null;
-    const infraErrorPct = atsSummary?.infraErrorPct ?? null;
-
-    const atsSummaryLine = getAtsSummaryLine({
-      hitPct,
-      missPct,
-      refreshPct,
-      clientErrorPct,
-      infraErrorPct,
-    });
-
-    const deliveryTrustPct =
-      clientErrorPct != null || infraErrorPct != null
-        ? Number(clientErrorPct || 0) + Number(infraErrorPct || 0)
-        : null;
-
-    const previousDeliveryTrustPct =
-      previousAtsSummary?.clientErrorPct != null ||
-      previousAtsSummary?.infraErrorPct != null
-        ? Number(previousAtsSummary?.clientErrorPct || 0) +
-          Number(previousAtsSummary?.infraErrorPct || 0)
-        : null;
-
-    const deliveryTrustDeltaPct =
-      deliveryTrustPct != null && previousDeliveryTrustPct != null
-        ? deliveryTrustPct - previousDeliveryTrustPct
-        : null;
-
-  return (
-    <div className="triage-enter rounded-2xl border border-white/12 bg-[#10151c] backdrop-blur p-4 shadow-xl shadow-black/20 space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-xs text-gray-400">Triage result</div>
-          <div className="text-sm font-semibold text-gray-100 truncate">
-            {[
-              run.inputs.partner || "—",
-              run.inputs.service || "—",
-              run.inputs.region,
-              run.inputs.pop,
-              run.inputs.contentType !== "all" ? `ct=${run.inputs.contentType}` : null,
-              run.inputs.uaFamily !== "all" ? `ua=${run.inputs.uaFamily}` : null,
-              timeRangeText,
-            ]
-              .filter(Boolean)
-              .join(" • ")}
-          </div>
-          {ts?.startTs && ts?.endTs && (
-            <div className="text-[11px] text-gray-500 mt-1">
-              actual window: {formatUtcYmdHm(ts.startTs)} → {formatUtcYmdHm(ts.endTs)} UTC
-            </div>
-          )}
-        </div>
-        <div className="flex flex-wrap justify-end gap-1.5 shrink-0">
-          <span className="text-[11px] px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
-            <span className="text-gray-400 mr-1">scope</span>
-            <span className="font-semibold">{scopeSource}</span>
-          </span>
-          <span
-            className={`text-[11px] px-2 py-1 rounded-full border ${
-              forcedLocal
-                ? "border-amber-400/30 bg-amber-400/10 text-amber-200"
-                : proxyEnabled
-                ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
-                : "border-white/10 bg-white/5 text-gray-200"
-            }`}
-          >
-            <span className="text-gray-400 mr-1">src</span>
-            <span className="font-semibold">{answerSource}</span>
-          </span>
-          {assessment?.overallStatus && (
-            <span
-              className={`text-[11px] px-2 py-1 rounded-full border font-semibold ${severityPillClass(
-                assessment.overallStatus
-              )}`}
-            >
-              {assessment.overallStatus}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {assessment && (
-        <div className="flex flex-wrap gap-2">
-          {assessment.primarySignal && (
-            <span className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
-              <span className="text-gray-400 mr-1">primary</span>
-              <span className="font-semibold">{signalLabel(assessment.primarySignal)}</span>
-            </span>
-          )}
-          {assessment.metadata?.timeMode && (
-            <span className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
-              <span className="text-gray-400 mr-1">timeMode</span>
-              <span className="font-semibold">{assessment.metadata.timeMode}</span>
-            </span>
-          )}
-        </div>
-      )}
-
-      <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-        <div className="text-xs text-gray-400 mb-2">Summary</div>
-        <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">
-          {summaryText}
-        </pre>
-      </div>
-
-      <div>
-        <div className="text-xs text-gray-400 mb-2">Key Signals</div>
-        <MetricChips metricsJson={run.metricsJson} />
-      </div>
-
-      {keyFindings.length > 0 && (
-        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-          <div className="text-xs text-gray-400 mb-2">Key Findings</div>
-          <div className="space-y-2">
-            {keyFindings.map((finding, idx) => (
-              <div
-                key={`${finding}-${idx}`}
-                className="flex items-start gap-2 text-sm text-gray-200/90"
-              >
-                <span className="mt-1 h-1.5 w-1.5 rounded-full bg-blue-400 shrink-0" />
-                <span>{finding}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {ts && ts.points.length > 0 ? (
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 gap-4">
-            <LatencyTimeseriesLines
-              points={ts.points}
-              bucketSeconds={bucketSeconds}
-              height={220}
-              windowMinutes={effectiveWindowMinutes}
-            />
-          </div>
-
-     <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-xs text-gray-400">Cache behavior</div>
-          <div className="text-sm font-semibold text-gray-100">ATS Summary</div>
-          <div className="text-[11px] text-gray-300 mt-1">
-            {atsSummaryLine}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-3">
-        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-          <div className="text-[11px] text-gray-400">Hit</div>
-          <div className="mt-1 text-lg font-semibold text-gray-100">
-            {formatPctOrNA(hitPct)}
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-          <div className="text-[11px] text-gray-400">Miss</div>
-          <div className="mt-1 text-lg font-semibold text-gray-100">
-            {formatPctOrNA(missPct)}
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-          <div className="text-[11px] text-gray-400">Refresh</div>
-          <div className="mt-1 text-lg font-semibold text-gray-100">
-            {formatPctOrNA(refreshPct)}
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-          <div className="text-[11px] text-gray-400">Client Err</div>
-          <div className="mt-1 text-lg font-semibold text-gray-100">
-            {formatPctOrNA(clientErrorPct)}
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-          <div className="text-[11px] text-gray-400">Infra Err</div>
-          <div className="mt-1 text-lg font-semibold text-gray-100">
-            {formatPctOrNA(infraErrorPct)}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-5">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-[11px] text-gray-400">Delivery trust</div>
-            <div className="flex items-center gap-2 mt-1 flex-wrap">
-              <span className="text-sm font-semibold text-gray-100">
-                {formatPctOrNA(deliveryTrustPct)}
-              </span>
-
-              {deliveryTrustDeltaPct != null ? (
-                <span
-                  className={`text-[11px] font-medium ${
-                    deliveryTrustDeltaPct > 0
-                      ? "text-red-300"
-                      : deliveryTrustDeltaPct < 0
-                      ? "text-emerald-300"
-                      : "text-gray-400"
-                  }`}
-                >
-                  {deliveryTrustDeltaPct > 0 ? "↑" : deliveryTrustDeltaPct < 0 ? "↓" : "•"}{" "}
-                  {deliveryTrustDeltaPct > 0 ? "+" : ""}
-                  {deliveryTrustDeltaPct.toFixed(2)}% vs previous
-                </span>
-              ) : (
-                <span className="text-[11px] font-medium text-gray-500">
-                  no previous ATS compare
-                </span>
-              )}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3 text-[10px] text-gray-500 shrink-0">
-            <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-red-400/80" />
-              Infra
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-amber-400/80" />
-              Client
-            </span>
-          </div>
-        </div>
-
-        <div className="mt-2 relative h-2 w-full rounded-full bg-white/15 overflow-hidden">
-          <div
-            className="absolute left-0 top-0 h-full bg-red-400/80"
-            style={{ width: `${Math.max(0, Number(infraErrorPct || 0))}%` }}
-          />
-          <div
-            className="absolute top-0 h-full bg-amber-400/80"
-            style={{
-              left: `${Math.max(0, Number(infraErrorPct || 0))}%`,
-              width: `${Math.max(0, Number(clientErrorPct || 0))}%`,
-            }}
-          />
-        </div>
-      </div>
-    </div>
-
-          <div className="grid grid-cols-1 gap-4">
-            <RequestsErrorRateLines
-              points={ts.points}
-              bucketSeconds={bucketSeconds}
-              height={220}
-              windowMinutes={effectiveWindowMinutes}
-            />
-          </div>
-        </div>
-      ) : (
-        <div className="text-sm text-gray-400">Timeseries: 0 points (aggregate-only).</div>
-      )}
-
-      <details className="rounded-2xl border border-white/10 bg-black/20 p-3 group">
-        <summary className="cursor-pointer text-sm font-semibold text-gray-200 select-none">
-          Evidence
-        </summary>
-        <div className="mt-4 space-y-4">
-          {agents?.length ? <SwarmAgentCards agents={agents} /> : null}
-
-          <div className="text-xs text-gray-300 grid grid-cols-2 gap-x-6 gap-y-1.5">
-            <div>
-              <span className="text-gray-400">Actual window:</span>{" "}
-              {ts?.startTs && ts?.endTs
-                ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(ts.endTs)} UTC`
-                : "n/a"}
-            </div>
-            <div>
-              <span className="text-gray-400">Bucket:</span> {bucketLabel(bucketSeconds)}
-            </div>
-            <div>
-              <span className="text-gray-400">Runner:</span> {runnerVersion}
-            </div>
-            <div>
-              <span className="text-gray-400">Table:</span> {tableUsed}
-            </div>
-            <div>
-              <span className="text-gray-400">Anchor:</span> {anchorMode}
-            </div>
-            <div>
-              <span className="text-gray-400">Debug bucket:</span>{" "}
-              {debugBucketSeconds != null ? `${debugBucketSeconds}s` : "n/a"}
-            </div>
-            {assessment?.metadata?.compareStartTs && assessment?.metadata?.compareEndTs && (
-              <div className="col-span-2">
-                <span className="text-gray-400">Compare window:</span>{" "}
-                {formatUtcYmdHm(assessment.metadata.compareStartTs)} →{" "}
-                {formatUtcYmdHm(assessment.metadata.compareEndTs)} UTC
-              </div>
-            )}
-          </div>
-
-          <details className="rounded-xl border border-white/10 bg-black/20 p-3">
-            <summary className="cursor-pointer text-sm text-gray-200 select-none">
-              Inputs
-            </summary>
-            <pre className="mt-3 whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
-              {JSON.stringify(run.inputs, null, 2)}
-            </pre>
-          </details>
-
-          {run.chatContext && (
-            <details className="rounded-xl border border-white/10 bg-black/20 p-3">
-              <summary className="cursor-pointer text-sm text-gray-200 select-none">
-                Chat parse context
-              </summary>
-              <pre className="mt-3 whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
-                {JSON.stringify(run.chatContext, null, 2)}
-              </pre>
-            </details>
-          )}
-
-          {run.swarm && (
-            <details className="rounded-xl border border-white/10 bg-black/20 p-3">
-              <summary className="cursor-pointer text-sm text-gray-200 select-none">
-                Swarm payload
-              </summary>
-              <pre className="mt-3 whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
-                {JSON.stringify(run.swarm, null, 2)}
-              </pre>
-            </details>
-          )}
-        </div>
-      </details>
-
-      {run.sql?.queries?.length ? (
-        <details className="rounded-2xl border border-white/10 bg-black/20 p-3">
-          <summary className="cursor-pointer text-sm font-semibold text-gray-200 select-none">
-            SQL Evidence
-          </summary>
-          <div className="mt-4 space-y-3">
-            {run.sql.queries.map((query, idx) => (
-              <div key={idx}>
-                <div className="text-xs text-gray-400 mb-1">Query {idx + 1}</div>
-                <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
-                  {query}
-                </pre>
-              </div>
-            ))}
-            {run.sql.params && (
-              <div>
-                <div className="text-xs text-gray-400 mb-1">Params</div>
-                <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
-                  {JSON.stringify(run.sql.params, null, 2)}
-                </pre>
-              </div>
-            )}
-          </div>
-        </details>
-      ) : null}
-
-      <style jsx>{`
-        .triage-enter {
-          animation: triageIn 220ms ease-out;
-        }
-        @keyframes triageIn {
-          from {
-            opacity: 0;
-            transform: translateY(6px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-      `}</style>
-    </div>
-  );
-}
-
-function drillDimensionLabel(row: any): string {
-  return (
-    row?.region ||
-    row?.pop ||
-    row?.host ||
-    row?.uaFamily ||
-    row?.contentType ||
-    row?.dimension ||
-    "n/a"
-  );
-}
-
-function drillDimensionHeader(drill: any): string {
-  switch (drill?.type) {
-    case "worst_region":
-      return "Region";
-    case "worst_pop":
-      return "POP";
-    case "worst_host":
-      return "Host";
-    case "worst_ua":
-      return "UA Family";
-    case "worst_content":
-      return "Content Type";
-    default:
-      return "Dimension";
+  function normalizeCachePctMaybe(v: unknown): number | null {
+    const n = toNumOrNull(v);
+    if (n == null) return null;
+    return n <= 1 ? n * 100 : n;
   }
-}
 
+  function scoreWorstCandidate(x: {
+    errorRatePct: number | null;
+    p95TtmsMs: number | null;
+    cacheHitRate: number | null;
+    totalRequests: number | null;
+  }): number {
+    const err = x.errorRatePct ?? 0;
+    const p95 = x.p95TtmsMs ?? 0;
+    const cachePenalty = x.cacheHitRate == null ? 0 : Math.max(0, 100 - x.cacheHitRate);
+    const reqWeight = x.totalRequests == null ? 0 : Math.min(x.totalRequests / 1000, 100);
 
-function DrillCard({
-  drill,
-  summaryText,
-}: {
-  drill: any;
-  summaryText: string;
-}) {
-  const hasRows = Array.isArray(drill?.rows) && drill.rows.length > 0;
-  const topRow = hasRows ? drill.rows[0] : null;
+    return err * 1000 + p95 + cachePenalty * 10 + reqWeight;
+  }
 
-    const drillTs =
-    drill?.timeseries &&
-    Array.isArray(drill.timeseries.points) &&
-    drill.timeseries.points.length > 0
-      ? {
-          bucketSeconds:
-            drill.timeseries.bucketSeconds == null
-              ? null
-              : Number(drill.timeseries.bucketSeconds),
-          startTs: drill.timeseries.startTs ? String(drill.timeseries.startTs) : null,
-          endTs: drill.timeseries.endTs ? String(drill.timeseries.endTs) : null,
-          points: drill.timeseries.points.map((p: any) => ({
-            ts: normalizeTsKey(p.ts),
-            totalRequests: Number(p.totalRequests || 0),
-            error5xxCount: Number(p.error5xxCount || 0),
-            errorRatePct: Number(p.errorRatePct || 0),
-            p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
-            p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
-            cacheHitRate: p.cacheHitRate == null ? null : Number(p.cacheHitRate),
-            crcErrorCount: Number(p.crcErrorCount || 0),
-            statusCountsByCode: p.statusCountsByCode || undefined,
-          })),
-          statusCodeSeries: undefined,
-          hostSeries: [],
-          crcSeries: [],
-        }
-      : null;
+  function coerceBreakdownCandidate(
+    raw: any,
+    keyField: "region" | "pop",
+    source: string
+  ): InvestigationWorstCandidate | null {
+    const value = String(raw?.[keyField] || "").trim();
+    if (!value || value === "all") return null;
 
-  const drillWindowMinutes =
-    drillTs?.startTs && drillTs?.endTs
-      ? windowMinutesFromRange(drillTs.startTs, drillTs.endTs, 60)
-      : 60;
+    return {
+      value,
+      errorRatePct: normalizePctMaybe(raw?.errorRatePct ?? raw?.errorRate),
+      p95TtmsMs: toNumOrNull(raw?.p95TtmsMs ?? raw?.p95Ms ?? raw?.latencyP95Ms),
+      cacheHitRate: normalizeCachePctMaybe(raw?.cacheHitRate ?? raw?.cacheHitPct),
+      totalRequests: toNumOrNull(raw?.totalRequests ?? raw?.requests),
+      source,
+    };
+  }
 
-  const topCachePct =
-    topRow?.cacheHitPct == null && topRow?.cacheHitRate == null
-      ? null
-      : Number(
-          topRow?.cacheHitPct != null ? topRow.cacheHitPct : topRow.cacheHitRate
-        ) <= 1
-      ? Number(
-          topRow?.cacheHitPct != null ? topRow.cacheHitPct : topRow.cacheHitRate
-        ) * 100
-      : Number(
-          topRow?.cacheHitPct != null ? topRow.cacheHitPct : topRow.cacheHitRate
+  function pickWorstFromBreakdown(
+    items: any[],
+    keyField: "region" | "pop",
+    source: string
+  ): InvestigationWorstCandidate | null {
+    const candidates = items
+      .map((item) => coerceBreakdownCandidate(item, keyField, source))
+      .filter(Boolean) as InvestigationWorstCandidate[];
+
+    if (!candidates.length) return null;
+
+    candidates.sort((a, b) => scoreWorstCandidate(b) - scoreWorstCandidate(a));
+    return candidates[0] ?? null;
+  }
+
+  function extractWorstRegionCandidate(run: ChatTriage["run"]): InvestigationWorstCandidate | null {
+    const m = run.metricsJson || {};
+
+    const candidateSources: Array<{ items: any[]; source: string }> = [
+      {
+        items:
+          Array.isArray(m?.regionBreakdown) && m.regionBreakdown.length > 0
+            ? m.regionBreakdown
+            : [],
+        source: "metricsJson.regionBreakdown",
+      },
+      {
+        items:
+          Array.isArray(m?.evidenceBundle?.regionBreakdown) &&
+          m.evidenceBundle.regionBreakdown.length > 0
+            ? m.evidenceBundle.regionBreakdown
+            : [],
+        source: "metricsJson.evidenceBundle.regionBreakdown",
+      },
+    ];
+
+    for (const entry of candidateSources) {
+      if (entry.items.length) {
+        const safeItems = entry.items.filter(
+          (x) => x && typeof x === "object" && x.region
         );
 
-  return (
+        const picked = pickWorstFromBreakdown(safeItems, "region", entry.source);
+        if (picked) return picked;
+      }
+    }
+
+    return null;
+  }
+
+  function extractWorstPopCandidate(run: ChatTriage["run"]): InvestigationWorstCandidate | null {
+    const m = run.metricsJson || {};
+
+    const candidateSources: Array<{ items: any[]; source: string }> = [
+      {
+        items:
+          Array.isArray(m?.popBreakdown) && m.popBreakdown.length > 0
+            ? m.popBreakdown
+            : [],
+        source: "metricsJson.popBreakdown",
+      },
+      {
+        items:
+          Array.isArray(m?.evidenceBundle?.popBreakdown) &&
+          m.evidenceBundle.popBreakdown.length > 0
+            ? m.evidenceBundle.popBreakdown
+            : [],
+        source: "metricsJson.evidenceBundle.popBreakdown",
+      },
+    ];
+
+    for (const entry of candidateSources) {
+      if (entry.items.length) {
+        const safeItems = entry.items.filter(
+          (x) => x && typeof x === "object" && x.pop
+        );
+
+        const picked = pickWorstFromBreakdown(safeItems, "pop", entry.source);
+        if (picked) return picked;
+      }
+    }
+
+    return null;
+  }
+
+  function buildLatestInvestigationContext(args: {
+    run: ChatTriage["run"];
+    availableRegions: string[];
+    availablePops: string[];
+    availableContentTypes: string[];
+    availableUaFamilies: string[];
+  }): InvestigationContext {
+    const baseTime = getRunTimeContext(args.run);
+
+    // Important:
+    // Keep relative runs relative.
+    // Only preserve absolute time when the original run was explicitly absolute.
+    const resolvedTime: InvestigationTimeContext =
+      baseTime.mode === "absolute"
+        ? {
+            mode: "absolute",
+            windowMinutes: baseTime.windowMinutes,
+            startTsUtc: baseTime.startTsUtc,
+            endTsUtc: baseTime.endTsUtc,
+          }
+        : {
+            mode: "relative",
+            windowMinutes: baseTime.windowMinutes,
+            startTsUtc: null,
+            endTsUtc: null,
+          };
+
+    return {
+      baseScope: getRunBaseScope(args.run),
+      time: resolvedTime,
+      worstRegion: extractWorstRegionCandidate(args.run),
+      worstPop: extractWorstPopCandidate(args.run),
+      availableDimensions: {
+        regions: (args.availableRegions || []).filter((x) => x && x !== "all"),
+        pops: (args.availablePops || []).filter((x) => x && x !== "all"),
+        contentTypes: (args.availableContentTypes || []).filter((x) => x && x !== "all"),
+        uaFamilies: (args.availableUaFamilies || []).filter((x) => x && x !== "all"),
+      },
+    };
+  }
+
+  function contextToTriageInputs(ctx: InvestigationContext): TriageInputs {
+    const { baseScope, time } = ctx;
+
+    return {
+      dataSource: "clickhouse",
+      partner: baseScope.partner,
+      service: baseScope.service,
+      region: baseScope.region,
+      pop: baseScope.pop,
+      contentType: baseScope.contentType,
+      uaFamily: baseScope.uaFamily,
+      windowMinutes: time.windowMinutes,
+      startTsUtc: time.mode === "absolute" ? time.startTsUtc : null,
+      endTsUtc: time.mode === "absolute" ? time.endTsUtc : null,
+    };
+  }
+
+
+  function buildExplorationContextWithTimeOverride(
+    ctx: InvestigationContext,
+    timeOverride?: {
+      mode: "relative";
+      windowMinutes: number;
+      sourceText: string;
+    } | {
+      mode: "absolute";
+      startTsUtc: string;
+      endTsUtc: string;
+      windowMinutes: number;
+      sourceText: string;
+    }
+  ) {
+    if (!timeOverride) {
+      return {
+        partner: ctx.baseScope.partner,
+        service: ctx.baseScope.service,
+        region: ctx.baseScope.region,
+        pop: ctx.baseScope.pop,
+        contentType: ctx.baseScope.contentType,
+        uaFamily: ctx.baseScope.uaFamily,
+        windowMinutes: ctx.time.windowMinutes,
+        startTsUtc: ctx.time.mode === "absolute" ? ctx.time.startTsUtc : null,
+        endTsUtc: ctx.time.mode === "absolute" ? ctx.time.endTsUtc : null,
+      };
+    }
+
+    if (timeOverride.mode === "relative") {
+      // Important:
+      // Relative exploration should mean "last X from now",
+      // not "last X from the end of some older triage result".
+      return {
+        partner: ctx.baseScope.partner,
+        service: ctx.baseScope.service,
+        region: ctx.baseScope.region,
+        pop: ctx.baseScope.pop,
+        contentType: ctx.baseScope.contentType,
+        uaFamily: ctx.baseScope.uaFamily,
+        windowMinutes: Math.max(1, Number(timeOverride.windowMinutes) || 120),
+        startTsUtc: null,
+        endTsUtc: null,
+      };
+    }
+
+    return {
+      partner: ctx.baseScope.partner,
+      service: ctx.baseScope.service,
+      region: ctx.baseScope.region,
+      pop: ctx.baseScope.pop,
+      contentType: ctx.baseScope.contentType,
+      uaFamily: ctx.baseScope.uaFamily,
+      windowMinutes: timeOverride.windowMinutes,
+      startTsUtc: timeOverride.startTsUtc,
+      endTsUtc: timeOverride.endTsUtc,
+    };
+  }
+
+  function deriveRefreshInputs(ctx: InvestigationContext): TriageInputs {
+    return contextToTriageInputs(ctx);
+  }
+
+  function derivePreviousWindowInputs(
+    ctx: InvestigationContext,
+    now: Date = new Date()
+  ): TriageInputs {
+    const base = contextToTriageInputs(ctx);
+    const windowMs = Math.max(1, ctx.time.windowMinutes) * 60 * 1000;
+
+    if (ctx.time.mode === "absolute" && ctx.time.startTsUtc && ctx.time.endTsUtc) {
+      const startMs = new Date(ctx.time.startTsUtc).getTime();
+      const endMs = new Date(ctx.time.endTsUtc).getTime();
+
+      if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
+        const spanMs = endMs - startMs;
+        const prevStart = new Date(startMs - spanMs).toISOString();
+        const prevEnd = new Date(startMs).toISOString();
+
+        return {
+          ...base,
+          windowMinutes: Math.max(1, Math.round(spanMs / 60000)),
+          startTsUtc: prevStart,
+          endTsUtc: prevEnd,
+        };
+      }
+    }
+
+    const endMs = now.getTime() - windowMs;
+    const startMs = endMs - windowMs;
+
+    return {
+      ...base,
+      windowMinutes: ctx.time.windowMinutes,
+      startTsUtc: new Date(startMs).toISOString(),
+      endTsUtc: new Date(endMs).toISOString(),
+    };
+  }
+
+  function deriveWorstRegionInputs(ctx: InvestigationContext): TriageInputs | null {
+    if (!ctx.worstRegion?.value) return null;
+
+    const base = contextToTriageInputs(ctx);
+
+    return {
+      ...base,
+      region: ctx.worstRegion.value,
+      pop: "all",
+    };
+  }
+
+  function deriveWorstPopInputs(ctx: InvestigationContext): TriageInputs | null {
+    if (!ctx.worstPop?.value) return null;
+
+    const base = contextToTriageInputs(ctx);
+
+    return {
+      ...base,
+      pop: ctx.worstPop.value,
+    };
+  }
+
+  function deriveScopedFollowupInputs(
+    ctx: InvestigationContext,
+    overrides: {
+      region?: string;
+      pop?: string;
+      contentType?: string;
+      uaFamily?: string;
+      service?: string;
+    }
+  ): TriageInputs {
+    const base = contextToTriageInputs(ctx);
+
+    const nextRegion =
+      overrides.region != null
+        ? overrides.region
+        : overrides.pop != null
+        ? "all"
+        : base.region;
+
+    const nextPop =
+      overrides.pop != null
+        ? overrides.pop
+        : overrides.region != null
+        ? "all"
+        : base.pop;
+
+    return {
+      ...base,
+      service: overrides.service ?? base.service,
+      region: nextRegion,
+      pop: nextPop,
+      contentType: overrides.contentType ?? base.contentType,
+      uaFamily: overrides.uaFamily ?? base.uaFamily,
+    };
+  }
+
+
+
+
+  // ── TriageCard ─────────────────────────────────────────────────────────────
+  function TriageCard({ run }: { run: ChatTriage["run"] }) {
+    const ts = parseTimeseries(run.metricsJson);
+    const effectiveWindowMinutes = windowMinutesFromRange(
+      run.inputs.startTsUtc,
+      run.inputs.endTsUtc,
+      run.inputs.windowMinutes
+    );
+    const bucketSeconds = ts?.bucketSeconds ?? run.metricsJson?.timeseries?.bucketSeconds ?? null;
+    const assessment = run.swarm?.assessment ?? null;
+    const agents = run.swarm?.agents ?? null;
+    const swarmSummary = String(assessment?.summary || "").trim();
+    const classicSummary = String(run.summaryText || "").trim();
+    const summaryText = swarmSummary || classicSummary || buildSummaryFallback(run);
+    const keyFindings = Array.isArray(assessment?.keyFindings)
+      ? assessment!.keyFindings!.map((x) => String(x || "").trim()).filter(Boolean)
+      : [];
+    const pointsCount = ts?.points?.length ?? 0;
+    const debug = run.metricsJson?.debug ?? null;
+    const runnerVersion = debug?.__runnerVersion
+      ? String(debug.__runnerVersion)
+      : debug?.proxyVersion
+      ? String(debug.proxyVersion)
+      : "unknown";
+    const scopeSource = run.scopeSource || "filters";
+    const forcedLocal = Boolean(debug?.forcedLocal);
+    const proxyEnabled = Boolean(debug?.hasProxyEnv);
+    const tableUsed = debug?.tableUsed ? String(debug.tableUsed) : "unknown";
+    const debugBucketSeconds = debug?.bucketSeconds != null ? Number(debug.bucketSeconds) : null;
+    const anchorMode =
+      run.inputs.startTsUtc && run.inputs.endTsUtc
+        ? "absolute"
+        : debug?.anchorToMaxTs
+        ? "max(ts)"
+        : "now()";
+      const answerSource = forcedLocal ? "Forced Local" : proxyEnabled ? "Proxy" : "Local";
+      const timeRangeText =
+        run.inputs.startTsUtc && run.inputs.endTsUtc
+          ? `${isoToUtcText(run.inputs.startTsUtc)} → ${isoToUtcText(run.inputs.endTsUtc)} UTC`
+          : `last ${run.inputs.windowMinutes}m`;
+
+      const atsSummary = run.metricsJson?.atsSummary ?? null;
+      const previousAtsSummary = run.metricsJson?.previousAtsSummary ?? null;
+
+      const hitPct = atsSummary?.hitPct ?? null;
+      const missPct = atsSummary?.missPct ?? null;
+      const refreshPct = atsSummary?.refreshPct ?? null;
+      const clientErrorPct = atsSummary?.clientErrorPct ?? null;
+      const infraErrorPct = atsSummary?.infraErrorPct ?? null;
+
+      const atsSummaryLine = getAtsSummaryLine({
+        hitPct,
+        missPct,
+        refreshPct,
+        clientErrorPct,
+        infraErrorPct,
+      });
+
+      const deliveryTrustPct =
+        clientErrorPct != null || infraErrorPct != null
+          ? Number(clientErrorPct || 0) + Number(infraErrorPct || 0)
+          : null;
+
+      const previousDeliveryTrustPct =
+        previousAtsSummary?.clientErrorPct != null ||
+        previousAtsSummary?.infraErrorPct != null
+          ? Number(previousAtsSummary?.clientErrorPct || 0) +
+            Number(previousAtsSummary?.infraErrorPct || 0)
+          : null;
+
+      const deliveryTrustDeltaPct =
+        deliveryTrustPct != null && previousDeliveryTrustPct != null
+          ? deliveryTrustPct - previousDeliveryTrustPct
+          : null;
+
+    return (
       <div className="triage-enter rounded-2xl border border-white/12 bg-[#10151c] backdrop-blur p-4 shadow-xl shadow-black/20 space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-xs text-gray-400">Drill result</div>
-          <div className="text-sm font-semibold text-gray-100 truncate">
-            {drill?.title || "Drill"}
-          </div>
-        </div>
-        <div className="flex flex-wrap justify-end gap-1.5 shrink-0">
-          <span className="text-[11px] px-2 py-1 rounded-full border border-blue-400/30 bg-blue-400/10 text-blue-200">
-            drill
-          </span>
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-        <div className="text-xs text-gray-400 mb-2">Summary</div>
-        <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">
-          {drill?.summary || summaryText || ""}
-        </pre>
-      </div>
-
-      {hasRows ? (
-        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-sm font-semibold text-gray-200">Top results</div>
-            <div className="text-[11px] text-gray-500">
-              {drill.rows.length} row{drill.rows.length === 1 ? "" : "s"}
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs text-gray-400">Triage result</div>
+            <div className="text-sm font-semibold text-gray-100 truncate">
+              {[
+                run.inputs.partner || "—",
+                run.inputs.service || "—",
+                run.inputs.region,
+                run.inputs.pop,
+                run.inputs.contentType !== "all" ? `ct=${run.inputs.contentType}` : null,
+                run.inputs.uaFamily !== "all" ? `ua=${run.inputs.uaFamily}` : null,
+                timeRangeText,
+              ]
+                .filter(Boolean)
+                .join(" • ")}
             </div>
-          </div>
-
-
-      {topRow ? (
-        <>
-          <div className="mt-4 rounded-xl border border-blue-400/20 bg-blue-400/[0.06] p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-[11px] text-blue-200/80">Top candidate</div>
-                <div className="text-sm font-semibold text-gray-100">
-                  {drillDimensionLabel(topRow)}
-                </div>
-              </div>
-              <div className="shrink-0 text-[11px] text-blue-100/80">
-                {drill?.type === "worst_region"
-                  ? "worst region"
-                  : drill?.type === "worst_pop"
-                  ? "worst pop"
-                  : drill?.type === "worst_ua"
-                  ? "worst ua"
-                  : drill?.type === "worst_content"
-                  ? "worst content"
-                  : "top result"}
-              </div>
-            </div>
-
-            <div className="mt-3 flex flex-wrap gap-2">
-              <span className="text-[11px] px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
-                <span className="text-gray-400 mr-1">requests</span>
-                <span className="font-semibold">{formatIntOrNA(topRow?.totalRequests)}</span>
-              </span>
-
-              <span className="text-[11px] px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
-                <span className="text-gray-400 mr-1">5xx%</span>
-                <span className="font-semibold">{formatPctOrNA(topRow?.errorRatePct)}</span>
-              </span>
-
-              <span className="text-[11px] px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
-                <span className="text-gray-400 mr-1">p95</span>
-                <span className="font-semibold">{formatMsOrNA(topRow?.p95TtmsMs)}</span>
-              </span>
-
-              <span className="text-[11px] px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
-                <span className="text-gray-400 mr-1">cache</span>
-                <span className="font-semibold">{formatPctOrNA(topCachePct)}</span>
-              </span>
-            </div>
-          </div>
-
-          {drillTs && drillTs.points.length > 0 ? (
-            <div className="mt-4 space-y-4">
-              <div className="text-[11px] text-gray-400">
-                Over time for {drill?.timeseries?.selectedValue || drillDimensionLabel(topRow)}
-              </div>
-
-              <div className="grid grid-cols-1 gap-4">
-                <LatencyTimeseriesLines
-                  points={drillTs.points}
-                  bucketSeconds={drillTs.bucketSeconds}
-                  height={220}
-                  windowMinutes={drillWindowMinutes}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 gap-4">
-                <RequestsErrorRateLines
-                  points={drillTs.points}
-                  bucketSeconds={drillTs.bucketSeconds}
-                  height={220}
-                  windowMinutes={drillWindowMinutes}
-                />
-              </div>
-            </div>
-          ) : null}
-
-          {hasRows && drill.rows.length > 1 ? (
-            <div className="mt-4 rounded-xl border border-white/10 bg-black/30 p-3">
-              <div className="text-[11px] text-gray-400 mb-3">
-                Distribution (top {Math.min(8, drill.rows.length)})
-              </div>
-
-              <div className="space-y-2">
-                {(() => {
-                  const graphRows = drill.rows.slice(0, 8);
-
-                  const values = graphRows.map((row: any) => {
-                    const err = Number(row?.errorRatePct ?? 0);
-                    const p95 = Number(row?.p95TtmsMs ?? 0);
-                    return err > 0 ? err : p95;
-                  });
-
-                  const maxValue = Math.max(1, ...values);
-
-                  return graphRows.map((row: any, idx: number) => {
-                    const label = drillDimensionLabel(row);
-                    const err = Number(row?.errorRatePct ?? 0);
-                    const p95 = Number(row?.p95TtmsMs ?? 0);
-                    const displayValue = err > 0 ? formatPctOrNA(err) : formatMsOrNA(p95);
-                    const rawValue = err > 0 ? err : p95;
-                    const widthPct = Math.max(6, (rawValue / maxValue) * 100);
-
-                    return (
-                      <div key={`${label}-${idx}`} className="flex items-center gap-3">
-                        <div className="w-24 shrink-0 truncate text-[11px] text-gray-300">
-                          {label}
-                        </div>
-
-                        <div className="flex-1 h-2.5 rounded-full bg-white/10 overflow-hidden">
-                          <div
-                            className={`h-full rounded-full ${
-                              idx === 0 ? "bg-blue-400" : "bg-gray-400/70"
-                            }`}
-                            style={{ width: `${widthPct}%` }}
-                          />
-                        </div>
-
-                        <div className="w-16 shrink-0 text-right text-[11px] text-gray-400">
-                          {displayValue}
-                        </div>
-                      </div>
-                    );
-                  });
-                })()}
-              </div>
-            </div>
-          ) : null}
-        </>
-      ) : null}
-
-          <div className="mt-4 overflow-x-auto rounded-xl border border-white/10 bg-black/30">
-            <table className="min-w-full text-left text-xs text-gray-200">
-              <thead className="border-b border-white/10 bg-white/[0.03] text-gray-400">
-                <tr>
-                  <th className="px-4 py-3 font-medium">#</th>
-                  <th className="px-4 py-3 font-medium">
-                    {drillDimensionHeader(drill)}
-                  </th>
-                  <th className="px-4 py-3 font-medium">Requests</th>
-                  <th className="px-4 py-3 font-medium">5xx</th>
-                  <th className="px-4 py-3 font-medium">5xx %</th>
-                  <th className="px-4 py-3 font-medium">P95</th>
-                  <th className="px-4 py-3 font-medium">Cache</th>
-                </tr>
-              </thead>
-              <tbody>
-                {drill.rows.map((row: any, idx: number) => {
-                  const cachePct =
-                    row?.cacheHitPct == null && row?.cacheHitRate == null
-                      ? null
-                      : Number(
-                          row?.cacheHitPct != null ? row.cacheHitPct : row.cacheHitRate
-                        ) <= 1
-                      ? Number(
-                          row?.cacheHitPct != null ? row.cacheHitPct : row.cacheHitRate
-                        ) * 100
-                      : Number(
-                          row?.cacheHitPct != null ? row.cacheHitPct : row.cacheHitRate
-                        );
-
-                  return (
-                    <tr
-                      key={`${drillDimensionLabel(row)}-${idx}`}
-                      className={`border-b border-white/5 last:border-b-0 hover:bg-white/[0.03] ${
-                        idx === 0 ? "bg-blue-400/[0.03]" : ""
-                      }`}
-                    >
-                      <td className="px-4 py-3 text-gray-400 font-medium">
-                        {idx + 1}
-                      </td>
-                      <td className="px-4 py-3 font-medium text-gray-100">
-                        {drillDimensionLabel(row)}
-                      </td>
-                      <td className="px-4 py-3 text-gray-300">
-                        {formatIntOrNA(row?.totalRequests)}
-                      </td>
-                      <td className="px-4 py-3 text-gray-300">
-                        {formatIntOrNA(row?.error5xxCount)}
-                      </td>
-                      <td className="px-4 py-3 text-gray-300">
-                        {formatPctOrNA(row?.errorRatePct)}
-                      </td>
-                      <td className="px-4 py-3 text-gray-300">
-                        {formatMsOrNA(row?.p95TtmsMs)}
-                      </td>
-                      <td className="px-4 py-3 text-gray-300">
-                        {formatPctOrNA(cachePct)}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ) : null}
-
-      {drill?.sql?.queries?.length ? (
-        <details className="rounded-2xl border border-white/10 bg-black/20 p-3">
-          <summary className="cursor-pointer text-sm font-semibold text-gray-200 select-none">
-            SQL Evidence
-          </summary>
-          <div className="mt-4 space-y-3">
-            {drill.sql.queries.map((query: string, idx: number) => (
-              <div key={idx}>
-                <div className="text-xs text-gray-400 mb-1">Query {idx + 1}</div>
-                <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
-                  {query}
-                </pre>
-              </div>
-            ))}
-            {drill.sql.params && (
-              <div>
-                <div className="text-xs text-gray-400 mb-1">Params</div>
-                <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
-                  {JSON.stringify(drill.sql.params, null, 2)}
-                </pre>
+            {ts?.startTs && ts?.endTs && (
+              <div className="text-[11px] text-gray-500 mt-1">
+                actual window: {formatUtcYmdHm(ts.startTs)} → {formatUtcYmdHm(ts.endTs)} UTC
               </div>
             )}
           </div>
-        </details>
-      ) : null}
-    </div>
-  );
-}
-
-function buildCompareGraphFromMetricsJson(args: {
-  metricsJson: any;
-  primarySignal?: string | null;
-}) {
-  const metricType =
-    args.primarySignal === "cache" ||
-    args.primarySignal === "latency" ||
-    args.primarySignal === "errors" ||
-    args.primarySignal === "traffic"
-      ? args.primarySignal
-      : null;
-
-  if (!metricType) return null;
-
-  const currentPoints = Array.isArray(args.metricsJson?.timeseries?.points)
-    ? args.metricsJson.timeseries.points
-    : [];
-
-  const previousPoints = Array.isArray(
-    args.metricsJson?.previousWindow?.timeseries?.points
-  )
-    ? args.metricsJson.previousWindow.timeseries.points
-    : [];
-
-  if (!currentPoints.length && !previousPoints.length) return null;
-
-  function toSeriesValue(
-    point: any,
-    type: "cache" | "latency" | "errors" | "traffic"
-  ) {
-    if (type === "cache") {
-      return point?.cacheHitRate == null ? null : Number(point.cacheHitRate);
-    }
-    if (type === "latency") {
-      return point?.p95TtmsMs == null ? null : Number(point.p95TtmsMs);
-    }
-    if (type === "errors") {
-      return point?.errorRatePct == null ? null : Number(point.errorRatePct);
-    }
-    if (type === "traffic") {
-      return point?.totalRequests == null ? null : Number(point.totalRequests);
-    }
-    return null;
-  }
-
-  function toLatencyP99Value(point: any) {
-    return point?.p99TtmsMs == null ? null : Number(point.p99TtmsMs);
-  }
-
-  const currentSeries = currentPoints
-    .map((point: any) => ({
-      ts: normalizeTsKey(point?.ts),
-      value: toSeriesValue(point, metricType),
-    }))
-    .filter((point: { ts: string; value: number | null }) => point.ts);
-
-  const previousSeries = previousPoints
-    .map((point: any) => ({
-      ts: normalizeTsKey(point?.ts),
-      value: toSeriesValue(point, metricType),
-    }))
-    .filter((point: { ts: string; value: number | null }) => point.ts);
-
-  const currentSeriesP99 =
-    metricType === "latency"
-      ? currentPoints
-          .map((point: any) => ({
-            ts: normalizeTsKey(point?.ts),
-            value: toLatencyP99Value(point),
-          }))
-          .filter((point: { ts: string; value: number | null }) => point.ts)
-      : [];
-
-  const previousSeriesP99 =
-    metricType === "latency"
-      ? previousPoints
-          .map((point: any) => ({
-            ts: normalizeTsKey(point?.ts),
-            value: toLatencyP99Value(point),
-          }))
-          .filter((point: { ts: string; value: number | null }) => point.ts)
-      : [];
-
-  if (
-    !currentSeries.length &&
-    !previousSeries.length &&
-    !currentSeriesP99.length &&
-    !previousSeriesP99.length
-  ) {
-    return null;
-  }
-
-  return {
-    metricType,
-    currentSeries,
-    previousSeries,
-    currentSeriesP99: metricType === "latency" ? currentSeriesP99 : undefined,
-    previousSeriesP99: metricType === "latency" ? previousSeriesP99 : undefined,
-  };
-}
-
-function buildCompareGraphFromTwoRuns(args: {
-  currentMetricsJson: any;
-  previousMetricsJson: any;
-  primarySignal?: string | null;
-}) {
-  const metricType =
-    args.primarySignal === "cache" ||
-    args.primarySignal === "latency" ||
-    args.primarySignal === "errors" ||
-    args.primarySignal === "traffic"
-      ? args.primarySignal
-      : null;
-
-  if (!metricType) return null;
-
-  const currentPoints = Array.isArray(args.currentMetricsJson?.timeseries?.points)
-    ? args.currentMetricsJson.timeseries.points
-    : [];
-
-  const previousPoints = Array.isArray(args.previousMetricsJson?.timeseries?.points)
-    ? args.previousMetricsJson.timeseries.points
-    : [];
-
-  if (!currentPoints.length && !previousPoints.length) return null;
-
-  function toSeriesValue(
-    point: any,
-    type: "cache" | "latency" | "errors" | "traffic"
-  ) {
-    if (type === "cache") {
-      return point?.cacheHitRate == null ? null : Number(point.cacheHitRate);
-    }
-    if (type === "latency") {
-      return point?.p95TtmsMs == null ? null : Number(point.p95TtmsMs);
-    }
-    if (type === "errors") {
-      return point?.errorRatePct == null ? null : Number(point.errorRatePct);
-    }
-    if (type === "traffic") {
-      return point?.totalRequests == null ? null : Number(point.totalRequests);
-    }
-    return null;
-  }
-
-  function toLatencyP99Value(point: any) {
-    return point?.p99TtmsMs == null ? null : Number(point.p99TtmsMs);
-  }
-
-  const currentSeries = currentPoints
-    .map((point: any) => ({
-      ts: normalizeTsKey(point?.ts),
-      value: toSeriesValue(point, metricType),
-    }))
-    .filter((point: { ts: string; value: number | null }) => point.ts);
-
-  const previousSeries = previousPoints
-    .map((point: any) => ({
-      ts: normalizeTsKey(point?.ts),
-      value: toSeriesValue(point, metricType),
-    }))
-    .filter((point: { ts: string; value: number | null }) => point.ts);
-
-  const currentSeriesP99 =
-    metricType === "latency"
-      ? currentPoints
-          .map((point: any) => ({
-            ts: normalizeTsKey(point?.ts),
-            value: toLatencyP99Value(point),
-          }))
-          .filter((point: { ts: string; value: number | null }) => point.ts)
-      : [];
-
-  const previousSeriesP99 =
-    metricType === "latency"
-      ? previousPoints
-          .map((point: any) => ({
-            ts: normalizeTsKey(point?.ts),
-            value: toLatencyP99Value(point),
-          }))
-          .filter((point: { ts: string; value: number | null }) => point.ts)
-      : [];
-
-  if (
-    !currentSeries.length &&
-    !previousSeries.length &&
-    !currentSeriesP99.length &&
-    !previousSeriesP99.length
-  ) {
-    return null;
-  }
-
-  return {
-    metricType,
-    currentSeries,
-    previousSeries,
-    currentSeriesP99: metricType === "latency" ? currentSeriesP99 : undefined,
-    previousSeriesP99: metricType === "latency" ? previousSeriesP99 : undefined,
-  };
-}
-  
-
-function StatusBreakdownCard({
-  breakdown,
-}: {
-  breakdown: ChatStatusBreakdown["breakdown"];
-}) {
-  const statusCodes = ["200", "206", "304", "403", "404", "429", "500", "502", "503", "504"];
-
-  function toStatusGraphInput(counts?: Record<string, number>) {
-    return Object.fromEntries(
-      statusCodes.map((code) => [`status_${code}`, Number(counts?.[code] ?? 0)])
-    );
-  }
-  const totalsEntries =
-    breakdown.totals
-      ? statusCodes
-          .map((code) => ({
-            code,
-            count: Number(breakdown.totals?.[code] ?? 0),
-          }))
-      : [];
-
-  return (
-    <div className="triage-enter rounded-2xl border border-white/12 bg-[#10151c] backdrop-blur p-4 shadow-xl shadow-black/20 space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-xs text-gray-400">Status breakdown</div>
-          <div className="text-sm font-semibold text-gray-100 truncate">
-            {breakdown.title}
+          <div className="flex flex-wrap justify-end gap-1.5 shrink-0">
+            <span className="text-[11px] px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
+              <span className="text-gray-400 mr-1">scope</span>
+              <span className="font-semibold">{scopeSource}</span>
+            </span>
+            <span
+              className={`text-[11px] px-2 py-1 rounded-full border ${
+                forcedLocal
+                  ? "border-amber-400/30 bg-amber-400/10 text-amber-200"
+                  : proxyEnabled
+                  ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+                  : "border-white/10 bg-white/5 text-gray-200"
+              }`}
+            >
+              <span className="text-gray-400 mr-1">src</span>
+              <span className="font-semibold">{answerSource}</span>
+            </span>
+            {assessment?.overallStatus && (
+              <span
+                className={`text-[11px] px-2 py-1 rounded-full border font-semibold ${severityPillClass(
+                  assessment.overallStatus
+                )}`}
+              >
+                {assessment.overallStatus}
+              </span>
+            )}
           </div>
         </div>
-        <div className="flex flex-wrap justify-end gap-1.5 shrink-0">
-          <span className="text-[11px] px-2 py-1 rounded-full border border-cyan-400/30 bg-cyan-400/10 text-cyan-200">
-            status
-          </span>
-          <span className="text-[11px] px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
-            {breakdown.mode}
-          </span>
-        </div>
-      </div>
 
-      <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-        <div className="text-xs text-gray-400 mb-2">Summary</div>
-        <div className="text-sm text-gray-100/90 leading-relaxed">
-          {breakdown.summary}
-        </div>
-      </div>
+        {assessment && (
+          <div className="flex flex-wrap gap-2">
+            {assessment.primarySignal && (
+              <span className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
+                <span className="text-gray-400 mr-1">primary</span>
+                <span className="font-semibold">{signalLabel(assessment.primarySignal)}</span>
+              </span>
+            )}
+            {assessment.metadata?.timeMode && (
+              <span className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
+                <span className="text-gray-400 mr-1">timeMode</span>
+                <span className="font-semibold">{assessment.metadata.timeMode}</span>
+              </span>
+            )}
+          </div>
+        )}
 
-      {breakdown.mode === "aggregate" && breakdown.totals ? (
-        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 space-y-4">
-          <div>
-            <div className="text-sm font-semibold text-gray-200 mb-3">Totals</div>
-            <div className="flex flex-wrap gap-2">
-              {totalsEntries.map(({ code, count }) => (
-                <span
-                  key={code}
-                  className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200"
+        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+          <div className="text-xs text-gray-400 mb-2">Summary</div>
+          <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">
+            {summaryText}
+          </pre>
+        </div>
+
+        <div>
+          <div className="text-xs text-gray-400 mb-2">Key Signals</div>
+          <MetricChips metricsJson={run.metricsJson} />
+        </div>
+
+        {keyFindings.length > 0 && (
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+            <div className="text-xs text-gray-400 mb-2">Key Findings</div>
+            <div className="space-y-2">
+              {keyFindings.map((finding, idx) => (
+                <div
+                  key={`${finding}-${idx}`}
+                  className="flex items-start gap-2 text-sm text-gray-200/90"
                 >
-                  <span className="text-gray-400 mr-1">{code}</span>
-                  <span className="font-semibold">{count.toLocaleString()}</span>
-                </span>
+                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-blue-400 shrink-0" />
+                  <span>{finding}</span>
+                </div>
               ))}
             </div>
           </div>
+        )}
 
-          <StatusBarGraph status={toStatusGraphInput(breakdown.totals)} />
+        {ts && ts.points.length > 0 ? (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 gap-4">
+              <LatencyTimeseriesLines
+                points={ts.points}
+                bucketSeconds={bucketSeconds}
+                height={220}
+                windowMinutes={effectiveWindowMinutes}
+              />
+            </div>
+
+      <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs text-gray-400">Cache behavior</div>
+            <div className="text-sm font-semibold text-gray-100">ATS Summary</div>
+            <div className="text-[11px] text-gray-300 mt-1">
+              {atsSummaryLine}
+            </div>
+          </div>
         </div>
-      ) : null}
 
-      {Array.isArray(breakdown.rows) && breakdown.rows.length > 0 ? (
-        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 space-y-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-sm font-semibold text-gray-200">Top results</div>
-            <div className="text-[11px] text-gray-500">
-              {breakdown.rows.length} row{breakdown.rows.length === 1 ? "" : "s"}
+        <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+            <div className="text-[11px] text-gray-400">Hit</div>
+            <div className="mt-1 text-lg font-semibold text-gray-100">
+              {formatPctOrNA(hitPct)}
             </div>
           </div>
 
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            {breakdown.rows.map((row, idx) => (
-              <div
-                key={`${row.label}-${idx}`}
-                className="rounded-xl border border-white/10 bg-black/30 p-3 space-y-3"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs text-gray-400">
-                      {breakdown.mode === "pop"
-                        ? "POP"
-                        : breakdown.mode === "region"
-                        ? "Region"
-                        : breakdown.mode === "host"
-                        ? "Host"
-                        : "Dimension"}
-                    </div>
-                    <div className="text-sm font-semibold text-gray-100 truncate">
-                      {row.label}
-                    </div>
-                  </div>
-                  <div className="text-[11px] text-gray-400 shrink-0">
-                    req={formatIntOrNA(row.totalRequests)}
-                  </div>
-                </div>
+          <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+            <div className="text-[11px] text-gray-400">Miss</div>
+            <div className="mt-1 text-lg font-semibold text-gray-100">
+              {formatPctOrNA(missPct)}
+            </div>
+          </div>
 
-                <StatusBarGraph status={toStatusGraphInput(row.counts)} />
+          <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+            <div className="text-[11px] text-gray-400">Refresh</div>
+            <div className="mt-1 text-lg font-semibold text-gray-100">
+              {formatPctOrNA(refreshPct)}
+            </div>
+          </div>
 
-                <div className="flex flex-wrap gap-2">
-                  {statusCodes.map((code) => (
-                    <span
-                      key={code}
-                      className="text-[11px] px-2 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200"
-                    >
-                      <span className="text-gray-400 mr-1">{code}</span>
-                      <span className="font-semibold">
-                        {formatIntOrNA(row.counts?.[code] ?? 0)}
-                      </span>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ))}
+          <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+            <div className="text-[11px] text-gray-400">Client Err</div>
+            <div className="mt-1 text-lg font-semibold text-gray-100">
+              {formatPctOrNA(clientErrorPct)}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+            <div className="text-[11px] text-gray-400">Infra Err</div>
+            <div className="mt-1 text-lg font-semibold text-gray-100">
+              {formatPctOrNA(infraErrorPct)}
+            </div>
           </div>
         </div>
-      ) : null}
-    </div>
-  );
-}
 
-function getClarificationMessage(parsed: {
-  clarificationReason: string | null;
-}) {
-  switch (parsed.clarificationReason) {
-    case "compare_requires_metric":
-      return "I can compare, but I need a metric first. Try: compare latency, compare errors, or what changed in ATS.";
+        <div className="mt-5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[11px] text-gray-400">Delivery trust</div>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                <span className="text-sm font-semibold text-gray-100">
+                  {formatPctOrNA(deliveryTrustPct)}
+                </span>
 
-    case "scope_mentioned_but_unresolved":
-      return "I can narrow scope, but I need a metric too. Try: traffic in us east, latency for mobile, or errors in pop 017.";
+                {deliveryTrustDeltaPct != null ? (
+                  <span
+                    className={`text-[11px] font-medium ${
+                      deliveryTrustDeltaPct > 0
+                        ? "text-red-300"
+                        : deliveryTrustDeltaPct < 0
+                        ? "text-emerald-300"
+                        : "text-gray-400"
+                    }`}
+                  >
+                    {deliveryTrustDeltaPct > 0 ? "↑" : deliveryTrustDeltaPct < 0 ? "↓" : "•"}{" "}
+                    {deliveryTrustDeltaPct > 0 ? "+" : ""}
+                    {deliveryTrustDeltaPct.toFixed(2)}% vs previous
+                  </span>
+                ) : (
+                  <span className="text-[11px] font-medium text-gray-500">
+                    no previous ATS compare
+                  </span>
+                )}
+              </div>
+            </div>
 
-    case "time_mentioned_but_unresolved":
-      return "I can use that time window, but I need a metric first. Try: latency over 6 hours, errors last 30 minutes, or ATS over time.";
+            <div className="flex items-center gap-3 text-[10px] text-gray-500 shrink-0">
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-red-400/80" />
+                Infra
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-amber-400/80" />
+                Client
+              </span>
+            </div>
+          </div>
 
-    case "low_confidence_parse":
-      return "I’m not confident enough to run that yet. Add the metric you want, like latency, errors, traffic, or ATS.";
+          <div className="mt-2 relative h-2 w-full rounded-full bg-white/15 overflow-hidden">
+            <div
+              className="absolute left-0 top-0 h-full bg-red-400/80"
+              style={{ width: `${Math.max(0, Number(infraErrorPct || 0))}%` }}
+            />
+            <div
+              className="absolute top-0 h-full bg-amber-400/80"
+              style={{
+                left: `${Math.max(0, Number(infraErrorPct || 0))}%`,
+                width: `${Math.max(0, Number(clientErrorPct || 0))}%`,
+              }}
+            />
+          </div>
+        </div>
+      </div>
 
-    case "unsupported_or_ambiguous_request":
-    default:
-      return "That didn't look like a triage request. Ask about traffic, latency, errors, cache, or incidents — or click Run Triage with the current scope.";
-  }
-}
+            <div className="grid grid-cols-1 gap-4">
+              <RequestsErrorRateLines
+                points={ts.points}
+                bucketSeconds={bucketSeconds}
+                height={220}
+                windowMinutes={effectiveWindowMinutes}
+              />
+            </div>
+          </div>
+        ) : (
+          <div className="text-sm text-gray-400">Timeseries: 0 points (aggregate-only).</div>
+        )}
 
-function shouldBlockForClarification(args: {
-  parsed: {
-    clarificationRequired: boolean;
-    clarificationReason: string | null;
-    metric: string | null;
-  };
-  latestTriageRun: ChatTriage["run"] | null;
-}) {
-  const { parsed, latestTriageRun } = args;
+        <details className="rounded-2xl border border-white/10 bg-black/20 p-3 group">
+          <summary className="cursor-pointer text-sm font-semibold text-gray-200 select-none">
+            Evidence
+          </summary>
+          <div className="mt-4 space-y-4">
+            {agents?.length ? <SwarmAgentCards agents={agents} /> : null}
 
-  if (!parsed.clarificationRequired) return false;
+            <div className="text-xs text-gray-300 grid grid-cols-2 gap-x-6 gap-y-1.5">
+              <div>
+                <span className="text-gray-400">Actual window:</span>{" "}
+                {ts?.startTs && ts?.endTs
+                  ? `${formatUtcYmdHm(ts.startTs)} → ${formatUtcYmdHm(ts.endTs)} UTC`
+                  : "n/a"}
+              </div>
+              <div>
+                <span className="text-gray-400">Bucket:</span> {bucketLabel(bucketSeconds)}
+              </div>
+              <div>
+                <span className="text-gray-400">Runner:</span> {runnerVersion}
+              </div>
+              <div>
+                <span className="text-gray-400">Table:</span> {tableUsed}
+              </div>
+              <div>
+                <span className="text-gray-400">Anchor:</span> {anchorMode}
+              </div>
+              <div>
+                <span className="text-gray-400">Debug bucket:</span>{" "}
+                {debugBucketSeconds != null ? `${debugBucketSeconds}s` : "n/a"}
+              </div>
+              {assessment?.metadata?.compareStartTs && assessment?.metadata?.compareEndTs && (
+                <div className="col-span-2">
+                  <span className="text-gray-400">Compare window:</span>{" "}
+                  {formatUtcYmdHm(assessment.metadata.compareStartTs)} →{" "}
+                  {formatUtcYmdHm(assessment.metadata.compareEndTs)} UTC
+                </div>
+              )}
+            </div>
 
-  // Allow metric-less inherited followups only later if you explicitly want them.
-  // For now, block all clarification-required asks at page level.
-  return true;
-}
+            <details className="rounded-xl border border-white/10 bg-black/20 p-3">
+              <summary className="cursor-pointer text-sm text-gray-200 select-none">
+                Inputs
+              </summary>
+              <pre className="mt-3 whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                {JSON.stringify(run.inputs, null, 2)}
+              </pre>
+            </details>
 
-// ── Home ───────────────────────────────────────────────────────────────────
-export default function Home() {
-  const [mounted, setMounted] = useState(false);
+            {run.chatContext && (
+              <details className="rounded-xl border border-white/10 bg-black/20 p-3">
+                <summary className="cursor-pointer text-sm text-gray-200 select-none">
+                  Chat parse context
+                </summary>
+                <pre className="mt-3 whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                  {JSON.stringify(run.chatContext, null, 2)}
+                </pre>
+              </details>
+            )}
 
-  const [partner, setPartner] = useState<PartnerOrMissing>("");
-  function setPartnerSticky(p: string) {
-    const v = String(p || "").trim();
-    if (!v) {
-      setPartner("");
-      safeDelLS(PARTNER_KEY);
-      return;
-    }
-    if ((PARTNER_OPTIONS as readonly string[]).includes(v)) {
-      setPartner(v as Partner);
-      safeSetLS(PARTNER_KEY, v);
-    }
-  }
+            {run.swarm && (
+              <details className="rounded-xl border border-white/10 bg-black/20 p-3">
+                <summary className="cursor-pointer text-sm text-gray-200 select-none">
+                  Swarm payload
+                </summary>
+                <pre className="mt-3 whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                  {JSON.stringify(run.swarm, null, 2)}
+                </pre>
+              </details>
+            )}
+          </div>
+        </details>
 
-  const [isTriageLoading, setIsTriageLoading] = useState(false);
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const [filtersDirty, setFiltersDirty] = useState(false);
+        {run.sql?.queries?.length ? (
+          <details className="rounded-2xl border border-white/10 bg-black/20 p-3">
+            <summary className="cursor-pointer text-sm font-semibold text-gray-200 select-none">
+              SQL Evidence
+            </summary>
+            <div className="mt-4 space-y-3">
+              {run.sql.queries.map((query, idx) => (
+                <div key={idx}>
+                  <div className="text-xs text-gray-400 mb-1">Query {idx + 1}</div>
+                  <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                    {query}
+                  </pre>
+                </div>
+              ))}
+              {run.sql.params && (
+                <div>
+                  <div className="text-xs text-gray-400 mb-1">Params</div>
+                  <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                    {JSON.stringify(run.sql.params, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </details>
+        ) : null}
 
-  const [schemaState, setSchemaState] = useState<SchemaState>({
-    partners: [...CANON.partners],
-    services: [...CANON.services],
-    regions: [...CANON.regions],
-    pops: [...CANON.pops],
-    contentTypes: ["all", ...CANON.contentTypes],
-    uaFamilies: ["all", ...CANON.uaFamilies],
-  });
-
-  const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
-  const chatScrollRef = useRef<HTMLDivElement | null>(null);
-  const lastMsgIdRef = useRef<string | null>(null);
-  const lastSuggestedScopeKeyRef = useRef<string | null>(null);
-  const [typing, setTyping] = useState(false);
-  const [dismissedSuggestionScopeKey, setDismissedSuggestionScopeKey] = useState<string | null>(null);
-
-  const [pendingChatScope, setPendingChatScope] = useState<{
-    partner: PartnerOrMissing;
-    service: string;
-  }>({
-    partner: "",
-    service: "",
-  });
-
-  const [debugOpen, setDebugOpen] = useState(false);
-  const [runLog, setRunLog] = useState<Array<{ ts: string; text: string }>>([]);
-
-  const [service, setService] = useState<string>("");
-  const [region, setRegion] = useState<string>("all");
-  const [pop, setPop] = useState<string>("all");
-  const [windowMinutes, setWindowMinutes] = useState<number>(120);
-  const [contentType, setContentType] = useState<string>("all");
-  const [uaFamily, setUaFamily] = useState<string>("all");
-  const [timeMode, setTimeMode] = useState<TimeMode>("relative");
-  const [startTsUtc, setStartTsUtc] = useState<string | null>(null);
-  const [endTsUtc, setEndTsUtc] = useState<string | null>(null);
-
-  const serviceRef = useRef(service);
-  useEffect(() => {
-    serviceRef.current = service;
-  }, [service]);
-
-  function setServiceSticky(s: string) {
-    const v = String(s || "").trim();
-    if (!v) {
-      setService("");
-      safeDelLS(SERVICE_KEY);
-      return;
-    }
-    if ((SERVICE_OPTIONS as readonly string[]).includes(v)) {
-      setService(v);
-      safeSetLS(SERVICE_KEY, v);
-    }
-  }
-
-  const [draftService, setDraftService] = useState<string>("");
-  const [draftRegion, setDraftRegion] = useState<string>("all");
-  const [draftPop, setDraftPop] = useState<string>("all");
-  const [draftWindowMinutes, setDraftWindowMinutes] = useState<number>(120);
-  const [draftContentType, setDraftContentType] = useState<string>("all");
-  const [draftUaFamily, setDraftUaFamily] = useState<string>("all");
-  const [draftTimeMode, setDraftTimeMode] = useState<TimeMode>("relative");
-  const [draftStartUtcLocal, setDraftStartUtcLocal] = useState<string>("");
-  const [draftEndUtcLocal, setDraftEndUtcLocal] = useState<string>("");
-
-  useEffect(() => setMounted(true), []);
-
-  function loadFiltersEnvelope() {
-    const raw = safeGetLS(FILTERS_KEY);
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      return {
-        expiresAt: Number(parsed?.expiresAt ?? 0),
-        value: parsed?.value ?? null,
-      };
-    } catch {
-      safeDelLS(FILTERS_KEY);
-      return null;
-    }
-  }
-
-  function loadFiltersFromTTL() {
-    const env = loadFiltersEnvelope();
-    if (!env) return null;
-    if (!Number.isFinite(env.expiresAt) || env.expiresAt <= Date.now()) {
-      safeDelLS(FILTERS_KEY);
-      return null;
-    }
-    return env.value ?? null;
-  }
-
-  function saveFiltersToTTL(next: {
-    region: string;
-    pop: string;
-    windowMinutes: number;
-    contentType: string;
-    uaFamily: string;
-    timeMode: TimeMode;
-    startTsUtc: string | null;
-    endTsUtc: string | null;
-  }) {
-    safeSetLS(
-      FILTERS_KEY,
-      JSON.stringify({
-        expiresAt: Date.now() + FILTERS_TTL_MS,
-        value: next,
-      })
+        <style jsx>{`
+          .triage-enter {
+            animation: triageIn 220ms ease-out;
+          }
+          @keyframes triageIn {
+            from {
+              opacity: 0;
+              transform: translateY(6px);
+            }
+            to {
+              opacity: 1;
+              transform: translateY(0);
+            }
+          }
+        `}</style>
+      </div>
     );
   }
 
-  function pushRunLog(text: string) {
-    setRunLog((prev) => [...prev.slice(-80), { ts: nowIso(), text }]);
+  function drillDimensionLabel(row: any): string {
+    return (
+      row?.region ||
+      row?.pop ||
+      row?.host ||
+      row?.uaFamily ||
+      row?.contentType ||
+      row?.dimension ||
+      "n/a"
+    );
   }
 
-  function addText(role: ChatText["role"], text: string) {
-    const id = `${Date.now()}-${Math.random()}`;
-    setChatMessages((prev) => [...prev, { id, type: "text", role, ts: nowIso(), text }]);
-    return id;
-  }
-
-  function addTriageCard(run: ChatTriage["run"]) {
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: `${Date.now()}-${Math.random()}`,
-        type: "triage",
-        role: "assistant",
-        ts: nowIso(),
-        run,
-      },
-    ]);
-  }
-
-  function addExplorationCard(
-    data: Omit<ChatExploration, "type">
-  ) {
-    setChatMessages((prev) => [
-      ...prev,
-      { type: "exploration", ...data },
-    ]);
-  }
-
-  function addDrillCard(payload: { drill: any; summaryText: string }) {
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: `${Date.now()}-${Math.random()}`,
-        type: "drill",
-        role: "assistant",
-        ts: nowIso(),
-        drill: payload.drill,
-        summaryText: payload.summaryText,
-      },
-    ]);
-  }
-
-  function addExplainCard(payload: {
-    summary: string;
-    overallState?: string;
-    primarySignal?: string;
-  }) {
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: `${Date.now()}-${Math.random()}`,
-        type: "explain",
-        role: "assistant",
-        ts: nowIso(),
-        summary: payload.summary,
-        overallState: payload.overallState,
-        primarySignal: payload.primarySignal,
-      },
-    ]);
-  }
-
-   function addCompareCard(payload: {
-    summary: string;
-    overallState?: string;
-    primarySignal?: string;
-    compareMetrics?: {
-      cache?: {
-        current: number | null;
-        previous: number | null;
-        delta: number | null;
-      };
-      errors?: {
-        current: number | null;
-        previous: number | null;
-        delta: number | null;
-      };
-      latency?: {
-        current: number | null;
-        previous: number | null;
-        delta: number | null;
-      };
-      traffic?: {
-        current: number | null;
-        previous: number | null;
-        delta: number | null;
-      };
-    };
-    compareGraph?: {
-      metricType: "cache" | "latency" | "errors" | "traffic";
-      currentSeries: Array<{ ts: string; value: number | null }>;
-      previousSeries: Array<{ ts: string; value: number | null }>;
-      currentSeriesP99?: Array<{ ts: string; value: number | null }>;
-      previousSeriesP99?: Array<{ ts: string; value: number | null }>;
-    };
-  }) {
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: `${Date.now()}-${Math.random()}`,
-        type: "compare",
-        role: "assistant",
-        ts: nowIso(),
-        summary: payload.summary,
-        overallState: payload.overallState,
-        primarySignal: payload.primarySignal,
-        compareMetrics: payload.compareMetrics,
-        compareGraph: payload.compareGraph,
-      },
-    ]);
-  }
-  
-
-  function addStatusBreakdownCard(
-    payload: ChatStatusBreakdown["breakdown"]
-  ) {
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: `${Date.now()}-${Math.random()}`,
-        type: "status_breakdown",
-        role: "assistant",
-        ts: nowIso(),
-        breakdown: payload,
-      },
-    ]);
-  }
-
-
-  function handleResetInvestigation() {
-    setChatMessages([]);
-    setChatInput("");
-    setTyping(false);
-    setPendingChatScope({
-      partner: "",
-      service: "",
-    });
-
-    setDismissedSuggestionScopeKey(null);
-    lastSuggestionTriageMsgIdRef.current = null;
-    lastSuggestedScopeKeyRef.current = null;
-
-    pushRunLog("Investigation reset by user.");
-  }
-
-  function resetAllFilters() {
-    safeDelLS(FILTERS_KEY);
-    safeDelLS(PARTNER_KEY);
-    safeDelLS(SERVICE_KEY);
-    setPartner("");
-    setService("");
-    setRegion("all");
-    setPop("all");
-    setWindowMinutes(120);
-    setContentType("all");
-    setUaFamily("all");
-    setTimeMode("relative");
-    setStartTsUtc(null);
-    setEndTsUtc(null);
-    setDraftService("");
-    setDraftRegion("all");
-    setDraftPop("all");
-    setDraftWindowMinutes(120);
-    setDraftContentType("all");
-    setDraftUaFamily("all");
-    setDraftTimeMode("relative");
-    setDraftStartUtcLocal("");
-    setDraftEndUtcLocal("");
-    setFiltersDirty(false);
-    setPendingChatScope({
-      partner: "",
-      service: "",
-    });
-    pushRunLog("Reset: cleared saved filters + partner + service");
-  }
-
-  useEffect(() => {
-    if (!mounted) return;
-
-    const savedPartner = safeGetLS(PARTNER_KEY);
-    if (savedPartner && (PARTNER_OPTIONS as readonly string[]).includes(savedPartner)) {
-      setPartner(savedPartner as Partner);
+  function drillDimensionHeader(drill: any): string {
+    switch (drill?.type) {
+      case "worst_region":
+        return "Region";
+      case "worst_pop":
+        return "POP";
+      case "worst_host":
+        return "Host";
+      case "worst_ua":
+        return "UA Family";
+      case "worst_content":
+        return "Content Type";
+      default:
+        return "Dimension";
     }
+  }
 
-    const savedService = safeGetLS(SERVICE_KEY);
-    if (savedService && (SERVICE_OPTIONS as readonly string[]).includes(savedService)) {
-      setService(savedService);
-      setDraftService(savedService);
-    }
 
-    const ttl = loadFiltersFromTTL();
-    if (ttl) {
-      const r = String(ttl.region || "all").trim() || "all";
-      const pp = String(ttl.pop || "all").trim() || "all";
-      const w = Number(ttl.windowMinutes ?? 120);
-      const ct = String(ttl.contentType || "all").trim() || "all";
-      const ua = String(ttl.uaFamily || "all").trim() || "all";
+  function DrillCard({
+    drill,
+    summaryText,
+  }: {
+    drill: any;
+    summaryText: string;
+  }) {
+    const hasRows = Array.isArray(drill?.rows) && drill.rows.length > 0;
+    const topRow = hasRows ? drill.rows[0] : null;
 
-      setRegion(r);
-      setDraftRegion(r);
-      setPop(pp);
-      setDraftPop(pp);
+      const drillTs =
+      drill?.timeseries &&
+      Array.isArray(drill.timeseries.points) &&
+      drill.timeseries.points.length > 0
+        ? {
+            bucketSeconds:
+              drill.timeseries.bucketSeconds == null
+                ? null
+                : Number(drill.timeseries.bucketSeconds),
+            startTs: drill.timeseries.startTs ? String(drill.timeseries.startTs) : null,
+            endTs: drill.timeseries.endTs ? String(drill.timeseries.endTs) : null,
+            points: drill.timeseries.points.map((p: any) => ({
+              ts: normalizeTsKey(p.ts),
+              totalRequests: Number(p.totalRequests || 0),
+              error5xxCount: Number(p.error5xxCount || 0),
+              errorRatePct: Number(p.errorRatePct || 0),
+              p95TtmsMs: p.p95TtmsMs == null ? null : Number(p.p95TtmsMs),
+              p99TtmsMs: p.p99TtmsMs == null ? null : Number(p.p99TtmsMs),
+              cacheHitRate: p.cacheHitRate == null ? null : Number(p.cacheHitRate),
+              crcErrorCount: Number(p.crcErrorCount || 0),
+              statusCountsByCode: p.statusCountsByCode || undefined,
+            })),
+            statusCodeSeries: undefined,
+            hostSeries: [],
+            crcSeries: [],
+          }
+        : null;
 
-      if (Number.isFinite(w) && w > 0) {
-        setWindowMinutes(w);
-        setDraftWindowMinutes(w);
+    const drillWindowMinutes =
+      drillTs?.startTs && drillTs?.endTs
+        ? windowMinutesFromRange(drillTs.startTs, drillTs.endTs, 60)
+        : 60;
+
+    const topCachePct =
+      topRow?.cacheHitPct == null && topRow?.cacheHitRate == null
+        ? null
+        : Number(
+            topRow?.cacheHitPct != null ? topRow.cacheHitPct : topRow.cacheHitRate
+          ) <= 1
+        ? Number(
+            topRow?.cacheHitPct != null ? topRow.cacheHitPct : topRow.cacheHitRate
+          ) * 100
+        : Number(
+            topRow?.cacheHitPct != null ? topRow.cacheHitPct : topRow.cacheHitRate
+          );
+
+    return (
+        <div className="triage-enter rounded-2xl border border-white/12 bg-[#10151c] backdrop-blur p-4 shadow-xl shadow-black/20 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs text-gray-400">Drill result</div>
+            <div className="text-sm font-semibold text-gray-100 truncate">
+              {drill?.title || "Drill"}
+            </div>
+          </div>
+          <div className="flex flex-wrap justify-end gap-1.5 shrink-0">
+            <span className="text-[11px] px-2 py-1 rounded-full border border-blue-400/30 bg-blue-400/10 text-blue-200">
+              drill
+            </span>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+          <div className="text-xs text-gray-400 mb-2">Summary</div>
+          <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">
+            {drill?.summary || summaryText || ""}
+          </pre>
+        </div>
+
+        {hasRows ? (
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-semibold text-gray-200">Top results</div>
+              <div className="text-[11px] text-gray-500">
+                {drill.rows.length} row{drill.rows.length === 1 ? "" : "s"}
+              </div>
+            </div>
+
+
+        {topRow ? (
+          <>
+            <div className="mt-4 rounded-xl border border-blue-400/20 bg-blue-400/[0.06] p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] text-blue-200/80">Top candidate</div>
+                  <div className="text-sm font-semibold text-gray-100">
+                    {drillDimensionLabel(topRow)}
+                  </div>
+                </div>
+                <div className="shrink-0 text-[11px] text-blue-100/80">
+                  {drill?.type === "worst_region"
+                    ? "worst region"
+                    : drill?.type === "worst_pop"
+                    ? "worst pop"
+                    : drill?.type === "worst_ua"
+                    ? "worst ua"
+                    : drill?.type === "worst_content"
+                    ? "worst content"
+                    : "top result"}
+                </div>
+              </div>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <span className="text-[11px] px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
+                  <span className="text-gray-400 mr-1">requests</span>
+                  <span className="font-semibold">{formatIntOrNA(topRow?.totalRequests)}</span>
+                </span>
+
+                <span className="text-[11px] px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
+                  <span className="text-gray-400 mr-1">5xx%</span>
+                  <span className="font-semibold">{formatPctOrNA(topRow?.errorRatePct)}</span>
+                </span>
+
+                <span className="text-[11px] px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
+                  <span className="text-gray-400 mr-1">p95</span>
+                  <span className="font-semibold">{formatMsOrNA(topRow?.p95TtmsMs)}</span>
+                </span>
+
+                <span className="text-[11px] px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
+                  <span className="text-gray-400 mr-1">cache</span>
+                  <span className="font-semibold">{formatPctOrNA(topCachePct)}</span>
+                </span>
+              </div>
+            </div>
+
+            {drillTs && drillTs.points.length > 0 ? (
+              <div className="mt-4 space-y-4">
+                <div className="text-[11px] text-gray-400">
+                  Over time for {drill?.timeseries?.selectedValue || drillDimensionLabel(topRow)}
+                </div>
+
+                <div className="grid grid-cols-1 gap-4">
+                  <LatencyTimeseriesLines
+                    points={drillTs.points}
+                    bucketSeconds={drillTs.bucketSeconds}
+                    height={220}
+                    windowMinutes={drillWindowMinutes}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 gap-4">
+                  <RequestsErrorRateLines
+                    points={drillTs.points}
+                    bucketSeconds={drillTs.bucketSeconds}
+                    height={220}
+                    windowMinutes={drillWindowMinutes}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {hasRows && drill.rows.length > 1 ? (
+              <div className="mt-4 rounded-xl border border-white/10 bg-black/30 p-3">
+                <div className="text-[11px] text-gray-400 mb-3">
+                  Distribution (top {Math.min(8, drill.rows.length)})
+                </div>
+
+                <div className="space-y-2">
+                  {(() => {
+                    const graphRows = drill.rows.slice(0, 8);
+
+                    const values = graphRows.map((row: any) => {
+                      const err = Number(row?.errorRatePct ?? 0);
+                      const p95 = Number(row?.p95TtmsMs ?? 0);
+                      return err > 0 ? err : p95;
+                    });
+
+                    const maxValue = Math.max(1, ...values);
+
+                    return graphRows.map((row: any, idx: number) => {
+                      const label = drillDimensionLabel(row);
+                      const err = Number(row?.errorRatePct ?? 0);
+                      const p95 = Number(row?.p95TtmsMs ?? 0);
+                      const displayValue = err > 0 ? formatPctOrNA(err) : formatMsOrNA(p95);
+                      const rawValue = err > 0 ? err : p95;
+                      const widthPct = Math.max(6, (rawValue / maxValue) * 100);
+
+                      return (
+                        <div key={`${label}-${idx}`} className="flex items-center gap-3">
+                          <div className="w-24 shrink-0 truncate text-[11px] text-gray-300">
+                            {label}
+                          </div>
+
+                          <div className="flex-1 h-2.5 rounded-full bg-white/10 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${
+                                idx === 0 ? "bg-blue-400" : "bg-gray-400/70"
+                              }`}
+                              style={{ width: `${widthPct}%` }}
+                            />
+                          </div>
+
+                          <div className="w-16 shrink-0 text-right text-[11px] text-gray-400">
+                            {displayValue}
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+
+            <div className="mt-4 overflow-x-auto rounded-xl border border-white/10 bg-black/30">
+              <table className="min-w-full text-left text-xs text-gray-200">
+                <thead className="border-b border-white/10 bg-white/[0.03] text-gray-400">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">#</th>
+                    <th className="px-4 py-3 font-medium">
+                      {drillDimensionHeader(drill)}
+                    </th>
+                    <th className="px-4 py-3 font-medium">Requests</th>
+                    <th className="px-4 py-3 font-medium">5xx</th>
+                    <th className="px-4 py-3 font-medium">5xx %</th>
+                    <th className="px-4 py-3 font-medium">P95</th>
+                    <th className="px-4 py-3 font-medium">Cache</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {drill.rows.map((row: any, idx: number) => {
+                    const cachePct =
+                      row?.cacheHitPct == null && row?.cacheHitRate == null
+                        ? null
+                        : Number(
+                            row?.cacheHitPct != null ? row.cacheHitPct : row.cacheHitRate
+                          ) <= 1
+                        ? Number(
+                            row?.cacheHitPct != null ? row.cacheHitPct : row.cacheHitRate
+                          ) * 100
+                        : Number(
+                            row?.cacheHitPct != null ? row.cacheHitPct : row.cacheHitRate
+                          );
+
+                    return (
+                      <tr
+                        key={`${drillDimensionLabel(row)}-${idx}`}
+                        className={`border-b border-white/5 last:border-b-0 hover:bg-white/[0.03] ${
+                          idx === 0 ? "bg-blue-400/[0.03]" : ""
+                        }`}
+                      >
+                        <td className="px-4 py-3 text-gray-400 font-medium">
+                          {idx + 1}
+                        </td>
+                        <td className="px-4 py-3 font-medium text-gray-100">
+                          {drillDimensionLabel(row)}
+                        </td>
+                        <td className="px-4 py-3 text-gray-300">
+                          {formatIntOrNA(row?.totalRequests)}
+                        </td>
+                        <td className="px-4 py-3 text-gray-300">
+                          {formatIntOrNA(row?.error5xxCount)}
+                        </td>
+                        <td className="px-4 py-3 text-gray-300">
+                          {formatPctOrNA(row?.errorRatePct)}
+                        </td>
+                        <td className="px-4 py-3 text-gray-300">
+                          {formatMsOrNA(row?.p95TtmsMs)}
+                        </td>
+                        <td className="px-4 py-3 text-gray-300">
+                          {formatPctOrNA(cachePct)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
+
+        {drill?.sql?.queries?.length ? (
+          <details className="rounded-2xl border border-white/10 bg-black/20 p-3">
+            <summary className="cursor-pointer text-sm font-semibold text-gray-200 select-none">
+              SQL Evidence
+            </summary>
+            <div className="mt-4 space-y-3">
+              {drill.sql.queries.map((query: string, idx: number) => (
+                <div key={idx}>
+                  <div className="text-xs text-gray-400 mb-1">Query {idx + 1}</div>
+                  <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                    {query}
+                  </pre>
+                </div>
+              ))}
+              {drill.sql.params && (
+                <div>
+                  <div className="text-xs text-gray-400 mb-1">Params</div>
+                  <pre className="whitespace-pre-wrap text-xs text-gray-200/90 rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                    {JSON.stringify(drill.sql.params, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </details>
+        ) : null}
+      </div>
+    );
+  }
+
+  function buildCompareGraphFromMetricsJson(args: {
+    metricsJson: any;
+    primarySignal?: string | null;
+  }) {
+    const metricType =
+      args.primarySignal === "cache" ||
+      args.primarySignal === "latency" ||
+      args.primarySignal === "errors" ||
+      args.primarySignal === "traffic"
+        ? args.primarySignal
+        : null;
+
+    if (!metricType) return null;
+
+    const currentPoints = Array.isArray(args.metricsJson?.timeseries?.points)
+      ? args.metricsJson.timeseries.points
+      : [];
+
+    const previousPoints = Array.isArray(
+      args.metricsJson?.previousWindow?.timeseries?.points
+    )
+      ? args.metricsJson.previousWindow.timeseries.points
+      : [];
+
+    if (!currentPoints.length && !previousPoints.length) return null;
+
+    function toSeriesValue(
+      point: any,
+      type: "cache" | "latency" | "errors" | "traffic"
+    ) {
+      if (type === "cache") {
+        return point?.cacheHitRate == null ? null : Number(point.cacheHitRate);
       }
+      if (type === "latency") {
+        return point?.p95TtmsMs == null ? null : Number(point.p95TtmsMs);
+      }
+      if (type === "errors") {
+        return point?.errorRatePct == null ? null : Number(point.errorRatePct);
+      }
+      if (type === "traffic") {
+        return point?.totalRequests == null ? null : Number(point.totalRequests);
+      }
+      return null;
+    }
 
-      setContentType(ct);
-      setDraftContentType(ct);
-      setUaFamily(ua);
-      setDraftUaFamily(ua);
+    function toLatencyP99Value(point: any) {
+      return point?.p99TtmsMs == null ? null : Number(point.p99TtmsMs);
+    }
 
-      const tm: TimeMode = ttl.timeMode === "absolute" ? "absolute" : "relative";
-      setTimeMode(tm);
-      setDraftTimeMode(tm);
+    const currentSeries = currentPoints
+      .map((point: any) => ({
+        ts: normalizeTsKey(point?.ts),
+        value: toSeriesValue(point, metricType),
+      }))
+      .filter((point: { ts: string; value: number | null }) => point.ts);
 
-      const sIso = ttl.startTsUtc ? String(ttl.startTsUtc) : null;
-      const eIso = ttl.endTsUtc ? String(ttl.endTsUtc) : null;
-      setStartTsUtc(sIso);
-      setEndTsUtc(eIso);
-      setDraftStartUtcLocal(isoToDatetimeLocalUtc(sIso));
-      setDraftEndUtcLocal(isoToDatetimeLocalUtc(eIso));
+    const previousSeries = previousPoints
+      .map((point: any) => ({
+        ts: normalizeTsKey(point?.ts),
+        value: toSeriesValue(point, metricType),
+      }))
+      .filter((point: { ts: string; value: number | null }) => point.ts);
 
-      pushRunLog("Loaded non-sticky filters from TTL (10m).");
-    } else {
+    const currentSeriesP99 =
+      metricType === "latency"
+        ? currentPoints
+            .map((point: any) => ({
+              ts: normalizeTsKey(point?.ts),
+              value: toLatencyP99Value(point),
+            }))
+            .filter((point: { ts: string; value: number | null }) => point.ts)
+        : [];
+
+    const previousSeriesP99 =
+      metricType === "latency"
+        ? previousPoints
+            .map((point: any) => ({
+              ts: normalizeTsKey(point?.ts),
+              value: toLatencyP99Value(point),
+            }))
+            .filter((point: { ts: string; value: number | null }) => point.ts)
+        : [];
+
+    if (
+      !currentSeries.length &&
+      !previousSeries.length &&
+      !currentSeriesP99.length &&
+      !previousSeriesP99.length
+    ) {
+      return null;
+    }
+
+    return {
+      metricType,
+      currentSeries,
+      previousSeries,
+      currentSeriesP99: metricType === "latency" ? currentSeriesP99 : undefined,
+      previousSeriesP99: metricType === "latency" ? previousSeriesP99 : undefined,
+    };
+  }
+
+  function buildCompareGraphFromTwoRuns(args: {
+    currentMetricsJson: any;
+    previousMetricsJson: any;
+    primarySignal?: string | null;
+  }) {
+    const metricType =
+      args.primarySignal === "cache" ||
+      args.primarySignal === "latency" ||
+      args.primarySignal === "errors" ||
+      args.primarySignal === "traffic"
+        ? args.primarySignal
+        : null;
+
+    if (!metricType) return null;
+
+    const currentPoints = Array.isArray(args.currentMetricsJson?.timeseries?.points)
+      ? args.currentMetricsJson.timeseries.points
+      : [];
+
+    const previousPoints = Array.isArray(args.previousMetricsJson?.timeseries?.points)
+      ? args.previousMetricsJson.timeseries.points
+      : [];
+
+    if (!currentPoints.length && !previousPoints.length) return null;
+
+    function toSeriesValue(
+      point: any,
+      type: "cache" | "latency" | "errors" | "traffic"
+    ) {
+      if (type === "cache") {
+        return point?.cacheHitRate == null ? null : Number(point.cacheHitRate);
+      }
+      if (type === "latency") {
+        return point?.p95TtmsMs == null ? null : Number(point.p95TtmsMs);
+      }
+      if (type === "errors") {
+        return point?.errorRatePct == null ? null : Number(point.errorRatePct);
+      }
+      if (type === "traffic") {
+        return point?.totalRequests == null ? null : Number(point.totalRequests);
+      }
+      return null;
+    }
+
+    function toLatencyP99Value(point: any) {
+      return point?.p99TtmsMs == null ? null : Number(point.p99TtmsMs);
+    }
+
+    const currentSeries = currentPoints
+      .map((point: any) => ({
+        ts: normalizeTsKey(point?.ts),
+        value: toSeriesValue(point, metricType),
+      }))
+      .filter((point: { ts: string; value: number | null }) => point.ts);
+
+    const previousSeries = previousPoints
+      .map((point: any) => ({
+        ts: normalizeTsKey(point?.ts),
+        value: toSeriesValue(point, metricType),
+      }))
+      .filter((point: { ts: string; value: number | null }) => point.ts);
+
+    const currentSeriesP99 =
+      metricType === "latency"
+        ? currentPoints
+            .map((point: any) => ({
+              ts: normalizeTsKey(point?.ts),
+              value: toLatencyP99Value(point),
+            }))
+            .filter((point: { ts: string; value: number | null }) => point.ts)
+        : [];
+
+    const previousSeriesP99 =
+      metricType === "latency"
+        ? previousPoints
+            .map((point: any) => ({
+              ts: normalizeTsKey(point?.ts),
+              value: toLatencyP99Value(point),
+            }))
+            .filter((point: { ts: string; value: number | null }) => point.ts)
+        : [];
+
+    if (
+      !currentSeries.length &&
+      !previousSeries.length &&
+      !currentSeriesP99.length &&
+      !previousSeriesP99.length
+    ) {
+      return null;
+    }
+
+    return {
+      metricType,
+      currentSeries,
+      previousSeries,
+      currentSeriesP99: metricType === "latency" ? currentSeriesP99 : undefined,
+      previousSeriesP99: metricType === "latency" ? previousSeriesP99 : undefined,
+    };
+  }
+    
+
+  function StatusBreakdownCard({
+    breakdown,
+  }: {
+    breakdown: ChatStatusBreakdown["breakdown"];
+  }) {
+    const statusCodes = ["200", "206", "304", "403", "404", "429", "500", "502", "503", "504"];
+
+    function toStatusGraphInput(counts?: Record<string, number>) {
+      return Object.fromEntries(
+        statusCodes.map((code) => [`status_${code}`, Number(counts?.[code] ?? 0)])
+      );
+    }
+    const totalsEntries =
+      breakdown.totals
+        ? statusCodes
+            .map((code) => ({
+              code,
+              count: Number(breakdown.totals?.[code] ?? 0),
+            }))
+        : [];
+
+    return (
+      <div className="triage-enter rounded-2xl border border-white/12 bg-[#10151c] backdrop-blur p-4 shadow-xl shadow-black/20 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs text-gray-400">Status breakdown</div>
+            <div className="text-sm font-semibold text-gray-100 truncate">
+              {breakdown.title}
+            </div>
+          </div>
+          <div className="flex flex-wrap justify-end gap-1.5 shrink-0">
+            <span className="text-[11px] px-2 py-1 rounded-full border border-cyan-400/30 bg-cyan-400/10 text-cyan-200">
+              status
+            </span>
+            <span className="text-[11px] px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
+              {breakdown.mode}
+            </span>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+          <div className="text-xs text-gray-400 mb-2">Summary</div>
+          <div className="text-sm text-gray-100/90 leading-relaxed">
+            {breakdown.summary}
+          </div>
+        </div>
+
+        {breakdown.mode === "aggregate" && breakdown.totals ? (
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 space-y-4">
+            <div>
+              <div className="text-sm font-semibold text-gray-200 mb-3">Totals</div>
+              <div className="flex flex-wrap gap-2">
+                {totalsEntries.map(({ code, count }) => (
+                  <span
+                    key={code}
+                    className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200"
+                  >
+                    <span className="text-gray-400 mr-1">{code}</span>
+                    <span className="font-semibold">{count.toLocaleString()}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <StatusBarGraph status={toStatusGraphInput(breakdown.totals)} />
+          </div>
+        ) : null}
+
+        {Array.isArray(breakdown.rows) && breakdown.rows.length > 0 ? (
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-semibold text-gray-200">Top results</div>
+              <div className="text-[11px] text-gray-500">
+                {breakdown.rows.length} row{breakdown.rows.length === 1 ? "" : "s"}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              {breakdown.rows.map((row, idx) => (
+                <div
+                  key={`${row.label}-${idx}`}
+                  className="rounded-xl border border-white/10 bg-black/30 p-3 space-y-3"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs text-gray-400">
+                        {breakdown.mode === "pop"
+                          ? "POP"
+                          : breakdown.mode === "region"
+                          ? "Region"
+                          : breakdown.mode === "host"
+                          ? "Host"
+                          : "Dimension"}
+                      </div>
+                      <div className="text-sm font-semibold text-gray-100 truncate">
+                        {row.label}
+                      </div>
+                    </div>
+                    <div className="text-[11px] text-gray-400 shrink-0">
+                      req={formatIntOrNA(row.totalRequests)}
+                    </div>
+                  </div>
+
+                  <StatusBarGraph status={toStatusGraphInput(row.counts)} />
+
+                  <div className="flex flex-wrap gap-2">
+                    {statusCodes.map((code) => (
+                      <span
+                        key={code}
+                        className="text-[11px] px-2 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200"
+                      >
+                        <span className="text-gray-400 mr-1">{code}</span>
+                        <span className="font-semibold">
+                          {formatIntOrNA(row.counts?.[code] ?? 0)}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  function getClarificationMessage(parsed: {
+    clarificationReason: string | null;
+  }) {
+    switch (parsed.clarificationReason) {
+      case "compare_requires_metric":
+        return "I can compare, but I need a metric first. Try: compare latency, compare errors, or what changed in ATS.";
+
+      case "scope_mentioned_but_unresolved":
+        return "I can narrow scope, but I need a metric too. Try: traffic in us east, latency for mobile, or errors in pop 017.";
+
+      case "time_mentioned_but_unresolved":
+        return "I can use that time window, but I need a metric first. Try: latency over 6 hours, errors last 30 minutes, or ATS over time.";
+
+      case "low_confidence_parse":
+        return "I’m not confident enough to run that yet. Add the metric you want, like latency, errors, traffic, or ATS.";
+
+      case "unsupported_or_ambiguous_request":
+      default:
+        return "That didn't look like a triage request. Ask about traffic, latency, errors, cache, or incidents — or click Run Triage with the current scope.";
+    }
+  }
+
+  function shouldBlockForClarification(args: {
+    parsed: {
+      clarificationRequired: boolean;
+      clarificationReason: string | null;
+      metric: string | null;
+    };
+    latestTriageRun: ChatTriage["run"] | null;
+  }) {
+    const { parsed, latestTriageRun } = args;
+
+    if (!parsed.clarificationRequired) return false;
+
+    // Allow metric-less inherited followups only later if you explicitly want them.
+    // For now, block all clarification-required asks at page level.
+    return true;
+  }
+
+  // ── Home ───────────────────────────────────────────────────────────────────
+  export default function Home() {
+    const [mounted, setMounted] = useState(false);
+
+    const [partner, setPartner] = useState<PartnerOrMissing>("");
+    function setPartnerSticky(p: string) {
+      const v = String(p || "").trim();
+      if (!v) {
+        setPartner("");
+        safeDelLS(PARTNER_KEY);
+        return;
+      }
+      if ((PARTNER_OPTIONS as readonly string[]).includes(v)) {
+        setPartner(v as Partner);
+        safeSetLS(PARTNER_KEY, v);
+      }
+    }
+
+    const [isTriageLoading, setIsTriageLoading] = useState(false);
+    const [filtersOpen, setFiltersOpen] = useState(false);
+    const [filtersDirty, setFiltersDirty] = useState(false);
+
+    const [schemaState, setSchemaState] = useState<SchemaState>({
+      partners: [...CANON.partners],
+      services: [...CANON.services],
+      regions: [...CANON.regions],
+      pops: [...CANON.pops],
+      contentTypes: ["all", ...CANON.contentTypes],
+      uaFamilies: ["all", ...CANON.uaFamilies],
+    });
+
+    const [chatInput, setChatInput] = useState("");
+    const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+    const chatScrollRef = useRef<HTMLDivElement | null>(null);
+    const lastMsgIdRef = useRef<string | null>(null);
+    const lastSuggestedScopeKeyRef = useRef<string | null>(null);
+    const [typing, setTyping] = useState(false);
+    const [dismissedSuggestionScopeKey, setDismissedSuggestionScopeKey] = useState<string | null>(null);
+
+    const [pendingChatScope, setPendingChatScope] = useState<{
+      partner: PartnerOrMissing;
+      service: string;
+    }>({
+      partner: "",
+      service: "",
+    });
+
+    const [debugOpen, setDebugOpen] = useState(false);
+    const [runLog, setRunLog] = useState<Array<{ ts: string; text: string }>>([]);
+
+    const [service, setService] = useState<string>("");
+    const [region, setRegion] = useState<string>("all");
+    const [pop, setPop] = useState<string>("all");
+    const [windowMinutes, setWindowMinutes] = useState<number>(120);
+    const [contentType, setContentType] = useState<string>("all");
+    const [uaFamily, setUaFamily] = useState<string>("all");
+    const [timeMode, setTimeMode] = useState<TimeMode>("relative");
+    const [startTsUtc, setStartTsUtc] = useState<string | null>(null);
+    const [endTsUtc, setEndTsUtc] = useState<string | null>(null);
+
+    const serviceRef = useRef(service);
+    useEffect(() => {
+      serviceRef.current = service;
+    }, [service]);
+
+    function setServiceSticky(s: string) {
+      const v = String(s || "").trim();
+      if (!v) {
+        setService("");
+        safeDelLS(SERVICE_KEY);
+        return;
+      }
+      if ((SERVICE_OPTIONS as readonly string[]).includes(v)) {
+        setService(v);
+        safeSetLS(SERVICE_KEY, v);
+      }
+    }
+
+    const [draftService, setDraftService] = useState<string>("");
+    const [draftRegion, setDraftRegion] = useState<string>("all");
+    const [draftPop, setDraftPop] = useState<string>("all");
+    const [draftWindowMinutes, setDraftWindowMinutes] = useState<number>(120);
+    const [draftContentType, setDraftContentType] = useState<string>("all");
+    const [draftUaFamily, setDraftUaFamily] = useState<string>("all");
+    const [draftTimeMode, setDraftTimeMode] = useState<TimeMode>("relative");
+    const [draftStartUtcLocal, setDraftStartUtcLocal] = useState<string>("");
+    const [draftEndUtcLocal, setDraftEndUtcLocal] = useState<string>("");
+
+    useEffect(() => setMounted(true), []);
+
+    function loadFiltersEnvelope() {
+      const raw = safeGetLS(FILTERS_KEY);
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw);
+        return {
+          expiresAt: Number(parsed?.expiresAt ?? 0),
+          value: parsed?.value ?? null,
+        };
+      } catch {
+        safeDelLS(FILTERS_KEY);
+        return null;
+      }
+    }
+
+    function loadFiltersFromTTL() {
+      const env = loadFiltersEnvelope();
+      if (!env) return null;
+      if (!Number.isFinite(env.expiresAt) || env.expiresAt <= Date.now()) {
+        safeDelLS(FILTERS_KEY);
+        return null;
+      }
+      return env.value ?? null;
+    }
+
+    function saveFiltersToTTL(next: {
+      region: string;
+      pop: string;
+      windowMinutes: number;
+      contentType: string;
+      uaFamily: string;
+      timeMode: TimeMode;
+      startTsUtc: string | null;
+      endTsUtc: string | null;
+    }) {
+      safeSetLS(
+        FILTERS_KEY,
+        JSON.stringify({
+          expiresAt: Date.now() + FILTERS_TTL_MS,
+          value: next,
+        })
+      );
+    }
+
+    function pushRunLog(text: string) {
+      setRunLog((prev) => [...prev.slice(-80), { ts: nowIso(), text }]);
+    }
+
+    function addText(role: ChatText["role"], text: string) {
+      const id = `${Date.now()}-${Math.random()}`;
+      setChatMessages((prev) => [...prev, { id, type: "text", role, ts: nowIso(), text }]);
+      return id;
+    }
+
+    function addTriageCard(run: ChatTriage["run"]) {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random()}`,
+          type: "triage",
+          role: "assistant",
+          ts: nowIso(),
+          run,
+        },
+      ]);
+    }
+
+    function addExplorationCard(
+      data: Omit<ChatExploration, "type">
+    ) {
+      setChatMessages((prev) => [
+        ...prev,
+        { type: "exploration", ...data },
+      ]);
+    }
+
+    function addDrillCard(payload: { drill: any; summaryText: string }) {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random()}`,
+          type: "drill",
+          role: "assistant",
+          ts: nowIso(),
+          drill: payload.drill,
+          summaryText: payload.summaryText,
+        },
+      ]);
+    }
+
+    function addExplainCard(payload: {
+      summary: string;
+      overallState?: string;
+      primarySignal?: string;
+    }) {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random()}`,
+          type: "explain",
+          role: "assistant",
+          ts: nowIso(),
+          summary: payload.summary,
+          overallState: payload.overallState,
+          primarySignal: payload.primarySignal,
+        },
+      ]);
+    }
+
+    function addCompareCard(payload: {
+      summary: string;
+      overallState?: string;
+      primarySignal?: string;
+      compareMetrics?: {
+        cache?: {
+          current: number | null;
+          previous: number | null;
+          delta: number | null;
+        };
+        errors?: {
+          current: number | null;
+          previous: number | null;
+          delta: number | null;
+        };
+        latency?: {
+          current: number | null;
+          previous: number | null;
+          delta: number | null;
+        };
+        traffic?: {
+          current: number | null;
+          previous: number | null;
+          delta: number | null;
+        };
+      };
+      compareGraph?: {
+        metricType: "cache" | "latency" | "errors" | "traffic";
+        currentSeries: Array<{ ts: string; value: number | null }>;
+        previousSeries: Array<{ ts: string; value: number | null }>;
+        currentSeriesP99?: Array<{ ts: string; value: number | null }>;
+        previousSeriesP99?: Array<{ ts: string; value: number | null }>;
+      };
+    }) {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random()}`,
+          type: "compare",
+          role: "assistant",
+          ts: nowIso(),
+          summary: payload.summary,
+          overallState: payload.overallState,
+          primarySignal: payload.primarySignal,
+          compareMetrics: payload.compareMetrics,
+          compareGraph: payload.compareGraph,
+        },
+      ]);
+    }
+    
+
+    function addStatusBreakdownCard(
+      payload: ChatStatusBreakdown["breakdown"]
+    ) {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random()}`,
+          type: "status_breakdown",
+          role: "assistant",
+          ts: nowIso(),
+          breakdown: payload,
+        },
+      ]);
+    }
+
+
+    function handleResetInvestigation() {
+      setChatMessages([]);
+      setChatInput("");
+      setTyping(false);
+      setPendingChatScope({
+        partner: "",
+        service: "",
+      });
+
+      setDismissedSuggestionScopeKey(null);
+      lastSuggestionTriageMsgIdRef.current = null;
+      lastSuggestedScopeKeyRef.current = null;
+
+      pushRunLog("Investigation reset by user.");
+    }
+
+    function resetAllFilters() {
+      safeDelLS(FILTERS_KEY);
+      safeDelLS(PARTNER_KEY);
+      safeDelLS(SERVICE_KEY);
+      setPartner("");
+      setService("");
+      setRegion("all");
+      setPop("all");
+      setWindowMinutes(120);
+      setContentType("all");
+      setUaFamily("all");
+      setTimeMode("relative");
+      setStartTsUtc(null);
+      setEndTsUtc(null);
+      setDraftService("");
       setDraftRegion("all");
       setDraftPop("all");
       setDraftWindowMinutes(120);
@@ -5077,30 +5011,64 @@ export default function Home() {
       setDraftTimeMode("relative");
       setDraftStartUtcLocal("");
       setDraftEndUtcLocal("");
+      setFiltersDirty(false);
+      setPendingChatScope({
+        partner: "",
+        service: "",
+      });
+      pushRunLog("Reset: cleared saved filters + partner + service");
     }
-  }, [mounted]);
 
-  useEffect(() => {
-    if (!mounted) return;
+    useEffect(() => {
+      if (!mounted) return;
 
-    const tick = () => {
-      const raw = safeGetLS(FILTERS_KEY);
-      if (!raw) return;
-      try {
-        const parsed = JSON.parse(raw);
-        const expiresAt = Number(parsed?.expiresAt ?? 0);
-        if (!Number.isFinite(expiresAt) || expiresAt <= 0 || expiresAt > Date.now()) return;
+      const savedPartner = safeGetLS(PARTNER_KEY);
+      if (savedPartner && (PARTNER_OPTIONS as readonly string[]).includes(savedPartner)) {
+        setPartner(savedPartner as Partner);
+      }
 
-        safeDelLS(FILTERS_KEY);
-        setRegion("all");
-        setPop("all");
-        setWindowMinutes(120);
-        setContentType("all");
-        setUaFamily("all");
-        setTimeMode("relative");
-        setStartTsUtc(null);
-        setEndTsUtc(null);
-        setDraftService(serviceRef.current);
+      const savedService = safeGetLS(SERVICE_KEY);
+      if (savedService && (SERVICE_OPTIONS as readonly string[]).includes(savedService)) {
+        setService(savedService);
+        setDraftService(savedService);
+      }
+
+      const ttl = loadFiltersFromTTL();
+      if (ttl) {
+        const r = String(ttl.region || "all").trim() || "all";
+        const pp = String(ttl.pop || "all").trim() || "all";
+        const w = Number(ttl.windowMinutes ?? 120);
+        const ct = String(ttl.contentType || "all").trim() || "all";
+        const ua = String(ttl.uaFamily || "all").trim() || "all";
+
+        setRegion(r);
+        setDraftRegion(r);
+        setPop(pp);
+        setDraftPop(pp);
+
+        if (Number.isFinite(w) && w > 0) {
+          setWindowMinutes(w);
+          setDraftWindowMinutes(w);
+        }
+
+        setContentType(ct);
+        setDraftContentType(ct);
+        setUaFamily(ua);
+        setDraftUaFamily(ua);
+
+        const tm: TimeMode = ttl.timeMode === "absolute" ? "absolute" : "relative";
+        setTimeMode(tm);
+        setDraftTimeMode(tm);
+
+        const sIso = ttl.startTsUtc ? String(ttl.startTsUtc) : null;
+        const eIso = ttl.endTsUtc ? String(ttl.endTsUtc) : null;
+        setStartTsUtc(sIso);
+        setEndTsUtc(eIso);
+        setDraftStartUtcLocal(isoToDatetimeLocalUtc(sIso));
+        setDraftEndUtcLocal(isoToDatetimeLocalUtc(eIso));
+
+        pushRunLog("Loaded non-sticky filters from TTL (10m).");
+      } else {
         setDraftRegion("all");
         setDraftPop("all");
         setDraftWindowMinutes(120);
@@ -5109,24 +5077,68 @@ export default function Home() {
         setDraftTimeMode("relative");
         setDraftStartUtcLocal("");
         setDraftEndUtcLocal("");
-        setFiltersDirty(false);
+      }
+    }, [mounted]);
 
-        pushRunLog("TTL expired: reset non-sticky filters (kept partner + service).");
-      } catch {}
-    };
+    useEffect(() => {
+      if (!mounted) return;
 
-    tick();
-    const id = window.setInterval(tick, 15_000);
-    return () => window.clearInterval(id);
-  }, [mounted]);
+      const tick = () => {
+        const raw = safeGetLS(FILTERS_KEY);
+        if (!raw) return;
+        try {
+          const parsed = JSON.parse(raw);
+          const expiresAt = Number(parsed?.expiresAt ?? 0);
+          if (!Number.isFinite(expiresAt) || expiresAt <= 0 || expiresAt > Date.now()) return;
 
-  useEffect(() => {
-    if (!mounted) return;
-    if (!service) {
-      safeDelLS(FILTERS_KEY);
-      return;
-    }
-    saveFiltersToTTL({
+          safeDelLS(FILTERS_KEY);
+          setRegion("all");
+          setPop("all");
+          setWindowMinutes(120);
+          setContentType("all");
+          setUaFamily("all");
+          setTimeMode("relative");
+          setStartTsUtc(null);
+          setEndTsUtc(null);
+          setDraftService(serviceRef.current);
+          setDraftRegion("all");
+          setDraftPop("all");
+          setDraftWindowMinutes(120);
+          setDraftContentType("all");
+          setDraftUaFamily("all");
+          setDraftTimeMode("relative");
+          setDraftStartUtcLocal("");
+          setDraftEndUtcLocal("");
+          setFiltersDirty(false);
+
+          pushRunLog("TTL expired: reset non-sticky filters (kept partner + service).");
+        } catch {}
+      };
+
+      tick();
+      const id = window.setInterval(tick, 15_000);
+      return () => window.clearInterval(id);
+    }, [mounted]);
+
+    useEffect(() => {
+      if (!mounted) return;
+      if (!service) {
+        safeDelLS(FILTERS_KEY);
+        return;
+      }
+      saveFiltersToTTL({
+        region,
+        pop,
+        windowMinutes,
+        contentType,
+        uaFamily,
+        timeMode,
+        startTsUtc,
+        endTsUtc,
+      });
+    }, [
+      mounted,
+      service,
       region,
       pop,
       windowMinutes,
@@ -5135,907 +5147,908 @@ export default function Home() {
       timeMode,
       startTsUtc,
       endTsUtc,
-    });
-  }, [
-    mounted,
-    service,
-    region,
-    pop,
-    windowMinutes,
-    contentType,
-    uaFamily,
-    timeMode,
-    startTsUtc,
-    endTsUtc,
-  ]);
+    ]);
 
-  useEffect(() => {
-    if (!mounted) return;
-    (async () => {
-      try {
-        const resp = await fetch("/api/schema");
-        const json = await resp.json().catch(() => null);
-        if (!resp.ok || !json?.ok || !json?.schema) return;
+    useEffect(() => {
+      if (!mounted) return;
+      (async () => {
+        try {
+          const resp = await fetch("/api/schema");
+          const json = await resp.json().catch(() => null);
+          if (!resp.ok || !json?.ok || !json?.schema) return;
 
-        const s = json.schema as SchemaState;
-        const next: SchemaState = {
-          partners: Array.isArray(s.partners) ? s.partners.map(String) : [...CANON.partners],
-          services: Array.isArray(s.services) ? s.services.map(String) : [...CANON.services],
-          regions: Array.isArray(s.regions) ? s.regions.map(String) : [...CANON.regions],
-          pops: Array.isArray(s.pops) ? s.pops.map(String) : [...CANON.pops],
-          contentTypes: Array.isArray(s.contentTypes)
-            ? s.contentTypes.map(String)
-            : ["all", ...CANON.contentTypes],
-          uaFamilies: Array.isArray(s.uaFamilies)
-            ? s.uaFamilies.map(String)
-            : ["all", ...CANON.uaFamilies],
-        };
+          const s = json.schema as SchemaState;
+          const next: SchemaState = {
+            partners: Array.isArray(s.partners) ? s.partners.map(String) : [...CANON.partners],
+            services: Array.isArray(s.services) ? s.services.map(String) : [...CANON.services],
+            regions: Array.isArray(s.regions) ? s.regions.map(String) : [...CANON.regions],
+            pops: Array.isArray(s.pops) ? s.pops.map(String) : [...CANON.pops],
+            contentTypes: Array.isArray(s.contentTypes)
+              ? s.contentTypes.map(String)
+              : ["all", ...CANON.contentTypes],
+            uaFamilies: Array.isArray(s.uaFamilies)
+              ? s.uaFamilies.map(String)
+              : ["all", ...CANON.uaFamilies],
+          };
 
-        if (!next.contentTypes.includes("all")) next.contentTypes = ["all", ...next.contentTypes];
-        if (!next.uaFamilies.includes("all")) next.uaFamilies = ["all", ...next.uaFamilies];
+          if (!next.contentTypes.includes("all")) next.contentTypes = ["all", ...next.contentTypes];
+          if (!next.uaFamilies.includes("all")) next.uaFamilies = ["all", ...next.uaFamilies];
 
-        setSchemaState(next);
-      } catch {}
-    })();
-  }, [mounted]);
+          setSchemaState(next);
+        } catch {}
+      })();
+    }, [mounted]);
 
-  useEffect(() => {
-    const last = chatMessages[chatMessages.length - 1];
-    if (!last) return;
-    if (lastMsgIdRef.current !== last.id) {
-      lastMsgIdRef.current = last.id;
-      chatScrollRef.current?.scrollTo({
-        top: chatScrollRef.current.scrollHeight,
-        behavior: "smooth",
-      });
-    }
-  }, [chatMessages]);
-
-  const availableRegions = useMemo(() => {
-    const uniq = Array.from(
-      new Set(
-        (schemaState.regions || [])
-          .map((x) => String(x || "").trim())
-          .filter(Boolean)
-      )
-    ).sort((a, b) => a.localeCompare(b));
-    return ["all", ...uniq];
-  }, [schemaState.regions]);
-
-  const availablePops = useMemo(() => {
-    const uniq = Array.from(
-      new Set(
-        (schemaState.pops || [])
-          .map((x) => String(x || "").trim())
-          .filter(Boolean)
-      )
-    ).sort((a, b) => a.localeCompare(b));
-    return ["all", ...uniq];
-  }, [schemaState.pops]);
-
-  const availableContentTypes = useMemo(() => {
-    const uniq = Array.from(
-      new Set(
-        (schemaState.contentTypes || [])
-          .map((x) => String(x || "").trim())
-          .filter(Boolean)
-      )
-    ).sort((a, b) => a.localeCompare(b));
-    return uniq.includes("all") ? uniq : ["all", ...uniq];
-  }, [schemaState.contentTypes]);
-
-  const availableUaFamilies = useMemo(() => {
-    const uniq = Array.from(
-      new Set(
-        (schemaState.uaFamilies || [])
-          .map((x) => String(x || "").trim())
-          .filter(Boolean)
-      )
-    ).sort((a, b) => a.localeCompare(b));
-    return uniq.includes("all") ? uniq : ["all", ...uniq];
-  }, [schemaState.uaFamilies]);
-
-  const lastSuggestionTriageMsgIdRef = useRef<string | null>(null);
-
-  function getSuggestionScopeKey(inputs?: Partial<TriageInputs> | null) {
-    if (!inputs) return "";
-
-    return [
-      inputs.partner || "",
-      inputs.service || "",
-      inputs.region || "all",
-      inputs.pop || "all",
-      inputs.contentType || "all",
-      inputs.uaFamily || "all",
-      inputs.startTsUtc || "",
-      inputs.endTsUtc || "",
-      inputs.windowMinutes || "",
-    ].join("|");
-  }
-
-  const latestActionableMsg = useMemo(() => {
-    for (let i = chatMessages.length - 1; i >= 0; i--) {
-      const msg = chatMessages[i];
-
-      if (
-        msg.type === "triage" ||
-        msg.type === "drill" ||
-        msg.type === "compare" ||
-        msg.type === "explain"
-      ) {
-        return msg;
+    useEffect(() => {
+      const last = chatMessages[chatMessages.length - 1];
+      if (!last) return;
+      if (lastMsgIdRef.current !== last.id) {
+        lastMsgIdRef.current = last.id;
+        chatScrollRef.current?.scrollTo({
+          top: chatScrollRef.current.scrollHeight,
+          behavior: "smooth",
+        });
       }
+    }, [chatMessages]);
+
+    const availableRegions = useMemo(() => {
+      const uniq = Array.from(
+        new Set(
+          (schemaState.regions || [])
+            .map((x) => String(x || "").trim())
+            .filter(Boolean)
+        )
+      ).sort((a, b) => a.localeCompare(b));
+      return ["all", ...uniq];
+    }, [schemaState.regions]);
+
+    const availablePops = useMemo(() => {
+      const uniq = Array.from(
+        new Set(
+          (schemaState.pops || [])
+            .map((x) => String(x || "").trim())
+            .filter(Boolean)
+        )
+      ).sort((a, b) => a.localeCompare(b));
+      return ["all", ...uniq];
+    }, [schemaState.pops]);
+
+    const availableContentTypes = useMemo(() => {
+      const uniq = Array.from(
+        new Set(
+          (schemaState.contentTypes || [])
+            .map((x) => String(x || "").trim())
+            .filter(Boolean)
+        )
+      ).sort((a, b) => a.localeCompare(b));
+      return uniq.includes("all") ? uniq : ["all", ...uniq];
+    }, [schemaState.contentTypes]);
+
+    const availableUaFamilies = useMemo(() => {
+      const uniq = Array.from(
+        new Set(
+          (schemaState.uaFamilies || [])
+            .map((x) => String(x || "").trim())
+            .filter(Boolean)
+        )
+      ).sort((a, b) => a.localeCompare(b));
+      return uniq.includes("all") ? uniq : ["all", ...uniq];
+    }, [schemaState.uaFamilies]);
+
+    const lastSuggestionTriageMsgIdRef = useRef<string | null>(null);
+
+    function getSuggestionScopeKey(inputs?: Partial<TriageInputs> | null) {
+      if (!inputs) return "";
+
+      return [
+        inputs.partner || "",
+        inputs.service || "",
+        inputs.region || "all",
+        inputs.pop || "all",
+        inputs.contentType || "all",
+        inputs.uaFamily || "all",
+        inputs.startTsUtc || "",
+        inputs.endTsUtc || "",
+        inputs.windowMinutes || "",
+      ].join("|");
     }
 
-    return null;
-  }, [chatMessages]);
-
-  const latestTriageMsg = useMemo<ChatTriage | null>(() => {
-    for (let i = chatMessages.length - 1; i >= 0; i--) {
-      const msg = chatMessages[i];
-      if (msg.type === "triage") return msg;
-    }
-    return null;
-  }, [chatMessages]);
-
-  const latestTriageRun = latestTriageMsg?.run ?? null;
-
-  const currentSuggestionScopeKey = useMemo(() => {
-    return latestTriageRun ? getSuggestionScopeKey(latestTriageRun.inputs) : "";
-  }, [latestTriageRun]);
-
-  useEffect(() => {
-    if (!latestTriageMsg) return;
-
-    const msgId = latestTriageMsg.id;
-    if (lastSuggestionTriageMsgIdRef.current === msgId) return;
-
-    lastSuggestionTriageMsgIdRef.current = msgId;
-
-    const nextScopeKey = getSuggestionScopeKey(latestTriageMsg.run.inputs);
-
-    if (lastSuggestedScopeKeyRef.current !== nextScopeKey) {
-      lastSuggestedScopeKeyRef.current = nextScopeKey;
-      setDismissedSuggestionScopeKey(null);
-    }
-  }, [latestTriageMsg]);
-
-  
-
-    const latestInvestigationContext = useMemo<InvestigationContext | null>(() => {
-      let candidateRun: ChatTriage["run"] | null = null;
-
+    const latestActionableMsg = useMemo(() => {
       for (let i = chatMessages.length - 1; i >= 0; i--) {
         const msg = chatMessages[i];
-        if (msg.type !== "triage") continue;
 
-        const metrics = msg.run.metricsJson || {};
-        const hasRegionEvidence =
-          Array.isArray(metrics.regionBreakdown) && metrics.regionBreakdown.length > 0;
-        const hasPopEvidence =
-          Array.isArray(metrics.popBreakdown) && metrics.popBreakdown.length > 0;
-        const hasEvidenceBundleRegion =
-          Array.isArray(metrics?.evidenceBundle?.regionBreakdown) &&
-          metrics.evidenceBundle.regionBreakdown.length > 0;
-        const hasEvidenceBundlePop =
-          Array.isArray(metrics?.evidenceBundle?.popBreakdown) &&
-          metrics.evidenceBundle.popBreakdown.length > 0;
-
-        if (hasRegionEvidence || hasPopEvidence || hasEvidenceBundleRegion || hasEvidenceBundlePop) {
-          candidateRun = msg.run;
-          break;
-        }
-
-        if (!candidateRun) {
-          candidateRun = msg.run;
+        if (
+          msg.type === "triage" ||
+          msg.type === "drill" ||
+          msg.type === "compare" ||
+          msg.type === "explain"
+        ) {
+          return msg;
         }
       }
 
-      if (!candidateRun) return null;
+      return null;
+    }, [chatMessages]);
 
-      return buildLatestInvestigationContext({
-        run: candidateRun,
+    const latestTriageMsg = useMemo<ChatTriage | null>(() => {
+      for (let i = chatMessages.length - 1; i >= 0; i--) {
+        const msg = chatMessages[i];
+        if (msg.type === "triage") return msg;
+      }
+      return null;
+    }, [chatMessages]);
+
+    const latestTriageRun = latestTriageMsg?.run ?? null;
+
+    const currentSuggestionScopeKey = useMemo(() => {
+      return latestTriageRun ? getSuggestionScopeKey(latestTriageRun.inputs) : "";
+    }, [latestTriageRun]);
+
+    useEffect(() => {
+      if (!latestTriageMsg) return;
+
+      const msgId = latestTriageMsg.id;
+      if (lastSuggestionTriageMsgIdRef.current === msgId) return;
+
+      lastSuggestionTriageMsgIdRef.current = msgId;
+
+      const nextScopeKey = getSuggestionScopeKey(latestTriageMsg.run.inputs);
+
+      if (lastSuggestedScopeKeyRef.current !== nextScopeKey) {
+        lastSuggestedScopeKeyRef.current = nextScopeKey;
+        setDismissedSuggestionScopeKey(null);
+      }
+    }, [latestTriageMsg]);
+
+    
+
+      const latestInvestigationContext = useMemo<InvestigationContext | null>(() => {
+        let candidateRun: ChatTriage["run"] | null = null;
+
+        for (let i = chatMessages.length - 1; i >= 0; i--) {
+          const msg = chatMessages[i];
+          if (msg.type !== "triage") continue;
+
+          const metrics = msg.run.metricsJson || {};
+          const hasRegionEvidence =
+            Array.isArray(metrics.regionBreakdown) && metrics.regionBreakdown.length > 0;
+          const hasPopEvidence =
+            Array.isArray(metrics.popBreakdown) && metrics.popBreakdown.length > 0;
+          const hasEvidenceBundleRegion =
+            Array.isArray(metrics?.evidenceBundle?.regionBreakdown) &&
+            metrics.evidenceBundle.regionBreakdown.length > 0;
+          const hasEvidenceBundlePop =
+            Array.isArray(metrics?.evidenceBundle?.popBreakdown) &&
+            metrics.evidenceBundle.popBreakdown.length > 0;
+
+          if (hasRegionEvidence || hasPopEvidence || hasEvidenceBundleRegion || hasEvidenceBundlePop) {
+            candidateRun = msg.run;
+            break;
+          }
+
+          if (!candidateRun) {
+            candidateRun = msg.run;
+          }
+        }
+
+        if (!candidateRun) return null;
+
+        return buildLatestInvestigationContext({
+          run: candidateRun,
+          availableRegions,
+          availablePops,
+          availableContentTypes,
+          availableUaFamilies,
+        });
+      }, [
+        chatMessages,
         availableRegions,
         availablePops,
         availableContentTypes,
         availableUaFamilies,
-      });
-    }, [
-      chatMessages,
-      availableRegions,
-      availablePops,
-      availableContentTypes,
-      availableUaFamilies,
-    ]);
+      ]);
 
-  function buildMissingContextReply(
-    followUpKind?: ReturnType<typeof parseTriageIntent>["followUpKind"] | null
-  ): string {
-    switch (followUpKind) {
-      case "compare_previous_window":
-        return "Compare with previous window needs a prior triage result. Run a triage first, then compare it.";
-      case "drilldown_region":
-        return "I need a prior triage result with region evidence before I can drill into the worst region.";
-      case "drilldown_pop":
-        return "I need a prior triage result with POP evidence before I can drill into the worst POP.";
-      case "drilldown_dimension":
-        return "That refinement needs a prior triage result. Run a triage first, then narrow it with region, POP, content type, or device filters.";
-      case "repeat_or_refresh":
-        return "There is no prior triage result to refresh yet. Run a triage first.";
-      case "explain_signal":
-        return "I need a prior triage result before I can explain what is driving the current signal.";
-      default:
-        return "Run a triage first, then I can refine or compare results.";
-    }
-  }
-
-  function resolveFollowupAction(args: {
-    parseResult: ReturnType<typeof parseTriageIntent>;
-    ctx: InvestigationContext | null;
-  }):
-    | { kind: "missing_context"; replyText: string }
-    | { kind: "rerun"; inputs: TriageInputs; reason: string }
-    | { kind: "unhandled" } {
-    const { parseResult, ctx } = args;
-
-    const followUpKind = parseResult.followUpKind ?? null;
-    if (!followUpKind) return { kind: "unhandled" };
-
-    if (!ctx) {
-      return {
-        kind: "missing_context",
-        replyText: buildMissingContextReply(followUpKind),
-      };
+    function buildMissingContextReply(
+      followUpKind?: ReturnType<typeof parseTriageIntent>["followUpKind"] | null
+    ): string {
+      switch (followUpKind) {
+        case "compare_previous_window":
+          return "Compare with previous window needs a prior triage result. Run a triage first, then compare it.";
+        case "drilldown_region":
+          return "I need a prior triage result with region evidence before I can drill into the worst region.";
+        case "drilldown_pop":
+          return "I need a prior triage result with POP evidence before I can drill into the worst POP.";
+        case "drilldown_dimension":
+          return "That refinement needs a prior triage result. Run a triage first, then narrow it with region, POP, content type, or device filters.";
+        case "repeat_or_refresh":
+          return "There is no prior triage result to refresh yet. Run a triage first.";
+        case "explain_signal":
+          return "I need a prior triage result before I can explain what is driving the current signal.";
+        default:
+          return "Run a triage first, then I can refine or compare results.";
+      }
     }
 
-    const allowedRegions = ctx.availableDimensions.regions || [];
-    const allowedPops = ctx.availableDimensions.pops || [];
-    const allowedContentTypes = ctx.availableDimensions.contentTypes || [];
-    const allowedUaFamilies = ctx.availableDimensions.uaFamilies || [];
+    function resolveFollowupAction(args: {
+      parseResult: ReturnType<typeof parseTriageIntent>;
+      ctx: InvestigationContext | null;
+    }):
+      | { kind: "missing_context"; replyText: string }
+      | { kind: "rerun"; inputs: TriageInputs; reason: string }
+      | { kind: "unhandled" } {
+      const { parseResult, ctx } = args;
 
-    if (followUpKind === "repeat_or_refresh") {
-      return {
-        kind: "rerun",
-        inputs: deriveRefreshInputs(ctx),
-        reason: "repeat_or_refresh",
-      };
-    }
+      const followUpKind = parseResult.followUpKind ?? null;
+      if (!followUpKind) return { kind: "unhandled" };
 
-    if (followUpKind === "compare_previous_window") {
-      return {
-        kind: "rerun",
-        inputs: derivePreviousWindowInputs(ctx),
-        reason: "compare_previous_window",
-      };
-    }
-
-    if (followUpKind === "drilldown_region") {
-      const inputs = deriveWorstRegionInputs(ctx);
-      if (!inputs) {
+      if (!ctx) {
         return {
           kind: "missing_context",
-          replyText:
-            "I need region evidence from the last run before I can drill into the worst region.",
+          replyText: buildMissingContextReply(followUpKind),
         };
       }
 
-      return {
-        kind: "rerun",
-        inputs,
-        reason: "drilldown_region",
-      };
-    }
+      const allowedRegions = ctx.availableDimensions.regions || [];
+      const allowedPops = ctx.availableDimensions.pops || [];
+      const allowedContentTypes = ctx.availableDimensions.contentTypes || [];
+      const allowedUaFamilies = ctx.availableDimensions.uaFamilies || [];
 
-    if (followUpKind === "drilldown_pop") {
-      const inputs = deriveWorstPopInputs(ctx);
-      if (!inputs) {
+      if (followUpKind === "repeat_or_refresh") {
         return {
-          kind: "missing_context",
-          replyText:
-            "I need POP evidence from the last run before I can drill into the worst POP.",
+          kind: "rerun",
+          inputs: deriveRefreshInputs(ctx),
+          reason: "repeat_or_refresh",
         };
       }
 
-      return {
-        kind: "rerun",
-        inputs,
-        reason: "drilldown_pop",
-      };
-    }
-
-    if (followUpKind === "drilldown_ua") {
-      return {
-        kind: "rerun",
-        inputs: contextToTriageInputs(ctx),
-        reason: "drilldown_ua",
-      };
-    }
-
-    if (followUpKind === "drilldown_content") {
-      return {
-        kind: "rerun",
-        inputs: contextToTriageInputs(ctx),
-        reason: "drilldown_content",
-      };
-    }
-
-    if (followUpKind === "drilldown_dimension") {
-      const overrides: {
-        region?: string;
-        pop?: string;
-        contentType?: string;
-        uaFamily?: string;
-        service?: string;
-      } = {};
-
-      const rawText = parseResult.rawText || "";
-
-      const regionDetection = detectRegionOverrideFromText(rawText);
-      const popDetection = detectPopOverrideFromText(rawText);
-      const uaDetection = detectUaFamilyOverrideFromText(rawText);
-      const contentTypeDetection = detectContentTypeOverrideFromText(rawText);
-
-      if (parseResult.serviceCanonical) {
-        overrides.service = parseResult.serviceCanonical;
-      }
-
-      if (regionDetection.mentioned) {
-        if (!regionDetection.value) {
-          return {
-            kind: "missing_context",
-            replyText: `I couldn't resolve region "${regionDetection.sourceText || "unknown"}". Use one of: ${allowedRegions.join(", ")}.`,
-          };
-        }
-
-        if (!allowedRegions.includes(regionDetection.value)) {
-          return {
-            kind: "missing_context",
-            replyText: `Region "${regionDetection.value}" is valid, but it is not available in the current scope. Available regions: ${allowedRegions.join(", ")}.`,
-          };
-        }
-
-        overrides.region = regionDetection.value;
-      }
-
-      if (popDetection.mentioned) {
-        if (!popDetection.value) {
-          return {
-            kind: "missing_context",
-            replyText: `I couldn't resolve POP "${popDetection.sourceText || "unknown"}". Use one of: ${allowedPops.join(", ")}.`,
-          };
-        }
-
-        if (!allowedPops.includes(popDetection.value)) {
-          return {
-            kind: "missing_context",
-            replyText: `POP "${popDetection.value}" is valid, but it is not available in the current scope. Available POPs: ${allowedPops.join(", ")}.`,
-          };
-        }
-
-        overrides.pop = popDetection.value;
-      }
-
-      if (uaDetection.mentioned) {
-        if (!uaDetection.value) {
-          return {
-            kind: "missing_context",
-            replyText: `I couldn't resolve device type "${uaDetection.sourceText || "unknown"}". Use one of: ${allowedUaFamilies.join(", ")}.`,
-          };
-        }
-
-        if (!allowedUaFamilies.includes(uaDetection.value)) {
-          return {
-            kind: "missing_context",
-            replyText: `Device type "${uaDetection.value}" is valid, but it is not available in the current scope. Available device types: ${allowedUaFamilies.join(", ")}.`,
-          };
-        }
-
-        overrides.uaFamily = uaDetection.value;
-      }
-
-      if (contentTypeDetection.mentioned) {
-        if (!contentTypeDetection.value) {
-          return {
-            kind: "missing_context",
-            replyText: `I couldn't resolve content type "${contentTypeDetection.sourceText || "unknown"}". Use one of: ${allowedContentTypes.join(", ")}.`,
-          };
-        }
-
-        if (!allowedContentTypes.includes(contentTypeDetection.value)) {
-          return {
-            kind: "missing_context",
-            replyText: `Content type "${contentTypeDetection.value}" is valid, but it is not available in the current scope. Available content types: ${allowedContentTypes.join(", ")}.`,
-          };
-        }
-
-        overrides.contentType = contentTypeDetection.value;
-      }
-
-      return {
-        kind: "rerun",
-        inputs: deriveScopedFollowupInputs(ctx, overrides),
-        reason: "drilldown_dimension",
-      };
-    }
-
-    return { kind: "unhandled" };
-  }
-
-  function isAllowed(val: string, allowed: string[]) {
-    const v = String(val ?? "").trim();
-    return v ? allowed.includes(v) : false;
-  }
-
-  function openFilters() {
-    setFiltersOpen(true);
-    setDraftService(service);
-    setDraftRegion(region);
-    setDraftPop(pop);
-    setDraftWindowMinutes(windowMinutes);
-    setDraftContentType(contentType);
-    setDraftUaFamily(uaFamily);
-    setDraftTimeMode(timeMode);
-    setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
-    setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
-    setFiltersDirty(false);
-  }
-
-  function applyDraftFilters() {
-    const s = String(draftService || "").trim();
-    console.log("🧪 APPLY DRAFT FILTERS:", {
-      draftService,
-      draftRegion,
-      draftPop,
-      draftWindowMinutes,
-      draftContentType,
-      draftUaFamily,
-      draftTimeMode,
-      draftStartUtcLocal,
-      draftEndUtcLocal,
-    });
-    if (!s) return { ok: false as const, error: "Pick a service before Apply." };
-    if (!(SERVICE_OPTIONS as readonly string[]).includes(s)) {
-      return { ok: false as const, error: "Invalid service selection." };
-    }
-
-    setServiceSticky(s);
-    setDraftService(s);
-    setService(s);
-
-    const tm: TimeMode = draftTimeMode === "absolute" ? "absolute" : "relative";
-    if (tm === "absolute") {
-      const sIso = parseDatetimeLocalAsUtcToIso(draftStartUtcLocal);
-      const eIso = parseDatetimeLocalAsUtcToIso(draftEndUtcLocal);
-      if (!sIso || !eIso) {
+      if (followUpKind === "compare_previous_window") {
         return {
-          ok: false as const,
-          error: "Pick start and end time (UTC) using the calendar inputs.",
+          kind: "rerun",
+          inputs: derivePreviousWindowInputs(ctx),
+          reason: "compare_previous_window",
         };
       }
-      const sMs = new Date(sIso).getTime();
-      const eMs = new Date(eIso).getTime();
-      if (!Number.isFinite(sMs) || !Number.isFinite(eMs) || eMs <= sMs) {
-        return { ok: false as const, error: "Invalid range: end must be after start." };
-      }
-      setTimeMode("absolute");
-      setStartTsUtc(sIso);
-      setEndTsUtc(eIso);
-      const derivedWin = windowMinutesFromRange(sIso, eIso, draftWindowMinutes || 120);
-      setWindowMinutes(derivedWin);
-      setDraftWindowMinutes(derivedWin);
-    } else {
-      setTimeMode("relative");
-      setStartTsUtc(null);
-      setEndTsUtc(null);
-      setWindowMinutes(Number(draftWindowMinutes) || 120);
-    }
 
-    const ct = String(draftContentType || "all").trim() || "all";
-    const ua = String(draftUaFamily || "all").trim() || "all";
-    const allowedCT = availableContentTypes.length
-      ? availableContentTypes
-      : ["all", "manifest", "segment", "api"];
-    const allowedUA = availableUaFamilies.length
-      ? availableUaFamilies
-      : ["all", "stb", "mobile", "web", "smart_tv", "console"];
+      if (followUpKind === "drilldown_region") {
+        const inputs = deriveWorstRegionInputs(ctx);
+        if (!inputs) {
+          return {
+            kind: "missing_context",
+            replyText:
+              "I need region evidence from the last run before I can drill into the worst region.",
+          };
+        }
 
-    if (!isAllowed(ct, allowedCT)) {
-      return { ok: false as const, error: "Invalid contentType selection." };
-    }
-    if (!isAllowed(ua, allowedUA)) {
-      return { ok: false as const, error: "Invalid uaFamily selection." };
-    }
-
-    setRegion(String(draftRegion || "all"));
-    setPop(String(draftPop || "all"));
-    setContentType(ct);
-    setUaFamily(ua);
-    setFiltersDirty(false);
-    setFiltersOpen(false);
-
-    pushRunLog(
-      `Applied filters: svc=${s} timeMode=${tm} region=${draftRegion} pop=${draftPop} win=${draftWindowMinutes}m ct=${ct} ua=${ua}`
-    );
-    return { ok: true as const };
-  }
-
-  async function runTriage(
-    inputs: TriageInputs,
-    extra?: {
-      drillIntent?:
-        | "worst_region"
-        | "worst_pop"
-        | "worst_host"
-        | "worst_ua"
-        | "worst_content";
-    }
-  ) {
-    const formData = new FormData();
-    formData.append("dataSource", inputs.dataSource);
-    formData.append("partner", inputs.partner || "");
-    formData.append("csvUrl", "");
-    formData.append("service", inputs.service);
-    formData.append("region", inputs.region);
-    formData.append("pop", inputs.pop);
-    formData.append("windowMinutes", String(inputs.windowMinutes));
-    formData.append("contentType", String(inputs.contentType || "all"));
-    formData.append("uaFamily", String(inputs.uaFamily || "all"));
-    if (extra?.drillIntent) formData.append("drillIntent", extra.drillIntent);
-    if (inputs.startTsUtc) formData.append("startTsUtc", inputs.startTsUtc);
-    if (inputs.endTsUtc) formData.append("endTsUtc", inputs.endTsUtc);
-
-    const response = await fetch("/api/triage", { method: "POST", body: formData });
-    const data = (await response.json().catch(() => null)) as TriageResponse | null;
-
-    if (!response.ok) {
-      throw new Error(
-        data && !(data as any).ok ? (data as any).error : `Triage failed (HTTP ${response.status})`
-      );
-    }
-    if (!data) throw new Error("Triage failed (empty response)");
-    if (!(data as any).ok) throw new Error((data as any).error);
-
-    return {
-      kind: (data as any).kind ?? "triage",
-      summaryText: (data as any).summaryText ?? (data as any).summary ?? "",
-      metricsJson: (data as any).metricsJson ?? null,
-      compareMetrics: (data as any).compareMetrics ?? null,
-      compareGraph: (data as any).compareGraph ?? null,
-      primarySignal: (data as any).primarySignal ?? null,
-      overallState: (data as any).overallState ?? null,
-      sql: (data as any).sql ?? null,
-      swarm: (data as any).swarm ?? null,
-      drill: (data as any).drill ?? null,
-    };
-  }
-
-  async function executeTriageRun(
-    inputs: TriageInputs,
-    scopeSource: "filters" | "chat",
-    extra?: {
-      chatContext?: ChatTriage["run"]["chatContext"];
-      drillIntent?:
-        | "worst_region"
-        | "worst_pop"
-        | "worst_host"
-        | "worst_ua"
-        | "worst_content";
-    }
-  ) {
-    if (isTriageLoading) return;
-    setIsTriageLoading(true);
-    setTyping(true);
-    try {
-      const timeLabel =
-        inputs.startTsUtc && inputs.endTsUtc
-          ? `abs=${isoToUtcText(inputs.startTsUtc)}→${isoToUtcText(inputs.endTsUtc)} UTC`
-          : `win=${inputs.windowMinutes}m`;
-      pushRunLog(
-        `Running triage [${scopeSource}]: partner=${inputs.partner} svc=${inputs.service} region=${inputs.region} pop=${inputs.pop} ${timeLabel} ct=${inputs.contentType} ua=${inputs.uaFamily}`
-      );
-      const data = await runTriage(inputs, {
-        drillIntent: extra?.drillIntent,
-      });
-
-      if (data.kind === "drill" && data.drill) {
-        addDrillCard({
-          drill: data.drill,
-          summaryText: data.summaryText || "",
-        });
-      } else {
-        addTriageCard({
+        return {
+          kind: "rerun",
           inputs,
-          summaryText: data.summaryText || "",
-          metricsJson: data.metricsJson || null,
-          sql: data.sql || null,
-          swarm: data.swarm || null,
-          scopeSource,
-          chatContext: extra?.chatContext ?? null,
-        });
+          reason: "drilldown_region",
+        };
       }
 
-      setPendingChatScope({
-        partner: "",
-        service: "",
+      if (followUpKind === "drilldown_pop") {
+        const inputs = deriveWorstPopInputs(ctx);
+        if (!inputs) {
+          return {
+            kind: "missing_context",
+            replyText:
+              "I need POP evidence from the last run before I can drill into the worst POP.",
+          };
+        }
+
+        return {
+          kind: "rerun",
+          inputs,
+          reason: "drilldown_pop",
+        };
+      }
+
+      if (followUpKind === "drilldown_ua") {
+        return {
+          kind: "rerun",
+          inputs: contextToTriageInputs(ctx),
+          reason: "drilldown_ua",
+        };
+      }
+
+      if (followUpKind === "drilldown_content") {
+        return {
+          kind: "rerun",
+          inputs: contextToTriageInputs(ctx),
+          reason: "drilldown_content",
+        };
+      }
+
+      if (followUpKind === "drilldown_dimension") {
+        const overrides: {
+          region?: string;
+          pop?: string;
+          contentType?: string;
+          uaFamily?: string;
+          service?: string;
+        } = {};
+
+        const rawText = parseResult.rawText || "";
+
+        const regionDetection = detectRegionOverrideFromText(rawText);
+        const popDetection = detectPopOverrideFromText(rawText);
+        const uaDetection = detectUaFamilyOverrideFromText(rawText);
+        const contentTypeDetection = detectContentTypeOverrideFromText(rawText);
+
+        if (parseResult.serviceCanonical) {
+          overrides.service = parseResult.serviceCanonical;
+        }
+
+        if (regionDetection.mentioned) {
+          if (!regionDetection.value) {
+            return {
+              kind: "missing_context",
+              replyText: `I couldn't resolve region "${regionDetection.sourceText || "unknown"}". Use one of: ${allowedRegions.join(", ")}.`,
+            };
+          }
+
+          if (!allowedRegions.includes(regionDetection.value)) {
+            return {
+              kind: "missing_context",
+              replyText: `Region "${regionDetection.value}" is valid, but it is not available in the current scope. Available regions: ${allowedRegions.join(", ")}.`,
+            };
+          }
+
+          overrides.region = regionDetection.value;
+        }
+
+        if (popDetection.mentioned) {
+          if (!popDetection.value) {
+            return {
+              kind: "missing_context",
+              replyText: `I couldn't resolve POP "${popDetection.sourceText || "unknown"}". Use one of: ${allowedPops.join(", ")}.`,
+            };
+          }
+
+          if (!allowedPops.includes(popDetection.value)) {
+            return {
+              kind: "missing_context",
+              replyText: `POP "${popDetection.value}" is valid, but it is not available in the current scope. Available POPs: ${allowedPops.join(", ")}.`,
+            };
+          }
+
+          overrides.pop = popDetection.value;
+        }
+
+        if (uaDetection.mentioned) {
+          if (!uaDetection.value) {
+            return {
+              kind: "missing_context",
+              replyText: `I couldn't resolve device type "${uaDetection.sourceText || "unknown"}". Use one of: ${allowedUaFamilies.join(", ")}.`,
+            };
+          }
+
+          if (!allowedUaFamilies.includes(uaDetection.value)) {
+            return {
+              kind: "missing_context",
+              replyText: `Device type "${uaDetection.value}" is valid, but it is not available in the current scope. Available device types: ${allowedUaFamilies.join(", ")}.`,
+            };
+          }
+
+          overrides.uaFamily = uaDetection.value;
+        }
+
+        if (contentTypeDetection.mentioned) {
+          if (!contentTypeDetection.value) {
+            return {
+              kind: "missing_context",
+              replyText: `I couldn't resolve content type "${contentTypeDetection.sourceText || "unknown"}". Use one of: ${allowedContentTypes.join(", ")}.`,
+            };
+          }
+
+          if (!allowedContentTypes.includes(contentTypeDetection.value)) {
+            return {
+              kind: "missing_context",
+              replyText: `Content type "${contentTypeDetection.value}" is valid, but it is not available in the current scope. Available content types: ${allowedContentTypes.join(", ")}.`,
+            };
+          }
+
+          overrides.contentType = contentTypeDetection.value;
+        }
+
+        return {
+          kind: "rerun",
+          inputs: deriveScopedFollowupInputs(ctx, overrides),
+          reason: "drilldown_dimension",
+        };
+      }
+
+      return { kind: "unhandled" };
+    }
+
+    function isAllowed(val: string, allowed: string[]) {
+      const v = String(val ?? "").trim();
+      return v ? allowed.includes(v) : false;
+    }
+
+    function openFilters() {
+      setFiltersOpen(true);
+      setDraftService(service);
+      setDraftRegion(region);
+      setDraftPop(pop);
+      setDraftWindowMinutes(windowMinutes);
+      setDraftContentType(contentType);
+      setDraftUaFamily(uaFamily);
+      setDraftTimeMode(timeMode);
+      setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
+      setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
+      setFiltersDirty(false);
+    }
+
+    function applyDraftFilters() {
+      const s = String(draftService || "").trim();
+      console.log("🧪 APPLY DRAFT FILTERS:", {
+        draftService,
+        draftRegion,
+        draftPop,
+        draftWindowMinutes,
+        draftContentType,
+        draftUaFamily,
+        draftTimeMode,
+        draftStartUtcLocal,
+        draftEndUtcLocal,
       });
+      if (!s) return { ok: false as const, error: "Pick a service before Apply." };
+      if (!(SERVICE_OPTIONS as readonly string[]).includes(s)) {
+        return { ok: false as const, error: "Invalid service selection." };
+      }
 
-    } catch (e: any) {
-      const msg = String(e?.message || "").toLowerCase();
+      setServiceSticky(s);
+      setDraftService(s);
+      setService(s);
 
-      if (msg.includes("invalid region")) {
-        addText(
-          "assistant",
-          `⚠️ I couldn't resolve that region. Use one of: ${availableRegions.join(", ")}.`
-        );
-      } else if (msg.includes("invalid pop")) {
-        addText(
-          "assistant",
-          `⚠️ I couldn't resolve that POP. Use one of: ${availablePops.join(", ")}.`
-        );
-      } else if (msg.includes("invalid uafamily")) {
-        addText(
-          "assistant",
-          `⚠️ I couldn't resolve that device type. Use one of: ${availableUaFamilies.join(", ")}.`
-        );
-      } else if (msg.includes("invalid contenttype")) {
-        addText(
-          "assistant",
-          `⚠️ I couldn't resolve that content type. Use one of: ${availableContentTypes.join(", ")}.`
-        );
-      } else if (msg.includes("missing partner")) {
-        addText("assistant", "⚠️ Please select a partner first.");
-      } else if (msg.includes("missing service")) {
-        addText("assistant", "⚠️ Please select a service (live, vod, etc).");
+      const tm: TimeMode = draftTimeMode === "absolute" ? "absolute" : "relative";
+      if (tm === "absolute") {
+        const sIso = parseDatetimeLocalAsUtcToIso(draftStartUtcLocal);
+        const eIso = parseDatetimeLocalAsUtcToIso(draftEndUtcLocal);
+        if (!sIso || !eIso) {
+          return {
+            ok: false as const,
+            error: "Pick start and end time (UTC) using the calendar inputs.",
+          };
+        }
+        const sMs = new Date(sIso).getTime();
+        const eMs = new Date(eIso).getTime();
+        if (!Number.isFinite(sMs) || !Number.isFinite(eMs) || eMs <= sMs) {
+          return { ok: false as const, error: "Invalid range: end must be after start." };
+        }
+        setTimeMode("absolute");
+        setStartTsUtc(sIso);
+        setEndTsUtc(eIso);
+        const derivedWin = windowMinutesFromRange(sIso, eIso, draftWindowMinutes || 120);
+        setWindowMinutes(derivedWin);
+        setDraftWindowMinutes(derivedWin);
       } else {
-        // fallback
-        addText("assistant", `⚠️ ${e?.message || "Triage failed."}`);
-      }
-    } finally {
-      setTyping(false);
-      setIsTriageLoading(false);
-    }
-  }
-
-  async function handleRunFromFilters() {
-    console.log("🚀 RUN TRIAGE WITH STATE:", {
-      partner,
-      service,
-      region,
-      pop,
-      windowMinutes,
-      timeMode,
-      startTsUtc,
-      endTsUtc,
-      contentType,
-      uaFamily,
-      draftService,
-      draftRegion,
-      draftPop,
-      draftWindowMinutes,
-      draftContentType,
-      draftUaFamily,
-    });
-
-    if (!partner) {
-      addText("assistant", `Pick a partner first. (${PARTNER_OPTIONS.join(", ")})`);
-      return;
-    }
-    if (!service) {
-      addText("assistant", `Pick a service first. Open Filters, then Apply. (${SERVICE_OPTIONS.join(", ")})`);
-      return;
-    }
-
-    const effectiveWin =
-      timeMode === "absolute" && startTsUtc && endTsUtc
-        ? windowMinutesFromRange(startTsUtc, endTsUtc, windowMinutes)
-        : windowMinutes;
-
-    const payload = {
-      dataSource: "clickhouse" as const,
-      partner,
-      service,
-      region,
-      pop,
-      windowMinutes: effectiveWin,
-      startTsUtc: timeMode === "absolute" ? startTsUtc : null,
-      endTsUtc: timeMode === "absolute" ? endTsUtc : null,
-      contentType,
-      uaFamily,
-    };
-
-    console.log("📦 PAYLOAD SENT TO API:", payload);
-
-    await executeTriageRun(payload, "filters");
-  }
-
-  function detectExplicitDrillIntent(text: string):
-  | "worst_region"
-  | "worst_pop"
-  | "worst_host"
-  | "worst_ua"
-  | "worst_content"
-  | null {
-  const lowered = text.toLowerCase().replace(/what’s/g, "whats");
-
-  const mentionsStatusBreakdown =
-    (lowered.includes("status") || lowered.includes("status code")) &&
-    (lowered.includes("breakdown") ||
-      lowered.includes("distribution") ||
-      lowered.includes("mix") ||
-      lowered.includes("split"));
-
-  if (mentionsStatusBreakdown) return null;
-
-  const asksForPop =
-    lowered.includes("pop") &&
-    (lowered.includes("bad") ||
-      lowered.includes("worst") ||
-      lowered.includes("which") ||
-      lowered.includes("show") ||
-      lowered.includes("top") ||
-      lowered.includes("breakdown") ||
-      lowered.includes("by pop"));
-
-  if (asksForPop) return "worst_pop";
-
-  const asksForHost =
-    lowered.includes("host") &&
-    (lowered.includes("bad") ||
-      lowered.includes("worst") ||
-      lowered.includes("which") ||
-      lowered.includes("show") ||
-      lowered.includes("top") ||
-      lowered.includes("breakdown") ||
-      lowered.includes("by host"));
-
-  if (asksForHost) return "worst_host";
-
-  const asksForRegion =
-    lowered.includes("region") &&
-    (lowered.includes("bad") ||
-      lowered.includes("worst") ||
-      lowered.includes("which") ||
-      lowered.includes("show") ||
-      lowered.includes("top") ||
-      lowered.includes("breakdown") ||
-      lowered.includes("by region"));
-
-  if (asksForRegion) return "worst_region";
-
-  const asksForUa =
-    (lowered.includes("ua") ||
-      lowered.includes("ua family") ||
-      lowered.includes("device")) &&
-    (lowered.includes("bad") ||
-      lowered.includes("worst") ||
-      lowered.includes("which") ||
-      lowered.includes("show") ||
-      lowered.includes("top") ||
-      lowered.includes("breakdown") ||
-      lowered.includes("by ua") ||
-      lowered.includes("by device"));
-
-  if (asksForUa) return "worst_ua";
-
-  const asksForContent =
-    (lowered.includes("content type") || lowered.includes("content")) &&
-    (lowered.includes("bad") ||
-      lowered.includes("worst") ||
-      lowered.includes("which") ||
-      lowered.includes("show") ||
-      lowered.includes("top") ||
-      lowered.includes("breakdown") ||
-      lowered.includes("by content"));
-
-  if (asksForContent) return "worst_content";
-
-  return null;
-}
-
-    async function processUserMessage(rawText: string) {
-      const text = String(rawText || "").trim();
-      if (!text || isTriageLoading) return;
-
-      const parsed = parseInput(text);
-
-      const normalization = normalizeInput(text);
-      const normalizedText = normalization.normalizedText;
-
-      console.log("PARSER DEBUG", parsed);
-      console.log("NORMALIZATION DEBUG", {
-        rawText: text,
-        normalizedText,
-      });
-
-      addText("user", text);
-
-      const guard = evaluateGuardrails({
-        rawText: text,
-        hasActiveInvestigation: Boolean(latestTriageRun),
-        activeScope: latestTriageRun
-          ? {
-              partner: latestTriageRun.inputs.partner || "",
-              service: latestTriageRun.inputs.service || "",
-            }
-          : null,
-        detectedPartner: null,
-        detectedService: null,
-      });
-
-      if (!guard.ok) {
-        addText("assistant", guard.message);
-        return;
+        setTimeMode("relative");
+        setStartTsUtc(null);
+        setEndTsUtc(null);
+        setWindowMinutes(Number(draftWindowMinutes) || 120);
       }
 
-      if (
-        shouldBlockForClarification({
-          parsed,
-          latestTriageRun: latestTriageRun ?? null,
-        })
-      ) {
-        addText("assistant", getClarificationMessage(parsed));
-        return;
+      const ct = String(draftContentType || "all").trim() || "all";
+      const ua = String(draftUaFamily || "all").trim() || "all";
+      const allowedCT = availableContentTypes.length
+        ? availableContentTypes
+        : ["all", "manifest", "segment", "api"];
+      const allowedUA = availableUaFamilies.length
+        ? availableUaFamilies
+        : ["all", "stb", "mobile", "web", "smart_tv", "console"];
+
+      if (!isAllowed(ct, allowedCT)) {
+        return { ok: false as const, error: "Invalid contentType selection." };
+      }
+      if (!isAllowed(ua, allowedUA)) {
+        return { ok: false as const, error: "Invalid uaFamily selection." };
       }
 
-      // Step 1: glossary-first routing
-      const glossary = detectGlossaryIntent(normalizedText);
+      setRegion(String(draftRegion || "all"));
+      setPop(String(draftPop || "all"));
+      setContentType(ct);
+      setUaFamily(ua);
+      setFiltersDirty(false);
+      setFiltersOpen(false);
 
-      if (glossary.isGlossary) {
-        const entry = lookupAtsCrc(glossary.canonical);
+      pushRunLog(
+        `Applied filters: svc=${s} timeMode=${tm} region=${draftRegion} pop=${draftPop} win=${draftWindowMinutes}m ct=${ct} ua=${ua}`
+      );
+      return { ok: true as const };
+    }
 
-        if (entry) {
+    async function runTriage(
+      inputs: TriageInputs,
+      extra?: {
+        drillIntent?:
+          | "worst_region"
+          | "worst_pop"
+          | "worst_host"
+          | "worst_ua"
+          | "worst_content";
+      }
+    ) {
+      const formData = new FormData();
+      formData.append("dataSource", inputs.dataSource);
+      formData.append("partner", inputs.partner || "");
+      formData.append("csvUrl", "");
+      formData.append("service", inputs.service);
+      formData.append("region", inputs.region);
+      formData.append("pop", inputs.pop);
+      formData.append("windowMinutes", String(inputs.windowMinutes));
+      formData.append("contentType", String(inputs.contentType || "all"));
+      formData.append("uaFamily", String(inputs.uaFamily || "all"));
+      if (extra?.drillIntent) formData.append("drillIntent", extra.drillIntent);
+      if (inputs.startTsUtc) formData.append("startTsUtc", inputs.startTsUtc);
+      if (inputs.endTsUtc) formData.append("endTsUtc", inputs.endTsUtc);
+
+      const response = await fetch("/api/triage", { method: "POST", body: formData });
+      const data = (await response.json().catch(() => null)) as TriageResponse | null;
+
+      if (!response.ok) {
+        throw new Error(
+          data && !(data as any).ok ? (data as any).error : `Triage failed (HTTP ${response.status})`
+        );
+      }
+      if (!data) throw new Error("Triage failed (empty response)");
+      if (!(data as any).ok) throw new Error((data as any).error);
+
+      return {
+        kind: (data as any).kind ?? "triage",
+        summaryText: (data as any).summaryText ?? (data as any).summary ?? "",
+        metricsJson: (data as any).metricsJson ?? null,
+        compareMetrics: (data as any).compareMetrics ?? null,
+        compareGraph: (data as any).compareGraph ?? null,
+        primarySignal: (data as any).primarySignal ?? null,
+        overallState: (data as any).overallState ?? null,
+        sql: (data as any).sql ?? null,
+        swarm: (data as any).swarm ?? null,
+        drill: (data as any).drill ?? null,
+      };
+    }
+
+    async function executeTriageRun(
+      inputs: TriageInputs,
+      scopeSource: "filters" | "chat",
+      extra?: {
+        chatContext?: ChatTriage["run"]["chatContext"];
+        drillIntent?:
+          | "worst_region"
+          | "worst_pop"
+          | "worst_host"
+          | "worst_ua"
+          | "worst_content";
+      }
+    ) {
+      if (isTriageLoading) return;
+      setIsTriageLoading(true);
+      setTyping(true);
+      try {
+        const timeLabel =
+          inputs.startTsUtc && inputs.endTsUtc
+            ? `abs=${isoToUtcText(inputs.startTsUtc)}→${isoToUtcText(inputs.endTsUtc)} UTC`
+            : `win=${inputs.windowMinutes}m`;
+        pushRunLog(
+          `Running triage [${scopeSource}]: partner=${inputs.partner} svc=${inputs.service} region=${inputs.region} pop=${inputs.pop} ${timeLabel} ct=${inputs.contentType} ua=${inputs.uaFamily}`
+        );
+        const data = await runTriage(inputs, {
+          drillIntent: extra?.drillIntent,
+        });
+
+        if (data.kind === "drill" && data.drill) {
+          addDrillCard({
+            drill: data.drill,
+            summaryText: data.summaryText || "",
+          });
+        } else {
+          addTriageCard({
+            inputs,
+            summaryText: data.summaryText || "",
+            metricsJson: data.metricsJson || null,
+            sql: data.sql || null,
+            swarm: data.swarm || null,
+            scopeSource,
+            chatContext: extra?.chatContext ?? null,
+          });
+        }
+
+        setPendingChatScope({
+          partner: "",
+          service: "",
+        });
+
+      } catch (e: any) {
+        const msg = String(e?.message || "").toLowerCase();
+
+        if (msg.includes("invalid region")) {
           addText(
             "assistant",
-            `${entry.title}\n\n${entry.meaning}${
-              entry.opsHint ? `\n\nOps hint: ${entry.opsHint}` : ""
-            }`
+            `⚠️ I couldn't resolve that region. Use one of: ${availableRegions.join(", ")}.`
+          );
+        } else if (msg.includes("invalid pop")) {
+          addText(
+            "assistant",
+            `⚠️ I couldn't resolve that POP. Use one of: ${availablePops.join(", ")}.`
+          );
+        } else if (msg.includes("invalid uafamily")) {
+          addText(
+            "assistant",
+            `⚠️ I couldn't resolve that device type. Use one of: ${availableUaFamilies.join(", ")}.`
+          );
+        } else if (msg.includes("invalid contenttype")) {
+          addText(
+            "assistant",
+            `⚠️ I couldn't resolve that content type. Use one of: ${availableContentTypes.join(", ")}.`
+          );
+        } else if (msg.includes("missing partner")) {
+          addText("assistant", "⚠️ Please select a partner first.");
+        } else if (msg.includes("missing service")) {
+          addText("assistant", "⚠️ Please select a service (live, vod, etc).");
+        } else {
+          // fallback
+          addText("assistant", `⚠️ ${e?.message || "Triage failed."}`);
+        }
+      } finally {
+        setTyping(false);
+        setIsTriageLoading(false);
+      }
+    }
+
+    async function handleRunFromFilters() {
+      console.log("🚀 RUN TRIAGE WITH STATE:", {
+        partner,
+        service,
+        region,
+        pop,
+        windowMinutes,
+        timeMode,
+        startTsUtc,
+        endTsUtc,
+        contentType,
+        uaFamily,
+        draftService,
+        draftRegion,
+        draftPop,
+        draftWindowMinutes,
+        draftContentType,
+        draftUaFamily,
+      });
+
+      if (!partner) {
+        addText("assistant", `Pick a partner first. (${PARTNER_OPTIONS.join(", ")})`);
+        return;
+      }
+      if (!service) {
+        addText("assistant", `Pick a service first. Open Filters, then Apply. (${SERVICE_OPTIONS.join(", ")})`);
+        return;
+      }
+
+      const effectiveWin =
+        timeMode === "absolute" && startTsUtc && endTsUtc
+          ? windowMinutesFromRange(startTsUtc, endTsUtc, windowMinutes)
+          : windowMinutes;
+
+      const payload = {
+        dataSource: "clickhouse" as const,
+        partner,
+        service,
+        region,
+        pop,
+        windowMinutes: effectiveWin,
+        startTsUtc: timeMode === "absolute" ? startTsUtc : null,
+        endTsUtc: timeMode === "absolute" ? endTsUtc : null,
+        contentType,
+        uaFamily,
+      };
+
+      console.log("📦 PAYLOAD SENT TO API:", payload);
+
+      await executeTriageRun(payload, "filters");
+    }
+
+    function detectExplicitDrillIntent(text: string):
+    | "worst_region"
+    | "worst_pop"
+    | "worst_host"
+    | "worst_ua"
+    | "worst_content"
+    | null {
+    const lowered = text.toLowerCase().replace(/what’s/g, "whats");
+
+    const mentionsStatusBreakdown =
+      (lowered.includes("status") || lowered.includes("status code")) &&
+      (lowered.includes("breakdown") ||
+        lowered.includes("distribution") ||
+        lowered.includes("mix") ||
+        lowered.includes("split"));
+
+    if (mentionsStatusBreakdown) return null;
+
+    const asksForPop =
+      lowered.includes("pop") &&
+      (lowered.includes("bad") ||
+        lowered.includes("worst") ||
+        lowered.includes("which") ||
+        lowered.includes("show") ||
+        lowered.includes("top") ||
+        lowered.includes("breakdown") ||
+        lowered.includes("by pop"));
+
+    if (asksForPop) return "worst_pop";
+
+    const asksForHost =
+      lowered.includes("host") &&
+      (lowered.includes("bad") ||
+        lowered.includes("worst") ||
+        lowered.includes("which") ||
+        lowered.includes("show") ||
+        lowered.includes("top") ||
+        lowered.includes("breakdown") ||
+        lowered.includes("by host"));
+
+    if (asksForHost) return "worst_host";
+
+    const asksForRegion =
+      lowered.includes("region") &&
+      (lowered.includes("bad") ||
+        lowered.includes("worst") ||
+        lowered.includes("which") ||
+        lowered.includes("show") ||
+        lowered.includes("top") ||
+        lowered.includes("breakdown") ||
+        lowered.includes("by region"));
+
+    if (asksForRegion) return "worst_region";
+
+    const asksForUa =
+      (lowered.includes("ua") ||
+        lowered.includes("ua family") ||
+        lowered.includes("device")) &&
+      (lowered.includes("bad") ||
+        lowered.includes("worst") ||
+        lowered.includes("which") ||
+        lowered.includes("show") ||
+        lowered.includes("top") ||
+        lowered.includes("breakdown") ||
+        lowered.includes("by ua") ||
+        lowered.includes("by device"));
+
+    if (asksForUa) return "worst_ua";
+
+    const asksForContent =
+      (lowered.includes("content type") || lowered.includes("content")) &&
+      (lowered.includes("bad") ||
+        lowered.includes("worst") ||
+        lowered.includes("which") ||
+        lowered.includes("show") ||
+        lowered.includes("top") ||
+        lowered.includes("breakdown") ||
+        lowered.includes("by content"));
+
+    if (asksForContent) return "worst_content";
+
+    return null;
+  }
+
+      async function processUserMessage(rawText: string) {
+        const text = String(rawText || "").trim();
+        if (!text || isTriageLoading) return;
+
+        const parsed = parseInput(text);
+
+        const normalization = normalizeInput(text);
+        const normalizedText = normalization.normalizedText;
+
+        console.log("PARSER DEBUG", parsed);
+        console.log("NORMALIZATION DEBUG", {
+          rawText: text,
+          normalizedText,
+        });
+
+        addText("user", text);
+
+        const guard = evaluateGuardrails({
+          rawText: text,
+          hasActiveInvestigation: Boolean(latestTriageRun),
+          activeScope: latestTriageRun
+            ? {
+                partner: latestTriageRun.inputs.partner || "",
+                service: latestTriageRun.inputs.service || "",
+              }
+            : null,
+          detectedPartner: null,
+          detectedService: null,
+        });
+
+        if (!guard.ok) {
+          addText("assistant", guard.message);
+          return;
+        }
+
+        const legacyIntent = detectIntent(normalizedText);
+
+        const isGreeting =
+          legacyIntent === "greeting" ||
+          /^\s*(hi|hello|hey|yo|sup)\b/i.test(text) ||
+          /^\s*good\s+(morning|afternoon|evening)\b/i.test(text);
+
+        if (isGreeting) {
+          addText(
+            "assistant",
+            "Hey — I can help you investigate CDN performance. Try asking something like 'how is live traffic' or 'why is cache low'."
           );
           return;
         }
-      }
 
-      const atsTerms = detectAtsCrcTerms(normalizedText);
-      const atsFamily = normalizeAtsExecutionFamily(normalizedText);
+        if (
+          shouldBlockForClarification({
+            parsed,
+            latestTriageRun: latestTriageRun ?? null,
+          })
+        ) {
+          addText("assistant", getClarificationMessage(parsed));
+          return;
+        }
 
-      const chatIntent = detectIntent(normalizedText);
-      const explicitDrillIntent = detectExplicitDrillIntent(normalizedText);
-      
+        // glossary...
+        const glossary = detectGlossaryIntent(normalizedText);
 
-      const parserExplorationIntent =
-        parsed.lane === "exploration" &&
-        parsed.metric &&
-        (parsed.metric === "ats" ||
-          parsed.metric === "latency" ||
-          parsed.metric === "errors" ||
-          parsed.metric === "requests")
-          ? {
-              mode: "exploration" as const,
-              metric: parsed.metric,
-              view:
-                parsed.view === "breakdown"
-                  ? parsed.dimension === "region"
-                    ? ("by_region" as const)
-                    : parsed.dimension === "pop"
-                    ? ("by_pop" as const)
-                    : parsed.dimension === "uaFamily"
-                    ? ("by_ua" as const)
-                    : parsed.dimension === "contentType"
-                    ? ("by_content" as const)
-                    : ("over_time" as const)
-                  : ("over_time" as const),
-              rawText: normalizedText,
-              timeOverride: convertParserTimeOverride(parsed.timeOverride),
-              atsMode: undefined,
-              atsFamily: parsed.family
-                ? normalizeAtsExecutionFamily(parsed.family)
-                : undefined,
-              atsRawCode: parsed.rawCode ?? undefined,
-            }
-          : null;
+        if (glossary.isGlossary) {
+          const entry = lookupAtsCrc(glossary.canonical);
 
-      console.log("EXPLORATION DEBUG", {
+          if (entry) {
+            addText(
+              "assistant",
+              `${entry.title}\n\n${entry.meaning}${
+                entry.opsHint ? `\n\nOps hint: ${entry.opsHint}` : ""
+              }`
+            );
+            return;
+          }
+        }
+
+        const atsTerms = detectAtsCrcTerms(normalizedText);
+        const atsFamily = normalizeAtsExecutionFamily(normalizedText);
+
+        const explicitDrillIntent = detectExplicitDrillIntent(normalizedText);
+        
+        const parserExplorationIntent =
+          parsed.lane === "exploration" &&
+          parsed.metric &&
+          (parsed.metric === "ats" ||
+            parsed.metric === "latency" ||
+            parsed.metric === "errors" ||
+            parsed.metric === "requests")
+            ? {
+                mode: "exploration" as const,
+                metric: parsed.metric,
+                view:
+                  parsed.view === "breakdown"
+                    ? parsed.dimension === "region"
+                      ? ("by_region" as const)
+                      : parsed.dimension === "pop"
+                      ? ("by_pop" as const)
+                      : parsed.dimension === "uaFamily"
+                      ? ("by_ua" as const)
+                      : parsed.dimension === "contentType"
+                      ? ("by_content" as const)
+                      : ("over_time" as const)
+                    : ("over_time" as const),
+                rawText: normalizedText,
+                timeOverride: convertParserTimeOverride(parsed.timeOverride),
+                atsMode: undefined,
+                atsFamily: parsed.family
+                  ? normalizeAtsExecutionFamily(parsed.family)
+                  : undefined,
+                atsRawCode: parsed.rawCode ?? undefined,
+              }
+            : null;
+
+        console.log("EXPLORATION DEBUG", {
           normalizedText,
-          chatIntent,
+          legacyIntent,
           parserLane: parsed.lane,
           parserMetric: parsed.metric,
           parserView: parsed.view,
@@ -6045,1890 +6058,1586 @@ export default function Home() {
           parserExplorationIntent,
         });
 
-      const parseResult = parseTriageIntent({
-        text: normalizedText,
-        hasPriorContext: Boolean(latestTriageRun),
-      });
-
-      if (parsed.lane === "exploration") {
-        if (!latestInvestigationContext) {
-          addText(
-            "assistant",
-            "Run a triage first, then I can explore metrics within the active investigation."
-          );
-          return;
-        }
-
-        const baseExplorationIntent = parserExplorationIntent!;
-
-        let effectiveExplorationIntent = {
-          ...baseExplorationIntent,
-        };
-
-        // 🔥 Prefer parser ATS signals if present
-        if (parsed.rawCode) {
-          effectiveExplorationIntent = {
-            ...effectiveExplorationIntent,
-            metric: "ats",
-            atsRawCode: parsed.rawCode,
-          };
-        } else if (parsed.family) {
-          effectiveExplorationIntent = {
-            ...effectiveExplorationIntent,
-            metric: "ats",
-            atsFamily: parsed.family,
-          };
-        } else if (atsFamily) {
-          effectiveExplorationIntent = {
-            ...effectiveExplorationIntent,
-            metric: "ats",
-            atsFamily,
-          };
-        }
-
-        // 🔥 Prefer parser time override if present
-        if (parsed.timeOverride) {
-          effectiveExplorationIntent = {
-            ...effectiveExplorationIntent,
-            timeOverride: convertParserTimeOverride(parsed.timeOverride),
-          };
-        }
-
-        const baseContext = buildExplorationContextWithTimeOverride(
-          latestInvestigationContext,
-          effectiveExplorationIntent.timeOverride
-        );
-
-        // 🔥 APPLY PARSER SCOPE OVERRIDES (Bug 2 fix)
-        const explorationContext = {
-          ...baseContext,
-          region:
-            parsed.scopeChanges.region ??
-            baseContext.region,
-
-          pop:
-            parsed.scopeChanges.pop ??
-            baseContext.pop,
-
-          contentType:
-            parsed.scopeChanges.contentType ??
-            baseContext.contentType,
-
-          uaFamily:
-            parsed.scopeChanges.uaFamily ??
-            baseContext.uaFamily,
-        };
-
-        console.log("EXPLORATION TIME DEBUG", {
-          inheritedTime: latestInvestigationContext.time,
-          timeOverride: effectiveExplorationIntent.timeOverride ?? null,
-          effectiveContext: explorationContext,
-          atsTerms,
-          atsFamily,
-          parserLane: parsed.lane,
-          parserMetric: parsed.metric,
-          parserView: parsed.view,
-          parserDimension: parsed.dimension,
-          parserExplorationIntent,
-          effectiveExplorationIntent,
+        const parseResult = parseTriageIntent({
+          text: normalizedText,
+          hasPriorContext: Boolean(latestTriageRun),
         });
 
-        console.log("PAGE -> AGENT INTENT", effectiveExplorationIntent);
-
-        const result = await runExplorationAgent({
-          intent: effectiveExplorationIntent,
-          context: explorationContext,
-        });
-
-        addExplorationCard({
-          id: `${Date.now()}-${Math.random()}`,
-          role: "assistant",
-          ts: nowIso(),
-          title: result.title,
-          summary: result.summary,
-          metric: result.metric,
-          view: result.view === "over_time" ? "timeseries" : "breakdown",
-          displayLabel: result.displayLabel,
-          series: result.view === "over_time" ? result.series : undefined,
-          seriesSecondary:
-            result.view === "over_time" ? result.seriesSecondary : undefined,
-          rows: result.rows,
-          spotlight:
-            result.view !== "over_time" ? result.spotlight : undefined,
-        });
-        return;
-      }
-
-      if (chatIntent === "compare") {
-        if (!latestTriageRun || !latestInvestigationContext) {
-          addText(
-            "assistant",
-            "Run a triage first, then I can compare this window to the previous one."
-          );
-          return;
-        }
-
-        setTyping(true);
-        setIsTriageLoading(true);
-
-        try {
-          const compareInputs = derivePreviousWindowInputs(latestInvestigationContext);
-
-          const data = await runTriage(compareInputs);
-
-          const previousSummary =
-            data.swarm?.assessment?.summary ||
-            data.summaryText ||
-            "Previous window comparison completed.";
-
-          const currentSummary =
-            latestTriageRun.swarm?.assessment?.summary ||
-            latestTriageRun.summaryText ||
-            "Current window summary unavailable.";
-
-          const requestedSignal = detectCompareSignalFromText(text);
-
-          const resolvedCompareSignal =
-            requestedSignal ??
-            data.primarySignal ??
-            latestTriageRun.swarm?.assessment?.primarySignal ??
-            "cache";
-
-          const compareGraph =
-            data.compareGraph ??
-            buildCompareGraphFromTwoRuns({
-              currentMetricsJson: latestTriageRun.metricsJson,
-              previousMetricsJson: data.metricsJson,
-              primarySignal: resolvedCompareSignal,
-            });
-
-          console.log("COMPARE DEBUG requestedSignal", requestedSignal);
-          console.log("COMPARE DEBUG resolvedCompareSignal", resolvedCompareSignal);
-          console.log("COMPARE DEBUG data.compareGraph", data.compareGraph);
-          console.log(
-            "COMPARE DEBUG current points",
-            data.metricsJson?.timeseries?.points?.length ?? 0
-          );
-          console.log(
-            "COMPARE DEBUG previous points",
-            data.metricsJson?.previousWindow?.timeseries?.points?.length ?? 0
-          );
-          console.log("COMPARE DEBUG final compareGraph", compareGraph);
-
-          addCompareCard({
-            summary:
-              `Compared against the previous window.\n\n` +
-              `Current: ${currentSummary}\n\n` +
-              `Previous: ${previousSummary}`,
-            overallState:
-              data.overallState ??
-              latestTriageRun.swarm?.assessment?.overallStatus,
-            primarySignal: resolvedCompareSignal,
-            compareMetrics: data.compareMetrics,
-            compareGraph,
-          });
-
-          pushRunLog("Compare card created from previous-window rerun.");
-        } catch (e: any) {
-          addText("assistant", `⚠️ ${e?.message || "Compare failed."}`);
-        } finally {
-          setTyping(false);
-          setIsTriageLoading(false);
-        }
-
-        return;
-      }
-
-      if (chatIntent === "explain") {
-        if (!latestTriageRun) {
-          addText(
-            "assistant",
-            "Run a triage first, then I can explain what’s going on."
-          );
-          return;
-        }
-
-        const verdict = buildExplainVerdict(latestTriageRun);
-        const summary =
-          latestTriageRun.swarm?.assessment?.summary ||
-          latestTriageRun.summaryText ||
-          "No summary available.";
-
-        addExplainCard({
-          summary: `${verdict}\n\n${summary}`,
-          overallState: latestTriageRun.swarm?.assessment?.overallStatus,
-          primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
-        });
-        return;
-      }
-
-      pushRunLog(
-        `Intent parse: kind=${parseResult.intentKind} shouldTrigger=${parseResult.shouldTrigger} partner=${parseResult.partnerCanonical || "-"} service=${parseResult.serviceCanonical || "-"} time=${parseResult.timeMeta?.kind || "-"}`
-      );
-
-      if (!parseResult.shouldTrigger) {
-        if (chatIntent === "greeting") {
-          addText(
-            "assistant",
-            "Hey — I can help you investigate CDN performance. Try asking something like 'how is live traffic' or 'why is cache low'."
-          );
-          return;
-        }
-
-        if (chatIntent === "status_breakdown") {
-          if (!latestTriageRun) {
-            addText(
-              "assistant",
-              "Run a triage first, then I can show a status-code breakdown for the current investigation."
-            );
-            return;
-          }
-
-          const lowered = text.toLowerCase().replace(/what’s/g, "whats");
-          const metrics = latestTriageRun.metricsJson || {};
-
-          const statusCodes = ["200", "206", "304", "403", "404", "429", "500", "502", "503", "504"];
-
-          function readStatusCounts(row: any) {
-            return statusCodes
-              .map((code) => ({
-                code,
-                count: Number(row?.[`status_${code}`] || 0),
-              }))
-              .filter((x) => x.count > 0);
-          }
-
-          function formatStatusCounts(row: any) {
-            const counts = readStatusCounts(row);
-            if (!counts.length) return "No status counts found.";
-            return counts.map((x) => `${x.code}=${x.count.toLocaleString()}`).join(" • ");
-          }
-
-          const wantsByPop = lowered.includes("by pop") || lowered.includes("per pop");
-          const wantsByRegion = lowered.includes("by region") || lowered.includes("per region");
-          const wantsByHost = lowered.includes("by host") || lowered.includes("per host");
-
-          if (wantsByPop) {
-            const rows = Array.isArray(metrics.statusByPop) ? metrics.statusByPop : [];
-
-            if (rows.length) {
-              const topRows = rows.slice(0, 5);
-
-              addStatusBreakdownCard({
-                mode: "pop",
-                title: "Status breakdown by POP",
-                summary: "Top POPs ranked from the latest triage status payload.",
-                rows: topRows.map((row: any) => {
-                  const counts: Record<string, number> = {};
-                  for (const code of statusCodes) {
-                    counts[code] = Number(row?.[`status_${code}`] || 0);
-                  }
-
-                  return {
-                    label: String(row?.pop || "unknown"),
-                    totalRequests: Number(row?.total_requests ?? row?.totalRequests ?? 0),
-                    counts,
-                  };
-                }),
-              });
-              return;
-            }
-
-            const fallbackRows = Array.isArray(metrics.popBreakdown)
-              ? metrics.popBreakdown
-              : [];
-
-            if (fallbackRows.length) {
-              addDrillCard({
-                drill: {
-                  type: "worst_pop",
-                  title: "POP breakdown",
-                  summary:
-                    "Per-status-code POP breakdown is not available on the latest triage result yet, so showing top POP breakdown instead.",
-                  rows: fallbackRows.slice(0, 20),
-                  metadata: {
-                    targetDimension: "pop",
-                    rowCount: fallbackRows.length,
-                  },
-                },
-                summaryText:
-                  "Per-status-code POP breakdown is not available on the latest triage result yet, so showing top POP breakdown instead.",
-              });
-              return;
-            }
-
-            addText(
-              "assistant",
-              "I recognized a POP-level status breakdown request, but there is no status-by-POP data or POP breakdown on the latest triage result yet."
-            );
-            return;
-          }
-
-          if (wantsByRegion) {
-            const rows = Array.isArray(metrics.statusByRegion) ? metrics.statusByRegion : [];
-
-            if (rows.length) {
-              const topRows = rows.slice(0, 5);
-
-              addStatusBreakdownCard({
-                mode: "region",
-                title: "Status breakdown by region",
-                summary: "Top regions ranked from the latest triage status payload.",
-                rows: topRows.map((row: any) => {
-                  const counts: Record<string, number> = {};
-                  for (const code of statusCodes) {
-                    counts[code] = Number(row?.[`status_${code}`] || 0);
-                  }
-
-                  return {
-                    label: String(row?.region || "unknown"),
-                    totalRequests: Number(row?.total_requests ?? row?.totalRequests ?? 0),
-                    counts,
-                  };
-                }),
-              });
-              return;
-            }
-
-            const fallbackRows = Array.isArray(metrics.regionBreakdown)
-              ? metrics.regionBreakdown
-              : [];
-
-            if (fallbackRows.length) {
-              addDrillCard({
-                drill: {
-                  type: "worst_region",
-                  title: "Region breakdown",
-                  summary:
-                    "Per-status-code region breakdown is not available on the latest triage result yet, so showing top region breakdown instead.",
-                  rows: fallbackRows.slice(0, 20),
-                  metadata: {
-                    targetDimension: "region",
-                    rowCount: fallbackRows.length,
-                  },
-                },
-                summaryText:
-                  "Per-status-code region breakdown is not available on the latest triage result yet, so showing top region breakdown instead.",
-              });
-              return;
-            }
-
-            addText(
-              "assistant",
-              "I recognized a region-level status breakdown request, but there is no status-by-region data or region breakdown on the latest triage result yet."
-            );
-            return;
-          }
-
-          if (wantsByHost) {
-            const rows = Array.isArray(metrics.statusByHost) ? metrics.statusByHost : [];
-
-            if (rows.length) {
-              const topRows = rows.slice(0, 5);
-
-              addStatusBreakdownCard({
-                mode: "host",
-                title: "Status breakdown by host",
-                summary: "Top hosts ranked from the latest triage status payload.",
-                rows: topRows.map((row: any) => {
-                  const counts: Record<string, number> = {};
-                  for (const code of statusCodes) {
-                    counts[code] = Number(row?.[`status_${code}`] || 0);
-                  }
-
-                  return {
-                    label: String(row?.host || "unknown"),
-                    totalRequests: Number(row?.totalRequests ?? row?.total_requests ?? 0),
-                    counts,
-                  };
-                }),
-              });
-              return;
-            }
-
-            const fallbackRows = Array.isArray(metrics.hostBreakdown)
-              ? metrics.hostBreakdown
-              : [];
-
-            if (fallbackRows.length) {
-              addDrillCard({
-                drill: {
-                  type: "worst_host",
-                  title: "Host breakdown",
-                  summary:
-                    "Per-status-code host breakdown is not available on the latest triage result yet, so showing top host breakdown instead.",
-                  rows: fallbackRows.slice(0, 20),
-                  metadata: {
-                    targetDimension: "host",
-                    rowCount: fallbackRows.length,
-                  },
-                },
-                summaryText:
-                  "Per-status-code host breakdown is not available on the latest triage result yet, so showing top host breakdown instead.",
-              });
-              return;
-            }
-
-            addText(
-              "assistant",
-              "I recognized a host-level status breakdown request, but there is no status-by-host data or host breakdown on the latest triage result yet."
-            );
-            return;
-          }
-
-          const statusTs = parseStatusOnlyTimeseries(metrics);
-
-          if (statusTs?.points?.length) {
-            const totals: Record<string, number> = {
-              "200": 0,
-              "206": 0,
-              "304": 0,
-              "403": 0,
-              "404": 0,
-              "429": 0,
-              "500": 0,
-              "502": 0,
-              "503": 0,
-              "504": 0,
-            };
-
-            for (const point of statusTs.points) {
-              const counts = point.statusCountsByCode || {};
-              for (const code of statusCodes) {
-                totals[code] += Number(counts[code] || 0);
-              }
-            }
-
-            addStatusBreakdownCard({
-              mode: "aggregate",
-              title: "Status code distribution",
-              summary: "Aggregate status totals derived from the latest status-over-time payload.",
-              totals,
-            });
-            return;
-          }
-
-          const totals: Record<string, number> = {};
-          for (const code of statusCodes) {
-            totals[code] = Number(metrics?.[`status_${code}`] || 0);
-          }
-
-          addStatusBreakdownCard({
-            mode: "aggregate",
-            title: "Status code distribution",
-            summary: "Aggregate status totals read from the latest triage payload.",
-            totals,
-          });
-          return;
-        }
-
-        if (chatIntent === "triage" && !explicitDrillIntent) {
-          const fallbackPartner =
-            pendingChatScope.partner ||
-            latestTriageRun?.inputs.partner ||
-            partner ||
-            "";
-
-          const fallbackService =
-            pendingChatScope.service ||
-            latestTriageRun?.inputs.service ||
-            service ||
-            "";
-
-          if (!fallbackPartner || !fallbackService) {
-            addText(
-              "assistant",
-              "I can check the current status, but I need a partner and service first."
-            );
-            return;
-          }
-
-          const fallbackInputs: TriageInputs = {
-            dataSource: "clickhouse",
-            partner: fallbackPartner as PartnerOrMissing,
-            service: fallbackService,
-            region: latestTriageRun?.inputs.region || region || "all",
-            pop: latestTriageRun?.inputs.pop || pop || "all",
-            windowMinutes:
-              latestTriageRun?.inputs.windowMinutes || windowMinutes || 120,
-            startTsUtc: latestTriageRun?.inputs.startTsUtc ?? startTsUtc ?? null,
-            endTsUtc: latestTriageRun?.inputs.endTsUtc ?? endTsUtc ?? null,
-            contentType:
-              latestTriageRun?.inputs.contentType || contentType || "all",
-            uaFamily: latestTriageRun?.inputs.uaFamily || uaFamily || "all",
-          };
-
-          await executeTriageRun(fallbackInputs, "chat", {
-            chatContext: {
-              rawText: text,
-              parseMode: "filters-default",
-              detected: {
-                chatIntent,
-                fallbackFromNonTrigger: true,
-                reason: "generic triage wording",
-              },
-            },
-          });
-          return;
-        }
-
-        if (chatIntent === "drill" || explicitDrillIntent) {
+        if (parsed.lane === "exploration") {
           if (!latestInvestigationContext) {
             addText(
               "assistant",
-              "Run a triage first, then I can drill into the worst region or POP."
+              "Run a triage first, then I can explore metrics within the active investigation."
             );
             return;
           }
 
-          let drillInputs: TriageInputs | null = null;
-          let drillIntent:
-            | "worst_region"
-            | "worst_pop"
-            | "worst_host"
-            | "worst_ua"
-            | "worst_content"
-            | undefined;
-          let reason = "generic drill wording";
+          const baseExplorationIntent = parserExplorationIntent!;
 
-          const lowered = text.toLowerCase().replace(/what’s/g, "whats");
+          let effectiveExplorationIntent = {
+            ...baseExplorationIntent,
+          };
 
-          if (
-            lowered.includes("pop") &&
-            (lowered.includes("bad") ||
-              lowered.includes("worst") ||
-              lowered.includes("which"))
-          ) {
-            drillInputs = deriveWorstPopInputs(latestInvestigationContext);
-            drillIntent = "worst_pop";
-            reason = "drill worst pop fallback";
-          } else if (
-            lowered.includes("host") &&
-            (lowered.includes("bad") ||
-              lowered.includes("worst") ||
-              lowered.includes("which") ||
-              lowered.includes("show"))
-          ) {
-            drillInputs = contextToTriageInputs(latestInvestigationContext);
-            drillIntent = "worst_host";
-            reason = "drill worst host fallback";
-          } else if (
-            lowered.includes("region") &&
-            (lowered.includes("bad") ||
-              lowered.includes("worst") ||
-              lowered.includes("which") ||
-              lowered.includes("breakdown") ||
-              lowered.includes("by region"))
-          ) {
-            drillInputs = deriveWorstRegionInputs(latestInvestigationContext);
-            drillIntent = "worst_region";
-            reason = "drill worst region fallback";
-          } else if (
-            (lowered.includes("ua") ||
-              lowered.includes("ua family") ||
-              lowered.includes("device")) &&
-            (lowered.includes("bad") ||
-              lowered.includes("worst") ||
-              lowered.includes("which") ||
-              lowered.includes("by ua") ||
-              lowered.includes("by device"))
-          ) {
-            drillInputs = contextToTriageInputs(latestInvestigationContext);
-            drillIntent = "worst_ua";
-            reason = "drill worst ua fallback";
-          } else if (
-            (lowered.includes("content type") || lowered.includes("content")) &&
-            (lowered.includes("bad") ||
-              lowered.includes("worst") ||
-              lowered.includes("which") ||
-              lowered.includes("by content"))
-          ) {
-            drillInputs = contextToTriageInputs(latestInvestigationContext);
-            drillIntent = "worst_content";
-            reason = "drill worst content fallback";
-          } else if (lowered.includes("pop") || lowered.includes("by pop")) {
-            drillInputs = deriveWorstPopInputs(latestInvestigationContext);
-            drillIntent = "worst_pop";
-            reason = "drill pop breakdown fallback";
-          } else {
-            drillInputs = deriveWorstRegionInputs(latestInvestigationContext);
-            drillIntent = "worst_region";
-            reason = "default drill fallback";
+          // 🔥 Prefer parser ATS signals if present
+          if (parsed.rawCode) {
+            effectiveExplorationIntent = {
+              ...effectiveExplorationIntent,
+              metric: "ats",
+              atsRawCode: parsed.rawCode,
+            };
+          } else if (parsed.family) {
+            effectiveExplorationIntent = {
+              ...effectiveExplorationIntent,
+              metric: "ats",
+              atsFamily: parsed.family,
+            };
+          } else if (atsFamily) {
+            effectiveExplorationIntent = {
+              ...effectiveExplorationIntent,
+              metric: "ats",
+              atsFamily,
+            };
           }
 
-          if (!drillInputs || !drillIntent) {
-            addText(
-              "assistant",
-              "I need a prior triage result with enough evidence before I can drill further."
-            );
-            return;
+          // 🔥 Prefer parser time override if present
+          if (parsed.timeOverride) {
+            effectiveExplorationIntent = {
+              ...effectiveExplorationIntent,
+              timeOverride: convertParserTimeOverride(parsed.timeOverride),
+            };
           }
 
-          const safeDrillInputs = drillInputs;
-          const safeDrillIntent = drillIntent;
+          const baseContext = buildExplorationContextWithTimeOverride(
+            latestInvestigationContext,
+            effectiveExplorationIntent.timeOverride
+          );
 
-          await executeTriageRun(safeDrillInputs, "chat", {
-            drillIntent: safeDrillIntent,
-            chatContext: {
-              rawText: text,
-              parseMode: "chat-overrides",
-              detected: {
-                chatIntent,
-                fallbackFromNonTrigger: true,
-                reason,
-              },
-            },
+          // 🔥 APPLY PARSER SCOPE OVERRIDES (Bug 2 fix)
+          const explorationContext = {
+            ...baseContext,
+            region:
+              parsed.scopeChanges.region ??
+              baseContext.region,
+
+            pop:
+              parsed.scopeChanges.pop ??
+              baseContext.pop,
+
+            contentType:
+              parsed.scopeChanges.contentType ??
+              baseContext.contentType,
+
+            uaFamily:
+              parsed.scopeChanges.uaFamily ??
+              baseContext.uaFamily,
+          };
+
+          console.log("EXPLORATION TIME DEBUG", {
+            inheritedTime: latestInvestigationContext.time,
+            timeOverride: effectiveExplorationIntent.timeOverride ?? null,
+            effectiveContext: explorationContext,
+            atsTerms,
+            atsFamily,
+            parserLane: parsed.lane,
+            parserMetric: parsed.metric,
+            parserView: parsed.view,
+            parserDimension: parsed.dimension,
+            parserExplorationIntent,
+            effectiveExplorationIntent,
+          });
+
+          console.log("PAGE -> AGENT INTENT", effectiveExplorationIntent);
+
+          const result = await runExplorationAgent({
+            intent: effectiveExplorationIntent,
+            context: explorationContext,
+          });
+
+          addExplorationCard({
+            id: `${Date.now()}-${Math.random()}`,
+            role: "assistant",
+            ts: nowIso(),
+            title: result.title,
+            summary: result.summary,
+            metric: result.metric,
+            view: result.view === "over_time" ? "timeseries" : "breakdown",
+            displayLabel: result.displayLabel,
+            series: result.view === "over_time" ? result.series : undefined,
+            seriesSecondary:
+              result.view === "over_time" ? result.seriesSecondary : undefined,
+            rows: result.rows,
+            spotlight:
+              result.view !== "over_time" ? result.spotlight : undefined,
           });
           return;
-        } 
+        }
 
-          addText(
-          "assistant",
-          parseResult.replyText ||
-            "That didn't look like a triage request. Ask about traffic, latency, errors, cache, or incidents — or click Run Triage with the current scope."
+        const shouldCompare =
+          parsed.lane === "compare" || legacyIntent === "compare";
+
+        if (shouldCompare) {
+          if (!latestTriageRun || !latestInvestigationContext) {
+            addText(
+              "assistant",
+              "Run a triage first, then I can compare this window to the previous one."
+            );
+            return;
+          }
+
+          setTyping(true);
+          setIsTriageLoading(true);
+
+          try {
+            const compareInputs = derivePreviousWindowInputs(latestInvestigationContext);
+
+            const data = await runTriage(compareInputs);
+
+            const previousSummary =
+              data.swarm?.assessment?.summary ||
+              data.summaryText ||
+              "Previous window comparison completed.";
+
+            const currentSummary =
+              latestTriageRun.swarm?.assessment?.summary ||
+              latestTriageRun.summaryText ||
+              "Current window summary unavailable.";
+
+            const requestedSignal = detectCompareSignalFromText(text);
+
+            const resolvedCompareSignal =
+              requestedSignal ??
+              data.primarySignal ??
+              latestTriageRun.swarm?.assessment?.primarySignal ??
+              "cache";
+
+            const compareGraph =
+              data.compareGraph ??
+              buildCompareGraphFromTwoRuns({
+                currentMetricsJson: latestTriageRun.metricsJson,
+                previousMetricsJson: data.metricsJson,
+                primarySignal: resolvedCompareSignal,
+              });
+
+            console.log("COMPARE DEBUG requestedSignal", requestedSignal);
+            console.log("COMPARE DEBUG resolvedCompareSignal", resolvedCompareSignal);
+            console.log("COMPARE DEBUG data.compareGraph", data.compareGraph);
+            console.log(
+              "COMPARE DEBUG current points",
+              data.metricsJson?.timeseries?.points?.length ?? 0
+            );
+            console.log(
+              "COMPARE DEBUG previous points",
+              data.metricsJson?.previousWindow?.timeseries?.points?.length ?? 0
+            );
+            console.log("COMPARE DEBUG final compareGraph", compareGraph);
+
+            addCompareCard({
+              summary:
+                `Compared against the previous window.\n\n` +
+                `Current: ${currentSummary}\n\n` +
+                `Previous: ${previousSummary}`,
+              overallState:
+                data.overallState ??
+                latestTriageRun.swarm?.assessment?.overallStatus,
+              primarySignal: resolvedCompareSignal,
+              compareMetrics: data.compareMetrics,
+              compareGraph,
+            });
+
+            pushRunLog("Compare card created from previous-window rerun.");
+          } catch (e: any) {
+            addText("assistant", `⚠️ ${e?.message || "Compare failed."}`);
+          } finally {
+            setTyping(false);
+            setIsTriageLoading(false);
+          }
+
+          return;
+        }
+
+        pushRunLog(
+          `Intent parse: kind=${parseResult.intentKind} shouldTrigger=${parseResult.shouldTrigger} partner=${parseResult.partnerCanonical || "-"} service=${parseResult.serviceCanonical || "-"} time=${parseResult.timeMeta?.kind || "-"}`
         );
-        return;
-      }
 
-      if (explicitDrillIntent) {
-        if (!latestInvestigationContext) {
+        if (!parseResult.shouldTrigger) {
+
+          if (legacyIntent === "status_breakdown") {
+            if (!latestTriageRun) {
+              addText(
+                "assistant",
+                "Run a triage first, then I can show a status-code breakdown for the current investigation."
+              );
+              return;
+            }
+
+            const lowered = text.toLowerCase().replace(/what’s/g, "whats");
+            const metrics = latestTriageRun.metricsJson || {};
+            const statusCodes = ["200", "206", "304", "403", "404", "429", "500", "502", "503", "504"];
+
+            const mentionsRegion =
+              lowered.includes("by region") || lowered.includes("per region");
+            const mentionsPop =
+              lowered.includes("by pop") || lowered.includes("per pop");
+            const mentionsHost =
+              lowered.includes("by host") || lowered.includes("per host");
+
+            if (mentionsRegion && Array.isArray(metrics.regionBreakdown)) {
+              addStatusBreakdownCard({
+                mode: "region",
+                title: "Status breakdown by region",
+                summary: "Showing explicit status code counts by region for the current investigation.",
+                rows: metrics.regionBreakdown.map((row: any) => ({
+                  label: String(row.region || "unknown"),
+                  totalRequests: Number(row.totalRequests || 0),
+                  counts: Object.fromEntries(
+                    statusCodes.map((code) => [code, Number(row?.[`status_${code}`] || 0)])
+                  ),
+                })),
+              });
+              return;
+            }
+
+            if (mentionsPop && Array.isArray(metrics.popBreakdown)) {
+              addStatusBreakdownCard({
+                mode: "pop",
+                title: "Status breakdown by POP",
+                summary: "Showing explicit status code counts by POP for the current investigation.",
+                rows: metrics.popBreakdown.map((row: any) => ({
+                  label: String(row.pop || "unknown"),
+                  totalRequests: Number(row.totalRequests || 0),
+                  counts: Object.fromEntries(
+                    statusCodes.map((code) => [code, Number(row?.[`status_${code}`] || 0)])
+                  ),
+                })),
+              });
+              return;
+            }
+
+            if (mentionsHost && Array.isArray(metrics?.timeseries?.hostSeries)) {
+              addStatusBreakdownCard({
+                mode: "host",
+                title: "Status breakdown by host",
+                summary: "Showing explicit host-level totals for the current investigation.",
+                rows: metrics.timeseries.hostSeries.map((row: any) => ({
+                  label: String(row.host || "unknown"),
+                  totalRequests: Number(row.totalRequests || 0),
+                  counts: {
+                    "200": 0,
+                    "206": 0,
+                    "304": 0,
+                    "403": 0,
+                    "404": 0,
+                    "429": 0,
+                    "500": Number(row.error5xxCount || 0),
+                    "502": 0,
+                    "503": 0,
+                    "504": 0,
+                  },
+                })),
+              });
+              return;
+            }
+
+            const aggregate =
+              Array.isArray(metrics?.timeseries?.statusOverTime) &&
+              metrics.timeseries.statusOverTime.length
+                ? metrics.timeseries.statusOverTime.reduce(
+                    (acc: Record<string, number>, row: any) => {
+                      for (const code of statusCodes) {
+                        acc[code] = (acc[code] || 0) + Number(row?.[`status_${code}`] || 0);
+                      }
+                      return acc;
+                    },
+                    {}
+                  )
+                : Object.fromEntries(statusCodes.map((code) => [code, 0]));
+
+            addStatusBreakdownCard({
+              mode: "aggregate",
+              title: "Status breakdown",
+              summary: "Showing explicit status code totals for the current investigation.",
+              totals: aggregate,
+            });
+            return;
+          }
+
           addText(
             "assistant",
-            "Run a triage first, then I can drill into the worst region, POP, device, or content type."
+            parseResult.replyText ||
+              "That didn't look like a triage request. Ask about traffic, latency, errors, cache, or incidents — or click Run Triage with the current scope."
           );
           return;
         }
 
-  let drillInputs: TriageInputs | null = null;
-  let drillIntent:
-    | "worst_region"
-    | "worst_pop"
-    | "worst_host"
-    | "worst_ua"
-    | "worst_content"
-    | undefined;
+        const shouldExplain =
+          legacyIntent === "explain" ||
+          parsed.lane === "explain" ||
+          /\b(explain|why|what happened|what is going on|whats going on)\b/i.test(
+            normalizedText
+          );
 
-  if (explicitDrillIntent === "worst_pop") {
-    drillInputs = deriveWorstPopInputs(latestInvestigationContext);
-    drillIntent = "worst_pop";
-  } else if (explicitDrillIntent === "worst_host") {
-    drillInputs = contextToTriageInputs(latestInvestigationContext);
-    drillIntent = "worst_host";
-  } else if (explicitDrillIntent === "worst_region") {
-    drillInputs = deriveWorstRegionInputs(latestInvestigationContext);
-    drillIntent = "worst_region";
-  } else if (explicitDrillIntent === "worst_ua") {
-    drillInputs = contextToTriageInputs(latestInvestigationContext);
-    drillIntent = "worst_ua";
-  } else if (explicitDrillIntent === "worst_content") {
-    drillInputs = contextToTriageInputs(latestInvestigationContext);
-    drillIntent = "worst_content";
+        if (shouldExplain) {
+          if (!latestTriageRun) {
+            addText(
+              "assistant",
+              "Run a triage first, then I can explain what’s going on."
+            );
+            return;
+          }
+
+          const verdict = buildExplainVerdict(latestTriageRun);
+          const summary =
+            latestTriageRun.swarm?.assessment?.summary ||
+            latestTriageRun.summaryText ||
+            "No summary available.";
+
+          addExplainCard({
+            summary: `${verdict}\n\n${summary}`,
+            overallState: latestTriageRun.swarm?.assessment?.overallStatus,
+            primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
+          });
+          return;
+        }
+
+        if (explicitDrillIntent) {
+          if (!latestInvestigationContext) {
+            addText(
+              "assistant",
+              "Run a triage first, then I can drill into the worst region, POP, device, or content type."
+            );
+            return;
+          }
+
+    let drillInputs: TriageInputs | null = null;
+    let drillIntent:
+      | "worst_region"
+      | "worst_pop"
+      | "worst_host"
+      | "worst_ua"
+      | "worst_content"
+      | undefined;
+
+    if (explicitDrillIntent === "worst_pop") {
+      drillInputs = deriveWorstPopInputs(latestInvestigationContext);
+      drillIntent = "worst_pop";
+    } else if (explicitDrillIntent === "worst_host") {
+      drillInputs = contextToTriageInputs(latestInvestigationContext);
+      drillIntent = "worst_host";
+    } else if (explicitDrillIntent === "worst_region") {
+      drillInputs = deriveWorstRegionInputs(latestInvestigationContext);
+      drillIntent = "worst_region";
+    } else if (explicitDrillIntent === "worst_ua") {
+      drillInputs = contextToTriageInputs(latestInvestigationContext);
+      drillIntent = "worst_ua";
+    } else if (explicitDrillIntent === "worst_content") {
+      drillInputs = contextToTriageInputs(latestInvestigationContext);
+      drillIntent = "worst_content";
+    }
+
+    if (!drillInputs || !drillIntent) {
+      addText(
+        "assistant",
+        "I need a prior triage result with enough evidence before I can drill further."
+      );
+      return;
+    }
+
+    await executeTriageRun(drillInputs, "chat", {
+      drillIntent,
+      chatContext: {
+        rawText: text,
+        parseMode: "chat-overrides",
+        detected: {
+          legacyIntent,
+          explicitDrillIntent,
+          forcedExplicitDrillIntercept: true,
+        },
+      },
+    });
+    return;
   }
 
-  if (!drillInputs || !drillIntent) {
+  const mergedPartner =
+    (parseResult.partnerCanonical ||
+      pendingChatScope.partner ||
+      latestTriageRun?.inputs.partner ||
+      partner ||
+      "") as PartnerOrMissing;
+
+  const mergedService =
+    parseResult.serviceCanonical ||
+    pendingChatScope.service ||
+    latestTriageRun?.inputs.service ||
+    service ||
+    "";
+
+  if (!mergedPartner || !mergedService) {
+    setPendingChatScope({
+      partner: mergedPartner,
+      service: mergedService,
+    });
+
+    if (!mergedPartner && !mergedService) {
+      addText(
+        "assistant",
+        `Pick a partner and service first. Partners: ${PARTNER_OPTIONS.join(", ")}. Services: ${SERVICE_OPTIONS.join(", ")}.`
+      );
+      return;
+    }
+
+    if (!mergedPartner) {
+      addText(
+        "assistant",
+        `Got it${mergedService ? ` — service=${mergedService}` : ""}. Now pick a partner. (${PARTNER_OPTIONS.join(", ")})`
+      );
+      return;
+    }
+
     addText(
       "assistant",
-      "I need a prior triage result with enough evidence before I can drill further."
+      `Got it${mergedPartner ? ` — partner=${mergedPartner}` : ""}. Now pick a service. (${SERVICE_OPTIONS.join(", ")})`
     );
     return;
   }
 
-  await executeTriageRun(drillInputs, "chat", {
-    drillIntent,
+  const built = buildChatInputsFromIntent({
+    parseResult,
+    resolvedPartner: mergedPartner,
+    resolvedService: mergedService,
+    region,
+    pop,
+    windowMinutes,
+    contentType,
+    uaFamily,
+    allowedRegions: availableRegions,
+    allowedPops: availablePops,
+    allowedContentTypes: availableContentTypes,
+    allowedUaFamilies: availableUaFamilies,
+    now: new Date(),
+  });
+
+  if (!built.ok) {
+    addText("assistant", built.error);
+    return;
+  }
+
+  await executeTriageRun(built.inputs, "chat", {
     chatContext: {
-      rawText: text,
-      parseMode: "chat-overrides",
+      ...(built.chatContext || {}),
       detected: {
-        chatIntent,
-        explicitDrillIntent,
-        forcedExplicitDrillIntercept: true,
+        ...(built.chatContext?.detected || {}),
+        mergedPartner,
+        mergedService,
+        pendingScopeUsed: Boolean(
+          pendingChatScope.partner || pendingChatScope.service
+        ),
       },
     },
   });
-  return;
-}
-
-const mergedPartner =
-  (parseResult.partnerCanonical ||
-    pendingChatScope.partner ||
-    latestTriageRun?.inputs.partner ||
-    partner ||
-    "") as PartnerOrMissing;
-
-const mergedService =
-  parseResult.serviceCanonical ||
-  pendingChatScope.service ||
-  latestTriageRun?.inputs.service ||
-  service ||
-  "";
-
-if (!mergedPartner || !mergedService) {
-  setPendingChatScope({
-    partner: mergedPartner,
-    service: mergedService,
-  });
-
-  if (!mergedPartner && !mergedService) {
-    addText(
-      "assistant",
-      `Pick a partner and service first. Partners: ${PARTNER_OPTIONS.join(", ")}. Services: ${SERVICE_OPTIONS.join(", ")}.`
-    );
-    return;
   }
 
-  if (!mergedPartner) {
-    addText(
-      "assistant",
-      `Got it${mergedService ? ` — service=${mergedService}` : ""}. Now pick a partner. (${PARTNER_OPTIONS.join(", ")})`
-    );
-    return;
+  async function handleSend() {
+    const text = chatInput.trim();
+    if (!text || isTriageLoading) return;
+
+    setChatInput("");
+    await processUserMessage(text);
   }
 
-  addText(
-    "assistant",
-    `Got it${mergedPartner ? ` — partner=${mergedPartner}` : ""}. Now pick a service. (${SERVICE_OPTIONS.join(", ")})`
+  const latestAssessment = latestTriageRun?.swarm?.assessment ?? null;
+  const headerStatusLabel = uiStatusLabel(
+    latestAssessment?.overallStatus,
+    isTriageLoading
   );
-  return;
-}
+  const headerStatusClass = uiStatusClass(
+    latestAssessment?.overallStatus,
+    isTriageLoading
+  );
 
-const built = buildChatInputsFromIntent({
-  parseResult,
-  resolvedPartner: mergedPartner,
-  resolvedService: mergedService,
-  region,
-  pop,
-  windowMinutes,
-  contentType,
-  uaFamily,
-  allowedRegions: availableRegions,
-  allowedPops: availablePops,
-  allowedContentTypes: availableContentTypes,
-  allowedUaFamilies: availableUaFamilies,
-  now: new Date(),
-});
+  const scopeSummary = useMemo(() => {
+    if (isTriageLoading) return `Status: ${headerStatusLabel}`;
+    if (!latestTriageRun || !latestAssessment?.overallStatus) return "Status: Idle";
+    const run = latestTriageRun.inputs;
+    const timeText =
+      run.startTsUtc && run.endTsUtc
+        ? `${isoToUtcText(run.startTsUtc)} → ${isoToUtcText(run.endTsUtc)} UTC`
+        : `last ${run.windowMinutes}m`;
+    return `Status: ${headerStatusLabel} • ${run.partner || "—"} • ${run.service || "—"} • ${run.region || "all"} • ${timeText}`;
+  }, [
+    isTriageLoading,
+    latestTriageRun,
+    latestAssessment?.overallStatus,
+    headerStatusLabel,
+  ]);
 
-if (!built.ok) {
-  addText("assistant", built.error);
-  return;
-}
+  const utcWindowPreview = useMemo(() => {
+    if (draftTimeMode !== "absolute") return "";
+    return computeWindowPreview(draftStartUtcLocal, draftEndUtcLocal);
+  }, [draftTimeMode, draftStartUtcLocal, draftEndUtcLocal]);
 
-await executeTriageRun(built.inputs, "chat", {
-  chatContext: {
-    ...(built.chatContext || {}),
-    detected: {
-      ...(built.chatContext?.detected || {}),
-      mergedPartner,
-      mergedService,
-      pendingScopeUsed: Boolean(
-        pendingChatScope.partner || pendingChatScope.service
-      ),
-    },
-  },
-});
-}
+  const hasTriage = useMemo(() => {
+    return chatMessages.some((m) => m.type === "triage");
+  }, [chatMessages]);
 
-async function handleSend() {
-  const text = chatInput.trim();
-  if (!text || isTriageLoading) return;
+  const showHomeLauncher = mounted && !hasTriage;
 
-  setChatInput("");
-  await processUserMessage(text);
-}
+  const suggestedActions = useMemo(() => {
+    if (!latestActionableMsg) return [];
 
-const latestAssessment = latestTriageRun?.swarm?.assessment ?? null;
-const headerStatusLabel = uiStatusLabel(
-  latestAssessment?.overallStatus,
-  isTriageLoading
-);
-const headerStatusClass = uiStatusClass(
-  latestAssessment?.overallStatus,
-  isTriageLoading
-);
+    if (latestActionableMsg.type === "triage") {
+      return getNextActions({
+        type: "triage",
+        primarySignal: latestActionableMsg.run.swarm?.assessment?.primarySignal,
+      }).slice(0, 3);
+    }
 
-const scopeSummary = useMemo(() => {
-  if (isTriageLoading) return `Status: ${headerStatusLabel}`;
-  if (!latestTriageRun || !latestAssessment?.overallStatus) return "Status: Idle";
-  const run = latestTriageRun.inputs;
-  const timeText =
-    run.startTsUtc && run.endTsUtc
-      ? `${isoToUtcText(run.startTsUtc)} → ${isoToUtcText(run.endTsUtc)} UTC`
-      : `last ${run.windowMinutes}m`;
-  return `Status: ${headerStatusLabel} • ${run.partner || "—"} • ${run.service || "—"} • ${run.region || "all"} • ${timeText}`;
-}, [
-  isTriageLoading,
-  latestTriageRun,
-  latestAssessment?.overallStatus,
-  headerStatusLabel,
-]);
+    if (latestActionableMsg.type === "compare") {
+      return getNextActions({
+        type: "compare",
+        primarySignal: latestActionableMsg.primarySignal,
+      }).slice(0, 3);
+    }
 
-const utcWindowPreview = useMemo(() => {
-  if (draftTimeMode !== "absolute") return "";
-  return computeWindowPreview(draftStartUtcLocal, draftEndUtcLocal);
-}, [draftTimeMode, draftStartUtcLocal, draftEndUtcLocal]);
+    if (latestActionableMsg.type === "explain") {
+      return getNextActions({
+        type: "explain",
+        primarySignal: latestActionableMsg.primarySignal,
+      }).slice(0, 3);
+    }
 
-const hasTriage = useMemo(() => {
-  return chatMessages.some((m) => m.type === "triage");
-}, [chatMessages]);
+    if (latestActionableMsg.type === "drill") {
+      return getNextActions({
+        type: "drill",
+      }).slice(0, 3);
+    }
 
-const showHomeLauncher = mounted && !hasTriage;
+    return [];
+  }, [latestActionableMsg]);
 
-const suggestedActions = useMemo(() => {
-  if (!latestActionableMsg) return [];
+  console.log("latestActionableMsg", latestActionableMsg);
+  console.log("suggestedActions", suggestedActions);
 
-  if (latestActionableMsg.type === "triage") {
-    return getNextActions({
-      type: "triage",
-      primarySignal: latestActionableMsg.run.swarm?.assessment?.primarySignal,
-    }).slice(0, 3);
-  }
-
-  if (latestActionableMsg.type === "compare") {
-    return getNextActions({
-      type: "compare",
-      primarySignal: latestActionableMsg.primarySignal,
-    }).slice(0, 3);
-  }
-
-  if (latestActionableMsg.type === "explain") {
-    return getNextActions({
-      type: "explain",
-      primarySignal: latestActionableMsg.primarySignal,
-    }).slice(0, 3);
-  }
-
-  if (latestActionableMsg.type === "drill") {
-    return getNextActions({
-      type: "drill",
-    }).slice(0, 3);
-  }
-
-  return [];
-}, [latestActionableMsg]);
-
-console.log("latestActionableMsg", latestActionableMsg);
-console.log("suggestedActions", suggestedActions);
-
-return (
-  <main className="min-h-screen bg-[#07090d] text-gray-100">
-    <div className="sticky top-0 z-50 border-b border-white/10 bg-[#0b0f14]/90 backdrop-blur-xl">
-      <div className="mx-auto w-full max-w-[1300px] px-6 py-4">
-        <div className="flex items-center gap-3">
-          <Image src={LOGO_SRC} alt="Cachey" width={34} height={34} className="rounded-full" />
-          <div className="min-w-0">
-            <div className="font-semibold text-lg text-white leading-tight">
-              Cachey <span className="text-gray-400">🤖</span>
+  return (
+    <main className="min-h-screen bg-[#07090d] text-gray-100">
+      <div className="sticky top-0 z-50 border-b border-white/10 bg-[#0b0f14]/90 backdrop-blur-xl">
+        <div className="mx-auto w-full max-w-[1300px] px-6 py-4">
+          <div className="flex items-center gap-3">
+            <Image src={LOGO_SRC} alt="Cachey" width={34} height={34} className="rounded-full" />
+            <div className="min-w-0">
+              <div className="font-semibold text-lg text-white leading-tight">
+                Cachey <span className="text-gray-400">🤖</span>
+              </div>
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              <a
+                href="/debug"
+                className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
+              >
+                Debug
+              </a>
             </div>
           </div>
-          <div className="ml-auto flex items-center gap-2">
-            <a
-              href="/debug"
-              className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
-            >
-              Debug
-            </a>
-          </div>
+          <div className={`mt-3 text-sm ${headerStatusClass}`}>{scopeSummary}</div>
         </div>
-        <div className={`mt-3 text-sm ${headerStatusClass}`}>{scopeSummary}</div>
       </div>
-    </div>
 
-    <div className="mx-auto w-full max-w-[1300px] px-6 py-6">
-      {hasTriage && filtersOpen && (
-        <div className="mb-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-white">Scope Controls</div>
-              <div className="text-xs text-gray-400 mt-1">
-                Apply updates the active scope. Run uses the applied scope.
-                <span className="ml-2 text-gray-500">(TTL: 10m · service persists)</span>
+      <div className="mx-auto w-full max-w-[1300px] px-6 py-6">
+        {hasTriage && filtersOpen && (
+          <div className="mb-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-white">Scope Controls</div>
+                <div className="text-xs text-gray-400 mt-1">
+                  Apply updates the active scope. Run uses the applied scope.
+                  <span className="ml-2 text-gray-500">(TTL: 10m · service persists)</span>
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setDraftService(service);
-                  setDraftRegion(region);
-                  setDraftPop(pop);
-                  setDraftWindowMinutes(windowMinutes);
-                  setDraftContentType(contentType);
-                  setDraftUaFamily(uaFamily);
-                  setDraftTimeMode(timeMode);
-                  setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
-                  setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
-                  setFiltersDirty(false);
-                }}
-                className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
-              >
-                Reset draft
-              </button>
-              <button
-                type="button"
-                onClick={resetAllFilters}
-                className="rounded-lg border border-white/10 bg-red-500/10 px-3 py-2 text-xs text-red-200 hover:bg-red-500/15"
-              >
-                Clear all
-              </button>
-              <button
-                type="button"
-                onClick={() => setFiltersOpen(false)}
-                className="rounded-lg border border-white/10 bg-white/10 px-3 py-2 text-xs hover:bg-white/15"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-            <div className="min-w-0">
-              <div className="text-xs text-gray-400 mb-1">
-                Partner <span className="text-amber-300">*</span>
-              </div>
-              <select
-                className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                value={partner}
-                onChange={(e) => {
-                  setPartnerSticky(e.target.value);
-                  setFiltersDirty(true);
-                }}
-                disabled={!mounted}
-              >
-                <option value="" className="bg-black">
-                  Select…
-                </option>
-                {PARTNER_OPTIONS.map((p) => (
-                  <option key={p} value={p} className="bg-black">
-                    {p}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="min-w-0">
-              <div className="text-xs text-gray-400 mb-1">
-                Service <span className="text-amber-300">*</span>
-              </div>
-              <select
-                className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                value={draftService}
-                onChange={(e) => {
-                  setDraftService(String(e.target.value || ""));
-                  setFiltersDirty(true);
-                }}
-                disabled={!mounted}
-              >
-                <option value="" className="bg-black">
-                  Select…
-                </option>
-                {SERVICE_OPTIONS.map((s) => (
-                  <option key={s} value={s} className="bg-black">
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="min-w-0">
-              <div className="text-xs text-gray-400 mb-1">Region</div>
-              <select
-                className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                value={draftRegion}
-                onChange={(e) => {
-                  setDraftRegion(String(e.target.value || "all"));
-                  setFiltersDirty(true);
-                }}
-                disabled={!mounted}
-              >
-                {availableRegions.map((r) => (
-                  <option key={r} value={r} className="bg-black">
-                    {r}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="min-w-0">
-              <div className="text-xs text-gray-400 mb-1">POP</div>
-              <select
-                className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                value={draftPop}
-                onChange={(e) => {
-                  setDraftPop(String(e.target.value || "all"));
-                  setFiltersDirty(true);
-                }}
-                disabled={!mounted}
-              >
-                {availablePops.map((p) => (
-                  <option key={p} value={p} className="bg-black">
-                    {p}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-            <div className="min-w-0">
-              <div className="text-xs text-gray-400 mb-1">Content Type</div>
-              <select
-                className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                value={draftContentType}
-                onChange={(e) => {
-                  setDraftContentType(String(e.target.value || "all"));
-                  setFiltersDirty(true);
-                }}
-                disabled={!mounted}
-              >
-                {availableContentTypes.map((ct) => (
-                  <option key={ct} value={ct} className="bg-black">
-                    {ct}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="min-w-0">
-              <div className="text-xs text-gray-400 mb-1">UA Family</div>
-              <select
-                className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                value={draftUaFamily}
-                onChange={(e) => {
-                  setDraftUaFamily(String(e.target.value || "all"));
-                  setFiltersDirty(true);
-                }}
-                disabled={!mounted}
-              >
-                {availableUaFamilies.map((ua) => (
-                  <option key={ua} value={ua} className="bg-black">
-                    {ua}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="min-w-0 xl:col-span-2">
-              <div className="flex items-center justify-between mb-1">
-                <div className="text-xs text-gray-400">Time Window</div>
-                <div className="text-[11px] text-blue-400/70 font-mono">UTC</div>
-              </div>
-
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => {
-                    setDraftTimeMode("relative");
-                    setFiltersDirty(true);
+                    setDraftService(service);
+                    setDraftRegion(region);
+                    setDraftPop(pop);
+                    setDraftWindowMinutes(windowMinutes);
+                    setDraftContentType(contentType);
+                    setDraftUaFamily(uaFamily);
+                    setDraftTimeMode(timeMode);
+                    setDraftStartUtcLocal(isoToDatetimeLocalUtc(startTsUtc));
+                    setDraftEndUtcLocal(isoToDatetimeLocalUtc(endTsUtc));
+                    setFiltersDirty(false);
                   }}
-                  className={`px-3 py-1.5 rounded-full border text-xs transition ${
-                    draftTimeMode === "relative"
-                      ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
-                      : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
-                  }`}
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"
                 >
-                  Relative
+                  Reset draft
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setDraftTimeMode("absolute");
-                    setFiltersDirty(true);
-                  }}
-                  className={`px-3 py-1.5 rounded-full border text-xs transition ${
-                    draftTimeMode === "absolute"
-                      ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
-                      : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
-                  }`}
+                  onClick={resetAllFilters}
+                  className="rounded-lg border border-white/10 bg-red-500/10 px-3 py-2 text-xs text-red-200 hover:bg-red-500/15"
                 >
-                  Absolute
+                  Clear all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFiltersOpen(false)}
+                  className="rounded-lg border border-white/10 bg-white/10 px-3 py-2 text-xs hover:bg-white/15"
+                >
+                  Close
                 </button>
               </div>
+            </div>
 
-              {draftTimeMode === "relative" ? (
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400 mb-1">
+                  Partner <span className="text-amber-300">*</span>
+                </div>
                 <select
                   className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                  value={String(draftWindowMinutes)}
+                  value={partner}
                   onChange={(e) => {
-                    setDraftWindowMinutes(Number(e.target.value));
+                    setPartnerSticky(e.target.value);
                     setFiltersDirty(true);
                   }}
                   disabled={!mounted}
                 >
-                  {[30, 60, 120, 360, 720, 1440].map((m) => (
-                    <option key={m} value={String(m)} className="bg-black">
-                      Last {m}m
+                  <option value="" className="bg-black">
+                    Select…
+                  </option>
+                  {PARTNER_OPTIONS.map((p) => (
+                    <option key={p} value={p} className="bg-black">
+                      {p}
                     </option>
                   ))}
                 </select>
-              ) : (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-2 gap-2">
-                    <UtcDateTimeInput
-                      label="Start (UTC)"
-                      value={draftStartUtcLocal}
-                      onChange={(next) => {
-                        setDraftStartUtcLocal(next);
-                        setFiltersDirty(true);
-                      }}
-                    />
+              </div>
 
-                    <UtcDateTimeInput
-                      label="End (UTC)"
-                      value={draftEndUtcLocal}
-                      onChange={(next) => {
-                        setDraftEndUtcLocal(next);
-                        setFiltersDirty(true);
-                      }}
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-[11px] font-mono text-blue-300/80 min-h-[16px]">
-                      {utcWindowPreview && (
-                        <>
-                          <span className="text-gray-500 mr-1">
-                            {draftStartUtcLocal
-                              ? isoToUtcText(parseDatetimeLocalAsUtcToIso(draftStartUtcLocal))
-                              : "—"}
-                          </span>
-                          <span className="text-gray-500 mx-1">→</span>
-                          <span className="text-gray-500 mr-2">
-                            {draftEndUtcLocal
-                              ? isoToUtcText(parseDatetimeLocalAsUtcToIso(draftEndUtcLocal))
-                              : "—"}
-                          </span>
-                          <span className="text-blue-300 font-semibold">{utcWindowPreview}</span>
-                        </>
-                      )}
-                    </div>
-                    <div className="flex gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const end = new Date();
-                          const start = new Date(end.getTime() - 60 * 60 * 1000);
-                          setDraftStartUtcLocal(isoToDatetimeLocalUtc(start.toISOString()));
-                          setDraftEndUtcLocal(isoToDatetimeLocalUtc(end.toISOString()));
-                          setFiltersDirty(true);
-                        }}
-                        className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
-                      >
-                        Last 60m
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setDraftEndUtcLocal(isoToDatetimeLocalUtc(new Date().toISOString()));
-                          setFiltersDirty(true);
-                        }}
-                        className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
-                      >
-                        End=Now
-                      </button>
-                    </div>
-                  </div>
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400 mb-1">
+                  Service <span className="text-amber-300">*</span>
                 </div>
-              )}
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                  value={draftService}
+                  onChange={(e) => {
+                    setDraftService(String(e.target.value || ""));
+                    setFiltersDirty(true);
+                  }}
+                  disabled={!mounted}
+                >
+                  <option value="" className="bg-black">
+                    Select…
+                  </option>
+                  {SERVICE_OPTIONS.map((s) => (
+                    <option key={s} value={s} className="bg-black">
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400 mb-1">Region</div>
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                  value={draftRegion}
+                  onChange={(e) => {
+                    setDraftRegion(String(e.target.value || "all"));
+                    setFiltersDirty(true);
+                  }}
+                  disabled={!mounted}
+                >
+                  {availableRegions.map((r) => (
+                    <option key={r} value={r} className="bg-black">
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400 mb-1">POP</div>
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                  value={draftPop}
+                  onChange={(e) => {
+                    setDraftPop(String(e.target.value || "all"));
+                    setFiltersDirty(true);
+                  }}
+                  disabled={!mounted}
+                >
+                  {availablePops.map((p) => (
+                    <option key={p} value={p} className="bg-black">
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
-          </div>
 
-          <div className="mt-4 flex items-center justify-end gap-3">
-            <button
-              type="button"
-              disabled={!filtersDirty}
-              onClick={() => {
-                const res = applyDraftFilters();
-                if (!res.ok) addText("assistant", res.error);
-              }}
-              className="rounded-xl px-5 py-2 text-sm font-semibold bg-white/10 hover:bg-white/15 border border-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Apply
-            </button>
-          </div>
-        </div>
-      )}
-      {hasTriage && (
-        <MissionStrip
-          partner={partner}
-          service={service}
-          region={region}
-          pop={pop}
-          windowMinutes={windowMinutes}
-          timeMode={timeMode}
-          startTsUtc={startTsUtc}
-          endTsUtc={endTsUtc}
-          overallState={latestAssessment?.overallStatus}
-          primarySignal={latestAssessment?.primarySignal}
-          onChange={openFilters}
-        />
-      )}
-            <div>
-        {showHomeLauncher ? (
-          <div className="min-h-[520px] flex items-center justify-center">
-            <div className="w-full max-w-4xl">
-              <div className="rounded-[28px] border border-white/10 bg-white/[0.04] backdrop-blur-xl shadow-2xl shadow-black/20 p-6 md:p-8">
-                <div className="text-center mb-6">
-                  <div className="flex justify-center mb-3">
-                    <div className="cachey-launcher-logo">
-                      <Image
-                        src={LOGO_SRC}
-                        alt="Cachey"
-                        width={52}
-                        height={52}
-                        className="rounded-full select-none pointer-events-none"
-                        priority
-                      />
-                    </div>
-                  </div>
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400 mb-1">Content Type</div>
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                  value={draftContentType}
+                  onChange={(e) => {
+                    setDraftContentType(String(e.target.value || "all"));
+                    setFiltersDirty(true);
+                  }}
+                  disabled={!mounted}
+                >
+                  {availableContentTypes.map((ct) => (
+                    <option key={ct} value={ct} className="bg-black">
+                      {ct}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-                  <div className="text-sm text-gray-300 mb-2">
-                    Investigate CDN health, performance, and anomalies in seconds.
-                  </div>
+              <div className="min-w-0">
+                <div className="text-xs text-gray-400 mb-1">UA Family</div>
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                  value={draftUaFamily}
+                  onChange={(e) => {
+                    setDraftUaFamily(String(e.target.value || "all"));
+                    setFiltersDirty(true);
+                  }}
+                  disabled={!mounted}
+                >
+                  {availableUaFamilies.map((ua) => (
+                    <option key={ua} value={ua} className="bg-black">
+                      {ua}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-                  <div className="text-2xl font-semibold text-white">
-                    Start investigation
-                  </div>
-
-                  <div className="mt-2 text-sm text-gray-400">
-                    Pick a scope and run triage against CDN health.
-                  </div>
+              <div className="min-w-0 xl:col-span-2">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-xs text-gray-400">Time Window</div>
+                  <div className="text-[11px] text-blue-400/70 font-mono">UTC</div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="min-w-0">
-                    <div className="text-xs text-gray-400 mb-1">
-                      Partner <span className="text-amber-300">*</span>
-                    </div>
-                    <select
-                      className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                      value={partner}
-                      onChange={(e) => {
-                        setPartnerSticky(e.target.value);
-                        setFiltersDirty(true);
-                      }}
-                      disabled={!mounted}
-                    >
-                      <option value="" className="bg-black">
-                        Select…
-                      </option>
-                      {PARTNER_OPTIONS.map((p) => (
-                        <option key={p} value={p} className="bg-black">
-                          {p}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="min-w-0">
-                    <div className="text-xs text-gray-400 mb-1">
-                      Service <span className="text-amber-300">*</span>
-                    </div>
-                    <select
-                      className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                      value={draftService}
-                      onChange={(e) => {
-                        setDraftService(String(e.target.value || ""));
-                        setFiltersDirty(true);
-                      }}
-                      disabled={!mounted}
-                    >
-                      <option value="" className="bg-black">
-                        Select…
-                      </option>
-                      {SERVICE_OPTIONS.map((s) => (
-                        <option key={s} value={s} className="bg-black">
-                          {s}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="mt-5">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="text-xs text-gray-400">Time Window</div>
-                    <div className="text-[11px] text-blue-400/70 font-mono">UTC</div>
-                  </div>
-
-                  <div className="flex items-center gap-2 mb-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDraftTimeMode("relative");
-                        setFiltersDirty(true);
-                      }}
-                      className={`px-3 py-1.5 rounded-full border text-xs transition ${
-                        draftTimeMode === "relative"
-                          ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
-                          : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
-                      }`}
-                    >
-                      Relative
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDraftTimeMode("absolute");
-                        setFiltersDirty(true);
-                      }}
-                      className={`px-3 py-1.5 rounded-full border text-xs transition ${
-                        draftTimeMode === "absolute"
-                          ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
-                          : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
-                      }`}
-                    >
-                      Absolute
-                    </button>
-                  </div>
-
-                  {draftTimeMode === "relative" ? (
-                    <select
-                      className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                      value={String(draftWindowMinutes)}
-                      onChange={(e) => {
-                        setDraftWindowMinutes(Number(e.target.value));
-                        setFiltersDirty(true);
-                      }}
-                      disabled={!mounted}
-                    >
-                      {[30, 60, 120, 360, 720, 1440].map((m) => (
-                        <option key={m} value={String(m)} className="bg-black">
-                          Last {m}m
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <div className="space-y-3">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <UtcDateTimeInput
-                          label="Start (UTC)"
-                          value={draftStartUtcLocal}
-                          onChange={(next) => {
-                            setDraftStartUtcLocal(next);
-                            setFiltersDirty(true);
-                          }}
-                        />
-
-                        <UtcDateTimeInput
-                          label="End (UTC)"
-                          value={draftEndUtcLocal}
-                          onChange={(next) => {
-                            setDraftEndUtcLocal(next);
-                            setFiltersDirty(true);
-                          }}
-                        />
-                      </div>
-
-                      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                        <div className="text-[11px] font-mono text-blue-300/80 min-h-[16px]">
-                          {utcWindowPreview && (
-                            <>
-                              <span className="text-gray-500 mr-1">
-                                {draftStartUtcLocal
-                                  ? isoToUtcText(
-                                      parseDatetimeLocalAsUtcToIso(draftStartUtcLocal)
-                                    )
-                                  : "—"}
-                              </span>
-                              <span className="text-gray-500 mx-1">→</span>
-                              <span className="text-gray-500 mr-2">
-                                {draftEndUtcLocal
-                                  ? isoToUtcText(
-                                      parseDatetimeLocalAsUtcToIso(draftEndUtcLocal)
-                                    )
-                                  : "—"}
-                              </span>
-                              <span className="text-blue-300 font-semibold">
-                                {utcWindowPreview}
-                              </span>
-                            </>
-                          )}
-                        </div>
-
-                        <div className="flex gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const end = new Date();
-                              const start = new Date(end.getTime() - 60 * 60 * 1000);
-                              setDraftStartUtcLocal(
-                                isoToDatetimeLocalUtc(start.toISOString())
-                              );
-                              setDraftEndUtcLocal(
-                                isoToDatetimeLocalUtc(end.toISOString())
-                              );
-                              setFiltersDirty(true);
-                            }}
-                            className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
-                          >
-                            Last 60m
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDraftEndUtcLocal(
-                                isoToDatetimeLocalUtc(new Date().toISOString())
-                              );
-                              setFiltersDirty(true);
-                            }}
-                            className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
-                          >
-                            End=Now
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="mt-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-                  <div className="min-w-0">
-                    <div className="text-xs text-gray-400 mb-1">Region</div>
-                    <select
-                      className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                      value={draftRegion}
-                      onChange={(e) => {
-                        setDraftRegion(String(e.target.value || "all"));
-                        setFiltersDirty(true);
-                      }}
-                      disabled={!mounted}
-                    >
-                      {availableRegions.map((r) => (
-                        <option key={r} value={r} className="bg-black">
-                          {r}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="min-w-0">
-                    <div className="text-xs text-gray-400 mb-1">POP</div>
-                    <select
-                      className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                      value={draftPop}
-                      onChange={(e) => {
-                        setDraftPop(String(e.target.value || "all"));
-                        setFiltersDirty(true);
-                      }}
-                      disabled={!mounted}
-                    >
-                      {availablePops.map((p) => (
-                        <option key={p} value={p} className="bg-black">
-                          {p}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="min-w-0">
-                    <div className="text-xs text-gray-400 mb-1">Content Type</div>
-                    <select
-                      className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                      value={draftContentType}
-                      onChange={(e) => {
-                        setDraftContentType(String(e.target.value || "all"));
-                        setFiltersDirty(true);
-                      }}
-                      disabled={!mounted}
-                    >
-                      {availableContentTypes.map((ct) => (
-                        <option key={ct} value={ct} className="bg-black">
-                          {ct}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="min-w-0">
-                    <div className="text-xs text-gray-400 mb-1">UA Family</div>
-                    <select
-                      className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
-                      value={draftUaFamily}
-                      onChange={(e) => {
-                        setDraftUaFamily(String(e.target.value || "all"));
-                        setFiltersDirty(true);
-                      }}
-                      disabled={!mounted}
-                    >
-                      {availableUaFamilies.map((ua) => (
-                        <option key={ua} value={ua} className="bg-black">
-                          {ua}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="mt-8 flex flex-col items-center justify-center gap-3">
+                <div className="flex items-center gap-2 mb-2">
                   <button
                     type="button"
                     onClick={() => {
-                      const res = applyDraftFilters();
-                      if (!res.ok) {
-                        addText("assistant", res.error);
-                        return;
-                      }
-                      void handleRunFromFilters();
+                      setDraftTimeMode("relative");
+                      setFiltersDirty(true);
                     }}
-                    disabled={isTriageLoading || !partner || !draftService}
-                    className="rounded-xl px-6 py-3 text-sm font-semibold bg-blue-500/20 border border-blue-400/30 text-blue-100 hover:bg-blue-500/25 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className={`px-3 py-1.5 rounded-full border text-xs transition ${
+                      draftTimeMode === "relative"
+                        ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
+                        : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+                    }`}
+                  >
+                    Relative
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftTimeMode("absolute");
+                      setFiltersDirty(true);
+                    }}
+                    className={`px-3 py-1.5 rounded-full border text-xs transition ${
+                      draftTimeMode === "absolute"
+                        ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
+                        : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+                    }`}
+                  >
+                    Absolute
+                  </button>
+                </div>
+
+                {draftTimeMode === "relative" ? (
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-white/10 text-gray-100 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                    value={String(draftWindowMinutes)}
+                    onChange={(e) => {
+                      setDraftWindowMinutes(Number(e.target.value));
+                      setFiltersDirty(true);
+                    }}
+                    disabled={!mounted}
+                  >
+                    {[30, 60, 120, 360, 720, 1440].map((m) => (
+                      <option key={m} value={String(m)} className="bg-black">
+                        Last {m}m
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <UtcDateTimeInput
+                        label="Start (UTC)"
+                        value={draftStartUtcLocal}
+                        onChange={(next) => {
+                          setDraftStartUtcLocal(next);
+                          setFiltersDirty(true);
+                        }}
+                      />
+
+                      <UtcDateTimeInput
+                        label="End (UTC)"
+                        value={draftEndUtcLocal}
+                        onChange={(next) => {
+                          setDraftEndUtcLocal(next);
+                          setFiltersDirty(true);
+                        }}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[11px] font-mono text-blue-300/80 min-h-[16px]">
+                        {utcWindowPreview && (
+                          <>
+                            <span className="text-gray-500 mr-1">
+                              {draftStartUtcLocal
+                                ? isoToUtcText(parseDatetimeLocalAsUtcToIso(draftStartUtcLocal))
+                                : "—"}
+                            </span>
+                            <span className="text-gray-500 mx-1">→</span>
+                            <span className="text-gray-500 mr-2">
+                              {draftEndUtcLocal
+                                ? isoToUtcText(parseDatetimeLocalAsUtcToIso(draftEndUtcLocal))
+                                : "—"}
+                            </span>
+                            <span className="text-blue-300 font-semibold">{utcWindowPreview}</span>
+                          </>
+                        )}
+                      </div>
+                      <div className="flex gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const end = new Date();
+                            const start = new Date(end.getTime() - 60 * 60 * 1000);
+                            setDraftStartUtcLocal(isoToDatetimeLocalUtc(start.toISOString()));
+                            setDraftEndUtcLocal(isoToDatetimeLocalUtc(end.toISOString()));
+                            setFiltersDirty(true);
+                          }}
+                          className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                        >
+                          Last 60m
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDraftEndUtcLocal(isoToDatetimeLocalUtc(new Date().toISOString()));
+                            setFiltersDirty(true);
+                          }}
+                          className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                        >
+                          End=Now
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                disabled={!filtersDirty}
+                onClick={() => {
+                  const res = applyDraftFilters();
+                  if (!res.ok) addText("assistant", res.error);
+                }}
+                className="rounded-xl px-5 py-2 text-sm font-semibold bg-white/10 hover:bg-white/15 border border-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        )}
+        {hasTriage && (
+          <MissionStrip
+            partner={partner}
+            service={service}
+            region={region}
+            pop={pop}
+            windowMinutes={windowMinutes}
+            timeMode={timeMode}
+            startTsUtc={startTsUtc}
+            endTsUtc={endTsUtc}
+            overallState={latestAssessment?.overallStatus}
+            primarySignal={latestAssessment?.primarySignal}
+            onChange={openFilters}
+          />
+        )}
+              <div>
+          {showHomeLauncher ? (
+            <div className="min-h-[520px] flex items-center justify-center">
+              <div className="w-full max-w-4xl">
+                <div className="rounded-[28px] border border-white/10 bg-white/[0.04] backdrop-blur-xl shadow-2xl shadow-black/20 p-6 md:p-8">
+                  <div className="text-center mb-6">
+                    <div className="flex justify-center mb-3">
+                      <div className="cachey-launcher-logo">
+                        <Image
+                          src={LOGO_SRC}
+                          alt="Cachey"
+                          width={52}
+                          height={52}
+                          className="rounded-full select-none pointer-events-none"
+                          priority
+                        />
+                      </div>
+                    </div>
+
+                    <div className="text-sm text-gray-300 mb-2">
+                      Investigate CDN health, performance, and anomalies in seconds.
+                    </div>
+
+                    <div className="text-2xl font-semibold text-white">
+                      Start investigation
+                    </div>
+
+                    <div className="mt-2 text-sm text-gray-400">
+                      Pick a scope and run triage against CDN health.
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="min-w-0">
+                      <div className="text-xs text-gray-400 mb-1">
+                        Partner <span className="text-amber-300">*</span>
+                      </div>
+                      <select
+                        className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                        value={partner}
+                        onChange={(e) => {
+                          setPartnerSticky(e.target.value);
+                          setFiltersDirty(true);
+                        }}
+                        disabled={!mounted}
+                      >
+                        <option value="" className="bg-black">
+                          Select…
+                        </option>
+                        {PARTNER_OPTIONS.map((p) => (
+                          <option key={p} value={p} className="bg-black">
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="min-w-0">
+                      <div className="text-xs text-gray-400 mb-1">
+                        Service <span className="text-amber-300">*</span>
+                      </div>
+                      <select
+                        className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                        value={draftService}
+                        onChange={(e) => {
+                          setDraftService(String(e.target.value || ""));
+                          setFiltersDirty(true);
+                        }}
+                        disabled={!mounted}
+                      >
+                        <option value="" className="bg-black">
+                          Select…
+                        </option>
+                        {SERVICE_OPTIONS.map((s) => (
+                          <option key={s} value={s} className="bg-black">
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="mt-5">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-xs text-gray-400">Time Window</div>
+                      <div className="text-[11px] text-blue-400/70 font-mono">UTC</div>
+                    </div>
+
+                    <div className="flex items-center gap-2 mb-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDraftTimeMode("relative");
+                          setFiltersDirty(true);
+                        }}
+                        className={`px-3 py-1.5 rounded-full border text-xs transition ${
+                          draftTimeMode === "relative"
+                            ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
+                            : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+                        }`}
+                      >
+                        Relative
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDraftTimeMode("absolute");
+                          setFiltersDirty(true);
+                        }}
+                        className={`px-3 py-1.5 rounded-full border text-xs transition ${
+                          draftTimeMode === "absolute"
+                            ? "border-blue-400/40 bg-blue-400/15 text-blue-100"
+                            : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+                        }`}
+                      >
+                        Absolute
+                      </button>
+                    </div>
+
+                    {draftTimeMode === "relative" ? (
+                      <select
+                        className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                        value={String(draftWindowMinutes)}
+                        onChange={(e) => {
+                          setDraftWindowMinutes(Number(e.target.value));
+                          setFiltersDirty(true);
+                        }}
+                        disabled={!mounted}
+                      >
+                        {[30, 60, 120, 360, 720, 1440].map((m) => (
+                          <option key={m} value={String(m)} className="bg-black">
+                            Last {m}m
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <UtcDateTimeInput
+                            label="Start (UTC)"
+                            value={draftStartUtcLocal}
+                            onChange={(next) => {
+                              setDraftStartUtcLocal(next);
+                              setFiltersDirty(true);
+                            }}
+                          />
+
+                          <UtcDateTimeInput
+                            label="End (UTC)"
+                            value={draftEndUtcLocal}
+                            onChange={(next) => {
+                              setDraftEndUtcLocal(next);
+                              setFiltersDirty(true);
+                            }}
+                          />
+                        </div>
+
+                        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                          <div className="text-[11px] font-mono text-blue-300/80 min-h-[16px]">
+                            {utcWindowPreview && (
+                              <>
+                                <span className="text-gray-500 mr-1">
+                                  {draftStartUtcLocal
+                                    ? isoToUtcText(
+                                        parseDatetimeLocalAsUtcToIso(draftStartUtcLocal)
+                                      )
+                                    : "—"}
+                                </span>
+                                <span className="text-gray-500 mx-1">→</span>
+                                <span className="text-gray-500 mr-2">
+                                  {draftEndUtcLocal
+                                    ? isoToUtcText(
+                                        parseDatetimeLocalAsUtcToIso(draftEndUtcLocal)
+                                      )
+                                    : "—"}
+                                </span>
+                                <span className="text-blue-300 font-semibold">
+                                  {utcWindowPreview}
+                                </span>
+                              </>
+                            )}
+                          </div>
+
+                          <div className="flex gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const end = new Date();
+                                const start = new Date(end.getTime() - 60 * 60 * 1000);
+                                setDraftStartUtcLocal(
+                                  isoToDatetimeLocalUtc(start.toISOString())
+                                );
+                                setDraftEndUtcLocal(
+                                  isoToDatetimeLocalUtc(end.toISOString())
+                                );
+                                setFiltersDirty(true);
+                              }}
+                              className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                            >
+                              Last 60m
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDraftEndUtcLocal(
+                                  isoToDatetimeLocalUtc(new Date().toISOString())
+                                );
+                                setFiltersDirty(true);
+                              }}
+                              className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs hover:bg-white/10"
+                            >
+                              End=Now
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                    <div className="min-w-0">
+                      <div className="text-xs text-gray-400 mb-1">Region</div>
+                      <select
+                        className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                        value={draftRegion}
+                        onChange={(e) => {
+                          setDraftRegion(String(e.target.value || "all"));
+                          setFiltersDirty(true);
+                        }}
+                        disabled={!mounted}
+                      >
+                        {availableRegions.map((r) => (
+                          <option key={r} value={r} className="bg-black">
+                            {r}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="min-w-0">
+                      <div className="text-xs text-gray-400 mb-1">POP</div>
+                      <select
+                        className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                        value={draftPop}
+                        onChange={(e) => {
+                          setDraftPop(String(e.target.value || "all"));
+                          setFiltersDirty(true);
+                        }}
+                        disabled={!mounted}
+                      >
+                        {availablePops.map((p) => (
+                          <option key={p} value={p} className="bg-black">
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="min-w-0">
+                      <div className="text-xs text-gray-400 mb-1">Content Type</div>
+                      <select
+                        className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                        value={draftContentType}
+                        onChange={(e) => {
+                          setDraftContentType(String(e.target.value || "all"));
+                          setFiltersDirty(true);
+                        }}
+                        disabled={!mounted}
+                      >
+                        {availableContentTypes.map((ct) => (
+                          <option key={ct} value={ct} className="bg-black">
+                            {ct}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="min-w-0">
+                      <div className="text-xs text-gray-400 mb-1">UA Family</div>
+                      <select
+                        className="w-full rounded-xl border border-white/10 bg-white/10 text-gray-100 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                        value={draftUaFamily}
+                        onChange={(e) => {
+                          setDraftUaFamily(String(e.target.value || "all"));
+                          setFiltersDirty(true);
+                        }}
+                        disabled={!mounted}
+                      >
+                        {availableUaFamilies.map((ua) => (
+                          <option key={ua} value={ua} className="bg-black">
+                            {ua}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="mt-8 flex flex-col items-center justify-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const res = applyDraftFilters();
+                        if (!res.ok) {
+                          addText("assistant", res.error);
+                          return;
+                        }
+                        void handleRunFromFilters();
+                      }}
+                      disabled={isTriageLoading || !partner || !draftService}
+                      className="rounded-xl px-6 py-3 text-sm font-semibold bg-blue-500/20 border border-blue-400/30 text-blue-100 hover:bg-blue-500/25 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isTriageLoading ? "Running…" : "Run Triage"}
+                    </button>
+
+                    {(!partner || !draftService) && (
+                      <span className="text-xs text-gray-500">
+                        Select partner and service to run triage.
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
+              <ConversationThread
+                chatMessages={chatMessages}
+                typing={typing}
+                mounted={mounted}
+                chatScrollRef={chatScrollRef}
+                renderTriageCard={(run) => <TriageCard run={run} />}
+                renderDrillCard={(drill, summaryText) => (
+                  <DrillCard drill={drill} summaryText={summaryText} />
+                )}
+                renderStatusBreakdownCard={(breakdown) => (
+                  <StatusBreakdownCard breakdown={breakdown} />
+                )}
+                renderExplainCard={(payload) => (
+                  <ExplainCard
+                    summary={payload.summary}
+                    overallState={payload.overallState}
+                    primarySignal={payload.primarySignal}
+                  />
+                )}
+                renderCompareCard={(payload) => (
+                  <CompareCard
+                    summary={payload.summary}
+                    overallState={payload.overallState}
+                    primarySignal={payload.primarySignal}
+                    compareMetrics={payload.compareMetrics}
+                    compareGraph={payload.compareGraph}
+                  />
+                )}
+                              renderExplorationCard={(msg) => (
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs text-gray-400">Exploration</div>
+                        <div className="text-sm font-semibold text-white truncate">
+                          {msg.title}
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <span className="text-[11px] px-2 py-1 rounded-full border border-indigo-400/30 bg-indigo-400/10 text-indigo-200">
+                          {msg.metric}
+                        </span>
+                        <span className="text-[11px] px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
+                          {msg.view}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 space-y-3">
+                      <div className="text-sm text-gray-300 whitespace-pre-wrap">
+                        {msg.summary}
+                      </div>
+
+                      {msg.view === "timeseries" &&
+                        Array.isArray(msg.series) &&
+                        msg.series.length > 0 && (
+                          <ExplorationMetricGraph
+                            metric={msg.metric}
+                            series={msg.series}
+                            seriesSecondary={
+                              Array.isArray(msg.seriesSecondary) ? msg.seriesSecondary : undefined
+                            }
+                            rows={msg.rows}
+                            displayLabel={
+                              msg.title
+                                ?.replace(/\s*%\s*vs Previous Window$/i, "")
+                                ?.replace(/\s*%\s*Over Time$/i, "")
+                                ?.trim()
+                            }
+                            windowMinutes={
+                              msg.series.length >= 2
+                                ? windowMinutesFromRange(
+                                    String(msg.series[0]?.ts || ""),
+                                    String(msg.series[msg.series.length - 1]?.ts || ""),
+                                    120
+                                  )
+                                : 120
+                            }
+                          />
+                        )}
+
+                      {msg.view === "breakdown" &&
+                        Array.isArray(msg.rows) &&
+                        msg.rows.length > 0 && (
+                          <div className="space-y-3">
+                            {msg.metric === "ats" ? (
+                              <div className="rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
+                                <div className="text-xs text-gray-400 mb-3">
+                                  Top 5 rows • backend order preserved
+                                </div>
+
+                                <table className="min-w-full text-left text-xs text-gray-200">
+                                  <thead className="border-b border-white/10 bg-white/[0.03] text-gray-400">
+                                    <tr>
+                                      <th className="px-4 py-3 font-medium">
+                                        {msg.title.toLowerCase().includes("ua")
+                                          ? "Device type"
+                                          : msg.title.toLowerCase().includes("pop")
+                                          ? "POP"
+                                          : msg.title.toLowerCase().includes("region")
+                                          ? "Region"
+                                          : msg.title.toLowerCase().includes("content")
+                                          ? "Content"
+                                          : "Dimension"}
+                                      </th>
+                                      <th className="px-4 py-3 font-medium">Miss %</th>
+                                      <th className="px-4 py-3 font-medium">Refresh %</th>
+                                      <th className="px-4 py-3 font-medium">Client error %</th>
+                                      <th className="px-4 py-3 font-medium">Infra error %</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {msg.rows.slice(0, 5).map((row: any, idx: number) => {
+                                      const label = String(
+                                        row?.key || row?.label || row?.dimension || "unknown"
+                                      );
+
+                                      return (
+                                        <tr
+                                          key={`${label}-${idx}`}
+                                          className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.03]"
+                                        >
+                                          <td className="px-4 py-3 font-medium text-gray-100">
+                                            {label}
+                                          </td>
+                                          <td className="px-4 py-3 text-gray-300">
+                                            {formatPctOrNA(row?.value)}
+                                          </td>
+                                          <td className="px-4 py-3 text-gray-300">
+                                            {formatPctOrNA(row?.secondaryValue)}
+                                          </td>
+                                          <td className="px-4 py-3 text-gray-300">
+                                            {formatPctOrNA(row?.tertiaryValue)}
+                                          </td>
+                                          <td className="px-4 py-3 text-gray-300">
+                                            {formatPctOrNA(row?.quaternaryValue)}
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            ) : (
+                              (() => {
+                                const rows = msg.rows.slice(0, 8);
+                                const maxValue = Math.max(
+                                  1,
+                                  ...rows.map((r: any) => Number(r?.value ?? 0))
+                                );
+
+                                return (
+                                  <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                                    <div className="text-xs text-gray-400 mb-3">Breakdown</div>
+
+                                    <div className="space-y-2">
+                                      {rows.map((row: any, idx: number) => {
+                                        const label = String(
+                                          row?.key || row?.label || row?.dimension || "unknown"
+                                        );
+                                        const value = Number(row?.value ?? 0);
+                                        const widthPct = Math.max(6, (value / maxValue) * 100);
+
+                                        return (
+                                          <div
+                                            key={`${label}-${idx}`}
+                                            className="flex items-center gap-3"
+                                          >
+                                            <div className="w-28 shrink-0 truncate text-[11px] text-gray-300">
+                                              {label}
+                                            </div>
+
+                                            <div className="flex-1 h-2.5 rounded-full bg-white/10 overflow-hidden">
+                                              <div
+                                                className={`h-full rounded-full ${
+                                                  idx === 0 ? "bg-blue-400" : "bg-gray-400/70"
+                                                }`}
+                                                style={{ width: `${widthPct}%` }}
+                                              />
+                                            </div>
+
+                                            <div className="w-20 shrink-0 text-right text-[11px] text-gray-400">
+                                              {Number.isFinite(value) ? value.toFixed(2) : "n/a"}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })()
+                            )}
+
+                            {msg.metric === "latency" &&
+                              msg.spotlight &&
+                              Array.isArray(msg.spotlight.series) &&
+                              msg.spotlight.series.length > 0 && (
+                                <div className="rounded-xl border border-white/10 bg-black/30 p-3 space-y-3">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <div className="text-xs text-gray-400">Spotlight</div>
+                                      <div className="text-sm font-semibold text-gray-100 truncate">
+                                        {msg.spotlight.title || "Worst latency trend"}
+                                      </div>
+                                    </div>
+
+                                    <span className="text-[11px] px-2 py-1 rounded-full border border-blue-400/30 bg-blue-400/10 text-blue-200">
+                                      {msg.spotlight.key}
+                                    </span>
+                                  </div>
+
+                                  {msg.spotlight.summary ? (
+                                    <div className="text-sm text-gray-300 whitespace-pre-wrap">
+                                      {msg.spotlight.summary}
+                                    </div>
+                                  ) : null}
+
+                                  <ExplorationMetricGraph
+                                    metric="latency"
+                                    series={msg.spotlight.series}
+                                    seriesSecondary={
+                                      Array.isArray(msg.spotlight.seriesSecondary)
+                                        ? msg.spotlight.seriesSecondary
+                                        : undefined
+                                    }
+                                    windowMinutes={
+                                      msg.spotlight.series.length >= 2
+                                        ? windowMinutesFromRange(
+                                            String(msg.spotlight.series[0]?.ts || ""),
+                                            String(
+                                              msg.spotlight.series[msg.spotlight.series.length - 1]?.ts || ""
+                                            ),
+                                            120
+                                          )
+                                        : 120
+                                    }
+                                  />
+                                </div>
+                              )}
+                          </div>
+                        )}
+                    </div>
+                  </div>
+                )}
+                renderTypingDots={() => <TypingDots />}
+                formatUtcYmdHm={formatUtcYmdHm}
+                nowIso={nowIso}
+              />
+
+              <div className="mt-3 space-y-2">
+                {hasTriage &&
+                  suggestedActions.length > 0 &&
+                  latestActionableMsg &&
+                  currentSuggestionScopeKey &&
+                  dismissedSuggestionScopeKey !== currentSuggestionScopeKey && (
+                    <div>
+                      <div className="px-1 text-[11px] text-gray-500">
+                        try asking this next
+                      </div>
+
+                      <NextActionChips
+                        actions={suggestedActions}
+                        onSelect={(query) => {
+                          setDismissedSuggestionScopeKey(currentSuggestionScopeKey);
+                          void processUserMessage(query);
+                        }}
+                      />
+                    </div>
+                  )}
+
+                <ChatInput
+                  value={chatInput}
+                  onChange={setChatInput}
+                  onSend={handleSend}
+                  disabled={isTriageLoading}
+                  isLoading={isTriageLoading}
+                />
+              </div>
+
+              {!showHomeLauncher && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleRunFromFilters}
+                    disabled={isTriageLoading || !partner || !service}
+                    className="rounded-full border border-white/10 bg-white/10 px-3 py-2 text-xs font-medium text-gray-100 hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {isTriageLoading ? "Running…" : "Run Triage"}
                   </button>
 
-                  {(!partner || !draftService) && (
+                  {chatMessages.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleResetInvestigation}
+                      className="rounded-full border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-300/80 hover:bg-red-500/10 hover:text-red-200"
+                    >
+                      Reset Investigation
+                    </button>
+                  )}
+
+                  {!partner || !service && (
                     <span className="text-xs text-gray-500">
                       Select partner and service to run triage.
                     </span>
                   )}
                 </div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <>
-            <ConversationThread
-              chatMessages={chatMessages}
-              typing={typing}
-              mounted={mounted}
-              chatScrollRef={chatScrollRef}
-              renderTriageCard={(run) => <TriageCard run={run} />}
-              renderDrillCard={(drill, summaryText) => (
-                <DrillCard drill={drill} summaryText={summaryText} />
               )}
-              renderStatusBreakdownCard={(breakdown) => (
-                <StatusBreakdownCard breakdown={breakdown} />
-              )}
-              renderExplainCard={(payload) => (
-                <ExplainCard
-                  summary={payload.summary}
-                  overallState={payload.overallState}
-                  primarySignal={payload.primarySignal}
-                />
-              )}
-              renderCompareCard={(payload) => (
-                <CompareCard
-                  summary={payload.summary}
-                  overallState={payload.overallState}
-                  primarySignal={payload.primarySignal}
-                  compareMetrics={payload.compareMetrics}
-                  compareGraph={payload.compareGraph}
-                />
-              )}
-                            renderExplorationCard={(msg) => (
-                <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-xs text-gray-400">Exploration</div>
-                      <div className="text-sm font-semibold text-white truncate">
-                        {msg.title}
-                      </div>
+
+              <details
+                className="mt-6 rounded-2xl border border-white/10 bg-black/25 p-4"
+                open={debugOpen}
+                onToggle={(e) => setDebugOpen((e.target as HTMLDetailsElement).open)}
+              >
+                <summary className="cursor-pointer text-sm font-semibold text-gray-200 select-none">
+                  Debug (internal)
+                </summary>
+                <div className="mt-3 max-h-[220px] overflow-auto rounded-xl border border-white/10 bg-black/30 p-3">
+                  {runLog.length ? (
+                    <div className="space-y-2">
+                      {runLog
+                        .slice()
+                        .reverse()
+                        .map((x, idx) => (
+                          <div key={`${x.ts}-${idx}`} className="text-xs text-gray-300">
+                            <span className="text-gray-500 mr-2">{formatUtcYmdHm(x.ts)} UTC</span>
+                            {x.text}
+                          </div>
+                        ))}
                     </div>
-
-                    <div className="flex gap-2">
-                      <span className="text-[11px] px-2 py-1 rounded-full border border-indigo-400/30 bg-indigo-400/10 text-indigo-200">
-                        {msg.metric}
-                      </span>
-                      <span className="text-[11px] px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
-                        {msg.view}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 space-y-3">
-                    <div className="text-sm text-gray-300 whitespace-pre-wrap">
-                      {msg.summary}
-                    </div>
-
-                    {msg.view === "timeseries" &&
-                      Array.isArray(msg.series) &&
-                      msg.series.length > 0 && (
-                        <ExplorationMetricGraph
-                          metric={msg.metric}
-                          series={msg.series}
-                          seriesSecondary={
-                            Array.isArray(msg.seriesSecondary) ? msg.seriesSecondary : undefined
-                          }
-                          rows={msg.rows}
-                          displayLabel={
-                            msg.title
-                              ?.replace(/\s*%\s*vs Previous Window$/i, "")
-                              ?.replace(/\s*%\s*Over Time$/i, "")
-                              ?.trim()
-                          }
-                          windowMinutes={
-                            msg.series.length >= 2
-                              ? windowMinutesFromRange(
-                                  String(msg.series[0]?.ts || ""),
-                                  String(msg.series[msg.series.length - 1]?.ts || ""),
-                                  120
-                                )
-                              : 120
-                          }
-                        />
-                      )}
-
-                    {msg.view === "breakdown" &&
-                      Array.isArray(msg.rows) &&
-                      msg.rows.length > 0 && (
-                        <div className="space-y-3">
-                          {msg.metric === "ats" ? (
-                            <div className="rounded-xl border border-white/10 bg-black/30 p-3 overflow-x-auto">
-                              <div className="text-xs text-gray-400 mb-3">
-                                Top 5 rows • backend order preserved
-                              </div>
-
-                              <table className="min-w-full text-left text-xs text-gray-200">
-                                <thead className="border-b border-white/10 bg-white/[0.03] text-gray-400">
-                                  <tr>
-                                    <th className="px-4 py-3 font-medium">
-                                      {msg.title.toLowerCase().includes("ua")
-                                        ? "Device type"
-                                        : msg.title.toLowerCase().includes("pop")
-                                        ? "POP"
-                                        : msg.title.toLowerCase().includes("region")
-                                        ? "Region"
-                                        : msg.title.toLowerCase().includes("content")
-                                        ? "Content"
-                                        : "Dimension"}
-                                    </th>
-                                    <th className="px-4 py-3 font-medium">Miss %</th>
-                                    <th className="px-4 py-3 font-medium">Refresh %</th>
-                                    <th className="px-4 py-3 font-medium">Client error %</th>
-                                    <th className="px-4 py-3 font-medium">Infra error %</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {msg.rows.slice(0, 5).map((row: any, idx: number) => {
-                                    const label = String(
-                                      row?.key || row?.label || row?.dimension || "unknown"
-                                    );
-
-                                    return (
-                                      <tr
-                                        key={`${label}-${idx}`}
-                                        className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.03]"
-                                      >
-                                        <td className="px-4 py-3 font-medium text-gray-100">
-                                          {label}
-                                        </td>
-                                        <td className="px-4 py-3 text-gray-300">
-                                          {formatPctOrNA(row?.value)}
-                                        </td>
-                                        <td className="px-4 py-3 text-gray-300">
-                                          {formatPctOrNA(row?.secondaryValue)}
-                                        </td>
-                                        <td className="px-4 py-3 text-gray-300">
-                                          {formatPctOrNA(row?.tertiaryValue)}
-                                        </td>
-                                        <td className="px-4 py-3 text-gray-300">
-                                          {formatPctOrNA(row?.quaternaryValue)}
-                                        </td>
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                          ) : (
-                            (() => {
-                              const rows = msg.rows.slice(0, 8);
-                              const maxValue = Math.max(
-                                1,
-                                ...rows.map((r: any) => Number(r?.value ?? 0))
-                              );
-
-                              return (
-                                <div className="rounded-xl border border-white/10 bg-black/30 p-3">
-                                  <div className="text-xs text-gray-400 mb-3">Breakdown</div>
-
-                                  <div className="space-y-2">
-                                    {rows.map((row: any, idx: number) => {
-                                      const label = String(
-                                        row?.key || row?.label || row?.dimension || "unknown"
-                                      );
-                                      const value = Number(row?.value ?? 0);
-                                      const widthPct = Math.max(6, (value / maxValue) * 100);
-
-                                      return (
-                                        <div
-                                          key={`${label}-${idx}`}
-                                          className="flex items-center gap-3"
-                                        >
-                                          <div className="w-28 shrink-0 truncate text-[11px] text-gray-300">
-                                            {label}
-                                          </div>
-
-                                          <div className="flex-1 h-2.5 rounded-full bg-white/10 overflow-hidden">
-                                            <div
-                                              className={`h-full rounded-full ${
-                                                idx === 0 ? "bg-blue-400" : "bg-gray-400/70"
-                                              }`}
-                                              style={{ width: `${widthPct}%` }}
-                                            />
-                                          </div>
-
-                                          <div className="w-20 shrink-0 text-right text-[11px] text-gray-400">
-                                            {Number.isFinite(value) ? value.toFixed(2) : "n/a"}
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              );
-                            })()
-                          )}
-
-                          {msg.metric === "latency" &&
-                            msg.spotlight &&
-                            Array.isArray(msg.spotlight.series) &&
-                            msg.spotlight.series.length > 0 && (
-                              <div className="rounded-xl border border-white/10 bg-black/30 p-3 space-y-3">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <div className="text-xs text-gray-400">Spotlight</div>
-                                    <div className="text-sm font-semibold text-gray-100 truncate">
-                                      {msg.spotlight.title || "Worst latency trend"}
-                                    </div>
-                                  </div>
-
-                                  <span className="text-[11px] px-2 py-1 rounded-full border border-blue-400/30 bg-blue-400/10 text-blue-200">
-                                    {msg.spotlight.key}
-                                  </span>
-                                </div>
-
-                                {msg.spotlight.summary ? (
-                                  <div className="text-sm text-gray-300 whitespace-pre-wrap">
-                                    {msg.spotlight.summary}
-                                  </div>
-                                ) : null}
-
-                                <ExplorationMetricGraph
-                                  metric="latency"
-                                  series={msg.spotlight.series}
-                                  seriesSecondary={
-                                    Array.isArray(msg.spotlight.seriesSecondary)
-                                      ? msg.spotlight.seriesSecondary
-                                      : undefined
-                                  }
-                                  windowMinutes={
-                                    msg.spotlight.series.length >= 2
-                                      ? windowMinutesFromRange(
-                                          String(msg.spotlight.series[0]?.ts || ""),
-                                          String(
-                                            msg.spotlight.series[msg.spotlight.series.length - 1]?.ts || ""
-                                          ),
-                                          120
-                                        )
-                                      : 120
-                                  }
-                                />
-                              </div>
-                            )}
-                        </div>
-                      )}
-                  </div>
+                  ) : (
+                    <div className="text-xs text-gray-500">No runs yet.</div>
+                  )}
                 </div>
-              )}
-              renderTypingDots={() => <TypingDots />}
-              formatUtcYmdHm={formatUtcYmdHm}
-              nowIso={nowIso}
-            />
+              </details>
 
-            <div className="mt-3 space-y-2">
-              {hasTriage &&
-                suggestedActions.length > 0 &&
-                latestActionableMsg &&
-                currentSuggestionScopeKey &&
-                dismissedSuggestionScopeKey !== currentSuggestionScopeKey && (
-                  <div>
-                    <div className="px-1 text-[11px] text-gray-500">
-                      try asking this next
-                    </div>
-
-                    <NextActionChips
-                      actions={suggestedActions}
-                      onSelect={(query) => {
-                        setDismissedSuggestionScopeKey(currentSuggestionScopeKey);
-                        void processUserMessage(query);
-                      }}
-                    />
-                  </div>
-                )}
-
-              <ChatInput
-                value={chatInput}
-                onChange={setChatInput}
-                onSend={handleSend}
-                disabled={isTriageLoading}
-                isLoading={isTriageLoading}
-              />
-            </div>
-
-            {!showHomeLauncher && (
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleRunFromFilters}
-                  disabled={isTriageLoading || !partner || !service}
-                  className="rounded-full border border-white/10 bg-white/10 px-3 py-2 text-xs font-medium text-gray-100 hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isTriageLoading ? "Running…" : "Run Triage"}
-                </button>
-
-                {chatMessages.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={handleResetInvestigation}
-                    className="rounded-full border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-300/80 hover:bg-red-500/10 hover:text-red-200"
-                  >
-                    Reset Investigation
-                  </button>
-                )}
-
-                {!partner || !service && (
-                  <span className="text-xs text-gray-500">
-                    Select partner and service to run triage.
-                  </span>
-                )}
+              <div className="mt-6 pt-4 text-[11px] text-gray-500 opacity-60">
+                Cachey • Deterministic triage assistant • ClickHouse path
               </div>
-            )}
-
-            <details
-              className="mt-6 rounded-2xl border border-white/10 bg-black/25 p-4"
-              open={debugOpen}
-              onToggle={(e) => setDebugOpen((e.target as HTMLDetailsElement).open)}
-            >
-              <summary className="cursor-pointer text-sm font-semibold text-gray-200 select-none">
-                Debug (internal)
-              </summary>
-              <div className="mt-3 max-h-[220px] overflow-auto rounded-xl border border-white/10 bg-black/30 p-3">
-                {runLog.length ? (
-                  <div className="space-y-2">
-                    {runLog
-                      .slice()
-                      .reverse()
-                      .map((x, idx) => (
-                        <div key={`${x.ts}-${idx}`} className="text-xs text-gray-300">
-                          <span className="text-gray-500 mr-2">{formatUtcYmdHm(x.ts)} UTC</span>
-                          {x.text}
-                        </div>
-                      ))}
-                  </div>
-                ) : (
-                  <div className="text-xs text-gray-500">No runs yet.</div>
-                )}
-              </div>
-            </details>
-
-            <div className="mt-6 pt-4 text-[11px] text-gray-500 opacity-60">
-              Cachey • Deterministic triage assistant • ClickHouse path
-            </div>
-          </>
-        )}
+            </>
+          )}
+        </div>
       </div>
-    </div>
-  </main>
-  );
-}
+    </main>
+    );
+  }
