@@ -119,8 +119,8 @@
     return scopeBits.join(" • ");
     }
 
-    function humanizeView(view: ExplorationView): string {
-    return view.replace("by_", "by ");
+    function humanizeView(view?: ExplorationView | null): string {
+    return String(view || "summary").replace("by_", " by ");
     }
 
     function titleFor(metric: ExplorationMetric, view: ExplorationView): string {

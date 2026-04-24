@@ -4671,6 +4671,9 @@
     clarificationReason: string | null;
   }) {
     switch (parsed.clarificationReason) {
+      case "status_codes_ambiguous":
+        return "Do you want a status code breakdown, status codes over time, or a specific status code? Try: status code breakdown.";
+
       case "compare_requires_metric":
         return "I can compare, but I need a metric first. Try: compare latency, compare errors, or what changed in ATS.";
 
@@ -5982,6 +5985,29 @@
           return;
         }
 
+        if (parsed.lane === "explain") {
+          if (!latestTriageRun) {
+            addText(
+              "assistant",
+              "Run a triage first, then I can explain what’s going on."
+            );
+            return;
+          }
+
+          const verdict = buildExplainVerdict(latestTriageRun);
+          const summary =
+            latestTriageRun.swarm?.assessment?.summary ||
+            latestTriageRun.summaryText ||
+            "No summary available.";
+
+          addExplainCard({
+            summary: `${verdict}\n\n${summary}`,
+            overallState: latestTriageRun.swarm?.assessment?.overallStatus,
+            primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
+          });
+          return;
+        }
+
         if (
           shouldBlockForClarification({
             parsed,
@@ -6012,7 +6038,7 @@
         const atsTerms = detectAtsCrcTerms(normalizedText);
         const atsFamily = normalizeAtsExecutionFamily(normalizedText);
 
-        const explicitDrillIntent = detectExplicitDrillIntent(normalizedText);
+        // Drill is parser-owned via parsed.lane === "drill".
         
         const parserExplorationIntent =
           parsed.lane === "exploration" &&
@@ -6063,7 +6089,56 @@
           hasPriorContext: Boolean(latestTriageRun),
         });
 
-        if (parsed.lane === "exploration") {
+        if (parsed.lane === "drill") {
+          if (!latestInvestigationContext) {
+            addText(
+              "assistant",
+              "Run a triage first, then I can drill into the worst region, POP, host, device, or content type."
+            );
+            return;
+          }
+
+          const drillIntent =
+            parsed.intentSubtype === "worst_region"
+              ? "worst_region"
+              : parsed.intentSubtype === "worst_pop"
+              ? "worst_pop"
+              : parsed.intentSubtype === "worst_host"
+              ? "worst_host"
+              : parsed.intentSubtype === "worst_ua"
+              ? "worst_ua"
+              : parsed.intentSubtype === "worst_content"
+              ? "worst_content"
+              : null;
+
+          if (!drillIntent) {
+            addText(
+              "assistant",
+              "I understood this as a drill request, but I couldn't determine whether you wanted region, POP, host, device, or content type."
+            );
+            return;
+          }
+
+          await executeTriageRun(
+            contextToTriageInputs(latestInvestigationContext),
+            "chat",
+            {
+              drillIntent,
+              chatContext: {
+                rawText: text,
+                parseMode: "chat-overrides",
+                detected: {
+                  lane: parsed.lane,
+                  intentSubtype: parsed.intentSubtype,
+                  source: "parseInput",
+                },
+              },
+            }
+          );
+          return;
+        }
+
+        if (parsed.lane === "exploration" && parsed.metric !== "status_codes") {
           if (!latestInvestigationContext) {
             addText(
               "assistant",
@@ -6172,8 +6247,7 @@
           return;
         }
 
-        const shouldCompare =
-          parsed.lane === "compare" || legacyIntent === "compare";
+        const shouldCompare = parsed.lane === "compare";
 
         if (shouldCompare) {
           if (!latestTriageRun || !latestInvestigationContext) {
@@ -6368,94 +6442,6 @@
           );
           return;
         }
-
-        const shouldExplain =
-          legacyIntent === "explain" ||
-          parsed.lane === "explain" ||
-          /\b(explain|why|what happened|what is going on|whats going on)\b/i.test(
-            normalizedText
-          );
-
-        if (shouldExplain) {
-          if (!latestTriageRun) {
-            addText(
-              "assistant",
-              "Run a triage first, then I can explain what’s going on."
-            );
-            return;
-          }
-
-          const verdict = buildExplainVerdict(latestTriageRun);
-          const summary =
-            latestTriageRun.swarm?.assessment?.summary ||
-            latestTriageRun.summaryText ||
-            "No summary available.";
-
-          addExplainCard({
-            summary: `${verdict}\n\n${summary}`,
-            overallState: latestTriageRun.swarm?.assessment?.overallStatus,
-            primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
-          });
-          return;
-        }
-
-        if (explicitDrillIntent) {
-          if (!latestInvestigationContext) {
-            addText(
-              "assistant",
-              "Run a triage first, then I can drill into the worst region, POP, device, or content type."
-            );
-            return;
-          }
-
-    let drillInputs: TriageInputs | null = null;
-    let drillIntent:
-      | "worst_region"
-      | "worst_pop"
-      | "worst_host"
-      | "worst_ua"
-      | "worst_content"
-      | undefined;
-
-    if (explicitDrillIntent === "worst_pop") {
-      drillInputs = deriveWorstPopInputs(latestInvestigationContext);
-      drillIntent = "worst_pop";
-    } else if (explicitDrillIntent === "worst_host") {
-      drillInputs = contextToTriageInputs(latestInvestigationContext);
-      drillIntent = "worst_host";
-    } else if (explicitDrillIntent === "worst_region") {
-      drillInputs = deriveWorstRegionInputs(latestInvestigationContext);
-      drillIntent = "worst_region";
-    } else if (explicitDrillIntent === "worst_ua") {
-      drillInputs = contextToTriageInputs(latestInvestigationContext);
-      drillIntent = "worst_ua";
-    } else if (explicitDrillIntent === "worst_content") {
-      drillInputs = contextToTriageInputs(latestInvestigationContext);
-      drillIntent = "worst_content";
-    }
-
-    if (!drillInputs || !drillIntent) {
-      addText(
-        "assistant",
-        "I need a prior triage result with enough evidence before I can drill further."
-      );
-      return;
-    }
-
-    await executeTriageRun(drillInputs, "chat", {
-      drillIntent,
-      chatContext: {
-        rawText: text,
-        parseMode: "chat-overrides",
-        detected: {
-          legacyIntent,
-          explicitDrillIntent,
-          forcedExplicitDrillIntercept: true,
-        },
-      },
-    });
-    return;
-  }
 
   const mergedPartner =
     (parseResult.partnerCanonical ||

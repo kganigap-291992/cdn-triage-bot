@@ -270,6 +270,72 @@ function hasCompareLanguage(text: string): boolean {
   );
 }
 
+
+function detectDrillSubtype(
+  text: string
+):
+  | "worst_region"
+  | "worst_pop"
+  | "worst_host"
+  | "worst_ua"
+  | "worst_content"
+  | null {
+  const lowered = String(text || "").toLowerCase().replace(/what’s/g, "whats");
+
+  const mentionsStatusBreakdown =
+    (lowered.includes("status") || lowered.includes("status code")) &&
+    (lowered.includes("breakdown") ||
+      lowered.includes("distribution") ||
+      lowered.includes("mix") ||
+      lowered.includes("split"));
+
+  // Keep status breakdown out of drill. That path stays separate.
+  if (mentionsStatusBreakdown) return null;
+
+  const hasDrillLanguage =
+    lowered.includes("bad") ||
+    lowered.includes("worst") ||
+    lowered.includes("which") ||
+    lowered.includes("show") ||
+    lowered.includes("top") ||
+    lowered.includes("breakdown") ||
+    lowered.includes("drill");
+
+  if (!hasDrillLanguage) return null;
+
+  if (lowered.includes("pop") || lowered.includes("by pop")) {
+    return "worst_pop";
+  }
+
+  if (lowered.includes("host") || lowered.includes("by host")) {
+    return "worst_host";
+  }
+
+  if (lowered.includes("region") || lowered.includes("by region")) {
+    return "worst_region";
+  }
+
+  if (
+    lowered.includes("ua") ||
+    lowered.includes("ua family") ||
+    lowered.includes("device") ||
+    lowered.includes("by ua") ||
+    lowered.includes("by device")
+  ) {
+    return "worst_ua";
+  }
+
+  if (
+    lowered.includes("content type") ||
+    lowered.includes("content") ||
+    lowered.includes("by content")
+  ) {
+    return "worst_content";
+  }
+
+  return null;
+}
+
 function detectView(args: {
   text: string;
   hasTimeOverride: boolean;
@@ -295,9 +361,9 @@ function detectView(args: {
     return "timeseries";
   }
 
-  if (dimension) {
-    return "breakdown";
-  }
+  if (metric === "status_codes") return "breakdown";
+
+    if (dimension) return "breakdown";
 
   // Broad graphable metric asks should default to exploration-style timeseries.
   if (
@@ -312,12 +378,37 @@ function detectView(args: {
   return "summary";
 }
 
-function detectLane(metric: ParserMetric, view: ParserView): ParserLane {
+function hasExplainLanguage(text: string): boolean {
+  return (
+    /\b(explain|why|what happened|what is happening|what is going on|whats going on)\b/i.test(
+      text
+    ) ||
+    /\bwhy is\b/i.test(text) ||
+    /\bwhy are\b/i.test(text)
+  );
+}
+
+function detectLane(args: {
+  text: string;
+  metric: ParserMetric;
+  view: ParserView;
+  drillSubtype: ReturnType<typeof detectDrillSubtype>;
+}): ParserLane {
+  const { text, metric, view, drillSubtype } = args;
+
+  if (hasExplainLanguage(text)) return "explain";
+
+  if (drillSubtype) return "drill";
+
   if (view === "compare") return "compare";
 
-  if (metric && (view === "timeseries" || view === "breakdown")) {
+  if (metric === "status_codes" && view === "breakdown") {
+    return "triage";
+    }
+
+    if (metric && (view === "timeseries" || view === "breakdown")) {
     return "exploration";
-  }
+    }
 
   if (metric) return "triage";
 
@@ -328,14 +419,19 @@ function detectIntentSubtype(args: {
   lane: ParserLane;
   view: ParserView;
   dimension: ParserDimension;
+  drillSubtype: ReturnType<typeof detectDrillSubtype>;
 }): string | null {
-  const { lane, view, dimension } = args;
+  const { lane, view, dimension, drillSubtype } = args;
+
+  if (lane === "explain") return "explain_signal";
+
+  if (lane === "drill") return drillSubtype;
 
   if (lane === "compare") return "previous_window";
 
   if (lane === "exploration" && view === "timeseries") {
     return "over_time";
-  }
+ }
 
   if (lane === "exploration" && view === "breakdown") {
     if (dimension === "region") return "by_region";
@@ -417,12 +513,20 @@ function detectConfidence(args: {
 
   if (lane === "compare" && hasMetric) {
     return {
-      confidence: "high",
-      confidenceReason: "compare intent is clear with supported metric",
+        confidence: "high",
+        confidenceReason: "compare intent is clear with supported metric",
     };
-  }
+    }
 
-  if (hasMetric && (timeOverride || dimension || hasScope)) {
+    if (lane === "drill") {
+    return {
+        confidence: "high",
+        confidenceReason:
+        "drill intent is clear and will inherit active investigation context",
+    };
+    }
+
+    if (hasMetric && (timeOverride || dimension || hasScope)) {
     const parts: string[] = ["strong metric match"];
     if (timeOverride) parts.push("explicit time match");
     if (dimension) parts.push("explicit dimension match");
@@ -437,12 +541,12 @@ function detectConfidence(args: {
   // -----------------------------
   // LOW confidence
   // -----------------------------
-  if (!hasMetric && hasCompareLanguage) {
+    if (!hasMetric && hasCompareLanguage) {
     return {
-      confidence: "low",
-      confidenceReason: "compare ambiguity: compare language found without a supported metric",
+        confidence: "low",
+        confidenceReason: "compare ambiguity: compare language found without a supported metric",
     };
-  }
+    }
 
   if (!hasMetric && hasWeakScopeLanguage) {
     return {
@@ -486,9 +590,30 @@ function detectClarification(args: {
   clarificationRequired: boolean;
   clarificationReason: string | null;
 } {
-  const { text, lane, metric, confidence, scopeChanges, dimension, timeOverride } = args;
+  
+const { text, lane, metric, confidence, scopeChanges, dimension, timeOverride } = args;
 
-  const hasScope = Object.values(scopeChanges).some(Boolean);
+if (lane === "drill") {
+  return {
+    clarificationRequired: false,
+    clarificationReason: null,
+  };
+}
+
+const isPlainStatusCodesAsk =
+  /\bstatus\s+codes?\b/i.test(text) &&
+  !/\b(breakdown|distribution|mix|split|over time|trend|timeline|by\s+(region|pop|host))\b/i.test(
+    text
+  );
+
+if (isPlainStatusCodesAsk) {
+  return {
+    clarificationRequired: true,
+    clarificationReason: "status_codes_ambiguous",
+  };
+}
+
+const hasScope = Object.values(scopeChanges).some(Boolean);
 
   const hasCompareLanguage =
     text.includes("compare") ||
@@ -626,18 +751,29 @@ function parseWorkingText(workingText: string): ParsedFields {
   const timeOverride = detectTimeOverride(workingText);
   const dimension = detectDimension(workingText);
   const { scopeChanges, scopeMode } = detectScopeChanges(workingText);
+
   const view = detectView({
     text: workingText,
     hasTimeOverride: Boolean(timeOverride),
     dimension,
     metric,
-    });
-  const lane = detectLane(metric, view);
-  const intentSubtype = detectIntentSubtype({
+  });
+
+  const drillSubtype = detectDrillSubtype(workingText);
+
+  const lane = detectLane({
+    text: workingText,
+    metric,
+    view,
+    drillSubtype,
+  });
+
+    const intentSubtype = detectIntentSubtype({
     lane,
     view,
     dimension,
-  });
+    drillSubtype,
+    });
 
   const { confidence, confidenceReason } = detectConfidence({
     text: workingText,
@@ -782,7 +918,8 @@ export function parseInput(input: string): ParserOutput {
   result.scopeMode = scopeMode;
 
   result.compareTarget = lane === "compare" ? "previous_window" : null;
-  result.requiresActiveContext = lane === "compare";
+  result.requiresActiveContext =
+    lane === "compare" || lane === "explain" || lane === "drill";
 
   result.confidence = confidence;
   result.confidenceReason = confidenceReason;
