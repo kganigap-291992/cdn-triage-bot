@@ -4441,10 +4441,10 @@
   }
 
   function buildCompareGraphFromTwoRuns(args: {
-    currentMetricsJson: any;
-    previousMetricsJson: any;
-    primarySignal?: string | null;
-  }) {
+  currentMetricsJson: any;
+  previousMetricsJson: any;
+  primarySignal?: string | null;
+}): ChatCompare["compareGraph"] | null {
     const metricType =
       args.primarySignal === "cache" ||
       args.primarySignal === "latency" ||
@@ -6308,47 +6308,41 @@
           setIsTriageLoading(true);
 
           try {
-            const compareInputs = derivePreviousWindowInputs(latestInvestigationContext);
+            const currentMetricsJson = latestTriageRun.metricsJson || {};
+            const previousMetricsJson = currentMetricsJson?.previousWindow || null;
 
-            const data = await runTriage(compareInputs);
-
-            const previousSummary =
-              data.swarm?.assessment?.summary ||
-              data.summaryText ||
-              "Previous window comparison completed.";
+            if (!previousMetricsJson) {
+              addText(
+                "assistant",
+                "I could not find previous-window data on the latest triage result. Run triage again, then compare."
+              );
+              return;
+            }
 
             const currentSummary =
               latestTriageRun.swarm?.assessment?.summary ||
               latestTriageRun.summaryText ||
               "Current window summary unavailable.";
 
+            const previousSummary = "Previous window data is available from the latest triage result.";
+
             const requestedSignal = detectCompareSignalFromText(text);
 
             const resolvedCompareSignal =
               requestedSignal ??
-              data.primarySignal ??
               latestTriageRun.swarm?.assessment?.primarySignal ??
               "cache";
 
-            const compareGraph =
-              data.compareGraph ??
-              buildCompareGraphFromTwoRuns({
-                currentMetricsJson: latestTriageRun.metricsJson,
-                previousMetricsJson: data.metricsJson,
-                primarySignal: resolvedCompareSignal,
-              });
+            const compareGraph = buildCompareGraphFromTwoRuns({
+              currentMetricsJson,
+              previousMetricsJson,
+              primarySignal: resolvedCompareSignal,
+            });
 
             console.log("COMPARE DEBUG requestedSignal", requestedSignal);
             console.log("COMPARE DEBUG resolvedCompareSignal", resolvedCompareSignal);
-            console.log("COMPARE DEBUG data.compareGraph", data.compareGraph);
-            console.log(
-              "COMPARE DEBUG current points",
-              data.metricsJson?.timeseries?.points?.length ?? 0
-            );
-            console.log(
-              "COMPARE DEBUG previous points",
-              data.metricsJson?.previousWindow?.timeseries?.points?.length ?? 0
-            );
+            console.log("COMPARE DEBUG current points", currentMetricsJson?.timeseries?.points?.length ?? 0);
+            console.log("COMPARE DEBUG previous points", previousMetricsJson?.timeseries?.points?.length ?? 0);
             console.log("COMPARE DEBUG final compareGraph", compareGraph);
 
             addCompareCard({
@@ -6356,15 +6350,13 @@
                 `Compared against the previous window.\n\n` +
                 `Current: ${currentSummary}\n\n` +
                 `Previous: ${previousSummary}`,
-              overallState:
-                data.overallState ??
-                latestTriageRun.swarm?.assessment?.overallStatus,
+              overallState: latestTriageRun.swarm?.assessment?.overallStatus,
               primarySignal: resolvedCompareSignal,
-              compareMetrics: data.compareMetrics,
-              compareGraph,
+              compareMetrics: undefined,
+              compareGraph: compareGraph ?? undefined,
             });
 
-            pushRunLog("Compare card created from previous-window rerun.");
+            pushRunLog("Compare card created from embedded previous-window data.");
           } catch (e: any) {
             addText("assistant", `⚠️ ${e?.message || "Compare failed."}`);
           } finally {
