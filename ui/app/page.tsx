@@ -190,6 +190,7 @@
     ts: string;
     title: string;
     summary: string;
+    confidenceHint?: string | null;
     metric: string;
     view: "timeseries" | "breakdown";
     displayLabel?: string;
@@ -4692,6 +4693,40 @@
     }
   }
 
+  function getConfidenceHint(parsed: {
+    confidence: "high" | "medium" | "low";
+    lane: string | null;
+    metric: string | null;
+    view: string | null;
+    dimension: string | null;
+  }) {
+    // Parser confidence is string-based.
+    // Treat "low" as < 0.6. Medium/high should not add UI noise.
+    if (parsed.confidence === "high") return null;
+
+    if (parsed.lane === "exploration") {
+      const metric = parsed.metric || "metric";
+      const view =
+        parsed.view === "breakdown"
+          ? parsed.dimension
+            ? `by ${parsed.dimension}`
+            : "breakdown"
+          : "over time";
+
+      return `Interpreted as ${metric} ${view} from the current investigation scope.`;
+    }
+
+    if (parsed.lane === "explain") {
+      return "Interpreted from the current investigation context.";
+    }
+
+    if (parsed.lane === "drill") {
+      return "Interpreted as a drill-down from the current investigation context.";
+    }
+
+    return null;
+  }
+
   function shouldBlockForClarification(args: {
     parsed: {
       clarificationRequired: boolean;
@@ -4852,6 +4887,7 @@
       setChatMessages((prev) => [...prev, { id, type: "text", role, ts: nowIso(), text }]);
       return id;
     }
+
 
     function addTriageCard(run: ChatTriage["run"]) {
       setChatMessages((prev) => [
@@ -6000,11 +6036,16 @@
             latestTriageRun.summaryText ||
             "No summary available.";
 
+          const confidenceHint = getConfidenceHint(parsed);
+
           addExplainCard({
-            summary: `${verdict}\n\n${summary}`,
+            summary: confidenceHint
+              ? `${verdict}\n\n${summary}\n\nℹ️ ${confidenceHint}`
+              : `${verdict}\n\n${summary}`,
             overallState: latestTriageRun.swarm?.assessment?.overallStatus,
             primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
           });
+
           return;
         }
 
@@ -6135,6 +6176,7 @@
               },
             }
           );
+
           return;
         }
 
@@ -6228,12 +6270,15 @@
             context: explorationContext,
           });
 
+          const confidenceHint = getConfidenceHint(parsed);
+
           addExplorationCard({
             id: `${Date.now()}-${Math.random()}`,
             role: "assistant",
             ts: nowIso(),
             title: result.title,
             summary: result.summary,
+            confidenceHint,
             metric: result.metric,
             view: result.view === "over_time" ? "timeseries" : "breakdown",
             displayLabel: result.displayLabel,
@@ -6244,6 +6289,7 @@
             spotlight:
               result.view !== "over_time" ? result.spotlight : undefined,
           });
+
           return;
         }
 
@@ -7334,6 +7380,15 @@
                       <div className="text-sm text-gray-300 whitespace-pre-wrap">
                         {msg.summary}
                       </div>
+
+                      {msg.confidenceHint ? (
+                        <div className="inline-flex w-fit items-center gap-2 rounded-full border border-blue-400/25 bg-blue-400/[0.08] px-3 py-1.5 text-[11px] text-blue-100 shadow-sm shadow-blue-950/30">
+                          <span className="flex h-4 w-4 items-center justify-center rounded-full border border-blue-300/30 bg-blue-300/15 text-[10px] font-semibold text-blue-100">
+                            i
+                          </span>
+                          <span>{msg.confidenceHint}</span>
+                        </div>
+                      ) : null}
 
                       {msg.view === "timeseries" &&
                         Array.isArray(msg.series) &&

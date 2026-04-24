@@ -28,13 +28,14 @@ type CompareGraph = {
 
 type ExplorationMessage = {
   id: string;
-  type: "exploration";
   role: "assistant";
   ts: string;
   title: string;
   summary: string;
+  confidenceHint?: string | null;
   metric: string;
   view: "timeseries" | "breakdown";
+  displayLabel?: string;
   series?: Array<{ ts: string; value: number | null }>;
   seriesSecondary?: Array<{ ts: string; value: number | null }>;
   rows?: any[];
