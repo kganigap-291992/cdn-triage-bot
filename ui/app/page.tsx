@@ -26,6 +26,9 @@
     normalizeAtsExecutionFamily,
   } from "@/lib/chat/domainLexicon";
   import { lookupAtsCrc } from "@/lib/triage/atsCrcGlossary";
+  import { buildExplainNarrationPayload } from "@/lib/llm/buildNarrationPayload";
+  import type { NarrationOutput } from "@/lib/llm/narrationTypes";
+
 
   // ── constants ──────────────────────────────────────────────────────────────
   const LOGO_SRC = "/cachey-logo.png";
@@ -124,6 +127,11 @@
     summary: string;
     overallState?: string;
     primarySignal?: string;
+    signalDelta?: number | null;
+    signalValue?: number | null;
+    latencyStatus?: "stable" | "up" | "down" | null;
+    errorStatus?: "low" | "high" | null;
+    narration?: NarrationOutput | null;
   };
 
   type ChatCompare = {
@@ -3240,6 +3248,70 @@
     return n <= 1 ? n * 100 : n;
   }
 
+  function buildExplainSignalProps(run: ChatTriage["run"]): {
+    signalDelta: number | null;
+    signalValue: number | null;
+    latencyStatus: "stable" | "up" | "down" | null;
+    errorStatus: "low" | "high" | null;
+  } {
+    const m = run.metricsJson || {};
+    const assessment = run.swarm?.assessment ?? null;
+    const primarySignal = assessment?.primarySignal || "mixed";
+
+    const currentCache = normalizeCachePctMaybe(
+      m.cacheHitRate ?? m.cacheHitPct ?? m.atsSummary?.hitPct
+    );
+
+    const previousCache = normalizeCachePctMaybe(
+      m.previousCacheHitRate ??
+        m.previousCacheHitPct ??
+        m.previousAtsSummary?.hitPct
+    );
+
+    const cacheDelta =
+      currentCache != null && previousCache != null
+        ? currentCache - previousCache
+        : null;
+
+    const currentP95 = toNumOrNull(m.p95TtmsMs ?? m.p95_ms);
+    const previousP95 = toNumOrNull(
+      m.previousP95TtmsMs ??
+        m.previousP95Ms ??
+        m.previousWindow?.p95TtmsMs ??
+        m.previousWindow?.p95_ms
+    );
+
+    const latencyDelta =
+      currentP95 != null && previousP95 != null ? currentP95 - previousP95 : null;
+
+    const errPct = normalizePctMaybe(
+      m.errorRatePct ??
+        m.error_rate_pct ??
+        m.errorRate ??
+        m.currentMetrics?.errorRatePct ??
+        m.currentMetrics?.error_rate_pct
+    );
+
+    const cacheSignalDelta =
+      primarySignal === "cache" && cacheDelta != null ? cacheDelta : null;
+
+    return {
+      // cache hit rate lower is bad, so keep real delta negative when it dropped
+      signalDelta: cacheSignalDelta,
+      signalValue: primarySignal === "cache" ? currentCache : null,
+
+      latencyStatus:
+        latencyDelta == null || Math.abs(latencyDelta) < 25
+          ? "stable"
+          : latencyDelta > 0
+          ? "up"
+          : "down",
+
+      // 1% is too high for your data; use 0.5% as warning threshold for now
+      errorStatus: errPct != null && errPct >= 0.5 ? "high" : "low",
+    };
+      }
+
   function scoreWorstCandidate(x: {
     errorRatePct: number | null;
     p95TtmsMs: number | null;
@@ -4763,6 +4835,7 @@
     }
 
     const [isTriageLoading, setIsTriageLoading] = useState(false);
+    const [llmEnabled, setLlmEnabled] = useState(true);
     const [filtersOpen, setFiltersOpen] = useState(false);
     const [filtersDirty, setFiltersDirty] = useState(false);
 
@@ -4929,6 +5002,11 @@
       summary: string;
       overallState?: string;
       primarySignal?: string;
+      signalDelta?: number | null;
+      signalValue?: number | null;
+      latencyStatus?: "stable" | "up" | "down" | null;
+      errorStatus?: "low" | "high" | null;
+      narration?: NarrationOutput | null;
     }) {
       setChatMessages((prev) => [
         ...prev,
@@ -4940,6 +5018,11 @@
           summary: payload.summary,
           overallState: payload.overallState,
           primarySignal: payload.primarySignal,
+          signalDelta: payload.signalDelta ?? null,
+          signalValue: payload.signalValue ?? null,
+          latencyStatus: payload.latencyStatus ?? null,
+          errorStatus: payload.errorStatus ?? null,
+          narration: payload.narration ?? null,
         },
       ]);
     }
@@ -6022,32 +6105,83 @@
         }
 
         if (parsed.lane === "explain") {
-          if (!latestTriageRun) {
-            addText(
-              "assistant",
-              "Run a triage first, then I can explain what’s going on."
-            );
+            if (!latestTriageRun) {
+              addText(
+                "assistant",
+                "Run a triage first, then I can explain what’s going on."
+              );
+              return;
+            }
+
+            const deterministicSummary = buildExplainVerdict(latestTriageRun);
+
+            let narration: NarrationOutput | null = null;
+
+            if (llmEnabled) {
+              try {
+                const payload = buildExplainNarrationPayload({
+                userQuestion: text,
+                parsedIntent: parsed.lane,
+                result: {
+                  ...(latestTriageRun.metricsJson || {}),
+                  summary:
+                    latestTriageRun.swarm?.assessment?.summary ||
+                    latestTriageRun.summaryText ||
+                    deterministicSummary,
+                  primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
+                  overallStatus: latestTriageRun.swarm?.assessment?.overallStatus,
+                  keyFindings: latestTriageRun.swarm?.assessment?.keyFindings || [],
+                  agents: latestTriageRun.swarm?.agents || [],
+                  nextActions: getNextActions({
+                    kind: "explain",
+                    primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
+                  } as any),
+                },
+                partner: latestTriageRun.inputs.partner || "",
+                service: latestTriageRun.inputs.service || "",
+                region: latestTriageRun.inputs.region || "all",
+                pop: latestTriageRun.inputs.pop || "all",
+                timeLabel:
+                  latestTriageRun.inputs.startTsUtc && latestTriageRun.inputs.endTsUtc
+                    ? `${isoToUtcText(latestTriageRun.inputs.startTsUtc)} → ${isoToUtcText(
+                        latestTriageRun.inputs.endTsUtc
+                      )} UTC`
+                    : `last ${latestTriageRun.inputs.windowMinutes}m`,
+                actualStart: latestTriageRun.inputs.startTsUtc,
+                actualEnd: latestTriageRun.inputs.endTsUtc,
+                confidence: parsed.confidence === "high" ? 0.9 : parsed.confidence === "medium" ? 0.65 : 0.4,
+              });
+
+              const res = await fetch("/api/narrate", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify(payload),
+              });
+
+              const json = await res.json().catch(() => null);
+
+              if (res.ok && json?.success && json?.data) {
+                narration = json.data;
+              }
+              } catch (e) {
+                  console.error("Narration failed", e);
+                }
+              }
+
+            const signalProps = buildExplainSignalProps(latestTriageRun);
+
+            addExplainCard({
+              summary: deterministicSummary,
+              overallState: latestTriageRun.swarm?.assessment?.overallStatus,
+              primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
+              ...signalProps,
+              narration,
+            });
+
             return;
           }
-
-          const verdict = buildExplainVerdict(latestTriageRun);
-          const summary =
-            latestTriageRun.swarm?.assessment?.summary ||
-            latestTriageRun.summaryText ||
-            "No summary available.";
-
-          const confidenceHint = getConfidenceHint(parsed);
-
-          addExplainCard({
-            summary: confidenceHint
-              ? `${verdict}\n\n${summary}\n\nℹ️ ${confidenceHint}`
-              : `${verdict}\n\n${summary}`,
-            overallState: latestTriageRun.swarm?.assessment?.overallStatus,
-            primarySignal: latestTriageRun.swarm?.assessment?.primarySignal,
-          });
-
-          return;
-        }
 
         if (
           shouldBlockForClarification({
@@ -6653,6 +6787,17 @@
               </div>
             </div>
             <div className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setLlmEnabled((v) => !v)}
+                className={`rounded-full border px-3 py-1.5 text-xs transition ${
+                  llmEnabled
+                    ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+                    : "border-gray-500/30 bg-gray-500/10 text-gray-300"
+                }`}
+              >
+                LLM: {llmEnabled ? "On" : "Off"}
+              </button>
               <a
                 href="/debug"
                 className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"
@@ -7337,6 +7482,11 @@
                     summary={payload.summary}
                     overallState={payload.overallState}
                     primarySignal={payload.primarySignal}
+                    signalDelta={payload.signalDelta ?? null}
+                    signalValue={payload.signalValue ?? null}
+                    latencyStatus={payload.latencyStatus ?? null}
+                    errorStatus={payload.errorStatus ?? null}
+                    narration={payload.narration ?? null}
                   />
                 )}
                 renderCompareCard={(payload) => (

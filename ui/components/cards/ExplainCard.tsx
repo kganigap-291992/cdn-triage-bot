@@ -6,99 +6,153 @@ type Props = {
   summary: string;
   overallState?: string;
   primarySignal?: string;
+  signalDelta?: number | null;
+  signalValue?: number | null;
+  latencyStatus?: "stable" | "up" | "down" | null;
+  errorStatus?: "low" | "high" | null;
+  narration?: {
+    leadershipSummary: string;
+    engineerRead: string;
+    nextChecks: string[];
+  } | null;
 };
 
-function getStateColor(state?: string) {
-  switch (state) {
-    case "ok":
-      return "bg-green-500/20 text-green-300 border-green-500/30";
-    case "warn":
-      return "bg-yellow-500/20 text-yellow-300 border-yellow-500/30";
-    case "critical":
-      return "bg-red-500/20 text-red-300 border-red-500/30";
-    default:
-      return "bg-gray-500/20 text-gray-300 border-gray-500/30";
+function getCacheChipColor(delta?: number | null) {
+  if (delta == null || !Number.isFinite(delta)) {
+    return "bg-blue-500/20 text-blue-300 border-blue-500/30";
   }
+
+  if (delta < 0) {
+    return "bg-red-500/20 text-red-300 border-red-500/30";
+  }
+
+  if (delta > 0) {
+    return "bg-green-500/20 text-green-300 border-green-500/30";
+  }
+
+  return "bg-gray-500/20 text-gray-300 border-gray-500/30";
 }
 
-function getSignalColor(signal?: string) {
-  switch (signal) {
-    case "cache":
-      return "bg-blue-500/20 text-blue-300 border-blue-500/30";
-    case "latency":
-      return "bg-purple-500/20 text-purple-300 border-purple-500/30";
-    case "errors":
-      return "bg-red-500/20 text-red-300 border-red-500/30";
-    case "traffic":
-      return "bg-green-500/20 text-green-300 border-green-500/30";
-    default:
-      return "bg-gray-500/20 text-gray-300 border-gray-500/30";
-  }
+function getCacheChipLabel(args: {
+  primarySignal?: string;
+  signalDelta?: number | null;
+  signalValue?: number | null;
+}) {
+  if (args.primarySignal !== "cache") return null;
+
+  const value =
+    args.signalValue != null && Number.isFinite(args.signalValue)
+      ? `${args.signalValue.toFixed(1)}%`
+      : null;
+
+  const arrow =
+    args.signalDelta == null || !Number.isFinite(args.signalDelta)
+      ? "↓"
+      : args.signalDelta < 0
+      ? "↓"
+      : args.signalDelta > 0
+      ? "↑"
+      : "•";
+
+  return value ? `Cache ${arrow} ${value}` : `Cache ${arrow}`;
 }
 
-function formatStateLabel(state?: string) {
-  switch (state) {
-    case "ok":
-      return "Healthy";
-    case "warn":
-      return "Degraded";
-    case "critical":
-      return "Critical";
-    default:
-      return null;
-  }
-}
+function getLatencyChip(latencyStatus?: "stable" | "up" | "down" | null) {
+  if (!latencyStatus) return null;
 
-function formatSignalLabel(signal?: string) {
-  switch (signal) {
-    case "cache":
-      return "Cache";
-    case "latency":
-      return "Latency";
-    case "errors":
-      return "Errors";
-    case "traffic":
-      return "Traffic";
-    default:
-      return null;
+  if (latencyStatus === "stable") {
+    return {
+      label: "Latency ✓ Stable",
+      className: "bg-green-500/20 text-green-300 border-green-500/30",
+    };
   }
+
+  if (latencyStatus === "up") {
+    return {
+      label: "Latency ↑ High",
+      className: "bg-red-500/20 text-red-300 border-red-500/30",
+    };
+  }
+
+  return {
+    label: "Latency ↓ Lower",
+    className: "bg-blue-500/20 text-blue-300 border-blue-500/30",
+  };
 }
 
 export default function ExplainCard({
   summary,
-  overallState,
   primarySignal,
+  signalDelta,
+  signalValue,
+  latencyStatus,
+  narration,
 }: Props) {
-  const stateLabel = formatStateLabel(overallState);
-  const signalLabel = formatSignalLabel(primarySignal);
+  const cacheChipLabel = getCacheChipLabel({
+    primarySignal,
+    signalDelta,
+    signalValue,
+  });
+
+  const latencyChip = getLatencyChip(latencyStatus);
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4 space-y-3">
-      <div className="flex items-center gap-2 flex-wrap">
-        {stateLabel && (
-          <span
-            className={`text-xs px-2 py-1 rounded-full border ${getStateColor(
-              overallState
-            )}`}
-          >
-            {stateLabel}
-          </span>
-        )}
+      {(cacheChipLabel || latencyChip) && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {cacheChipLabel && (
+            <span
+              className={`text-xs px-2 py-1 rounded-full border ${getCacheChipColor(
+                signalDelta
+              )}`}
+            >
+              {cacheChipLabel}
+            </span>
+          )}
 
-        {signalLabel && (
-          <span
-            className={`text-xs px-2 py-1 rounded-full border ${getSignalColor(
-              primarySignal
-            )}`}
-          >
-            {signalLabel}
-          </span>
-        )}
+          {latencyChip && (
+            <span
+              className={`text-xs px-2 py-1 rounded-full border ${latencyChip.className}`}
+            >
+              {latencyChip.label}
+            </span>
+          )}
+        </div>
+      )}
+
+      <div>
+        <div className="text-xs text-gray-400 mb-1">Telemetry Truth</div>
+        <div className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap">
+          {summary}
+        </div>
       </div>
 
-      <div className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap">
-        {summary}
-      </div>
+      {narration && (
+        <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.04] p-3 space-y-2">
+          <div className="text-xs text-gray-400">Cachey Insight</div>
+
+          <div className="text-sm text-gray-200 leading-relaxed">
+            <span className="text-gray-400">Impact: </span>
+            {narration.leadershipSummary}
+          </div>
+
+          <div className="text-sm text-gray-200 leading-relaxed">
+            <span className="text-gray-400">Triage: </span>
+            {narration.engineerRead}
+          </div>
+
+          {narration.nextChecks?.length > 0 && (
+            <div className="text-xs text-blue-300 mt-1">
+              Next checks:
+              <ul className="list-disc ml-4 mt-1 space-y-1">
+                {narration.nextChecks.map((n, i) => (
+                  <li key={`${n}-${i}`}>{n}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

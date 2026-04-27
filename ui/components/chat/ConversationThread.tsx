@@ -60,6 +60,15 @@ type ConversationThreadProps = {
     summary: string;
     overallState?: string;
     primarySignal?: string;
+    signalDelta?: number | null;
+    signalValue?: number | null;
+    latencyStatus?: "stable" | "up" | "down" | null;
+    errorStatus?: "low" | "high" | null;
+    narration?: {
+      leadershipSummary: string;
+      engineerRead: string;
+      nextChecks: string[];
+    } | null;
   }) => React.ReactNode;
   renderCompareCard: (payload: {
     summary: string;
@@ -154,11 +163,16 @@ export default function ConversationThread({
                   renderStatusBreakdownCard(m.breakdown)}
 
                 {m.type === "explain" &&
-                  renderExplainCard({
-                    summary: m.summary,
-                    overallState: m.overallState,
-                    primarySignal: m.primarySignal,
-                  })}
+                renderExplainCard({
+                  summary: m.summary,
+                  overallState: m.overallState,
+                  primarySignal: m.primarySignal,
+                  signalDelta: m.signalDelta ?? null,
+                  signalValue: m.signalValue ?? null,
+                  latencyStatus: m.latencyStatus ?? null,
+                  errorStatus: m.errorStatus ?? null,
+                  narration: m.narration ?? null,
+                })}
 
                 {m.type === "compare" &&
                   renderCompareCard({
