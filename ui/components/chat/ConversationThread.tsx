@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import type { NarrationOutput } from "@/lib/llm/narrationTypes";
 
 type CompareMetricBlock = {
   current: number | null;
@@ -74,6 +75,7 @@ type ConversationThreadProps = {
     summary: string;
     overallState?: string;
     primarySignal?: string;
+    narration?: NarrationOutput | null;
     compareMetrics?: CompareMetrics;
     compareGraph?: CompareGraph;
   }) => React.ReactNode;
@@ -175,13 +177,14 @@ export default function ConversationThread({
                 })}
 
                 {m.type === "compare" &&
-                  renderCompareCard({
-                    summary: m.summary,
-                    overallState: m.overallState,
-                    primarySignal: m.primarySignal,
-                    compareMetrics: m.compareMetrics,
-                    compareGraph: m.compareGraph,
-                  })}
+                renderCompareCard({
+                  summary: m.summary,
+                  overallState: m.overallState,
+                  primarySignal: m.primarySignal,
+                  narration: m.narration ?? null,
+                  compareMetrics: m.compareMetrics,
+                  compareGraph: m.compareGraph,
+                })}
 
                 {m.type === "exploration" && renderExplorationCard(m)}
 

@@ -76,6 +76,7 @@
       inputs: TriageInputs;
       summaryText: string;
       metricsJson: any;
+      narration?: NarrationOutput | null;
       sql?: { queries: string[]; params?: Record<string, any> } | null;
       swarm?: {
         assessment?: {
@@ -135,14 +136,15 @@
   };
 
   type ChatCompare = {
-    id: string;
-    type: "compare";
-    role: "assistant";
-    ts: string;
-    summary: string;
-    overallState?: string;
-    primarySignal?: string;
-    compareMetrics?: {
+  id: string;
+  type: "compare";
+  role: "assistant";
+  ts: string;
+  summary: string;
+  overallState?: string;
+  primarySignal?: string;
+  narration?: NarrationOutput | null;
+  compareMetrics?: {
       cache?: {
         current: number | null;
         previous: number | null;
@@ -3743,58 +3745,14 @@
             </div>
             {ts?.startTs && ts?.endTs && (
               <div className="text-[11px] text-gray-500 mt-1">
-                actual window: {formatUtcYmdHm(ts.startTs)} → {formatUtcYmdHm(ts.endTs)} UTC
+                Actual Window: {formatUtcYmdHm(ts.startTs)} → {formatUtcYmdHm(ts.endTs)} UTC
               </div>
-            )}
-          </div>
-          <div className="flex flex-wrap justify-end gap-1.5 shrink-0">
-            <span className="text-[11px] px-2 py-1 rounded-full border border-white/10 bg-white/5 text-gray-200">
-              <span className="text-gray-400 mr-1">scope</span>
-              <span className="font-semibold">{scopeSource}</span>
-            </span>
-            <span
-              className={`text-[11px] px-2 py-1 rounded-full border ${
-                forcedLocal
-                  ? "border-amber-400/30 bg-amber-400/10 text-amber-200"
-                  : proxyEnabled
-                  ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
-                  : "border-white/10 bg-white/5 text-gray-200"
-              }`}
-            >
-              <span className="text-gray-400 mr-1">src</span>
-              <span className="font-semibold">{answerSource}</span>
-            </span>
-            {assessment?.overallStatus && (
-              <span
-                className={`text-[11px] px-2 py-1 rounded-full border font-semibold ${severityPillClass(
-                  assessment.overallStatus
-                )}`}
-              >
-                {assessment.overallStatus}
-              </span>
             )}
           </div>
         </div>
 
-        {assessment && (
-          <div className="flex flex-wrap gap-2">
-            {assessment.primarySignal && (
-              <span className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
-                <span className="text-gray-400 mr-1">primary</span>
-                <span className="font-semibold">{signalLabel(assessment.primarySignal)}</span>
-              </span>
-            )}
-            {assessment.metadata?.timeMode && (
-              <span className="text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/10 text-gray-200">
-                <span className="text-gray-400 mr-1">timeMode</span>
-                <span className="font-semibold">{assessment.metadata.timeMode}</span>
-              </span>
-            )}
-          </div>
-        )}
-
         <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-          <div className="text-xs text-gray-400 mb-2">Summary</div>
+          <div className="text-xs text-gray-400 mb-2">Telemetry Summary</div>
           <pre className="whitespace-pre-wrap text-sm text-gray-100/90 leading-relaxed">
             {summaryText}
           </pre>
@@ -3804,20 +3762,44 @@
           <div className="text-xs text-gray-400 mb-2">Key Signals</div>
           <MetricChips metricsJson={run.metricsJson} />
         </div>
-
-        {keyFindings.length > 0 && (
+        {run.narration && (
           <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-            <div className="text-xs text-gray-400 mb-2">Key Findings</div>
-            <div className="space-y-2">
-              {keyFindings.map((finding, idx) => (
-                <div
-                  key={`${finding}-${idx}`}
-                  className="flex items-start gap-2 text-sm text-gray-200/90"
-                >
-                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-blue-400 shrink-0" />
-                  <span>{finding}</span>
+            <div className="text-xs text-gray-400 mb-3">Cachey Insight</div>
+
+            <div className="space-y-3 text-sm text-gray-100/90">
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
+                  Impact
                 </div>
-              ))}
+                <div className="leading-relaxed line-clamp-2">
+                  {run.narration.leadershipSummary}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
+                  Triage
+                </div>
+                <div className="leading-relaxed line-clamp-2">
+                  {run.narration.engineerRead}
+                </div>
+              </div>
+
+              {run.narration.nextChecks?.length > 0 && (
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
+                    Next checks
+                  </div>
+                  <ul className="space-y-1">
+                    {run.narration.nextChecks.slice(0, 3).map((check, idx) => (
+                      <li key={`${check}-${idx}`} className="flex gap-2">
+                        <span className="text-blue-400">•</span>
+                        <span>{check}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -4178,7 +4160,7 @@
             {drill?.summary || summaryText || ""}
           </pre>
         </div>
-
+       
         {hasRows ? (
           <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
             <div className="flex items-center justify-between gap-3">
@@ -4970,7 +4952,10 @@
           type: "triage",
           role: "assistant",
           ts: nowIso(),
-          run,
+          run: {
+            ...run,
+            narration: run.narration ?? null,
+          },
         },
       ]);
     }
@@ -5031,6 +5016,7 @@
       summary: string;
       overallState?: string;
       primarySignal?: string;
+      narration?: NarrationOutput | null;
       compareMetrics?: {
         cache?: {
           current: number | null;
@@ -5071,6 +5057,7 @@
           summary: payload.summary,
           overallState: payload.overallState,
           primarySignal: payload.primarySignal,
+          narration: payload.narration ?? null,
           compareMetrics: payload.compareMetrics,
           compareGraph: payload.compareGraph,
         },
@@ -5865,10 +5852,53 @@
             summaryText: data.summaryText || "",
           });
         } else {
+          let triageNarration: NarrationOutput | null = null;
+          if (llmEnabled) {
+            try {
+              const narrationResp = await fetch("/api/narrate", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  cardType: "triage",
+                  userQuestion: extra?.chatContext?.rawText || "Run triage",
+                  parsedIntent: extra?.chatContext?.detected ?? null,
+                  activeScope: inputs,
+                  timeWindow: {
+                    windowMinutes: inputs.windowMinutes,
+                    startTsUtc: inputs.startTsUtc ?? null,
+                    endTsUtc: inputs.endTsUtc ?? null,
+                  },
+                  confidence: "high",
+                  deterministicSummary: data.summaryText || "",
+                  keyFindings: data.swarm?.assessment?.keyFindings ?? [],
+                  agentOutputs: data.swarm?.agents ?? [],
+                  importantMetrics: data.metricsJson || {},
+                  evidenceUsed: data.swarm?.assessment?.keyFindings ?? [],
+                  allowedNextActions: [
+                    "Show worst region",
+                    "Show worst POP",
+                    "Show status by POP",
+                  ],
+                }),
+              });
+
+              const narrationJson = await narrationResp.json().catch(() => null);
+
+              if (narrationResp.ok && narrationJson?.success && narrationJson?.data) {
+                triageNarration = narrationJson.data as NarrationOutput;
+              }
+            } catch {
+              triageNarration = null;
+            }
+          }
+
           addTriageCard({
             inputs,
             summaryText: data.summaryText || "",
             metricsJson: data.metricsJson || null,
+            narration: triageNarration,
             sql: data.sql || null,
             swarm: data.swarm || null,
             scopeSource,
@@ -6458,7 +6488,7 @@
               latestTriageRun.summaryText ||
               "Current window summary unavailable.";
 
-            const previousSummary = "Previous window data is available from the latest triage result.";
+            
 
             const requestedSignal = detectCompareSignalFromText(text);
 
@@ -6479,17 +6509,56 @@
             console.log("COMPARE DEBUG previous points", previousMetricsJson?.timeseries?.points?.length ?? 0);
             console.log("COMPARE DEBUG final compareGraph", compareGraph);
 
+            let compareNarration: NarrationOutput | null = null;
+
+            if (llmEnabled) {
+              try {
+                const narrationResp = await fetch("/api/narrate", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    cardType: "compare",
+                    userQuestion: text,
+                    deterministicSummary:
+                      `Compared against the previous window.\n\n` +
+                      `Current: ${currentSummary}`,
+                    parsedIntent: {
+                      lane: "compare",
+                      metric: resolvedCompareSignal,
+                    },
+                    activeScope: latestInvestigationContext.baseScope,
+                    timeWindow: latestInvestigationContext.time,
+                    confidence: parsed.confidence,
+                    importantMetrics: {
+                      primarySignal: resolvedCompareSignal,
+                      current: currentMetricsJson,
+                      previous: previousMetricsJson,
+                    },
+                    allowedNextActions: [
+                      "Show worst region",
+                      "Show worst POP",
+                      "Show status by POP",
+                    ],
+                  }),
+                });
+
+                const narrationJson = await narrationResp.json().catch(() => null);
+                compareNarration = narrationJson?.data ?? null;
+              } catch (err) {
+                console.error("Compare narration failed", err);
+              }
+            }
+
             addCompareCard({
               summary:
                 `Compared against the previous window.\n\n` +
-                `Current: ${currentSummary}\n\n` +
-                `Previous: ${previousSummary}`,
+                `Current: ${currentSummary}`,
               overallState: latestTriageRun.swarm?.assessment?.overallStatus,
               primarySignal: resolvedCompareSignal,
+              narration: compareNarration,
               compareMetrics: undefined,
               compareGraph: compareGraph ?? undefined,
             });
-
             pushRunLog("Compare card created from embedded previous-window data.");
           } catch (e: any) {
             addText("assistant", `⚠️ ${e?.message || "Compare failed."}`);
@@ -7494,6 +7563,7 @@
                     summary={payload.summary}
                     overallState={payload.overallState}
                     primarySignal={payload.primarySignal}
+                    narration={payload.narration ?? null}
                     compareMetrics={payload.compareMetrics}
                     compareGraph={payload.compareGraph}
                   />

@@ -17,27 +17,27 @@ const triageActionsBySignal: Record<SignalType, NextAction[]> = {
   cache: [
     { id: "pop", label: "Which POP has low cache?", query: "show worst pop" },
     { id: "region", label: "Which region is degraded?", query: "show worst region" },
-    { id: "host", label: "Which host has low cache?", query: "show worst host" },
+    { id: "status", label: "Show status by POP", query: "status by pop" },
   ],
   latency: [
     { id: "region", label: "Where is latency highest?", query: "show worst region" },
     { id: "pop", label: "Which POP is slow?", query: "show worst pop" },
-    { id: "host", label: "Which host is slow?", query: "show worst host" },
+    { id: "status", label: "Show status by POP", query: "status by pop" },
   ],
   errors: [
     { id: "region", label: "Where are errors highest?", query: "show worst region" },
     { id: "pop", label: "Which POP has most 5xx?", query: "show worst pop" },
-    { id: "host", label: "Which host has most errors?", query: "show worst host" },
+    { id: "status", label: "Show status by POP", query: "status by pop" },
   ],
   traffic: [
     { id: "region", label: "Which region dropped traffic?", query: "show worst region" },
     { id: "pop", label: "Which POP is impacted?", query: "show worst pop" },
-    { id: "host", label: "Which host lost traffic?", query: "show worst host" },
+    { id: "status", label: "Show status by POP", query: "status by pop" },
   ],
   mixed: [
     { id: "region", label: "Which region looks worst?", query: "show worst region" },
     { id: "pop", label: "Which POP looks worst?", query: "show worst pop" },
-    { id: "host", label: "Which host looks worst?", query: "show worst host" },
+    { id: "status", label: "Show status by POP", query: "status by pop" },
   ],
 };
 
@@ -53,7 +53,7 @@ export function getNextActions(result: ResultLike | null | undefined): NextActio
 
     case "drill":
       return [
-        { id: "status", label: "Break down status codes", query: "status by host" },
+        { id: "status", label: "Break down status by POP", query: "status by pop" },
         { id: "compare", label: "Compare this scope", query: "compare this scope" },
         { id: "explain", label: "Explain this result", query: "explain this" },
       ];
@@ -61,15 +61,15 @@ export function getNextActions(result: ResultLike | null | undefined): NextActio
     case "compare":
       return [
         { id: "region", label: "Which region drove this change?", query: "show worst region" },
-        { id: "host", label: "Which host contributed most?", query: "show worst host" },
+        { id: "pop", label: "Which POP contributed most?", query: "show worst pop" },
         { id: "explain", label: "Explain this delta", query: "explain this delta" },
       ];
 
     case "explain":
       return [
         { id: "region", label: "Show worst region", query: "show worst region" },
-        { id: "host", label: "Show worst host", query: "show worst host" },
-        { id: "status", label: "Show status by host", query: "status by host" },
+        { id: "pop", label: "Show worst POP", query: "show worst pop" },
+        { id: "status", label: "Show status by POP", query: "status by pop" },
       ];
 
     default:

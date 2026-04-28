@@ -30,6 +30,11 @@ type Props = {
   summary: string;
   overallState?: string;
   primarySignal?: string;
+  narration?: {
+    leadershipSummary: string;
+    engineerRead: string;
+    nextChecks: string[];
+  } | null;
   compareMetrics?: CompareMetrics;
   compareGraph?: CompareGraph;
 };
@@ -101,13 +106,13 @@ function splitCompareSummary(summary: string) {
     };
   }
 
-  const currentMarker = "\n\nCurrent:";
-  const previousMarker = "\n\nPrevious:";
+  const currentMarker = "Current:";
+  const previousMarker = "Previous:";
 
   const currentIdx = text.indexOf(currentMarker);
   const previousIdx = text.indexOf(previousMarker);
 
-  if (currentIdx === -1 || previousIdx === -1) {
+  if (currentIdx === -1) {
     return {
       intro: text,
       current: "",
@@ -116,14 +121,22 @@ function splitCompareSummary(summary: string) {
   }
 
   const intro = text.slice(0, currentIdx).trim();
-  const current = text
-    .slice(currentIdx + currentMarker.length, previousIdx)
-    .trim();
-  const previous = text
-    .slice(previousIdx + previousMarker.length)
-    .trim();
 
-  return { intro, current, previous };
+  const current =
+    previousIdx !== -1
+      ? text.slice(currentIdx + currentMarker.length, previousIdx).trim()
+      : text.slice(currentIdx + currentMarker.length).trim();
+
+  const previous =
+    previousIdx !== -1
+      ? text.slice(previousIdx + previousMarker.length).trim()
+      : "";
+
+  return {
+    intro,
+    current,
+    previous,
+  };
 }
 
 function extractCachePct(text: string): number | null {
@@ -947,6 +960,7 @@ export default function CompareCard({
   summary,
   overallState,
   primarySignal,
+  narration,
   compareMetrics,
   compareGraph,
 }: Props) {
@@ -1045,6 +1059,48 @@ export default function CompareCard({
         {showCompareGraph ? (
           <CompareMiniGraph compareGraph={compareGraph!} />
         ) : null}
+
+        {narration && (
+          <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+            <div className="text-xs text-gray-400 mb-3">Cachey Insight</div>
+
+            <div className="space-y-3 text-sm text-gray-100/90">
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
+                  Impact
+                </div>
+                <div className="leading-relaxed">
+                  {narration.leadershipSummary}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
+                  Triage
+                </div>
+                <div className="leading-relaxed text-gray-300">
+                  {narration.engineerRead}
+                </div>
+              </div>
+
+              {narration.nextChecks?.length > 0 && (
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
+                    Next checks
+                  </div>
+                  <ul className="space-y-1">
+                    {narration.nextChecks.slice(0, 3).map((check, idx) => (
+                      <li key={`${check}-${idx}`} className="flex gap-2 text-gray-300">
+                        <span className="text-blue-400">•</span>
+                        <span>{check}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {!showStructuredMetrics && parts.current && (
           <div className="rounded-xl border border-white/10 bg-black/20 p-3">

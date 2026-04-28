@@ -160,10 +160,22 @@ export function buildTriageNarrationPayload(input: AnyRecord): NarrationPayload 
   };
 }
 
+export function buildCompareNarrationPayload(input: AnyRecord): NarrationPayload {
+  const base = basePayload(input);
+
+  return {
+    ...base,
+    cardType: "compare",
+    primarySignal: compactString(input.primarySignal ?? input.metric, "unknown"),
+    importantMetrics: input.importantMetrics ?? input.compareMetrics ?? {},
+  };
+}
+
 export function buildNarrationPayload(input: AnyRecord): NarrationPayload {
   const cardType = compactString(input.cardType, "explain");
 
   if (cardType === "triage") return buildTriageNarrationPayload(input);
+  if (cardType === "compare") return buildCompareNarrationPayload(input);
 
   return buildExplainNarrationPayload({
     ...input,
