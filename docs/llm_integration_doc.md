@@ -1,66 +1,151 @@
-# Cachey — LLM Narrator Integration Design
+# Cachey — Bounded LLM Integration (Narrator + Verbiage Adapter)
 
 ## Overview
 
-Cachey uses a **deterministic-first architecture** where:
+Cachey follows a **deterministic-first architecture**:
 
-* Parser → decides intent (lane)
-* Deterministic engine → computes truth (metrics, agents, evidence)
-* UI → renders graphs/tables
-* LLM → **narrates** the result (does not compute or decide)
+Parser → decides intent
+Deterministic Engine → computes truth
+UI → renders graphs/tables
+LLM → explains and improves usability
 
 ---
 
 ## Core Principle
 
-```txt
 Deterministic System = Source of Truth
-LLM = Narrator / Explainer
-```
+LLM = Language Layer (Translator + Narrator)
 
-LLM must **never**:
+LLM is strictly bounded.
 
-* Generate SQL
-* Infer schema
-* Compute metrics
-* Override agent decisions
+---
 
-LLM must only:
+## What LLM CAN Do
+
+### Narrator
 
 * Explain results
 * Summarize findings
 * Suggest next actions
 * Improve readability
 
+### Verbiage Adapter
+
+* Normalize user language
+* Handle synonyms / messy phrasing
+* Improve parser success rate
+
 ---
 
-## System Flow
+## What LLM MUST NEVER Do
 
-```txt
+* Generate SQL
+* Infer schema
+* Compute metrics
+* Override deterministic agents
+* Change scope (partner/service)
+* Invent data
+
+---
+
+## System Architecture
+
+### High-Level Flow
+
 User Input
-   ↓
+↓
 Parser (parseInput.ts)
-   ↓
+↓
+IF low confidence → LLM Verbiage Adapter
+↓
 Lane Selection (triage / exploration / drill / compare / explain)
-   ↓
+↓
 Deterministic Engine (SQL + agents)
-   ↓
+↓
 EvidenceBundle
-   ↓
-UI renders card (graphs/tables)
-   ↓
+↓
+UI renders graphs/tables
+↓
 NarrationPayload built
-   ↓
-LLM generates explanation
-   ↓
-UI displays narration inside card
+↓
+LLM Narrator
+↓
+UI displays explanation
+
+---
+
+## Mermaid Diagram
+
+```mermaid
+flowchart TD
+  U[User Input]
+
+  P[Parser parseInput.ts]
+  VA[LLM Verbiage Adapter]
+
+  R[Routing Layer]
+
+  DE[Deterministic Engine SQL + Agents]
+
+  EB[EvidenceBundle]
+
+  UI[UI Renderer]
+
+  NP[Narration Payload Builder]
+
+  LLM[LLM Narrator]
+
+  OUT[User Output]
+
+  U --> P
+  P -->|high confidence| R
+  P -->|low confidence| VA --> R
+
+  R --> DE --> EB --> UI
+  EB --> NP --> LLM --> UI
+
+  UI --> OUT
 ```
 
 ---
 
-## Universal Narration Payload
+## Visio Diagram (Copy Blocks)
 
-All LLM calls use a shared structure:
+[User Input]
+
+↓
+
+[Parser (parseInput.ts)]
+├── High Confidence → [Routing]
+└── Low Confidence → [LLM Verbiage Adapter] → [Routing]
+
+↓
+
+[Deterministic Engine (SQL + Agents)]
+
+↓
+
+[EvidenceBundle]
+
+↓
+
+[UI Renderer (Graphs / Cards)]
+
+↓
+
+[Narration Payload Builder]
+
+↓
+
+[LLM Narrator]
+
+↓
+
+[Final UI Output]
+
+---
+
+## Narration Payload
 
 ```ts
 type NarrationPayload = {
@@ -99,11 +184,9 @@ type NarrationPayload = {
 
 ---
 
-## Payload by Card Type
+## Payloads by Card Type
 
-### 1. Triage Payload
-
-Used for: full triage card narration
+### Triage
 
 ```ts
 {
@@ -126,166 +209,81 @@ Used for: full triage card narration
     infraErr: number;
   };
 
-  blastRadius: {
-    regions: number;
-    pops: number;
-  };
-
-  agentOutputs: {
-    scope: string;
-    traffic: string;
-    latency: string;
-    errors: string;
-    cache: string;
-  };
-
   keyFindings: string[];
 }
 ```
 
-Purpose:
-
-> Explain what is happening and what is driving the incident.
-
 ---
 
-### 2. Exploration Payload
-
-Used for: graph/table explanations
+### Exploration
 
 ```ts
 {
   metric: string;
   view: "timeseries" | "breakdown" | "compare";
-  dimension?: string;
-
-  summary: string;
 
   seriesSummary: {
     latest: number;
-    min?: number;
-    max?: number;
     trend?: "up" | "down" | "stable";
   };
-
-  rowsSummary?: string[];
-
-  confidenceHint?: string;
 }
 ```
 
-Purpose:
-
-> Explain the graph or breakdown the user requested.
-
 ---
 
-### 3. Drill Payload
-
-Used for: worst entity / drill-down
+### Drill
 
 ```ts
 {
-  drillType: "worst_region" | "worst_pop" | "worst_ua" | "worst_content" | "worst_host";
-
+  drillType: string;
   selectedEntity: string;
-
-  topMetrics: {
-    requests: number;
-    p95: number;
-    errorRate: number;
-    cacheHitRate: number;
-  };
-
-  comparisonContext: string;
-
   rowsSummary: string[];
-
-  parentTriageSummary: string;
 }
 ```
 
-Purpose:
-
-> Explain why this entity is the worst.
-
 ---
 
-### 4. Compare Payload
-
-Used for: time comparison
+### Compare
 
 ```ts
 {
-  metric: string;
-
   current: number;
   previous: number;
-
   delta: number;
   direction: "up" | "down";
-
-  context: string;
 }
 ```
 
-Purpose:
-
-> Explain what changed and whether it matters.
-
 ---
 
-### 5. Explain Payload
-
-Used for: “why” / “what happened”
+### Explain
 
 ```ts
 {
   primarySignal: string;
-
   agentOutputs: Record<string, string>;
-
   keyFindings: string[];
-
-  supportingMetrics: Record<string, number>;
-
-  userQuestion: string;
 }
 ```
 
-Purpose:
-
-> Answer user’s question using latest triage result.
-
 ---
 
-### 6. Status Breakdown Payload
+### Status
 
 ```ts
 {
-  mode: "aggregate" | "region" | "pop" | "host";
-
   statusCounts: Record<string, number>;
-
-  totalRequests: number;
-
   dominantStatuses: string[];
-
-  interpretationHint: string;
 }
 ```
 
-Purpose:
-
-> Explain status distribution and failures.
-
 ---
 
-## LLM Prompt Structure
+## LLM Prompt
 
 ### System Prompt
 
-```txt
+```
 You are Cachey’s narrator.
 
 Rules:
@@ -293,14 +291,14 @@ Rules:
 - Do NOT invent metrics
 - Do NOT contradict agent outputs
 - Be concise and operational
-- Focus on what matters to debugging
+- Focus on debugging relevance
 ```
 
 ---
 
 ### Input Template
 
-```txt
+```
 User Question:
 {userQuestion}
 
@@ -322,7 +320,7 @@ Evidence:
 
 ---
 
-### Output Structure
+### Output
 
 ```ts
 type NarrationOutput = {
@@ -336,27 +334,33 @@ type NarrationOutput = {
 
 ## What NOT to Send to LLM
 
-Avoid sending:
+Avoid:
 
 * Full SQL queries
 * Large timeseries arrays
-* Full UI text blobs
-* Raw unprocessed logs
+* Raw logs
+* Full UI blobs
 
-Instead:
+Send instead:
 
-* Send summaries
-* Send top-N rows
-* Send derived metrics
+* Summaries
+* Top-N rows
+* Derived metrics
 
 ---
 
 ## Design Philosophy
 
-```txt
 Metrics → Agents → Truth
 Truth → LLM → Explanation
 Explanation → UI → User
-```
+
 
 ---
+
+## Final State
+
+* Deterministic system remains authoritative
+* LLM improves usability without risk
+* No Redis dependency
+* Clean separation of concerns
