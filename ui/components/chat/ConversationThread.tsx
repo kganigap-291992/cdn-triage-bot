@@ -71,11 +71,29 @@ type ConversationThreadProps = {
       nextChecks: string[];
     } | null;
   }) => React.ReactNode;
-  renderCompareCard: (payload: {
+    renderCompareCard: (payload: {
     summary: string;
     overallState?: string;
     primarySignal?: string;
     narration?: NarrationOutput | null;
+    topDriver?: {
+      dimension: "pop" | "region";
+      name: string;
+      metric: "latency";
+      deltaMs: number;
+      currentMs: number;
+      previousMs: number;
+    } | null;
+    impactDriver?: {
+      dimension: "pop";
+      name: string;
+      metric: "latency";
+      deltaMs: number;
+      currentMs: number;
+      previousMs: number;
+      totalRequests: number;
+      impactScore: number;
+    } | null;
     compareMetrics?: CompareMetrics;
     compareGraph?: CompareGraph;
   }) => React.ReactNode;
@@ -176,15 +194,17 @@ export default function ConversationThread({
                   narration: m.narration ?? null,
                 })}
 
-                {m.type === "compare" &&
-                renderCompareCard({
-                  summary: m.summary,
-                  overallState: m.overallState,
-                  primarySignal: m.primarySignal,
-                  narration: m.narration ?? null,
-                  compareMetrics: m.compareMetrics,
-                  compareGraph: m.compareGraph,
-                })}
+                 {m.type === "compare" &&
+                  renderCompareCard({
+                    summary: m.summary,
+                    overallState: m.overallState,
+                    primarySignal: m.primarySignal,
+                    narration: m.narration ?? null,
+                    topDriver: m.topDriver ?? null,
+                    impactDriver: m.impactDriver ?? null,
+                    compareMetrics: m.compareMetrics,
+                    compareGraph: m.compareGraph,
+                  })}
 
                 {m.type === "exploration" && renderExplorationCard(m)}
 

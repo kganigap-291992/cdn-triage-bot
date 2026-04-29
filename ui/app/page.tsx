@@ -144,6 +144,27 @@
   overallState?: string;
   primarySignal?: string;
   narration?: NarrationOutput | null;
+
+  topDriver?: {
+    dimension: "pop" | "region";
+    name: string;
+    metric: "latency";
+    deltaMs: number;
+    currentMs: number;
+    previousMs: number;
+  } | null;
+
+  impactDriver?: {
+    dimension: "pop";
+    name: string;
+    metric: "latency";
+    deltaMs: number;
+    currentMs: number;
+    previousMs: number;
+    totalRequests: number;
+    impactScore: number;
+  } | null;
+
   compareMetrics?: {
       cache?: {
         current: number | null;
@@ -173,7 +194,7 @@
       currentSeriesP99?: Array<{ ts: string; value: number | null }>;
       previousSeriesP99?: Array<{ ts: string; value: number | null }>;
     };
-  };
+};
 
   type ChatStatusBreakdown = {
     id: string;
@@ -4593,7 +4614,129 @@
       previousSeriesP99: metricType === "latency" ? previousSeriesP99 : undefined,
     };
   }
-    
+  
+
+  function buildLatencyCompareTopDriver(metricsJson: any): ChatCompare["topDriver"] {
+    function getP95(row: any): number | null {
+      return toNumOrNull(row?.p95TtmsMs ?? row?.p95_ms ?? row?.p95Ms ?? row?.p95_ttms_ms);
+    }
+
+    function previousKey(key: "pop" | "region") {
+      return key === "pop" ? "previousPopBreakdown" : "previousRegionBreakdown";
+    }
+
+    function bestFor(key: "pop" | "region"): ChatCompare["topDriver"] {
+      const currentRows = Array.isArray(metricsJson?.[`${key}Breakdown`])
+        ? metricsJson[`${key}Breakdown`]
+        : [];
+
+      const previousRows = Array.isArray(metricsJson?.[previousKey(key)])
+        ? metricsJson[previousKey(key)]
+        : [];
+
+      const previousByName = new Map<string, any>();
+
+      for (const row of previousRows) {
+        const name = String(row?.[key] || "").trim();
+        if (name) previousByName.set(name, row);
+      }
+
+      let best: ChatCompare["topDriver"] = null;
+
+      for (const current of currentRows) {
+        const name = String(current?.[key] || "").trim();
+        if (!name) continue;
+
+        const previous = previousByName.get(name);
+        if (!previous) continue;
+
+        const currentMs = getP95(current);
+        const previousMs = getP95(previous);
+
+        if (currentMs == null || previousMs == null) continue;
+
+        const deltaMs = currentMs - previousMs;
+
+        if (!best || Math.abs(deltaMs) > Math.abs(best.deltaMs)) {
+          best = {
+            dimension: key,
+            name,
+            metric: "latency",
+            deltaMs,
+            currentMs,
+            previousMs,
+          };
+        }
+      }
+
+      return best;
+    }
+
+    const popDriver = bestFor("pop");
+    const regionDriver = bestFor("region");
+
+    if (popDriver && regionDriver) {
+      return popDriver.deltaMs >= regionDriver.deltaMs ? popDriver : regionDriver;
+    }
+
+    return popDriver ?? regionDriver ?? null;
+  }
+
+  function buildLatencyImpactDriver(metricsJson: any): ChatCompare["impactDriver"] {
+  function getP95(row: any): number | null {
+    return toNumOrNull(row?.p95TtmsMs ?? row?.p95_ms ?? row?.p95Ms ?? row?.p95_ttms_ms);
+  }
+
+  const currentRows = Array.isArray(metricsJson?.popBreakdown)
+    ? metricsJson.popBreakdown
+    : [];
+
+  const previousRows = Array.isArray(metricsJson?.previousPopBreakdown)
+    ? metricsJson.previousPopBreakdown
+    : [];
+
+  const previousByName = new Map<string, any>();
+
+  for (const row of previousRows) {
+    const name = String(row?.pop || "").trim();
+    if (name) previousByName.set(name, row);
+  }
+
+  let best: ChatCompare["impactDriver"] = null;
+
+  for (const current of currentRows) {
+    const name = String(current?.pop || "").trim();
+    if (!name) continue;
+
+    const previous = previousByName.get(name);
+    if (!previous) continue;
+
+    const currentMs = getP95(current);
+    const previousMs = getP95(previous);
+    const totalRequests =
+      toNumOrNull(current?.totalRequests ?? current?.requests) ?? 0;
+
+    if (currentMs == null || previousMs == null || totalRequests <= 0) continue;
+
+    const deltaMs = currentMs - previousMs;
+    const impactScore = Math.abs(deltaMs) * totalRequests;
+
+    if (!best || impactScore > best.impactScore) {
+      best = {
+        dimension: "pop",
+        name,
+        metric: "latency",
+        deltaMs,
+        currentMs,
+        previousMs,
+        totalRequests,
+        impactScore,
+      };
+    }
+  }
+
+  return best;
+}
 
   function StatusBreakdownCard({
     breakdown,
@@ -5017,6 +5160,27 @@
       overallState?: string;
       primarySignal?: string;
       narration?: NarrationOutput | null;
+
+      topDriver?: {
+        dimension: "pop" | "region";
+        name: string;
+        metric: "latency";
+        deltaMs: number;
+        currentMs: number;
+        previousMs: number;
+      } | null;
+
+      impactDriver?: {
+        dimension: "pop";
+        name: string;
+        metric: "latency";
+        deltaMs: number;
+        currentMs: number;
+        previousMs: number;
+        totalRequests: number;
+        impactScore: number;
+      } | null;
+
       compareMetrics?: {
         cache?: {
           current: number | null;
@@ -5058,6 +5222,8 @@
           overallState: payload.overallState,
           primarySignal: payload.primarySignal,
           narration: payload.narration ?? null,
+          topDriver: payload.topDriver ?? null,
+          impactDriver: payload.impactDriver ?? null,
           compareMetrics: payload.compareMetrics,
           compareGraph: payload.compareGraph,
         },
@@ -6475,6 +6641,18 @@
             const currentMetricsJson = latestTriageRun.metricsJson || {};
             const previousMetricsJson = currentMetricsJson?.previousWindow || null;
 
+            console.log("COMPARE DEBUG current popBreakdown", currentMetricsJson?.popBreakdown?.length ?? 0);
+            console.log("COMPARE DEBUG previous popBreakdown", previousMetricsJson?.popBreakdown?.length ?? 0);
+
+            console.log("COMPARE DEBUG current evidence popBreakdown", currentMetricsJson?.evidenceBundle?.popBreakdown?.length ?? 0);
+            console.log("COMPARE DEBUG previous evidence popBreakdown", previousMetricsJson?.evidenceBundle?.popBreakdown?.length ?? 0);
+
+            console.log("COMPARE DEBUG current popBreakdown", currentMetricsJson?.popBreakdown?.length ?? 0);
+            console.log("COMPARE DEBUG previous popBreakdown", previousMetricsJson?.popBreakdown?.length ?? 0);
+            console.log("COMPARE DEBUG current evidence popBreakdown", currentMetricsJson?.evidenceBundle?.popBreakdown?.length ?? 0);
+            console.log("COMPARE DEBUG previous evidence popBreakdown", previousMetricsJson?.evidenceBundle?.popBreakdown?.length ?? 0);
+            
+
             if (!previousMetricsJson) {
               addText(
                 "assistant",
@@ -6503,11 +6681,29 @@
               primarySignal: resolvedCompareSignal,
             });
 
+            const topDriver =
+            resolvedCompareSignal === "latency"
+              ? buildLatencyCompareTopDriver(currentMetricsJson)
+              : null;
+
+            const impactDriver =
+              resolvedCompareSignal === "latency"
+                ? buildLatencyImpactDriver(currentMetricsJson)
+                : null;
+
             console.log("COMPARE DEBUG requestedSignal", requestedSignal);
             console.log("COMPARE DEBUG resolvedCompareSignal", resolvedCompareSignal);
             console.log("COMPARE DEBUG current points", currentMetricsJson?.timeseries?.points?.length ?? 0);
             console.log("COMPARE DEBUG previous points", previousMetricsJson?.timeseries?.points?.length ?? 0);
             console.log("COMPARE DEBUG final compareGraph", compareGraph);
+            console.log("COMPARE DEBUG topDriver", topDriver);
+            console.log("COMPARE DRIVER DEBUG current pop len", currentMetricsJson?.popBreakdown?.length ?? 0);
+            console.log("COMPARE DRIVER DEBUG previous pop len", currentMetricsJson?.previousPopBreakdown?.length ?? 0);
+            console.log("COMPARE DRIVER DEBUG current region len", currentMetricsJson?.regionBreakdown?.length ?? 0);
+            console.log("COMPARE DRIVER DEBUG previous region len", currentMetricsJson?.previousRegionBreakdown?.length ?? 0);
+
+            console.log("COMPARE DRIVER DEBUG current pop sample", currentMetricsJson?.popBreakdown?.[0]);
+            console.log("COMPARE DRIVER DEBUG previous pop sample", currentMetricsJson?.previousPopBreakdown?.[0]);
 
             let compareNarration: NarrationOutput | null = null;
 
@@ -6533,6 +6729,8 @@
                       primarySignal: resolvedCompareSignal,
                       current: currentMetricsJson,
                       previous: previousMetricsJson,
+                      topDriver,
+                      impactDriver,
                     },
                     allowedNextActions: [
                       "Show worst region",
@@ -6556,6 +6754,8 @@
               overallState: latestTriageRun.swarm?.assessment?.overallStatus,
               primarySignal: resolvedCompareSignal,
               narration: compareNarration,
+              topDriver,
+              impactDriver,
               compareMetrics: undefined,
               compareGraph: compareGraph ?? undefined,
             });
@@ -7559,14 +7759,16 @@
                   />
                 )}
                 renderCompareCard={(payload) => (
-                  <CompareCard
-                    summary={payload.summary}
-                    overallState={payload.overallState}
-                    primarySignal={payload.primarySignal}
-                    narration={payload.narration ?? null}
-                    compareMetrics={payload.compareMetrics}
-                    compareGraph={payload.compareGraph}
-                  />
+                <CompareCard
+                  summary={payload.summary}
+                  overallState={payload.overallState}
+                  primarySignal={payload.primarySignal}
+                  narration={payload.narration ?? null}
+                  topDriver={payload.topDriver ?? null}
+                  impactDriver={payload.impactDriver ?? null}
+                  compareMetrics={payload.compareMetrics}
+                  compareGraph={payload.compareGraph}
+                />
                 )}
                               renderExplorationCard={(msg) => (
                   <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur p-4">

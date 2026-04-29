@@ -404,6 +404,28 @@ function pickPopBreakdownFromProxy(parsed: any, rawMetrics: any): any[] | undefi
   );
 }
 
+function pickPreviousRegionBreakdownFromProxy(parsed: any, rawMetrics: any): any[] | undefined {
+  return (
+    normalizeRegionBreakdown(rawMetrics?.previousRegionBreakdown) ||
+    normalizeRegionBreakdown(rawMetrics?.previousWindow?.regionBreakdown) ||
+    normalizeRegionBreakdown(parsed?.metricsJson?.previousRegionBreakdown) ||
+    normalizeRegionBreakdown(parsed?.previousRegionBreakdown) ||
+    undefined
+  );
+}
+
+function pickPreviousPopBreakdownFromProxy(parsed: any, rawMetrics: any): any[] | undefined {
+  return (
+    normalizePopBreakdown(rawMetrics?.previousPopBreakdown) ||
+    normalizePopBreakdown(rawMetrics?.previousWindow?.popBreakdown) ||
+    normalizePopBreakdown(parsed?.metricsJson?.previousPopBreakdown) ||
+    normalizePopBreakdown(parsed?.previousPopBreakdown) ||
+    undefined
+  );
+}
+
+
+
 function pickUaBreakdownFromProxy(parsed: any, rawMetrics: any): any[] | undefined {
   return (
     normalizeUaBreakdown(rawMetrics?.uaBreakdown) ||
@@ -1407,6 +1429,12 @@ async function safeAdaptProxyToUi(parsed: any, tm: TimeMode, scope: EvidenceScop
 
   const popBreakdown = pickPopBreakdownFromProxy(parsed, rawMetrics);
   if (popBreakdown) metricsJson.popBreakdown = popBreakdown;
+
+  const previousRegionBreakdown = pickPreviousRegionBreakdownFromProxy(parsed, rawMetrics);
+  metricsJson.previousRegionBreakdown = previousRegionBreakdown ?? [];
+
+  const previousPopBreakdown = pickPreviousPopBreakdownFromProxy(parsed, rawMetrics);
+  metricsJson.previousPopBreakdown = previousPopBreakdown ?? [];
 
   const uaBreakdown = pickUaBreakdownFromProxy(parsed, rawMetrics);
   if (uaBreakdown) metricsJson.uaBreakdown = uaBreakdown;

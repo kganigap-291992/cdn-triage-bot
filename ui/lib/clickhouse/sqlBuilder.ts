@@ -1284,13 +1284,47 @@ SELECT
   sum(ats_err_invalid_req_count) AS ats_err_invalid_req_count,
   sum(ats_err_read_timeout_count) AS ats_err_read_timeout_count,
   sum(ats_err_proxy_denied_count) AS ats_err_proxy_denied_count,
-  sum(ats_err_unknown_count) AS ats_err_unknown_count
-
+  sum(ats_err_unknown_count) AS ats_err_unknown_count  
 FROM ${table}
 ${whereSql}
 
 GROUP BY bucket
 ORDER BY bucket ASC
+FORMAT JSON
+`.trim();
+
+
+const q38 = `
+${prevTimeWith}
+SELECT
+  region,
+  sum(requests) AS total_requests,
+  sum(http_5xx_count) AS error_5xx_count,
+  round(100.0 * sum(http_5xx_count) / nullIf(sum(requests), 0), 3) AS error_rate_pct,
+  avg(p95_ms) AS p95_ttms_ms,
+  avg(cache_hit_rate) AS cache_hit_rate
+FROM ${table}
+${prevWhereSql}
+GROUP BY region
+ORDER BY error_5xx_count DESC
+LIMIT 20
+FORMAT JSON
+`.trim();
+
+const q39 = `
+${prevTimeWith}
+SELECT
+  pop,
+  sum(requests) AS total_requests,
+  sum(http_5xx_count) AS error_5xx_count,
+  round(100.0 * sum(http_5xx_count) / nullIf(sum(requests), 0), 3) AS error_rate_pct,
+  avg(p95_ms) AS p95_ttms_ms,
+  avg(cache_hit_rate) AS cache_hit_rate
+FROM ${table}
+${prevWhereSql}
+GROUP BY pop
+ORDER BY error_5xx_count DESC
+LIMIT 20
 FORMAT JSON
 `.trim();
 
@@ -1334,6 +1368,8 @@ FORMAT JSON
       q35,
       q36,
       q37,
+      q38,
+      q39,
     ],
     params,
     meta: {

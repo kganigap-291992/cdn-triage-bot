@@ -378,6 +378,26 @@ function pickPopBreakdown(metricsJson: any): any[] | undefined {
   );
 }
 
+function pickPreviousRegionBreakdown(metricsJson: any): any[] | undefined {
+  return (
+    normalizeRegionBreakdown(metricsJson?.previousRegionBreakdown) ||
+    normalizeRegionBreakdown(metricsJson?.previousWindow?.regionBreakdown) ||
+    normalizeRegionBreakdown(metricsJson?.evidenceBundle?.previousRegionBreakdown) ||
+    normalizeRegionBreakdown(metricsJson?.evidence?.previousRegionBreakdown) ||
+    undefined
+  );
+}
+
+function pickPreviousPopBreakdown(metricsJson: any): any[] | undefined {
+  return (
+    normalizePopBreakdown(metricsJson?.previousPopBreakdown) ||
+    normalizePopBreakdown(metricsJson?.previousWindow?.popBreakdown) ||
+    normalizePopBreakdown(metricsJson?.evidenceBundle?.previousPopBreakdown) ||
+    normalizePopBreakdown(metricsJson?.evidence?.previousPopBreakdown) ||
+    undefined
+  );
+}
+
 function pickUaBreakdown(metricsJson: any): any[] | undefined {
   return (
     normalizeUaBreakdown(metricsJson?.uaBreakdown) ||
@@ -755,6 +775,12 @@ function assertCanonicalMetrics(metricsJson: any) {
 
   const popBreakdown = pickPopBreakdown(metricsJson);
   if (popBreakdown) out.popBreakdown = popBreakdown;
+
+  const previousRegionBreakdown = pickPreviousRegionBreakdown(metricsJson);
+  if (previousRegionBreakdown) out.previousRegionBreakdown = previousRegionBreakdown;
+
+  const previousPopBreakdown = pickPreviousPopBreakdown(metricsJson);
+  if (previousPopBreakdown) out.previousPopBreakdown = previousPopBreakdown;
 
   const uaBreakdown = pickUaBreakdown(metricsJson);
   if (uaBreakdown) out.uaBreakdown = uaBreakdown;

@@ -35,6 +35,27 @@ type Props = {
     engineerRead: string;
     nextChecks: string[];
   } | null;
+
+  topDriver?: {
+    dimension: "pop" | "region";
+    name: string;
+    metric: "latency";
+    deltaMs: number;
+    currentMs: number;
+    previousMs: number;
+  } | null;
+
+  impactDriver?: {
+  dimension: "pop";
+  name: string;
+  metric: "latency";
+  deltaMs: number;
+  currentMs: number;
+  previousMs: number;
+  totalRequests: number;
+  impactScore: number;
+} | null;
+
   compareMetrics?: CompareMetrics;
   compareGraph?: CompareGraph;
 };
@@ -961,9 +982,12 @@ export default function CompareCard({
   overallState,
   primarySignal,
   narration,
+  topDriver,
+  impactDriver,
   compareMetrics,
   compareGraph,
 }: Props) {
+  console.log("COMPARE CARD topDriver", topDriver);
   const stateLabel = formatStateLabel(overallState);
   const signalLabel = formatSignalLabel(primarySignal);
   const parts = splitCompareSummary(summary);
@@ -1037,6 +1061,42 @@ export default function CompareCard({
             {parts.intro}
           </div>
         )}
+        
+        {(topDriver || impactDriver) && (
+          <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
+            <div className="text-[11px] uppercase tracking-wide text-gray-400">
+              How to read this
+            </div>
+            <div className="mt-2 space-y-1 text-xs text-gray-300">
+              <div>Largest change = biggest movement vs previous window.</div>
+              <div>Highest impact = movement × traffic volume.</div>
+              <div>Worst POP = current degraded POP from drill-down.</div>
+            </div>
+          </div>
+        )}
+
+
+        {topDriver ? (
+          <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.06] p-3">
+            <div className="text-[11px] uppercase tracking-wide text-amber-200/80">
+              Largest latency change
+            </div>
+
+            <div className="text-[10px] text-gray-400 mt-0.5">
+              (vs previous window)
+            </div>
+
+            <div className="mt-1 text-sm text-gray-100">
+              {topDriver.dimension.toUpperCase()}{" "}
+              <span className="font-semibold">{topDriver.name}</span>{" "}
+              changed p95 by{" "}
+              <span className="font-semibold">
+                {Math.abs(Math.round(topDriver.deltaMs))} ms
+              </span>{" "}
+              ({Math.round(topDriver.previousMs)} → {Math.round(topDriver.currentMs)} ms)
+            </div>
+          </div>
+        ) : null}
 
         {showStructuredMetrics && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1058,6 +1118,32 @@ export default function CompareCard({
 
         {showCompareGraph ? (
           <CompareMiniGraph compareGraph={compareGraph!} />
+        ) : null}
+
+
+        {impactDriver ? (
+          <div className="rounded-xl border border-blue-400/20 bg-blue-400/[0.06] p-3">
+            <div className="text-[11px] uppercase tracking-wide text-blue-200/80">
+              Highest impact POP
+            </div>
+
+            <div className="text-[10px] text-gray-400 mt-0.5">
+              traffic-weighted latency impact
+            </div>
+
+            <div className="mt-1 text-sm text-gray-100">
+              POP <span className="font-semibold">{impactDriver.name}</span>{" "}
+              changed p95 by{" "}
+              <span className="font-semibold">
+                {Math.abs(Math.round(impactDriver.deltaMs))} ms
+              </span>{" "}
+              across{" "}
+              <span className="font-semibold">
+                {Math.round(impactDriver.totalRequests).toLocaleString()}
+              </span>{" "}
+              requests
+            </div>
+          </div>
         ) : null}
 
         {narration && (
