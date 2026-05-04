@@ -167,13 +167,27 @@ export default function ConversationThread({
                   {mounted ? `${formatUtcYmdHm(m.ts)} UTC` : m.ts}
                 </div>
 
-                {m.type === "text" && (
-                  <div className={`rounded-2xl border ${bubbleStyle} px-4 py-3`}>
-                    <pre className="whitespace-pre-wrap text-sm leading-relaxed">
-                      {m.text}
-                    </pre>
-                  </div>
-                )}
+                {m.type === "text" && (() => {
+                  const isBridge =
+                    m.role === "assistant" &&
+                    m.text.length < 120;
+
+                  if (isBridge) {
+                    return (
+                      <div className="text-sm text-gray-100 leading-relaxed px-1 mt-2 mb-1">
+                        {m.text}
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className={`rounded-2xl border ${bubbleStyle} px-4 py-3`}>
+                      <pre className="whitespace-pre-wrap text-sm leading-relaxed">
+                        {m.text}
+                      </pre>
+                    </div>
+                  );
+                })()}
 
                 {m.type === "triage" && renderTriageCard(m.run)}
 

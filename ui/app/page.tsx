@@ -28,6 +28,7 @@
   import { lookupAtsCrc } from "@/lib/triage/atsCrcGlossary";
   import { buildExplainNarrationPayload } from "@/lib/llm/buildNarrationPayload";
   import type { NarrationOutput } from "@/lib/llm/narrationTypes";
+  import { buildAssistantBridgeMessage } from "@/lib/chat/buildAssistantBridgeMessage";
 
 
   // ── constants ──────────────────────────────────────────────────────────────
@@ -4738,6 +4739,33 @@
   return best;
 }
 
+function buildCompareMetricsForSignal(args: {
+  currentMetricsJson: any;
+  previousMetricsJson: any;
+  signal: "cache" | "latency" | "errors" | "traffic";
+}): ChatCompare["compareMetrics"] {
+  const { currentMetricsJson, previousMetricsJson, signal } = args;
+
+  const currentP95 = toNumOrNull(currentMetricsJson?.p95TtmsMs ?? currentMetricsJson?.p95_ms);
+  const previousP95 = toNumOrNull(previousMetricsJson?.p95TtmsMs ?? previousMetricsJson?.p95_ms);
+
+  if (signal === "latency") {
+    return {
+      latency: {
+        current: currentP95,
+        previous: previousP95,
+        delta:
+          currentP95 != null && previousP95 != null
+            ? currentP95 - previousP95
+            : null,
+      },
+    };
+  }
+
+  return undefined;
+}
+
+
   function StatusBreakdownCard({
     breakdown,
   }: {
@@ -6013,6 +6041,37 @@
         });
 
         if (data.kind === "drill" && data.drill) {
+          const drillDimension =
+            extra?.drillIntent === "worst_region"
+              ? "region"
+              : extra?.drillIntent === "worst_pop"
+              ? "pop"
+              : extra?.drillIntent === "worst_host"
+              ? "host"
+              : extra?.drillIntent === "worst_ua"
+              ? "ua family"
+              : extra?.drillIntent === "worst_content"
+              ? "content type"
+              : "results";
+
+          const drillBridge = buildAssistantBridgeMessage({
+            lane: "drill",
+            dimension: drillDimension,
+            scope: {
+              partner: inputs.partner,
+              service: inputs.service,
+              region: inputs.region,
+              pop: inputs.pop,
+              contentType: inputs.contentType,
+              uaFamily: inputs.uaFamily,
+              windowMinutes: inputs.windowMinutes,
+            },
+          });
+
+          if (drillBridge.intro) {
+            addText("assistant", drillBridge.intro);
+          }
+
           addDrillCard({
             drill: data.drill,
             summaryText: data.summaryText || "",
@@ -6162,6 +6221,23 @@
       };
 
       console.log("📦 PAYLOAD SENT TO API:", payload);
+
+      const bridge = buildAssistantBridgeMessage({
+        lane: "triage",
+        scope: {
+          partner: payload.partner,
+          service: payload.service,
+          region: payload.region,
+          pop: payload.pop,
+          contentType: payload.contentType,
+          uaFamily: payload.uaFamily,
+          windowMinutes: payload.windowMinutes,
+        },
+      });
+
+      if (bridge.intro) {
+        addText("assistant", bridge.intro);
+      }
 
       await executeTriageRun(payload, "filters");
     }
@@ -6691,6 +6767,18 @@
                 ? buildLatencyImpactDriver(currentMetricsJson)
                 : null;
 
+            const compareMetrics =
+              resolvedCompareSignal === "latency" ||
+              resolvedCompareSignal === "errors" ||
+              resolvedCompareSignal === "cache" ||
+              resolvedCompareSignal === "traffic"
+                ? buildCompareMetricsForSignal({
+                    currentMetricsJson,
+                    previousMetricsJson,
+                    signal: resolvedCompareSignal,
+                  })
+                : undefined;
+
             console.log("COMPARE DEBUG requestedSignal", requestedSignal);
             console.log("COMPARE DEBUG resolvedCompareSignal", resolvedCompareSignal);
             console.log("COMPARE DEBUG current points", currentMetricsJson?.timeseries?.points?.length ?? 0);
@@ -6747,6 +6835,15 @@
               }
             }
 
+            const compareBridge = buildAssistantBridgeMessage({
+              lane: "compare",
+              metric: resolvedCompareSignal,
+            });
+
+            if (compareBridge.intro) {
+              addText("assistant", compareBridge.intro);
+            }
+
             addCompareCard({
               summary:
                 `Compared against the previous window.\n\n` +
@@ -6756,7 +6853,7 @@
               narration: compareNarration,
               topDriver,
               impactDriver,
-              compareMetrics: undefined,
+              compareMetrics,
               compareGraph: compareGraph ?? undefined,
             });
             pushRunLog("Compare card created from embedded previous-window data.");
@@ -6946,6 +7043,23 @@
   if (!built.ok) {
     addText("assistant", built.error);
     return;
+  }
+
+  const triageBridge = buildAssistantBridgeMessage({
+    lane: "triage",
+    scope: {
+      partner: built.inputs.partner,
+      service: built.inputs.service,
+      region: built.inputs.region,
+      pop: built.inputs.pop,
+      contentType: built.inputs.contentType,
+      uaFamily: built.inputs.uaFamily,
+      windowMinutes: built.inputs.windowMinutes,
+    },
+  });
+
+  if (triageBridge.intro) {
+    addText("assistant", triageBridge.intro);
   }
 
   await executeTriageRun(built.inputs, "chat", {
