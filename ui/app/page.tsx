@@ -369,6 +369,17 @@
     return `${Math.round(Number(x)).toLocaleString()}`;
   }
 
+  function statusCountFromRow(row: any, code: string): number {
+    return Number(
+      row?.[`status_${code}`] ??
+        row?.statusCounts?.[code] ??
+        row?.statusCountsByCode?.[code] ??
+        row?.counts?.[code] ??
+        row?.counts?.[`status_${code}`] ??
+        0
+    );
+  }
+
   function getAtsSummaryLine(args: {
     hitPct: number | null;
     missPct: number | null;
@@ -4773,9 +4784,16 @@ function buildCompareMetricsForSignal(args: {
   }) {
     const statusCodes = ["200", "206", "304", "403", "404", "429", "500", "502", "503", "504"];
 
+    function getStatusCount(
+      counts: Record<string, number> | undefined,
+      code: string
+    ) {
+      return Number(counts?.[code] ?? counts?.[`status_${code}`] ?? 0);
+    }
+
     function toStatusGraphInput(counts?: Record<string, number>) {
       return Object.fromEntries(
-        statusCodes.map((code) => [`status_${code}`, Number(counts?.[code] ?? 0)])
+        statusCodes.map((code) => [`status_${code}`, getStatusCount(counts, code)])
       );
     }
     const totalsEntries =
@@ -4783,7 +4801,7 @@ function buildCompareMetricsForSignal(args: {
         ? statusCodes
             .map((code) => ({
               code,
-              count: Number(breakdown.totals?.[code] ?? 0),
+              count: getStatusCount(breakdown.totals, code),
             }))
         : [];
 
@@ -4879,7 +4897,7 @@ function buildCompareMetricsForSignal(args: {
                       >
                         <span className="text-gray-400 mr-1">{code}</span>
                         <span className="font-semibold">
-                          {formatIntOrNA(row.counts?.[code] ?? 0)}
+                          {formatIntOrNA(getStatusCount(row.counts, code))}
                         </span>
                       </span>
                     ))}
@@ -6902,7 +6920,7 @@ function buildCompareMetricsForSignal(args: {
                   label: String(row.region || "unknown"),
                   totalRequests: Number(row.totalRequests || 0),
                   counts: Object.fromEntries(
-                    statusCodes.map((code) => [code, Number(row?.[`status_${code}`] || 0)])
+                    statusCodes.map((code) => [code, statusCountFromRow(row, code)])
                   ),
                 })),
               });
@@ -6918,7 +6936,7 @@ function buildCompareMetricsForSignal(args: {
                   label: String(row.pop || "unknown"),
                   totalRequests: Number(row.totalRequests || 0),
                   counts: Object.fromEntries(
-                    statusCodes.map((code) => [code, Number(row?.[`status_${code}`] || 0)])
+                    statusCodes.map((code) => [code, statusCountFromRow(row, code)])
                   ),
                 })),
               });
