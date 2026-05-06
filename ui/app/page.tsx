@@ -28,7 +28,7 @@
   import { lookupAtsCrc } from "@/lib/triage/atsCrcGlossary";
   import { buildExplainNarrationPayload } from "@/lib/llm/buildNarrationPayload";
   import type { NarrationOutput } from "@/lib/llm/narrationTypes";
-  import { buildAssistantBridgeMessage } from "@/lib/chat/buildAssistantBridgeMessage";
+  import { getAssistantBridgeMessage } from "@/lib/chat/buildAssistantBridgeMessage";
 
 
   // ── constants ──────────────────────────────────────────────────────────────
@@ -46,6 +46,7 @@
   type PartnerOrMissing = Partner | "";
   type DataSource = "clickhouse";
   type TimeMode = "relative" | "absolute";
+  type AssistantMode = "basic" | "ai";
 
   type TriageInputs = {
     dataSource: DataSource;
@@ -4970,6 +4971,38 @@ function buildCompareMetricsForSignal(args: {
     return null;
   }
 
+  function isAiKnowledgeQuestion(text: string): boolean {
+    const raw = String(text || "").toLowerCase().trim();
+    if (!raw) return false;
+
+    const isDefinitionShape =
+      raw.startsWith("what is ") ||
+      raw.startsWith("what are ") ||
+      raw.startsWith("what does ") ||
+      raw.startsWith("define ") ||
+      raw.startsWith("explain ") ||
+      raw.startsWith("how does ") ||
+      raw.includes(" mean") ||
+      raw.includes(" meaning");
+
+    if (!isDefinitionShape) return false;
+
+    const isOperationalMetricCommand =
+      /\b(over time|trend|graph|plot|show|breakdown|by region|by pop|by ua|by content|compare|drill|worst|status by)\b/.test(
+        raw
+      );
+
+    if (isOperationalMetricCommand) return false;
+
+    const hasCdnTopic =
+      /\b(cdn|cache|edge cache|edge|origin|latency|ttms|p95|p99|ats|traffic router|router|tcp_miss|tcp_hit|crc|http|status code|5xx|4xx|pop|region|manifest|segment|varnish|akamai|cloudfront|fastly)\b/.test(
+        raw
+      );
+
+    return hasCdnTopic;
+  }
+
+
   function shouldBlockForClarification(args: {
     parsed: {
       clarificationRequired: boolean;
@@ -5007,6 +5040,7 @@ function buildCompareMetricsForSignal(args: {
 
     const [isTriageLoading, setIsTriageLoading] = useState(false);
     const [llmEnabled, setLlmEnabled] = useState(true);
+    const [assistantMode, setAssistantMode] = useState<AssistantMode>("basic");
     const [filtersOpen, setFiltersOpen] = useState(false);
     const [filtersDirty, setFiltersDirty] = useState(false);
 
@@ -6072,19 +6106,22 @@ function buildCompareMetricsForSignal(args: {
               ? "content type"
               : "results";
 
-          const drillBridge = buildAssistantBridgeMessage({
-            lane: "drill",
-            dimension: drillDimension,
-            scope: {
-              partner: inputs.partner,
-              service: inputs.service,
-              region: inputs.region,
-              pop: inputs.pop,
-              contentType: inputs.contentType,
-              uaFamily: inputs.uaFamily,
-              windowMinutes: inputs.windowMinutes,
+          const drillBridge = await getAssistantBridgeMessage(
+            {
+              lane: "drill",
+              dimension: drillDimension,
+              scope: {
+                partner: inputs.partner,
+                service: inputs.service,
+                region: inputs.region,
+                pop: inputs.pop,
+                contentType: inputs.contentType,
+                uaFamily: inputs.uaFamily,
+                windowMinutes: inputs.windowMinutes,
+              },
             },
-          });
+            assistantMode
+          );
 
           if (drillBridge.intro) {
             addText("assistant", drillBridge.intro);
@@ -6240,18 +6277,21 @@ function buildCompareMetricsForSignal(args: {
 
       console.log("📦 PAYLOAD SENT TO API:", payload);
 
-      const bridge = buildAssistantBridgeMessage({
-        lane: "triage",
-        scope: {
-          partner: payload.partner,
-          service: payload.service,
-          region: payload.region,
-          pop: payload.pop,
-          contentType: payload.contentType,
-          uaFamily: payload.uaFamily,
-          windowMinutes: payload.windowMinutes,
+      const bridge = await getAssistantBridgeMessage(
+        {
+          lane: "triage",
+          scope: {
+            partner: payload.partner,
+            service: payload.service,
+            region: payload.region,
+            pop: payload.pop,
+            contentType: payload.contentType,
+            uaFamily: payload.uaFamily,
+            windowMinutes: payload.windowMinutes,
+          },
         },
-      });
+        assistantMode
+      );
 
       if (bridge.intro) {
         addText("assistant", bridge.intro);
@@ -6391,6 +6431,32 @@ function buildCompareMetricsForSignal(args: {
             "assistant",
             "Hey — I can help you investigate CDN performance. Try asking something like 'how is live traffic' or 'why is cache low'."
           );
+          return;
+        }
+
+        const aiKnowledgeQuestion = isAiKnowledgeQuestion(text);
+
+        if (aiKnowledgeQuestion) {
+          if (assistantMode !== "ai") {
+            addText(
+              "assistant",
+              "Switch to AI mode to ask general CDN or concept questions. Basic mode is for live investigation."
+            );
+            return;
+          }
+
+          const bridge = await getAssistantBridgeMessage(
+            {
+              lane: "glossary",
+              metric: null,
+              dimension: null,
+              scope: null,
+              question: text,
+            } as any,
+            assistantMode
+          );
+
+          addText("assistant", bridge.intro);
           return;
         }
 
@@ -6853,10 +6919,13 @@ function buildCompareMetricsForSignal(args: {
               }
             }
 
-            const compareBridge = buildAssistantBridgeMessage({
-              lane: "compare",
-              metric: resolvedCompareSignal,
-            });
+            const compareBridge = await getAssistantBridgeMessage(
+              {
+                lane: "compare",
+                metric: resolvedCompareSignal,
+              },
+              assistantMode
+            );
 
             if (compareBridge.intro) {
               addText("assistant", compareBridge.intro);
@@ -7063,18 +7132,21 @@ function buildCompareMetricsForSignal(args: {
     return;
   }
 
-  const triageBridge = buildAssistantBridgeMessage({
-    lane: "triage",
-    scope: {
-      partner: built.inputs.partner,
-      service: built.inputs.service,
-      region: built.inputs.region,
-      pop: built.inputs.pop,
-      contentType: built.inputs.contentType,
-      uaFamily: built.inputs.uaFamily,
-      windowMinutes: built.inputs.windowMinutes,
+  const triageBridge = await getAssistantBridgeMessage(
+    {
+      lane: "triage",
+      scope: {
+        partner: built.inputs.partner,
+        service: built.inputs.service,
+        region: built.inputs.region,
+        pop: built.inputs.pop,
+        contentType: built.inputs.contentType,
+        uaFamily: built.inputs.uaFamily,
+        windowMinutes: built.inputs.windowMinutes,
+      },
     },
-  });
+    assistantMode
+  );
 
   if (triageBridge.intro) {
     addText("assistant", triageBridge.intro);
@@ -7188,6 +7260,34 @@ function buildCompareMetricsForSignal(args: {
               </div>
             </div>
             <div className="ml-auto flex items-center gap-2">
+              <div className="flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] p-1">
+                <span className="px-2 text-xs text-gray-400">Assistant</span>
+
+                <button
+                  type="button"
+                  onClick={() => setAssistantMode("basic")}
+                  className={`rounded-full px-2.5 py-1 text-xs transition ${
+                    assistantMode === "basic"
+                      ? "bg-white text-black"
+                      : "text-gray-400 hover:text-gray-100"
+                  }`}
+                >
+                  Basic
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setAssistantMode("ai")}
+                  className={`rounded-full px-2.5 py-1 text-xs transition ${
+                    assistantMode === "ai"
+                      ? "bg-white text-black"
+                      : "text-gray-400 hover:text-gray-100"
+                  }`}
+                >
+                  AI
+                </button>
+              </div>
+
               <button
                 type="button"
                 onClick={() => setLlmEnabled((v) => !v)}
@@ -7199,6 +7299,7 @@ function buildCompareMetricsForSignal(args: {
               >
                 LLM: {llmEnabled ? "On" : "Off"}
               </button>
+
               <a
                 href="/debug"
                 className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm text-gray-100 hover:bg-white/15"

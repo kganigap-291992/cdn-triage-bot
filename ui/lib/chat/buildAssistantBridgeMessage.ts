@@ -1,4 +1,4 @@
-type BridgeInput = {
+export type BridgeInput = {
   lane: "triage" | "compare" | "drill" | "exploration" | "explain" | "glossary";
   metric?: string | null;
   dimension?: string | null;
@@ -13,12 +13,14 @@ type BridgeInput = {
   } | null;
 };
 
-type BridgeOutput = {
+export type BridgeOutput = {
   intro: string;
 };
 
+export type AssistantMode = "basic" | "ai";
+
 function pick(arr: string[]): string {
-  return arr[Math.floor(Math.random() * arr.length)];
+  return arr[Math.floor(Math.random() * arr.length)] || "";
 }
 
 function label(value?: string | null, fallback = "this") {
@@ -42,6 +44,25 @@ function scopeLabel(scope?: BridgeInput["scope"]) {
     .map((x) => String(x).replace(/_/g, " "));
 
   return parts.length ? parts.join(" • ") : "the current scope";
+}
+
+export function buildSafeBridgeInput(input: BridgeInput): BridgeInput {
+  return {
+    lane: input.lane,
+    metric: input.metric ?? null,
+    dimension: input.dimension ?? null,
+    scope: input.scope
+      ? {
+          partner: input.scope.partner ?? null,
+          service: input.scope.service ?? null,
+          region: input.scope.region ?? null,
+          pop: input.scope.pop ?? null,
+          contentType: input.scope.contentType ?? null,
+          uaFamily: input.scope.uaFamily ?? null,
+          windowMinutes: input.scope.windowMinutes ?? null,
+        }
+      : null,
+  };
 }
 
 export function buildAssistantBridgeMessage(input: BridgeInput): BridgeOutput {
@@ -109,4 +130,34 @@ export function buildAssistantBridgeMessage(input: BridgeInput): BridgeOutput {
   return {
     intro: pick(intros[input.lane] || [""]),
   };
+}
+
+export async function getAssistantBridgeMessage(
+  input: BridgeInput,
+  assistantMode: AssistantMode
+): Promise<BridgeOutput> {
+  const safeInput = buildSafeBridgeInput(input);
+
+  if (assistantMode === "ai") {
+    try {
+      const res = await fetch("/api/lab/bridge", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(safeInput),
+      });
+
+      const data = await res.json();
+
+      return {
+        intro: data.intro || buildAssistantBridgeMessage(safeInput).intro,
+      };
+    } catch (err) {
+      console.error("Bridge fallback:", err);
+      return buildAssistantBridgeMessage(safeInput);
+    }
+  }
+
+  return buildAssistantBridgeMessage(safeInput);
 }
