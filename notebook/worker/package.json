@@ -1,0 +1,21 @@
+{
+  "name": "cachey-notebook-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Isolated worker for Cachey Notebook PDF extraction, narration, and video rendering.",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.458",
+    "@remotion/renderer": "^4.0.458",
+    "dotenv": "^17.4.2",
+    "express": "^4.18.3",
+    "multer": "^2.1.1",
+    "openai": "^6.36.0",
+    "pdf-parse": "^2.4.5",
+    "remotion": "^4.0.458"
+  }
+}

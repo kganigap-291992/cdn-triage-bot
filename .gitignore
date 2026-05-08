@@ -10,3 +10,10 @@ ui/lib/triage/metricsEngine.js.broken
 data/*.csv
 data/*.parquet
 
+
+# Cachey Notebook local secrets + generated artifacts
+notebook/worker/.env
+notebook/worker/temp/
+notebook/worker/**/*.mp4
+notebook/worker/**/audio/
+notebook/worker/**/page-images/

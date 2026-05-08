@@ -1,0 +1,11 @@
+services:
+  cachey-notebook-worker:
+    build: .
+    container_name: cachey-notebook-worker
+    ports:
+      - "4001:4001"
+    env_file:
+      - .env
+    volumes:
+      - ./temp:/app/temp
+    restart: unless-stopped
