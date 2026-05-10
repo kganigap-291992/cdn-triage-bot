@@ -5,12 +5,19 @@ const {
   Img,
   Sequence,
   staticFile,
+  useCurrentFrame,
+  interpolate,
+  Easing,
 } = require("remotion");
 
 const FPS = 30;
 
 function msToFrames(ms) {
   return Math.max(1, Math.round((ms / 1000) * FPS));
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function getSceneTitle(scene) {
@@ -39,6 +46,187 @@ function getReference(scene) {
 
 function getCommand(scene) {
   return scene?.visualIntent?.command || "";
+}
+
+function getTransitionFrames(scene, durationFrames) {
+  const transition = scene.transition || {};
+  const behavior = scene.sceneBehavior || {};
+
+  const inMs =
+    transition.inMs ||
+    behavior.transitionInMs ||
+    360;
+
+  const outMs =
+    transition.outMs ||
+    behavior.transitionOutMs ||
+    420;
+
+  return {
+    inFrames: clamp(msToFrames(inMs), 4, Math.max(4, Math.floor(durationFrames / 3))),
+    outFrames: clamp(msToFrames(outMs), 4, Math.max(4, Math.floor(durationFrames / 3))),
+  };
+}
+
+function getSceneOpacity(scene, durationFrames) {
+  const frame = useCurrentFrame();
+  const { inFrames, outFrames } = getTransitionFrames(scene, durationFrames);
+
+  const fadeInOpacity = interpolate(
+    frame,
+    [0, inFrames],
+    [0, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    }
+  );
+
+  const fadeOutOpacity = interpolate(
+    frame,
+    [Math.max(0, durationFrames - outFrames), durationFrames],
+    [1, 0],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.in(Easing.cubic),
+    }
+  );
+
+  return Math.min(fadeInOpacity, fadeOutOpacity);
+}
+
+function getSceneEntranceStyle(scene, durationFrames) {
+  const frame = useCurrentFrame();
+  const { inFrames } = getTransitionFrames(scene, durationFrames);
+
+  const y = interpolate(
+    frame,
+    [0, inFrames],
+    [14, 0],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    }
+  );
+
+  const scale = interpolate(
+    frame,
+    [0, durationFrames],
+    [1.006, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    }
+  );
+
+  return {
+    opacity: getSceneOpacity(scene, durationFrames),
+    transform: `translateY(${y}px) scale(${scale})`,
+  };
+}
+
+function getCameraMotionStyle(scene, dim = false) {
+  const frame = useCurrentFrame();
+  const durationFrames = msToFrames(scene.durationMs || scene.estimatedDurationMs || 4000);
+  const progress = durationFrames <= 1 ? 1 : frame / durationFrames;
+  const cameraMotion = scene?.sceneBehavior?.cameraMotion || "static";
+
+  let startScale = 1;
+  let endScale = 1.012;
+  let startX = 0;
+  let endX = 0;
+  let startY = 0;
+  let endY = 0;
+
+  switch (cameraMotion) {
+    case "slow_zoom":
+      endScale = 1.035;
+      break;
+
+    case "slow_focus":
+    case "soft_focus":
+      endScale = 1.026;
+      startY = 4;
+      endY = -4;
+      break;
+
+    case "soft_pan":
+      endScale = 1.018;
+      startX = -8;
+      endX = 8;
+      break;
+
+    case "guided_pan":
+      endScale = 1.028;
+      startX = -12;
+      endX = 12;
+      startY = 4;
+      endY = -4;
+      break;
+
+    case "flow_pan":
+      endScale = 1.03;
+      startX = -16;
+      endX = 16;
+      break;
+
+    case "step_focus":
+      endScale = 1.02;
+      startY = 6;
+      endY = -6;
+      break;
+
+    case "static":
+    default:
+      endScale = 1.008;
+      break;
+  }
+
+  const easedProgress = Easing.inOut(Easing.cubic)(clamp(progress, 0, 1));
+
+  const scale = startScale + (endScale - startScale) * easedProgress;
+  const x = startX + (endX - startX) * easedProgress;
+  const y = startY + (endY - startY) * easedProgress;
+
+  return {
+    transform: `translate(${x}px, ${y}px) scale(${scale})`,
+    opacity: dim ? 0.62 : 1,
+  };
+}
+
+function getOverlayEntranceStyle(delayFrames = 5) {
+  const frame = useCurrentFrame();
+
+  const opacity = interpolate(
+    frame,
+    [delayFrames, delayFrames + 14],
+    [0, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    }
+  );
+
+  const y = interpolate(
+    frame,
+    [delayFrames, delayFrames + 14],
+    [18, 0],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    }
+  );
+
+  return {
+    opacity,
+    transform: `translateY(${y}px)`,
+  };
 }
 
 function Shell({ children }) {
@@ -108,20 +296,21 @@ function Header({ scene, label }) {
         justifyContent: "space-between",
         alignItems: "center",
         zIndex: 5,
+        ...getOverlayEntranceStyle(2),
       }}
     >
       <div>
         <div
           style={{
-            fontSize: 22,
-            color: "#60a5fa",
-            letterSpacing: 1.8,
+            fontSize: 14,
+            color: "rgba(148,163,184,0.72)",
+            letterSpacing: 1.4,
             textTransform: "uppercase",
-            fontWeight: 900,
-            marginBottom: 10,
+            fontWeight: 700,
+            marginBottom: 6,
           }}
         >
-          Cachey Notebook
+          Notebook
         </div>
         <div
           style={{
@@ -164,6 +353,7 @@ function CaptionStrip({ scene }) {
         background: "rgba(2, 6, 23, 0.82)",
         border: "1px solid rgba(148, 163, 184, 0.25)",
         boxShadow: "0 28px 90px rgba(0,0,0,0.45)",
+        ...getOverlayEntranceStyle(9),
       }}
     >
       <div
@@ -206,6 +396,8 @@ function CaptionStrip({ scene }) {
 }
 
 function PageImagePanel({ scene, dim = false }) {
+  const motionStyle = getCameraMotionStyle(scene, dim);
+
   return (
     <div
       style={{
@@ -223,6 +415,7 @@ function PageImagePanel({ scene, dim = false }) {
         alignItems: "center",
         justifyContent: "center",
         padding: 28,
+        ...getOverlayEntranceStyle(4),
       }}
     >
       {scene.pageImagePath ? (
@@ -234,7 +427,8 @@ function PageImagePanel({ scene, dim = false }) {
             objectFit: "contain",
             borderRadius: 22,
             background: "#020617",
-            opacity: dim ? 0.62 : 1,
+            transform: motionStyle.transform,
+            opacity: motionStyle.opacity,
           }}
         />
       ) : (
@@ -297,6 +491,7 @@ function FloatingTeachingCard({
         border: `1px solid ${theme.border}`,
         boxShadow: "0 28px 90px rgba(0,0,0,0.5)",
         zIndex: 10,
+        ...getOverlayEntranceStyle(12),
       }}
     >
       <div
@@ -401,18 +596,23 @@ function CommandScene({ scene }) {
     <Shell>
       <Header scene={scene} label="Command Focus" />
 
+      {scene.pageImagePath ? (
+        <PageImagePanel scene={scene} dim />
+      ) : null}
+
       <div
         style={{
           position: "absolute",
-          left: 120,
-          right: 120,
-          top: 210,
+          right: 90,
+          top: 220,
+          width: 760,
           bottom: 230,
           borderRadius: 36,
           padding: 46,
           background: "rgba(2,6,23,0.9)",
           border: "1px solid rgba(34,197,94,0.42)",
           boxShadow: "0 34px 120px rgba(0,0,0,0.6)",
+          ...getOverlayEntranceStyle(10),
         }}
       >
         <div
@@ -425,7 +625,7 @@ function CommandScene({ scene }) {
             marginBottom: 26,
           }}
         >
-          Terminal-style teaching moment
+          Reference command
         </div>
 
         <div
@@ -437,7 +637,7 @@ function CommandScene({ scene }) {
             fontFamily:
               "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
             color: "#bbf7d0",
-            fontSize: 34,
+            fontSize: 30,
             lineHeight: 1.25,
             whiteSpace: "pre-wrap",
             marginBottom: 36,
@@ -448,11 +648,10 @@ function CommandScene({ scene }) {
 
         <div
           style={{
-            fontSize: 36,
+            fontSize: 32,
             lineHeight: 1.18,
             color: "#f8fafc",
             fontWeight: 850,
-            maxWidth: 1360,
           }}
         >
           {scene.caption}
@@ -470,79 +669,71 @@ function WorkflowScene({ scene }) {
     .map((item) => item.trim())
     .filter(Boolean);
 
-  const fallbackSteps = ["Understand purpose", "Follow workflow", "Inspect signals", "Debug one layer at a time"];
-  const displaySteps = steps.length > 1 ? steps : fallbackSteps;
+  const displaySteps =
+    steps.length > 1
+      ? steps
+      : [getFocus(scene), getReference(scene)].filter(Boolean);
 
   return (
     <Shell>
       <Header scene={scene} label="Operational Flow" />
 
+      {scene.pageImagePath ? (
+        <PageImagePanel scene={scene} dim />
+      ) : null}
+
       <div
         style={{
           position: "absolute",
-          top: 220,
-          left: 96,
-          right: 96,
+          top: 245,
+          right: 90,
+          width: 780,
           bottom: 230,
           borderRadius: 38,
-          padding: 44,
-          background: "rgba(15,23,42,0.82)",
+          padding: 40,
+          background: "rgba(15,23,42,0.88)",
           border: "1px solid rgba(96,165,250,0.3)",
           boxShadow: "0 34px 120px rgba(0,0,0,0.52)",
           display: "flex",
-          alignItems: "center",
+          flexDirection: "column",
           justifyContent: "center",
-          gap: 22,
+          gap: 20,
+          ...getOverlayEntranceStyle(10),
         }}
       >
-        {displaySteps.slice(0, 4).map((step, index) => (
-          <React.Fragment key={`${step}-${index}`}>
+        {displaySteps.slice(0, 3).map((step, index) => (
+          <div
+            key={`${step}-${index}`}
+            style={{
+              borderRadius: 24,
+              padding: 24,
+              background: "rgba(30,64,175,0.28)",
+              border: "1px solid rgba(147,197,253,0.32)",
+            }}
+          >
             <div
               style={{
-                flex: 1,
-                minHeight: 210,
-                borderRadius: 28,
-                padding: 26,
-                background: "rgba(30,64,175,0.28)",
-                border: "1px solid rgba(147,197,253,0.32)",
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: "center",
+                fontSize: 20,
+                color: "#93c5fd",
+                fontWeight: 900,
+                marginBottom: 10,
+                textTransform: "uppercase",
+                letterSpacing: 1.2,
               }}
             >
-              <div
-                style={{
-                  fontSize: 24,
-                  color: "#93c5fd",
-                  fontWeight: 900,
-                  marginBottom: 16,
-                }}
-              >
-                Step {index + 1}
-              </div>
-              <div
-                style={{
-                  fontSize: 34,
-                  lineHeight: 1.12,
-                  color: "#f8fafc",
-                  fontWeight: 900,
-                }}
-              >
-                {step}
-              </div>
+              Context {index + 1}
             </div>
-            {index < Math.min(displaySteps.length, 4) - 1 ? (
-              <div
-                style={{
-                  fontSize: 48,
-                  color: "#60a5fa",
-                  fontWeight: 900,
-                }}
-              >
-                →
-              </div>
-            ) : null}
-          </React.Fragment>
+            <div
+              style={{
+                fontSize: 30,
+                lineHeight: 1.15,
+                color: "#f8fafc",
+                fontWeight: 850,
+              }}
+            >
+              {step}
+            </div>
+          </div>
         ))}
       </div>
 
@@ -603,6 +794,7 @@ function RecapSummaryScene({ scene }) {
           background: "rgba(15,23,42,0.86)",
           border: "1px solid rgba(148,163,184,0.28)",
           boxShadow: "0 34px 120px rgba(0,0,0,0.55)",
+          ...getOverlayEntranceStyle(8),
         }}
       >
         <div
@@ -657,19 +849,20 @@ function TeachingCardScene({ scene }) {
           maxWidth: 1360,
           margin: "0 auto",
           width: "100%",
+          ...getOverlayEntranceStyle(6),
         }}
       >
         <div
           style={{
-            fontSize: 22,
+            fontSize: 18,
             color: "#60a5fa",
-            letterSpacing: 1.8,
+            letterSpacing: 1.4,
             textTransform: "uppercase",
-            fontWeight: 900,
-            marginBottom: 20,
+            fontWeight: 800,
+            marginBottom: 16,
           }}
         >
-          Cachey Notebook · Section {scene.sectionNumber}
+          Notebook · Section {scene.sectionNumber}
         </div>
 
         <div
@@ -721,6 +914,39 @@ function TeachingCardScene({ scene }) {
 
 function SceneCard({ scene }) {
   switch (scene.visualType) {
+    case "command_reference_scene":
+      return <CommandScene scene={scene} />;
+
+    case "operational_signal_scene":
+      return <DebuggingFocusScene scene={scene} />;
+
+    case "workflow_context_scene":
+      return <WorkflowScene scene={scene} />;
+
+    case "document_reference_scene":
+      return <PagePreviewScene scene={scene} />;
+
+    case "concept_overlay_scene":
+      return <AnalogyOverlayScene scene={scene} />;
+
+    case "diagram_dominant_scene":
+      return <ArchitectureFocusScene scene={scene} />;
+
+    case "component_focus_scene":
+      return <DiagramGuidedScene scene={scene} />;
+
+    case "flow_walkthrough_scene":
+      return <WorkflowScene scene={scene} />;
+
+    case "step_reference_scene":
+      return <WorkflowScene scene={scene} />;
+
+    case "verification_focus_scene":
+      return <DebuggingFocusScene scene={scene} />;
+
+    case "decision_checkpoint_scene":
+      return <WarningCalloutScene scene={scene} />;
+
     case "architecture_focus_scene":
       return <ArchitectureFocusScene scene={scene} />;
 
@@ -753,15 +979,31 @@ function SceneCard({ scene }) {
   }
 }
 
-function NotebookVideo({ renderPlan }) {
-  let cursor = 0;
+function CinematicScene({ scene, durationFrames }) {
+  const entranceStyle = getSceneEntranceStyle(scene, durationFrames);
 
+  return (
+    <AbsoluteFill
+      style={{
+        background: "#020617",
+        opacity: entranceStyle.opacity,
+        transform: entranceStyle.transform,
+      }}
+    >
+      <SceneCard scene={scene} />
+    </AbsoluteFill>
+  );
+}
+
+function NotebookVideo({ renderPlan }) {
   return (
     <AbsoluteFill>
       {renderPlan.scenes.map((scene) => {
-        const durationFrames = msToFrames(scene.estimatedDurationMs);
-        const from = cursor;
-        cursor += durationFrames;
+        const durationFrames = msToFrames(
+          scene.durationMs || scene.estimatedDurationMs || 4000
+        );
+
+        const from = msToFrames(scene.startMs || 0);
 
         return (
           <Sequence
@@ -769,7 +1011,11 @@ function NotebookVideo({ renderPlan }) {
             from={from}
             durationInFrames={durationFrames}
           >
-            <SceneCard scene={scene} />
+            <CinematicScene
+              scene={scene}
+              durationFrames={durationFrames}
+            />
+
             {scene.audioPath ? (
               <Audio src={staticFile(scene.audioPath)} />
             ) : null}

@@ -1,8 +1,30 @@
 const fs = require("fs");
 const path = require("path");
 
-const REAL_AUDIO_PADDING_MS = 500;
-const FALLBACK_AUDIO_PADDING_MS = 3000;
+/**
+ * Phase 8C.1 — BUG-15 pacing fix
+ *
+ * Borrowed idea:
+ * - Motion Canvas-style timeline rhythm: narration drives timing, scenes get a small
+ *   breathing tail, and render layer receives explicit transition metadata.
+ *
+ * Cachey adaptation:
+ * - Real audio duration is the source of truth when available.
+ * - lessonGraph targetDurationSec is advisory only, not allowed to create long dead air.
+ * - Estimated duration is only used when real audio duration is unavailable.
+ * - Scene timing now exposes transition/tail metadata for Root.jsx.
+ */
+
+const REAL_AUDIO_PADDING_MS = 650;
+const FALLBACK_AUDIO_PADDING_MS = 1200;
+
+const MIN_SCENE_DURATION_MS = 3200;
+const MAX_REAL_AUDIO_TAIL_MS = 900;
+const MAX_TARGET_EXTENSION_MS = 1400;
+
+const DEFAULT_TRANSITION_IN_MS = 360;
+const DEFAULT_TRANSITION_OUT_MS = 420;
+const DEFAULT_TAIL_HOLD_MS = 420;
 
 function readJson(filePath, fallback = null) {
   if (!fs.existsSync(filePath)) return fallback;
@@ -18,6 +40,55 @@ function normalizeSectionNumber(value, index) {
   return String(index + 1).padStart(3, "0");
 }
 
+function validateManifestAgainstDialogue(sections, audioManifest) {
+  const manifestSections = Array.isArray(audioManifest?.sections)
+    ? audioManifest.sections
+    : [];
+
+  if (!manifestSections.length) {
+    throw new Error("audio-manifest.json does not contain sections");
+  }
+
+  if (manifestSections.length !== sections.length) {
+    throw new Error(
+      `Render plan validation failed: dialogue has ${sections.length} sections but audio manifest has ${manifestSections.length}`
+    );
+  }
+
+  for (let index = 0; index < sections.length; index += 1) {
+    const dialogueSection = sections[index];
+    const manifestSection = manifestSections[index];
+
+    const expectedSectionNumber = normalizeSectionNumber(
+      dialogueSection.sectionNumber,
+      index
+    );
+
+    const actualSectionNumber = normalizeSectionNumber(
+      manifestSection.sectionNumber,
+      index
+    );
+
+    if (expectedSectionNumber !== actualSectionNumber) {
+      throw new Error(
+        `Render plan validation failed: section mismatch at index ${index}. Dialogue=${expectedSectionNumber}, Manifest=${actualSectionNumber}`
+      );
+    }
+
+    if (!manifestSection.audioPath) {
+      throw new Error(
+        `Render plan validation failed: missing audioPath for section ${expectedSectionNumber}`
+      );
+    }
+
+    if (!fs.existsSync(manifestSection.audioPath)) {
+      throw new Error(
+        `Render plan validation failed: missing audio file ${manifestSection.audioPath}`
+      );
+    }
+  }
+}
+
 function estimateDurationMs(text, audioItem) {
   if (audioItem?.estimatedDurationMs) return audioItem.estimatedDurationMs;
   if (audioItem?.durationMs) return audioItem.durationMs;
@@ -27,18 +98,89 @@ function estimateDurationMs(text, audioItem) {
     .split(/\s+/)
     .filter(Boolean).length;
 
-  return Math.max(
-    4000,
-    Math.round((words / 145) * 60 * 1000)
-  );
+  return Math.max(4000, Math.round((words / 145) * 60 * 1000));
 }
 
-function resolveSceneDurationMs(text, audioItem) {
-  if (audioItem?.durationMs) {
-    return audioItem.durationMs + REAL_AUDIO_PADDING_MS;
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getTargetDurationMs(section) {
+  if (
+    typeof section?.targetDurationSec === "number" &&
+    Number.isFinite(section.targetDurationSec)
+  ) {
+    return Math.round(section.targetDurationSec * 1000);
   }
 
-  return estimateDurationMs(text, audioItem) + FALLBACK_AUDIO_PADDING_MS;
+  return 0;
+}
+
+function resolveSceneTiming(section, audioItem) {
+  const audioDurationMs =
+    typeof audioItem?.durationMs === "number" && Number.isFinite(audioItem.durationMs)
+      ? Math.round(audioItem.durationMs)
+      : 0;
+
+  const targetDurationMs = getTargetDurationMs(section);
+
+  const estimatedSpeechDurationMs = estimateDurationMs(section?.text || "", audioItem);
+
+  const hasRealAudio = audioDurationMs > 0;
+
+  if (hasRealAudio) {
+    const safeAudioDurationMs = audioDurationMs + REAL_AUDIO_PADDING_MS;
+
+    const targetExtensionMs =
+      targetDurationMs > safeAudioDurationMs
+        ? clampNumber(targetDurationMs - safeAudioDurationMs, 0, MAX_TARGET_EXTENSION_MS)
+        : 0;
+
+    const durationMs = Math.max(
+      MIN_SCENE_DURATION_MS,
+      safeAudioDurationMs + targetExtensionMs
+    );
+
+    const tailHoldMs = clampNumber(
+      durationMs - audioDurationMs,
+      DEFAULT_TAIL_HOLD_MS,
+      MAX_REAL_AUDIO_TAIL_MS + targetExtensionMs
+    );
+
+    return {
+      durationMs,
+      audioDurationMs,
+      estimatedSpeechDurationMs,
+      targetDurationMs,
+      hasRealAudio: true,
+      timingSource: targetExtensionMs > 0 ? "audio_duration_plus_limited_target" : "audio_duration",
+      transitionInMs: DEFAULT_TRANSITION_IN_MS,
+      transitionOutMs: DEFAULT_TRANSITION_OUT_MS,
+      tailHoldMs,
+      motionWindowMs: Math.max(1000, durationMs - DEFAULT_TRANSITION_IN_MS),
+    };
+  }
+
+  const fallbackDurationMs = Math.max(
+    MIN_SCENE_DURATION_MS,
+    estimatedSpeechDurationMs + FALLBACK_AUDIO_PADDING_MS,
+    targetDurationMs
+  );
+
+  return {
+    durationMs: fallbackDurationMs,
+    audioDurationMs: 0,
+    estimatedSpeechDurationMs,
+    targetDurationMs,
+    hasRealAudio: false,
+    timingSource: targetDurationMs > estimatedSpeechDurationMs
+      ? "target_duration_fallback"
+      : "estimated_duration",
+    transitionInMs: DEFAULT_TRANSITION_IN_MS,
+    transitionOutMs: DEFAULT_TRANSITION_OUT_MS,
+    tailHoldMs: FALLBACK_AUDIO_PADDING_MS,
+    motionWindowMs: Math.max(1000, fallbackDurationMs - DEFAULT_TRANSITION_IN_MS),
+  };
 }
 
 function resolveVisualType(type, page) {
@@ -59,37 +201,168 @@ function resolveVisualIntent(section) {
     reference: visualIntent.reference || null,
     step: visualIntent.step || null,
     totalSteps: visualIntent.totalSteps || null,
+    presentationStyle: visualIntent.presentationStyle || null,
+    sceneIntent: visualIntent.sceneIntent || null,
   };
 }
 
 function resolveVisualTypeFromIntent(type, page, visualIntent) {
+  switch (visualIntent.presentationStyle) {
+    case "command_reference_dominant":
+      return "command_reference_scene";
+
+    case "operational_signal_overlay":
+      return "operational_signal_scene";
+
+    case "workflow_context_card":
+      return "workflow_context_scene";
+
+    case "diagram_dominant":
+      return "diagram_dominant_scene";
+
+    case "component_focus":
+      return "component_focus_scene";
+
+    case "flow_walkthrough":
+      return "flow_walkthrough_scene";
+
+    case "step_reference_dominant":
+      return "step_reference_scene";
+
+    case "verification_focus":
+      return "verification_focus_scene";
+
+    case "decision_checkpoint":
+      return "decision_checkpoint_scene";
+
+    case "recap_summary_card":
+      return "recap_summary_scene";
+
+    case "document_reference_dominant":
+      return "document_reference_scene";
+
+    case "concept_overlay_support":
+      return "concept_overlay_scene";
+
+    default:
+      break;
+  }
+
   switch (visualIntent.mode) {
     case "architecture_focus":
       return "architecture_focus_scene";
+
     case "diagram_guided_focus":
       return "diagram_guided_scene";
+
     case "workflow_progression":
       return "workflow_scene";
+
     case "command_focus":
       return "command_scene";
+
+    case "grouped_reference_card":
+      return "command_scene";
+
+    case "quick_debugging_flow":
+      return "debugging_focus_scene";
+
     case "analogy_overlay":
       return "analogy_overlay_scene";
+
     case "warning_callout":
       return "warning_callout_scene";
+
     case "debugging_focus":
       return "debugging_focus_scene";
+
     case "recap_summary":
       return "recap_summary_scene";
+
     case "transition_bridge":
       return "transition_bridge_scene";
+
     case "lesson_progress":
       return "lesson_progress_scene";
+
+    case "learner_overlay":
+      return "speaker_card";
+
     default:
       return resolveVisualType(type, page);
   }
 }
 
 function buildSceneBehavior(visualIntent) {
+  switch (visualIntent.presentationStyle) {
+    case "command_reference_dominant":
+      return {
+        cameraMotion: "static",
+        overlayMode: "minimal_terminal_overlay",
+        preserveFullPage: false,
+        visualPriority: "commands_dominate",
+      };
+
+    case "operational_signal_overlay":
+      return {
+        cameraMotion: "slow_focus",
+        overlayMode: "signal_overlay",
+        preserveFullPage: false,
+        visualPriority: "signal_context_balance",
+      };
+
+    case "workflow_context_card":
+      return {
+        cameraMotion: "guided_pan",
+        overlayMode: "workflow_context",
+        preserveFullPage: true,
+        visualPriority: "workflow_context",
+      };
+
+    case "diagram_dominant":
+      return {
+        cameraMotion: "slow_zoom",
+        overlayMode: "minimal",
+        preserveFullPage: true,
+        visualPriority: "diagram_dominate",
+      };
+
+    case "component_focus":
+      return {
+        cameraMotion: "guided_pan",
+        overlayMode: "component_callout",
+        preserveFullPage: true,
+        visualPriority: "focused_component",
+      };
+
+    case "flow_walkthrough":
+      return {
+        cameraMotion: "flow_pan",
+        overlayMode: "flow_overlay",
+        preserveFullPage: true,
+        visualPriority: "flow_sequence",
+      };
+
+    case "document_reference_dominant":
+      return {
+        cameraMotion: "soft_pan",
+        overlayMode: "minimal",
+        preserveFullPage: true,
+        visualPriority: "document_dominate",
+      };
+
+    case "concept_overlay_support":
+      return {
+        cameraMotion: "soft_focus",
+        overlayMode: "concept_support",
+        preserveFullPage: true,
+        visualPriority: "document_primary_overlay_secondary",
+      };
+
+    default:
+      break;
+  }
+
   switch (visualIntent.mode) {
     case "architecture_focus":
       return {
@@ -106,9 +379,17 @@ function buildSceneBehavior(visualIntent) {
       };
 
     case "command_focus":
+    case "grouped_reference_card":
       return {
         cameraMotion: "static",
         overlayMode: "terminal_overlay",
+        preserveFullPage: false,
+      };
+
+    case "quick_debugging_flow":
+      return {
+        cameraMotion: "static",
+        overlayMode: "debugging_callout",
         preserveFullPage: false,
       };
 
@@ -159,6 +440,13 @@ function buildSceneBehavior(visualIntent) {
         cameraMotion: "static",
         overlayMode: "progress_badge",
         preserveFullPage: true,
+      };
+
+    case "learner_overlay":
+      return {
+        cameraMotion: "static",
+        overlayMode: "learner_card",
+        preserveFullPage: false,
       };
 
     default:
@@ -264,6 +552,10 @@ function createRenderPlan(jobDir) {
     throw new Error("dialogue.json did not contain any dialogue sections");
   }
 
+  validateManifestAgainstDialogue(sections, audioManifest);
+
+  let timelineCursorMs = 0;
+
   const scenes = sections.map((section, index) => {
     const sectionNumber = normalizeSectionNumber(
       section.sectionNumber,
@@ -271,6 +563,7 @@ function createRenderPlan(jobDir) {
     );
 
     const page = section.page ?? section.pageNumber ?? null;
+
     const audioItem = findAudioForSection(
       audioManifest,
       sectionNumber,
@@ -292,35 +585,95 @@ function createRenderPlan(jobDir) {
     const type = section.type || "speaker_card";
     const visualIntent = resolveVisualIntent(section);
     const visualType = resolveVisualTypeFromIntent(type, page, visualIntent);
+    const sceneBehavior = buildSceneBehavior(visualIntent);
+    const timing = resolveSceneTiming(section, audioItem);
+
+    const startMs = timelineCursorMs;
+    const endMs = startMs + timing.durationMs;
+
+    timelineCursorMs = endMs;
 
     return {
       sceneIndex: index,
       sectionNumber,
       speaker: section.speaker || "Senior Engineer",
       type,
+      scenePurpose: type,
+      teachingUnitId: section.teachingUnitId || null,
+      teachingMode: section.teachingMode || null,
+      narrationGoals: section.narrationGoals || [],
+      avoidNarration: section.avoidNarration || [],
       text: section.text || "",
       audioFile,
       audioPath,
-      estimatedDurationMs: resolveSceneDurationMs(section.text, audioItem),
+      audioDurationMs: timing.audioDurationMs,
+      estimatedSpeechDurationMs: timing.estimatedSpeechDurationMs,
+      targetDurationMs: timing.targetDurationMs,
+      estimatedDurationMs: timing.durationMs,
+      durationMs: timing.durationMs,
+      startMs,
+      endMs,
       page,
       pageImageFile,
       pageImagePath,
       visualType,
       visualIntent,
-      sceneBehavior: buildSceneBehavior(visualIntent),
+      sceneBehavior: {
+        ...sceneBehavior,
+        transitionInMs: timing.transitionInMs,
+        transitionOutMs: timing.transitionOutMs,
+        tailHoldMs: timing.tailHoldMs,
+        motionWindowMs: timing.motionWindowMs,
+        timingSource: timing.timingSource,
+      },
+      transition: {
+        type: "soft_fade",
+        inMs: timing.transitionInMs,
+        outMs: timing.transitionOutMs,
+        tailHoldMs: timing.tailHoldMs,
+      },
+      timingSource: timing.timingSource,
+      hasRealAudio: timing.hasRealAudio,
       caption: section.caption || buildCaption(section),
     };
   });
 
+  const totalDurationMs = scenes.length
+    ? scenes[scenes.length - 1].endMs
+    : 0;
+
+  const timingSources = scenes.reduce((acc, scene) => {
+    acc[scene.timingSource] = (acc[scene.timingSource] || 0) + 1;
+    return acc;
+  }, {});
+
   const renderPlan = {
     generatedAt: new Date().toISOString(),
-    version: "render-plan-v2-visual-intent",
+    version: "render-plan-v6-cinematic-pacing",
     sceneCount: scenes.length,
+    totalDurationMs,
     scenes,
+    validation: {
+      sceneCountMatchesDialogue: scenes.length === sections.length,
+      sceneCountMatchesAudioManifest:
+        scenes.length === audioManifest.sections.length,
+      audioManifestValidated: true,
+    },
     metadata: {
       dialogueVersion: dialogue?.version || null,
+      audioManifestVersion: audioManifest?.version || null,
+      hasLessonGraph: Boolean(dialogue?.lessonGraph),
+      hasTeachingUnitMetadata: scenes.some(
+        (scene) => Boolean(scene.teachingUnitId)
+      ),
       hasVisualIntent: scenes.some(
         (scene) => scene.visualIntent?.mode && scene.visualIntent.mode !== "default"
+      ),
+      hasPresentationStyles: scenes.some(
+        (scene) => Boolean(scene.visualIntent?.presentationStyle)
+      ),
+      hasSceneIntents: scenes.some(
+        (scene) => Boolean(scene.visualIntent?.sceneIntent)
       ),
       hasAudioManifest: fs.existsSync(audioManifestPath),
       hasDiagramAnalysis: fs.existsSync(diagramAnalysisPath),
@@ -328,6 +681,17 @@ function createRenderPlan(jobDir) {
       diagramAnalysisVersion: diagramAnalysis?.version || null,
       realAudioPaddingMs: REAL_AUDIO_PADDING_MS,
       fallbackAudioPaddingMs: FALLBACK_AUDIO_PADDING_MS,
+      minSceneDurationMs: MIN_SCENE_DURATION_MS,
+      maxRealAudioTailMs: MAX_REAL_AUDIO_TAIL_MS,
+      maxTargetExtensionMs: MAX_TARGET_EXTENSION_MS,
+      defaultTransitionInMs: DEFAULT_TRANSITION_IN_MS,
+      defaultTransitionOutMs: DEFAULT_TRANSITION_OUT_MS,
+      defaultTailHoldMs: DEFAULT_TAIL_HOLD_MS,
+      timingSources,
+      timelineSource:
+        "audioManifest.durationMs primary | lessonGraph.targetDurationSec advisory | estimatedDurationMs fallback",
+      borrowedIdea:
+        "Motion Canvas-inspired timeline pacing translated into Remotion render metadata",
     },
   };
 

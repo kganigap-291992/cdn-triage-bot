@@ -1,0 +1,1036 @@
+// notebook/worker/services/lessonGraphBuilder.js
+
+/**
+ * Phase 8C.1B — Runtime Compression + Anti-Repetition
+ *
+ * Goal:
+ * - Stop small cheat sheets from becoming long AI lectures.
+ * - Keep walkthroughs dense, operational, and useful.
+ * - Prevent every command/subconcept from becoming its own mini-documentary.
+ *
+ * Borrowed idea:
+ * - Motion Canvas discipline: every scene must justify its timeline.
+ *
+ * Cachey adaptation:
+ * - Compact cheat-sheet mode.
+ * - Hard scene/runtime caps for small docs.
+ * - Command grouping by operational category.
+ * - Shorter target durations.
+ * - Less mentor/meta narration.
+ */
+
+function safeString(value) {
+  return String(value || "").trim();
+}
+
+function safeLower(value) {
+  return safeString(value).toLowerCase();
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function slugify(value) {
+  return safeLower(value)
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 60);
+}
+
+function uniq(values) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => safeString(value))
+        .filter(Boolean)
+    )
+  );
+}
+
+function getPrimaryTopics(conceptsData) {
+  return Array.isArray(conceptsData?.primaryTopics)
+    ? conceptsData.primaryTopics
+    : [];
+}
+
+function getPageCount(diagramAnalysis) {
+  if (Array.isArray(diagramAnalysis?.pages)) return diagramAnalysis.pages.length;
+  if (Array.isArray(diagramAnalysis?.pageAnalyses)) return diagramAnalysis.pageAnalyses.length;
+  if (typeof diagramAnalysis?.pageCount === "number") return diagramAnalysis.pageCount;
+  return 0;
+}
+
+function isCheatSheet(documentIntelligence) {
+  return documentIntelligence?.primaryType === "cheat_sheet";
+}
+
+function isCompactCheatSheet(documentIntelligence, pageCount) {
+  return (
+    isCheatSheet(documentIntelligence) &&
+    (
+      pageCount <= 3 ||
+      Boolean(documentIntelligence?.compactDoc) ||
+      Number(documentIntelligence?.runtimeBudgetMinutes || 0) <= 4
+    )
+  );
+}
+
+function getEffectiveRuntimeBudgetMinutes(documentIntelligence, pageCount) {
+  const requested = Number(documentIntelligence?.runtimeBudgetMinutes || 0);
+  const primaryType = documentIntelligence?.primaryType;
+
+  if (isCompactCheatSheet(documentIntelligence, pageCount)) {
+    return clamp(requested || 2.75, 2, 3.25);
+  }
+
+  if (primaryType === "cheat_sheet") {
+    return clamp(requested || 4, 3, 5);
+  }
+
+  if (pageCount > 0 && pageCount <= 3) {
+    return clamp(requested || 3.5, 2.5, 5);
+  }
+
+  return clamp(requested || 5, 3, Number(documentIntelligence?.maxRuntimeMinutes || 8));
+}
+
+function getFallbackSourcePages({ documentIntelligence, pageCount }) {
+  if (documentIntelligence?.primaryType === "cheat_sheet" && pageCount > 0) {
+    return [1];
+  }
+
+  return [];
+}
+
+function resolveSourcePages({ topic, subConcept, fallbackSourcePages }) {
+  const sourcePages = getSourcePages(topic, subConcept);
+
+  return sourcePages.length > 0
+    ? sourcePages
+    : fallbackSourcePages;
+}
+
+function getTopicTitle(topic, index) {
+  return (
+    safeString(topic?.title) ||
+    safeString(topic?.name) ||
+    safeString(topic?.topic) ||
+    `Topic ${index + 1}`
+  );
+}
+
+function getSubConceptTitle(subConcept, index) {
+  return (
+    safeString(subConcept?.title) ||
+    safeString(subConcept?.name) ||
+    safeString(subConcept?.concept) ||
+    safeString(subConcept?.label) ||
+    `Concept ${index + 1}`
+  );
+}
+
+function getSubConceptSummary(subConcept) {
+  return (
+    safeString(subConcept?.summary) ||
+    safeString(subConcept?.description) ||
+    safeString(subConcept?.meaning) ||
+    safeString(subConcept?.whyItMatters)
+  );
+}
+
+function normalizeConceptKey(value) {
+  return safeLower(value)
+    .replace(/[`"'()[\]{}]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function getCommandDetails(subConcept) {
+  const commandDetails = [];
+
+  if (Array.isArray(subConcept?.commands)) {
+    for (const item of subConcept.commands) {
+      if (typeof item === "string") {
+        commandDetails.push({
+          command: item,
+          meaning: "",
+          whenToUse: "",
+          debuggingSignal: "",
+        });
+      } else if (item && typeof item === "object") {
+        commandDetails.push({
+          command: safeString(
+            item.command ||
+            item.name ||
+            item.text ||
+            ""
+          ),
+          meaning: safeString(item.meaning),
+          whenToUse: safeString(item.whenToUse),
+          debuggingSignal: safeString(item.debuggingSignal),
+        });
+      }
+    }
+  }
+
+  if (Array.isArray(subConcept?.commandMeanings)) {
+    for (const item of subConcept.commandMeanings) {
+      if (typeof item === "string") {
+        commandDetails.push({
+          command: item,
+          meaning: "",
+          whenToUse: "",
+          debuggingSignal: "",
+        });
+      } else if (item && typeof item === "object") {
+        commandDetails.push({
+          command: safeString(
+            item.command ||
+            item.name ||
+            item.text ||
+            ""
+          ),
+          meaning: safeString(item.meaning),
+          whenToUse: safeString(item.whenToUse),
+          debuggingSignal: safeString(item.debuggingSignal),
+        });
+      }
+    }
+  }
+
+  const seen = new Set();
+
+  return commandDetails.filter((item) => {
+    const key = normalizeConceptKey(item.command);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function getCommands(subConcept) {
+  return getCommandDetails(subConcept).map(
+    (item) => item.command
+  );
+}
+
+function getSourcePagesFromObject(value) {
+  const pageCandidates = [
+    value?.page,
+    value?.pageNumber,
+    value?.sourcePage,
+    value?.source_page,
+  ];
+
+  const directPages = pageCandidates
+    .filter((page) => typeof page === "number" && Number.isFinite(page))
+    .map((page) => page);
+
+  const arrayPages = Array.isArray(value?.pages)
+    ? value.pages.filter((page) => typeof page === "number" && Number.isFinite(page))
+    : [];
+
+  return uniq([...directPages, ...arrayPages].map(String)).map(Number);
+}
+
+function getSourcePages(topic, subConcept) {
+  return uniq([
+    ...getSourcePagesFromObject(topic),
+    ...getSourcePagesFromObject(subConcept),
+  ].map(String)).map(Number);
+}
+
+function shouldSkipRepeatedConcept({ title, commands, coveredConcepts }) {
+  const titleKey = normalizeConceptKey(title);
+
+  if (titleKey && coveredConcepts.has(titleKey)) {
+    return true;
+  }
+
+  for (const command of commands) {
+    const commandKey = normalizeConceptKey(command);
+
+    if (commandKey && coveredConcepts.has(commandKey)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function markCoveredConcept({ title, commands, coveredConcepts }) {
+  const titleKey = normalizeConceptKey(title);
+
+  if (titleKey) {
+    coveredConcepts.add(titleKey);
+  }
+
+  for (const command of commands) {
+    const commandKey = normalizeConceptKey(command);
+
+    if (commandKey) {
+      coveredConcepts.add(commandKey);
+    }
+  }
+}
+
+function getCommandCategory(value) {
+  const text = safeLower(value);
+
+  if (
+    text.includes("cluster") ||
+    text.includes("context") ||
+    text.includes("namespace") ||
+    text.includes("config")
+  ) {
+    return {
+      key: "cluster_context",
+      title: "Cluster and Context",
+      rank: 1,
+      summary: "Know which cluster and namespace you are operating in before debugging.",
+    };
+  }
+
+  if (
+    text.includes("pod") ||
+    text.includes("logs") ||
+    text.includes("exec") ||
+    text.includes("describe pod")
+  ) {
+    return {
+      key: "pods_status",
+      title: "Pods and Runtime Status",
+      rank: 2,
+      summary: "Use pod commands to see what is running, failing, restarting, or exposing logs.",
+    };
+  }
+
+  if (
+    text.includes("svc") ||
+    text.includes("service") ||
+    text.includes("endpoint") ||
+    text.includes("port-forward")
+  ) {
+    return {
+      key: "services_networking",
+      title: "Services and Connectivity",
+      rank: 3,
+      summary: "Use service and endpoint checks to connect app symptoms to network routing.",
+    };
+  }
+
+  if (
+    text.includes("label") ||
+    text.includes("selector") ||
+    text.includes("-l ")
+  ) {
+    return {
+      key: "labels_selectors",
+      title: "Labels and Selectors",
+      rank: 4,
+      summary: "Labels and selectors explain which objects belong together.",
+    };
+  }
+
+  if (
+    text.includes("yaml") ||
+    text.includes("apply") ||
+    text.includes("delete") ||
+    text.includes("rollout") ||
+    text.includes("restart")
+  ) {
+    return {
+      key: "yaml_workflow",
+      title: "YAML and Change Workflow",
+      rank: 5,
+      summary: "Use YAML workflow commands when changing or checking deployed resources.",
+    };
+  }
+
+  if (
+    text.includes("event") ||
+    text.includes("debug") ||
+    text.includes("top") ||
+    text.includes("watch")
+  ) {
+    return {
+      key: "debugging_flow",
+      title: "Debugging Flow",
+      rank: 6,
+      summary: "Use these commands to move from symptom to evidence quickly.",
+    };
+  }
+
+  return {
+    key: "reference_commands",
+    title: "Reference Commands",
+    rank: 99,
+    summary: "Useful commands to recognize and apply when needed.",
+  };
+}
+
+function getCompactNarrationGoals({ hasCommands }) {
+  if (hasCommands) {
+    return [
+      "explain the practical use in one or two sentences",
+      "group related commands instead of explaining each command line by line",
+      "state the production/debugging signal only if it adds new value",
+    ];
+  }
+
+  return [
+    "explain the concept briefly",
+    "connect it to the document only if useful",
+  ];
+}
+
+function getDefaultNarrationGoals({ documentIntelligence, hasCommands }) {
+  const grammar = documentIntelligence?.presentationGrammar || {};
+
+  if (isCheatSheet(documentIntelligence)) {
+    return getCompactNarrationGoals({ hasCommands });
+  }
+
+  if (Array.isArray(grammar.narrationShouldAdd) && grammar.narrationShouldAdd.length > 0) {
+    return grammar.narrationShouldAdd;
+  }
+
+  if (hasCommands) {
+    return [
+      "explain when this is useful",
+      "explain why it matters operationally",
+      "connect it to a real debugging workflow",
+    ];
+  }
+
+  return [
+    "explain the meaning",
+    "explain why it matters",
+    "connect it to the larger document",
+  ];
+}
+
+function getDefaultAvoidNarration(documentIntelligence) {
+  const grammar = documentIntelligence?.presentationGrammar || {};
+  const baseAvoid = [
+    "reading visible text verbatim",
+    "repeating the same concept",
+    "filler narration",
+    "meta-teaching phrases like do not memorize this",
+    "generic phrases like operational guide or useful move unless they add new information",
+  ];
+
+  if (Array.isArray(grammar.avoid) && grammar.avoid.length > 0) {
+    return uniq([...grammar.avoid, ...baseAvoid]);
+  }
+
+  return baseAvoid;
+}
+
+function getPreferredVisuals(documentIntelligence, hasCommands) {
+  const grammar = documentIntelligence?.presentationGrammar || {};
+
+  if (Array.isArray(grammar.preferredVisuals) && grammar.preferredVisuals.length > 0) {
+    return grammar.preferredVisuals;
+  }
+
+  return hasCommands
+    ? ["command_focus", "grouped_reference_card"]
+    : ["topic_card", "page_focus"];
+}
+
+function getPresentationStyle({ documentIntelligence, hasCommands, unitIndex = 0 }) {
+  const primaryType = documentIntelligence?.primaryType;
+
+  if (primaryType === "cheat_sheet") {
+    const commandStyles = [
+      "command_reference_dominant",
+      "operational_signal_overlay",
+      "workflow_context_card",
+      "document_reference_dominant",
+    ];
+
+    return commandStyles[unitIndex % commandStyles.length];
+  }
+
+  if (hasCommands) {
+    const commandStyles = [
+      "command_reference_dominant",
+      "operational_signal_overlay",
+      "workflow_context_card",
+    ];
+
+    return commandStyles[unitIndex % commandStyles.length];
+  }
+
+  if (primaryType === "architecture_doc") {
+    const architectureStyles = [
+      "diagram_dominant",
+      "component_focus",
+      "flow_walkthrough",
+    ];
+
+    return architectureStyles[unitIndex % architectureStyles.length];
+  }
+
+  if (primaryType === "runbook") {
+    const runbookStyles = [
+      "step_reference_dominant",
+      "verification_focus",
+      "decision_checkpoint",
+    ];
+
+    return runbookStyles[unitIndex % runbookStyles.length];
+  }
+
+  return unitIndex % 2 === 0
+    ? "document_reference_dominant"
+    : "concept_overlay_support";
+}
+
+function getSceneIntent({ documentIntelligence, hasCommands }) {
+  if (isCheatSheet(documentIntelligence) && hasCommands) {
+    return "group_commands_explain_only_high_value_context";
+  }
+
+  return hasCommands
+    ? "show_commands_explain_operational_context"
+    : "show_document_explain_concept";
+}
+
+function getTeachingMode({ documentIntelligence, hasCommands }) {
+  const primaryType = documentIntelligence?.primaryType;
+
+  if (primaryType === "cheat_sheet") {
+    return "compact_operational_reference_walkthrough";
+  }
+
+  if (hasCommands) {
+    return "operational_command_walkthrough";
+  }
+
+  if (primaryType === "runbook") {
+    return "operational_step_walkthrough";
+  }
+
+  if (primaryType === "workflow_guide") {
+    return "workflow_walkthrough";
+  }
+
+  if (primaryType === "architecture_doc") {
+    return "architecture_explainer";
+  }
+
+  if (primaryType === "design_doc") {
+    return "design_intent_explainer";
+  }
+
+  return documentIntelligence?.teachingStrategy || "technical_walkthrough";
+}
+
+function getUnitType({ documentIntelligence, hasCommands }) {
+  const primaryType = documentIntelligence?.primaryType;
+
+  if (primaryType === "cheat_sheet") {
+    return "compact_command_group";
+  }
+
+  if (hasCommands) {
+    return "command_group";
+  }
+
+  if (primaryType === "runbook") {
+    return "operational_step";
+  }
+
+  if (primaryType === "workflow_guide") {
+    return "workflow_step";
+  }
+
+  if (primaryType === "architecture_doc") {
+    return "concept";
+  }
+
+  if (primaryType === "design_doc") {
+    return "decision_or_tradeoff";
+  }
+
+  return "concept";
+}
+
+function getMaxTeachingUnits(documentIntelligence, pageCount) {
+  const targetSceneCount = Number(documentIntelligence?.targetSceneCount || 0);
+  const runtimeBudgetMinutes = Number(documentIntelligence?.runtimeBudgetMinutes || 0);
+  const primaryType = documentIntelligence?.primaryType;
+
+  if (isCompactCheatSheet(documentIntelligence, pageCount)) {
+    return clamp(targetSceneCount || 5, 4, 6);
+  }
+
+  if (primaryType === "cheat_sheet") {
+    return clamp(targetSceneCount || 7, 5, 8);
+  }
+
+  if (runtimeBudgetMinutes <= 5) {
+    return clamp(targetSceneCount || 12, 8, 14);
+  }
+
+  return clamp(targetSceneCount || 28, 14, 36);
+}
+
+function buildIntroUnit({ documentIntelligence, pageCount }) {
+  const primaryType = documentIntelligence?.primaryType || "technical_document";
+  const grammar = documentIntelligence?.presentationGrammar || {};
+  const compactCheatSheet = isCompactCheatSheet(documentIntelligence, pageCount);
+
+  return {
+    id: "intro_purpose",
+    type: "purpose",
+    title: compactCheatSheet ? "How to use this cheat sheet" : "What this document is for",
+    importance: 1,
+    teachingMode: compactCheatSheet
+      ? "compact_reference_orientation"
+      : documentIntelligence?.teachingStrategy || "technical_walkthrough",
+    runtimeWeight: compactCheatSheet ? 0.35 : 0.7,
+    concepts: [],
+    visibleElements: [],
+    narrationGoals: compactCheatSheet
+      ? [
+          "set context in one sentence",
+          "explain that the walkthrough will group commands by debugging use",
+        ]
+      : [
+          "set context quickly",
+          "explain how to watch this walkthrough",
+          "avoid over-explaining obvious visible text",
+        ],
+    avoidNarration: getDefaultAvoidNarration(documentIntelligence),
+    preferredVisuals: grammar.preferredVisuals || ["topic_card"],
+    presentationStyle: "document_reference_dominant",
+    sceneIntent: "set_context_without_reading_document",
+    sourcePages: [],
+    metadata: {
+      primaryType,
+      role: "intro",
+      compactCheatSheet,
+    },
+  };
+}
+
+function buildRecapUnit({ documentIntelligence, pageCount }) {
+  const grammar = documentIntelligence?.presentationGrammar || {};
+  const compactCheatSheet = isCompactCheatSheet(documentIntelligence, pageCount);
+
+  return {
+    id: "recap_key_takeaways",
+    type: "recap",
+    title: compactCheatSheet ? "What to remember" : "Key takeaways",
+    importance: 0.82,
+    teachingMode: "concise_recap",
+    runtimeWeight: compactCheatSheet ? 0.35 : 0.6,
+    concepts: [],
+    visibleElements: [],
+    narrationGoals: compactCheatSheet
+      ? [
+          "give one practical closing takeaway",
+          "do not repeat every section",
+        ]
+      : [
+          "summarize the practical takeaways",
+          "avoid repeating the full lesson",
+          "end with what the viewer should remember",
+        ],
+    avoidNarration: getDefaultAvoidNarration(documentIntelligence),
+    preferredVisuals: grammar.preferredVisuals || ["summary_card"],
+    presentationStyle: "recap_summary_card",
+    sceneIntent: "summarize_without_repeating_full_lesson",
+    sourcePages: [],
+    metadata: {
+      role: "recap",
+      compactCheatSheet,
+    },
+  };
+}
+
+function makeTeachingUnit({
+  documentIntelligence,
+  topicTitle,
+  title,
+  summary,
+  commands,
+  commandDetails,
+  sourcePages,
+  unitIndex,
+  importance,
+  runtimeWeight,
+  metadata = {},
+}) {
+  const hasCommands = commands.length > 0;
+
+  return {
+    id: `unit_${slugify(topicTitle)}_${slugify(title) || unitIndex}`,
+    type: getUnitType({ documentIntelligence, hasCommands }),
+    title,
+    importance,
+    teachingMode: getTeachingMode({ documentIntelligence, hasCommands }),
+    runtimeWeight,
+    concepts: uniq([topicTitle, title, summary].filter(Boolean)),
+    visibleElements: commands,
+    narrationGoals: getDefaultNarrationGoals({
+      documentIntelligence,
+      hasCommands,
+    }),
+    avoidNarration: getDefaultAvoidNarration(documentIntelligence),
+    preferredVisuals: getPreferredVisuals(documentIntelligence, hasCommands),
+    presentationStyle: getPresentationStyle({
+      documentIntelligence,
+      hasCommands,
+      unitIndex,
+    }),
+    sceneIntent: getSceneIntent({ documentIntelligence, hasCommands }),
+    sourcePages,
+    metadata: {
+      topicTitle,
+      summary,
+      commandCount: commands.length,
+      hasCommands,
+      commandDetails,
+      ...metadata,
+    },
+  };
+}
+
+function collectRawConceptUnits({
+  conceptsData,
+  diagramAnalysis,
+  documentIntelligence,
+}) {
+  const topics = getPrimaryTopics(conceptsData);
+  const coveredConcepts = new Set();
+  const units = [];
+  const pageCount = getPageCount(diagramAnalysis);
+  const fallbackSourcePages = getFallbackSourcePages({
+    documentIntelligence,
+    pageCount,
+  });
+
+  for (let topicIndex = 0; topicIndex < topics.length; topicIndex += 1) {
+    const topic = topics[topicIndex];
+    const topicTitle = getTopicTitle(topic, topicIndex);
+    const subConcepts = Array.isArray(topic?.subConcepts) ? topic.subConcepts : [];
+
+    if (subConcepts.length === 0) {
+      const commandDetails = getCommandDetails(topic);
+      const commands = commandDetails.map((item) => item.command);
+      const hasCommands = commands.length > 0;
+      const title = topicTitle;
+
+      if (shouldSkipRepeatedConcept({ title, commands, coveredConcepts })) {
+        continue;
+      }
+
+      markCoveredConcept({ title, commands, coveredConcepts });
+
+      units.push(
+        makeTeachingUnit({
+          documentIntelligence,
+          topicTitle,
+          title,
+          summary: safeString(topic?.summary),
+          commands,
+          commandDetails,
+          sourcePages: resolveSourcePages({
+            topic,
+            subConcept: null,
+            fallbackSourcePages,
+          }),
+          unitIndex: units.length,
+          importance: hasCommands ? 0.86 : 0.72,
+          runtimeWeight: hasCommands ? 0.65 : 0.75,
+        })
+      );
+
+      continue;
+    }
+
+    for (let subIndex = 0; subIndex < subConcepts.length; subIndex += 1) {
+      const subConcept = subConcepts[subIndex];
+      const title = getSubConceptTitle(subConcept, subIndex);
+      const summary = getSubConceptSummary(subConcept);
+      const commandDetails = getCommandDetails(subConcept);
+      const commands = commandDetails.map((item) => item.command);
+      const hasCommands = commands.length > 0;
+
+      if (shouldSkipRepeatedConcept({ title, commands, coveredConcepts })) {
+        continue;
+      }
+
+      markCoveredConcept({ title, commands, coveredConcepts });
+
+      units.push(
+        makeTeachingUnit({
+          documentIntelligence,
+          topicTitle,
+          title,
+          summary,
+          commands,
+          commandDetails,
+          sourcePages: resolveSourcePages({
+            topic,
+            subConcept,
+            fallbackSourcePages,
+          }),
+          unitIndex: units.length,
+          importance: hasCommands ? 0.9 : 0.7,
+          runtimeWeight: hasCommands ? 0.6 : 0.7,
+        })
+      );
+    }
+  }
+
+  return units;
+}
+
+function buildCompactCheatSheetUnits({
+  conceptsData,
+  diagramAnalysis,
+  documentIntelligence,
+}) {
+  const rawUnits = collectRawConceptUnits({
+    conceptsData,
+    diagramAnalysis,
+    documentIntelligence,
+  });
+
+  const pageCount = getPageCount(diagramAnalysis);
+  const fallbackSourcePages = getFallbackSourcePages({
+    documentIntelligence,
+    pageCount,
+  });
+
+  const grouped = new Map();
+
+  for (const unit of rawUnits) {
+    const allCommandText = [
+      unit.title,
+      unit.metadata?.summary,
+      ...(unit.visibleElements || []),
+    ].join(" ");
+
+    const category = getCommandCategory(allCommandText);
+
+    if (!grouped.has(category.key)) {
+      grouped.set(category.key, {
+        category,
+        commands: [],
+        commandDetails: [],
+        sourcePages: [],
+        sourceTitles: [],
+      });
+    }
+
+    const bucket = grouped.get(category.key);
+
+    bucket.commands.push(...(unit.visibleElements || []));
+    bucket.commandDetails.push(...(unit.metadata?.commandDetails || []));
+    bucket.sourcePages.push(...(unit.sourcePages || []));
+    bucket.sourceTitles.push(unit.title);
+  }
+
+  const groupedUnits = Array.from(grouped.values())
+    .sort((a, b) => a.category.rank - b.category.rank)
+    .map((bucket, index) => {
+      const commands = uniq(bucket.commands).slice(0, 5);
+      const commandDetails = bucket.commandDetails
+        .filter((item) => commands.includes(item.command))
+        .slice(0, 5);
+
+      return makeTeachingUnit({
+        documentIntelligence,
+        topicTitle: bucket.category.title,
+        title: bucket.category.title,
+        summary: bucket.category.summary,
+        commands,
+        commandDetails,
+        sourcePages: uniq(bucket.sourcePages.map(String)).map(Number).filter(Boolean).length
+          ? uniq(bucket.sourcePages.map(String)).map(Number).filter(Boolean)
+          : fallbackSourcePages,
+        unitIndex: index,
+        importance: 0.95 - index * 0.04,
+        runtimeWeight: index <= 2 ? 0.75 : 0.55,
+        metadata: {
+          compactGrouped: true,
+          categoryKey: bucket.category.key,
+          groupedFrom: uniq(bucket.sourceTitles).slice(0, 6),
+        },
+      });
+    })
+    .filter((unit) => {
+      return unit.visibleElements.length > 0 || unit.metadata?.summary;
+    });
+
+  const maxUnits = getMaxTeachingUnits(documentIntelligence, pageCount);
+
+  return groupedUnits.slice(0, maxUnits);
+}
+
+function buildTeachingUnitsFromConcepts({
+  conceptsData,
+  diagramAnalysis,
+  documentIntelligence,
+}) {
+  const pageCount = getPageCount(diagramAnalysis);
+
+  if (isCompactCheatSheet(documentIntelligence, pageCount)) {
+    return buildCompactCheatSheetUnits({
+      conceptsData,
+      diagramAnalysis,
+      documentIntelligence,
+    });
+  }
+
+  const units = collectRawConceptUnits({
+    conceptsData,
+    diagramAnalysis,
+    documentIntelligence,
+  });
+
+  const maxTeachingUnits = getMaxTeachingUnits(documentIntelligence, pageCount);
+
+  return units
+    .sort((a, b) => b.importance - a.importance)
+    .slice(0, maxTeachingUnits);
+}
+
+function allocateRuntime({ units, documentIntelligence, pageCount }) {
+  const effectiveRuntimeBudgetMinutes = getEffectiveRuntimeBudgetMinutes(
+    documentIntelligence,
+    pageCount
+  );
+
+  const compactCheatSheet = isCompactCheatSheet(documentIntelligence, pageCount);
+  const totalBudgetSec = Math.max(
+    compactCheatSheet ? 120 : 150,
+    Math.round(effectiveRuntimeBudgetMinutes * 60)
+  );
+
+  const weightedUnits = units.map((unit) => ({
+    ...unit,
+    runtimeWeight: Math.max(0.1, Number(unit.runtimeWeight || 1)),
+  }));
+
+  const totalWeight = weightedUnits.reduce((sum, unit) => {
+    return sum + unit.runtimeWeight;
+  }, 0);
+
+  return weightedUnits.map((unit) => {
+    const role = unit.metadata?.role;
+    const share = totalWeight > 0
+      ? unit.runtimeWeight / totalWeight
+      : 1 / Math.max(1, weightedUnits.length);
+
+    let minSceneSec = compactCheatSheet ? 8 : 12;
+    let maxSceneSec = compactCheatSheet ? 18 : 28;
+
+    if (role === "intro") {
+      minSceneSec = compactCheatSheet ? 7 : 10;
+      maxSceneSec = compactCheatSheet ? 12 : 18;
+    }
+
+    if (role === "recap") {
+      minSceneSec = compactCheatSheet ? 7 : 10;
+      maxSceneSec = compactCheatSheet ? 12 : 18;
+    }
+
+    const grammarMax = Number(documentIntelligence?.presentationGrammar?.maxSceneDurationSec || 0);
+    if (grammarMax > 0) {
+      maxSceneSec = Math.min(maxSceneSec, grammarMax);
+    }
+
+    const targetDurationSec = clamp(
+      Math.round(totalBudgetSec * share),
+      minSceneSec,
+      maxSceneSec
+    );
+
+    return {
+      ...unit,
+      targetDurationSec,
+    };
+  });
+}
+
+function buildLessonGraph({
+  documentIntelligence = {},
+  conceptsData = {},
+  diagramAnalysis = {},
+} = {}) {
+  const pageCount = getPageCount(diagramAnalysis);
+  const compactCheatSheet = isCompactCheatSheet(documentIntelligence, pageCount);
+  const effectiveRuntimeBudgetMinutes = getEffectiveRuntimeBudgetMinutes(
+    documentIntelligence,
+    pageCount
+  );
+
+  const coreUnits = buildTeachingUnitsFromConcepts({
+    conceptsData,
+    diagramAnalysis,
+    documentIntelligence,
+  });
+
+  const includeIntro = true;
+  const includeRecap =
+    compactCheatSheet
+      ? coreUnits.length >= 4
+      : effectiveRuntimeBudgetMinutes >= 3;
+
+  const orderedUnits = [
+    ...(includeIntro ? [buildIntroUnit({ documentIntelligence, pageCount })] : []),
+    ...coreUnits,
+    ...(includeRecap ? [buildRecapUnit({ documentIntelligence, pageCount })] : []),
+  ];
+
+  const teachingUnits = allocateRuntime({
+    units: orderedUnits,
+    documentIntelligence,
+    pageCount,
+  });
+
+  return {
+    version: "lesson-graph-v2-compact-runtime",
+    documentType: documentIntelligence?.primaryType || "unknown",
+    secondaryTypes: documentIntelligence?.secondaryTypes || [],
+    teachingStrategy:
+      compactCheatSheet
+        ? "compact_high_density_operational_walkthrough"
+        : documentIntelligence?.teachingStrategy || "technical_walkthrough",
+    presentationGrammar: documentIntelligence?.presentationGrammar || {},
+    runtimeBudgetMinutes: effectiveRuntimeBudgetMinutes,
+    requestedRuntimeBudgetMinutes: documentIntelligence?.runtimeBudgetMinutes || null,
+    maxRuntimeMinutes: documentIntelligence?.maxRuntimeMinutes,
+    targetSceneCount: documentIntelligence?.targetSceneCount,
+    pageCount,
+    compactCheatSheet,
+    teachingUnits,
+    stats: {
+      teachingUnitCount: teachingUnits.length,
+      conceptUnitCount: coreUnits.length,
+      totalTargetDurationSec: teachingUnits.reduce((sum, unit) => {
+        return sum + Number(unit.targetDurationSec || 0);
+      }, 0),
+      averageTargetDurationSec: teachingUnits.length
+        ? Math.round(
+            teachingUnits.reduce((sum, unit) => {
+              return sum + Number(unit.targetDurationSec || 0);
+            }, 0) / teachingUnits.length
+          )
+        : 0,
+      compactRuntimeCompressionApplied: compactCheatSheet,
+    },
+  };
+}
+
+module.exports = {
+  buildLessonGraph,
+};

@@ -30,12 +30,18 @@ router.post("/:jobId", async (req, res) => {
       ok: true,
       jobId,
       status: "audio_manifest_built",
+      version: manifestData.version,
+      dialogueVersion: manifestData.dialogueVersion,
       sectionCount: manifestData.sectionCount,
+      dialogueSectionCount: manifestData.dialogueSectionCount,
+      audioFileCount: manifestData.audioFileCount,
+      validation: manifestData.validation,
       output: path.basename(outputPath),
     });
   } catch (error) {
     res.status(500).json({
       ok: false,
+      status: "audio_manifest_failed",
       error:
         error.message ||
         "Failed to build audio manifest",
