@@ -75,6 +75,7 @@ function buildVisualIntent({
   totalSteps = null,
   presentationStyle = null,
   sceneIntent = null,
+  focusHint = null,
 }) {
   return {
     mode,
@@ -86,6 +87,7 @@ function buildVisualIntent({
     totalSteps,
     presentationStyle,
     sceneIntent,
+    focusHint,
   };
 }
 
@@ -302,15 +304,17 @@ function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntellige
     narrationGoals: unit.narrationGoals || [],
     avoidNarration: unit.avoidNarration || [],
     visualIntent: buildVisualIntent({
-      mode: visualMode,
-      page,
-      focus: unit.title,
-      command: visibleElements.join(" | "),
-      reference: unit?.metadata?.summary || null,
-      step: index + 1,
-      totalSteps: totalUnits,
-      presentationStyle: unit.presentationStyle || null,
-      sceneIntent: unit.sceneIntent || null,
+    mode: visualMode,
+    page,
+    focus: unit.title,
+    command: visibleElements.join(" | "),
+    reference: unit?.metadata?.summary || null,
+    step: index + 1,
+    totalSteps: totalUnits,
+    presentationStyle: unit.presentationStyle || null,
+    sceneIntent: unit.sceneIntent || null,
+    focusHint: unit.focusHint || null,
+    avoidNarration: unit.avoidNarration || [],
     }),
   };
 }
@@ -346,12 +350,16 @@ function buildDialogue({
     diagramAnalysis,
   });
 
-  const lessonGraph = buildLessonGraph({
-    documentIntelligence,
-    conceptsData,
-    diagramAnalysis,
-    lessonPlan,
-  });
+  const lessonGraph =
+    lessonPlan?.lessonGraph &&
+    Array.isArray(lessonPlan.lessonGraph.teachingUnits)
+        ? lessonPlan.lessonGraph
+        : buildLessonGraph({
+            documentIntelligence,
+            conceptsData,
+            diagramAnalysis,
+            lessonPlan,
+        });
 
   console.log("[notebook] document intelligence", {
     primaryType: documentIntelligence.primaryType,

@@ -2,17 +2,22 @@ const fs = require("fs");
 const path = require("path");
 
 /**
- * Phase 8C.1 — BUG-15 pacing fix
+ * Phase 8C.3B — Focus-Guided Render Plan
  *
- * Borrowed idea:
- * - Motion Canvas-style timeline rhythm: narration drives timing, scenes get a small
- *   breathing tail, and render layer receives explicit transition metadata.
+ * Goal:
+ * - Consume lessonGraph/dialogue focusHint metadata.
+ * - Convert pedagogical focus intent into renderable scene metadata.
+ * - Keep document/page as the primary visual whenever focusHint says so.
+ * - Reduce overlay dominance and fake scene variety.
+ *
+ * Borrowed ideas:
+ * - tldraw: focus region / zoom-to-bounds style viewport intent.
+ * - Motion Canvas: explicit visual beats and scene choreography.
  *
  * Cachey adaptation:
- * - Real audio duration is the source of truth when available.
- * - lessonGraph targetDurationSec is advisory only, not allowed to create long dead air.
- * - Estimated duration is only used when real audio duration is unavailable.
- * - Scene timing now exposes transition/tail metadata for Root.jsx.
+ * - lessonGraphBuilder owns pedagogy/focus intent.
+ * - renderPlan owns cinematic interpretation.
+ * - Root.jsx owns visual rendering only.
  */
 
 const REAL_AUDIO_PADDING_MS = 650;
@@ -123,9 +128,7 @@ function resolveSceneTiming(section, audioItem) {
       : 0;
 
   const targetDurationMs = getTargetDurationMs(section);
-
   const estimatedSpeechDurationMs = estimateDurationMs(section?.text || "", audioItem);
-
   const hasRealAudio = audioDurationMs > 0;
 
   if (hasRealAudio) {
@@ -153,7 +156,9 @@ function resolveSceneTiming(section, audioItem) {
       estimatedSpeechDurationMs,
       targetDurationMs,
       hasRealAudio: true,
-      timingSource: targetExtensionMs > 0 ? "audio_duration_plus_limited_target" : "audio_duration",
+      timingSource: targetExtensionMs > 0
+        ? "audio_duration_plus_limited_target"
+        : "audio_duration",
       transitionInMs: DEFAULT_TRANSITION_IN_MS,
       transitionOutMs: DEFAULT_TRANSITION_OUT_MS,
       tailHoldMs,
@@ -191,22 +196,56 @@ function resolveVisualType(type, page) {
   return page != null ? "page_preview_card" : "speaker_card";
 }
 
+function resolveFocusHint(section) {
+  const direct =
+    section.focusHint ||
+    section.visualIntent?.focusHint ||
+    section.metadata?.focusHint ||
+    null;
+
+  if (direct && typeof direct === "object") {
+    return direct;
+  }
+
+  return null;
+}
+
 function resolveVisualIntent(section) {
   const visualIntent = section.visualIntent || {};
+  const focusHint = resolveFocusHint(section);
 
   return {
     mode: visualIntent.mode || "default",
-    focus: visualIntent.focus || null,
+    focus: visualIntent.focus || focusHint?.label || null,
     command: visualIntent.command || null,
     reference: visualIntent.reference || null,
     step: visualIntent.step || null,
     totalSteps: visualIntent.totalSteps || null,
     presentationStyle: visualIntent.presentationStyle || null,
     sceneIntent: visualIntent.sceneIntent || null,
+    focusHint,
+    focusRegion: focusHint?.focusRegion || null,
+    cameraIntent: focusHint?.cameraIntent || null,
+    overlayMode: focusHint?.overlayMode || null,
+    keepDocumentPrimary: Boolean(focusHint?.keepDocumentPrimary),
+    reduceOverlayDominance: Boolean(focusHint?.reduceOverlayDominance),
+    avoidFullSceneReset: Boolean(focusHint?.avoidFullSceneReset),
   };
 }
 
+function shouldUseFocusGuidedVisual(page, visualIntent) {
+  return Boolean(
+    page != null &&
+    visualIntent?.focusHint &&
+    visualIntent?.keepDocumentPrimary
+  );
+}
+
 function resolveVisualTypeFromIntent(type, page, visualIntent) {
+  if (shouldUseFocusGuidedVisual(page, visualIntent)) {
+    return "focus_guided_document_scene";
+  }
+
   switch (visualIntent.presentationStyle) {
     case "command_reference_dominant":
       return "command_reference_scene";
@@ -293,30 +332,77 @@ function resolveVisualTypeFromIntent(type, page, visualIntent) {
   }
 }
 
+function getCameraMotionFromFocusHint(focusHint) {
+  switch (focusHint?.cameraIntent) {
+    case "zoom_top_section":
+      return "focus_top";
+    case "zoom_upper_middle_section":
+      return "focus_upper_middle";
+    case "zoom_middle_section":
+      return "focus_middle";
+    case "zoom_lower_middle_section":
+      return "focus_lower_middle";
+    case "zoom_lower_section":
+      return "focus_lower";
+    case "zoom_bottom_section":
+      return "focus_bottom";
+    case "guided_document_focus":
+      return "guided_focus";
+    default:
+      return "guided_focus";
+  }
+}
+
+function buildFocusGuidedBehavior(visualIntent) {
+  const focusHint = visualIntent.focusHint || {};
+
+  return {
+    cameraMotion: getCameraMotionFromFocusHint(focusHint),
+    overlayMode: focusHint.overlayMode || "minimal_context_callout",
+    preserveFullPage: true,
+    visualPriority: "document_primary_focus_guided",
+    focusGuided: true,
+    focusTarget: focusHint.target || null,
+    focusLabel: focusHint.label || visualIntent.focus || null,
+    focusRegion: focusHint.focusRegion || null,
+    cameraIntent: focusHint.cameraIntent || null,
+    keepDocumentPrimary: true,
+    reduceOverlayDominance: true,
+    avoidFullSceneReset: true,
+  };
+}
+
 function buildSceneBehavior(visualIntent) {
+  if (visualIntent?.focusHint && visualIntent?.keepDocumentPrimary) {
+    return buildFocusGuidedBehavior(visualIntent);
+  }
+
   switch (visualIntent.presentationStyle) {
     case "command_reference_dominant":
       return {
-        cameraMotion: "static",
-        overlayMode: "minimal_terminal_overlay",
-        preserveFullPage: false,
-        visualPriority: "commands_dominate",
+        cameraMotion: "soft_focus",
+        overlayMode: "minimal_command_callout",
+        preserveFullPage: true,
+        visualPriority: "document_primary_command_supporting",
+        reduceOverlayDominance: true,
       };
 
     case "operational_signal_overlay":
       return {
         cameraMotion: "slow_focus",
-        overlayMode: "signal_overlay",
-        preserveFullPage: false,
-        visualPriority: "signal_context_balance",
+        overlayMode: "small_signal_callout",
+        preserveFullPage: true,
+        visualPriority: "document_primary_signal_supporting",
+        reduceOverlayDominance: true,
       };
 
     case "workflow_context_card":
       return {
         cameraMotion: "guided_pan",
-        overlayMode: "workflow_context",
+        overlayMode: "compact_workflow_steps",
         preserveFullPage: true,
         visualPriority: "workflow_context",
+        reduceOverlayDominance: true,
       };
 
     case "diagram_dominant":
@@ -381,16 +467,18 @@ function buildSceneBehavior(visualIntent) {
     case "command_focus":
     case "grouped_reference_card":
       return {
-        cameraMotion: "static",
-        overlayMode: "terminal_overlay",
-        preserveFullPage: false,
+        cameraMotion: "soft_focus",
+        overlayMode: "minimal_command_callout",
+        preserveFullPage: true,
+        reduceOverlayDominance: true,
       };
 
     case "quick_debugging_flow":
       return {
-        cameraMotion: "static",
-        overlayMode: "debugging_callout",
-        preserveFullPage: false,
+        cameraMotion: "soft_focus",
+        overlayMode: "small_signal_callout",
+        preserveFullPage: true,
+        reduceOverlayDominance: true,
       };
 
     case "workflow_progression":
@@ -409,7 +497,7 @@ function buildSceneBehavior(visualIntent) {
 
     case "warning_callout":
       return {
-        cameraMotion: "static",
+        cameraMotion: "soft_focus",
         overlayMode: "warning_card",
         preserveFullPage: true,
       };
@@ -532,6 +620,20 @@ function normalizeDialogue(dialogue) {
   return [];
 }
 
+
+function getAvailablePageCount(jobDir) {
+  const pageImagesDir = path.join(jobDir, "page-images");
+
+  if (!fs.existsSync(pageImagesDir)) {
+    return 0;
+  }
+
+  return fs
+    .readdirSync(pageImagesDir)
+    .filter((file) => /^page-\d+\.png$/.test(file))
+    .length;
+}
+
 function createRenderPlan(jobDir) {
   const dialoguePath = path.join(jobDir, "dialogue.json");
   const audioManifestPath = path.join(jobDir, "audio-manifest.json");
@@ -557,18 +659,30 @@ function createRenderPlan(jobDir) {
   let timelineCursorMs = 0;
 
   const scenes = sections.map((section, index) => {
-    const sectionNumber = normalizeSectionNumber(
-      section.sectionNumber,
-      index
-    );
+    const sectionNumber = normalizeSectionNumber(section.sectionNumber, index);
+    const visualIntentForPage = section.visualIntent || {};
+    const focusHintForPage =
+    section.focusHint ||
+    section.visualIntent?.focusHint ||
+    section.metadata?.focusHint ||
+    null;
 
-    const page = section.page ?? section.pageNumber ?? null;
+    const explicitPage =
+    section.page ??
+    section.pageNumber ??
+    visualIntentForPage.page ??
+    focusHintForPage?.sourcePages?.[0] ??
+    null;
 
-    const audioItem = findAudioForSection(
-      audioManifest,
-      sectionNumber,
-      index
-    );
+    const availablePageCount = getAvailablePageCount(jobDir);
+
+    const fallbackPage =
+    availablePageCount > 0 ? 1 : null;
+
+    
+    const page = explicitPage ?? fallbackPage;
+
+    const audioItem = findAudioForSection(audioManifest, sectionNumber, index);
 
     const audioFile =
       audioItem?.audioFile ||
@@ -618,6 +732,10 @@ function createRenderPlan(jobDir) {
       pageImagePath,
       visualType,
       visualIntent,
+      focusHint: visualIntent.focusHint || null,
+      focusRegion: visualIntent.focusRegion || sceneBehavior.focusRegion || null,
+      cameraIntent: visualIntent.cameraIntent || sceneBehavior.cameraIntent || null,
+      overlayMode: visualIntent.overlayMode || sceneBehavior.overlayMode || null,
       sceneBehavior: {
         ...sceneBehavior,
         transitionInMs: timing.transitionInMs,
@@ -627,7 +745,7 @@ function createRenderPlan(jobDir) {
         timingSource: timing.timingSource,
       },
       transition: {
-        type: "soft_fade",
+        type: sceneBehavior.focusGuided ? "focus_guided_soft_fade" : "soft_fade",
         inMs: timing.transitionInMs,
         outMs: timing.transitionOutMs,
         tailHoldMs: timing.tailHoldMs,
@@ -649,7 +767,7 @@ function createRenderPlan(jobDir) {
 
   const renderPlan = {
     generatedAt: new Date().toISOString(),
-    version: "render-plan-v6-cinematic-pacing",
+    version: "render-plan-v7-focus-guided",
     sceneCount: scenes.length,
     totalDurationMs,
     scenes,
@@ -675,6 +793,11 @@ function createRenderPlan(jobDir) {
       hasSceneIntents: scenes.some(
         (scene) => Boolean(scene.visualIntent?.sceneIntent)
       ),
+      hasFocusHints: scenes.some((scene) => Boolean(scene.focusHint)),
+      hasFocusRegions: scenes.some((scene) => Boolean(scene.focusRegion)),
+      focusGuidedSceneCount: scenes.filter(
+        (scene) => Boolean(scene.sceneBehavior?.focusGuided)
+      ).length,
       hasAudioManifest: fs.existsSync(audioManifestPath),
       hasDiagramAnalysis: fs.existsSync(diagramAnalysisPath),
       hasPageImages: fs.existsSync(path.join(jobDir, "page-images")),
@@ -690,8 +813,10 @@ function createRenderPlan(jobDir) {
       timingSources,
       timelineSource:
         "audioManifest.durationMs primary | lessonGraph.targetDurationSec advisory | estimatedDurationMs fallback",
-      borrowedIdea:
-        "Motion Canvas-inspired timeline pacing translated into Remotion render metadata",
+      borrowedIdeas: [
+        "Motion Canvas-inspired timeline pacing translated into Remotion metadata",
+        "tldraw-inspired focusRegion/cameraIntent translated into Cachey scene behavior",
+      ],
     },
   };
 

@@ -12,6 +12,55 @@ const {
 
 const FPS = 30;
 
+const VIDEO_WIDTH = 1920;
+const VIDEO_HEIGHT = 1080;
+const PAGE_STAGE_INSET = 18;
+
+function getPageStageRect() {
+  return {
+    width: VIDEO_WIDTH - 84 - PAGE_STAGE_INSET * 2,
+    height: VIDEO_HEIGHT - 214 - PAGE_STAGE_INSET * 2,
+  };
+}
+
+function getContainedImageRect(containerWidth, containerHeight, imageAspectRatio = 8.5 / 11) {
+  const containerAspectRatio = containerWidth / containerHeight;
+
+  if (containerAspectRatio > imageAspectRatio) {
+    const imageHeight = containerHeight;
+    const imageWidth = imageHeight * imageAspectRatio;
+
+    return {
+      width: imageWidth,
+      height: imageHeight,
+      left: (containerWidth - imageWidth) / 2,
+      top: 0,
+    };
+  }
+
+  const imageWidth = containerWidth;
+  const imageHeight = imageWidth / imageAspectRatio;
+
+  return {
+    width: imageWidth,
+    height: imageHeight,
+    left: 0,
+    top: (containerHeight - imageHeight) / 2,
+  };
+}
+
+function getFocusRegionStyle(focusRegion, imageRect) {
+  if (!focusRegion || !imageRect) return null;
+
+  return {
+    left: imageRect.left + focusRegion.x * imageRect.width,
+    top: imageRect.top + focusRegion.y * imageRect.height,
+    width: focusRegion.width * imageRect.width,
+    height: focusRegion.height * imageRect.height,
+  };
+}
+
+
 function msToFrames(ms) {
   return Math.max(1, Math.round((ms / 1000) * FPS));
 }
@@ -48,23 +97,26 @@ function getCommand(scene) {
   return scene?.visualIntent?.command || "";
 }
 
+function getSceneDurationFrames(scene) {
+  return msToFrames(scene.durationMs || scene.estimatedDurationMs || 4000);
+}
+
+function getProgress(durationFrames) {
+  const frame = useCurrentFrame();
+  if (durationFrames <= 1) return 1;
+  return clamp(frame / durationFrames, 0, 1);
+}
+
 function getTransitionFrames(scene, durationFrames) {
   const transition = scene.transition || {};
   const behavior = scene.sceneBehavior || {};
 
-  const inMs =
-    transition.inMs ||
-    behavior.transitionInMs ||
-    360;
-
-  const outMs =
-    transition.outMs ||
-    behavior.transitionOutMs ||
-    420;
+  const inMs = transition.inMs || behavior.transitionInMs || 420;
+  const outMs = transition.outMs || behavior.transitionOutMs || 520;
 
   return {
-    inFrames: clamp(msToFrames(inMs), 4, Math.max(4, Math.floor(durationFrames / 3))),
-    outFrames: clamp(msToFrames(outMs), 4, Math.max(4, Math.floor(durationFrames / 3))),
+    inFrames: clamp(msToFrames(inMs), 5, Math.max(5, Math.floor(durationFrames / 3))),
+    outFrames: clamp(msToFrames(outMs), 5, Math.max(5, Math.floor(durationFrames / 3))),
   };
 }
 
@@ -72,16 +124,11 @@ function getSceneOpacity(scene, durationFrames) {
   const frame = useCurrentFrame();
   const { inFrames, outFrames } = getTransitionFrames(scene, durationFrames);
 
-  const fadeInOpacity = interpolate(
-    frame,
-    [0, inFrames],
-    [0, 1],
-    {
-      extrapolateLeft: "clamp",
-      extrapolateRight: "clamp",
-      easing: Easing.out(Easing.cubic),
-    }
-  );
+  const fadeInOpacity = interpolate(frame, [0, inFrames], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.out(Easing.cubic),
+  });
 
   const fadeOutOpacity = interpolate(
     frame,
@@ -101,27 +148,17 @@ function getSceneEntranceStyle(scene, durationFrames) {
   const frame = useCurrentFrame();
   const { inFrames } = getTransitionFrames(scene, durationFrames);
 
-  const y = interpolate(
-    frame,
-    [0, inFrames],
-    [14, 0],
-    {
-      extrapolateLeft: "clamp",
-      extrapolateRight: "clamp",
-      easing: Easing.out(Easing.cubic),
-    }
-  );
+  const y = interpolate(frame, [0, inFrames], [18, 0], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.out(Easing.cubic),
+  });
 
-  const scale = interpolate(
-    frame,
-    [0, durationFrames],
-    [1.006, 1],
-    {
-      extrapolateLeft: "clamp",
-      extrapolateRight: "clamp",
-      easing: Easing.out(Easing.cubic),
-    }
-  );
+  const scale = interpolate(frame, [0, durationFrames], [1.01, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.out(Easing.cubic),
+  });
 
   return {
     opacity: getSceneOpacity(scene, durationFrames),
@@ -129,107 +166,124 @@ function getSceneEntranceStyle(scene, durationFrames) {
   };
 }
 
+function getBackgroundMotionStyle(scene) {
+  const durationFrames = getSceneDurationFrames(scene);
+  const progress = Easing.inOut(Easing.cubic)(getProgress(durationFrames));
+
+  const driftX = interpolate(progress, [0, 1], [-10, 10]);
+  const driftY = interpolate(progress, [0, 1], [6, -6]);
+  const scale = interpolate(progress, [0, 1], [1, 1.018]);
+
+  return {
+    transform: `translate(${driftX}px, ${driftY}px) scale(${scale})`,
+  };
+}
+
 function getCameraMotionStyle(scene, dim = false) {
-  const frame = useCurrentFrame();
-  const durationFrames = msToFrames(scene.durationMs || scene.estimatedDurationMs || 4000);
-  const progress = durationFrames <= 1 ? 1 : frame / durationFrames;
-  const cameraMotion = scene?.sceneBehavior?.cameraMotion || "static";
+  const durationFrames = getSceneDurationFrames(scene);
+  const progress = Easing.inOut(Easing.cubic)(getProgress(durationFrames));
 
-  let startScale = 1;
-  let endScale = 1.012;
-  let startX = 0;
-  let endX = 0;
-  let startY = 0;
-  let endY = 0;
+  const behavior = scene?.sceneBehavior || {};
+  const focusRegion = scene?.focusRegion || behavior?.focusRegion || null;
 
-  switch (cameraMotion) {
-    case "slow_zoom":
-      endScale = 1.035;
-      break;
+  let scale = 1.035;
+  let x = 0;
+  let y = 0;
 
-    case "slow_focus":
-    case "soft_focus":
-      endScale = 1.026;
-      startY = 4;
-      endY = -4;
-      break;
+  if (focusRegion) {
+    const regionCenterX = focusRegion.x + focusRegion.width / 2;
+    const regionCenterY = focusRegion.y + focusRegion.height / 2;
 
-    case "soft_pan":
-      endScale = 1.018;
-      startX = -8;
-      endX = 8;
-      break;
+    const targetX = interpolate(regionCenterX, [0, 1], [90, -90]);
+    const targetY = interpolate(regionCenterY, [0, 1], [58, -58]);
 
-    case "guided_pan":
-      endScale = 1.028;
-      startX = -12;
-      endX = 12;
-      startY = 4;
-      endY = -4;
-      break;
+    x = interpolate(progress, [0, 1], [0, targetX]);
+    y = interpolate(progress, [0, 1], [0, targetY]);
 
-    case "flow_pan":
-      endScale = 1.03;
-      startX = -16;
-      endX = 16;
-      break;
+    scale = interpolate(progress, [0, 1], [1.025, 1.13], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    });
+  } else {
+    const cameraMotion = behavior.cameraMotion || "slow_zoom";
 
-    case "step_focus":
-      endScale = 1.02;
-      startY = 6;
-      endY = -6;
-      break;
-
-    case "static":
-    default:
-      endScale = 1.008;
-      break;
+    switch (cameraMotion) {
+      case "slow_zoom":
+        scale = interpolate(progress, [0, 1], [1.02, 1.075]);
+        break;
+      case "soft_focus":
+      case "slow_focus":
+        scale = interpolate(progress, [0, 1], [1.02, 1.07]);
+        y = interpolate(progress, [0, 1], [10, -10]);
+        break;
+      case "soft_pan":
+        scale = interpolate(progress, [0, 1], [1.02, 1.055]);
+        x = interpolate(progress, [0, 1], [-18, 18]);
+        break;
+      case "guided_pan":
+        scale = interpolate(progress, [0, 1], [1.02, 1.08]);
+        x = interpolate(progress, [0, 1], [-24, 24]);
+        y = interpolate(progress, [0, 1], [10, -10]);
+        break;
+      default:
+        scale = interpolate(progress, [0, 1], [1.02, 1.055]);
+        break;
+    }
   }
-
-  const easedProgress = Easing.inOut(Easing.cubic)(clamp(progress, 0, 1));
-
-  const scale = startScale + (endScale - startScale) * easedProgress;
-  const x = startX + (endX - startX) * easedProgress;
-  const y = startY + (endY - startY) * easedProgress;
 
   return {
     transform: `translate(${x}px, ${y}px) scale(${scale})`,
-    opacity: dim ? 0.62 : 1,
+    opacity: dim ? 0.78 : 1,
   };
 }
 
-function getOverlayEntranceStyle(delayFrames = 5) {
+function getOverlayEntranceStyle(delayFrames = 5, durationFramesOverride) {
   const frame = useCurrentFrame();
+  const durationFrames = durationFramesOverride || 9999;
 
-  const opacity = interpolate(
+  const opacityIn = interpolate(frame, [delayFrames, delayFrames + 16], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.out(Easing.cubic),
+  });
+
+  const opacityOut = interpolate(
     frame,
-    [delayFrames, delayFrames + 14],
-    [0, 1],
+    [Math.max(0, durationFrames - 16), durationFrames],
+    [1, 0],
     {
       extrapolateLeft: "clamp",
       extrapolateRight: "clamp",
-      easing: Easing.out(Easing.cubic),
+      easing: Easing.in(Easing.cubic),
     }
   );
 
-  const y = interpolate(
-    frame,
-    [delayFrames, delayFrames + 14],
-    [18, 0],
-    {
-      extrapolateLeft: "clamp",
-      extrapolateRight: "clamp",
-      easing: Easing.out(Easing.cubic),
-    }
-  );
+  const y = interpolate(frame, [delayFrames, delayFrames + 16], [20, 0], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.out(Easing.cubic),
+  });
+
+  const scale = interpolate(frame, [delayFrames, delayFrames + 16], [0.985, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.out(Easing.cubic),
+  });
 
   return {
-    opacity,
-    transform: `translateY(${y}px)`,
+    opacity: Math.min(opacityIn, opacityOut),
+    transform: `translateY(${y}px) scale(${scale})`,
   };
 }
 
-function Shell({ children }) {
+function getStepRevealStyle(index, baseDelay = 12) {
+  return getOverlayEntranceStyle(baseDelay + index * 7);
+}
+
+function Shell({ scene, children }) {
+  const backgroundMotion = getBackgroundMotionStyle(scene || {});
+
   return (
     <AbsoluteFill
       style={{
@@ -239,8 +293,26 @@ function Shell({ children }) {
         fontFamily:
           "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
         padding: 56,
+        overflow: "hidden",
       }}
     >
+      <AbsoluteFill
+        style={{
+          ...backgroundMotion,
+          background:
+            "linear-gradient(115deg, rgba(59,130,246,0.08), transparent 36%, rgba(20,184,166,0.06))",
+          opacity: 0.9,
+        }}
+      />
+
+      <AbsoluteFill
+        style={{
+          boxShadow: "inset 0 0 180px rgba(0,0,0,0.72)",
+          pointerEvents: "none",
+          zIndex: 30,
+        }}
+      />
+
       {children}
     </AbsoluteFill>
   );
@@ -257,9 +329,7 @@ function SpeakerBadge({ speaker }) {
         gap: 12,
         borderRadius: 999,
         padding: "10px 18px",
-        background: isSenior
-          ? "rgba(37, 99, 235, 0.22)"
-          : "rgba(20, 184, 166, 0.18)",
+        background: isSenior ? "rgba(37, 99, 235, 0.22)" : "rgba(20, 184, 166, 0.18)",
         border: isSenior
           ? "1px solid rgba(96, 165, 250, 0.45)"
           : "1px solid rgba(45, 212, 191, 0.38)",
@@ -353,7 +423,8 @@ function CaptionStrip({ scene }) {
         background: "rgba(2, 6, 23, 0.82)",
         border: "1px solid rgba(148, 163, 184, 0.25)",
         boxShadow: "0 28px 90px rgba(0,0,0,0.45)",
-        ...getOverlayEntranceStyle(9),
+        zIndex: 12,
+        ...getOverlayEntranceStyle(14),
       }}
     >
       <div
@@ -397,43 +468,101 @@ function CaptionStrip({ scene }) {
 
 function PageImagePanel({ scene, dim = false }) {
   const motionStyle = getCameraMotionStyle(scene, dim);
+  const stageRect = getPageStageRect();
+  const imageRect = getContainedImageRect(
+    stageRect.width,
+    stageRect.height,
+    scene.pageAspectRatio || scene.imageAspectRatio || 8.5 / 11
+  );
+  const focusStyle = getFocusRegionStyle(scene.focusRegion, imageRect);
 
   return (
     <div
       style={{
         position: "absolute",
-        top: 168,
-        left: 72,
-        right: 72,
-        bottom: 190,
-        borderRadius: 34,
+        top: 92,
+        left: 42,
+        right: 42,
+        bottom: 122,
+        borderRadius: 30,
         overflow: "hidden",
-        background: "rgba(15, 23, 42, 0.78)",
-        border: "1px solid rgba(148, 163, 184, 0.26)",
-        boxShadow: "0 34px 120px rgba(0,0,0,0.55)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 28,
+        background:
+          "linear-gradient(135deg, rgba(15,23,42,0.72), rgba(2,6,23,0.94))",
+        border: "1px solid rgba(148, 163, 184, 0.18)",
+        boxShadow: "0 42px 140px rgba(0,0,0,0.62)",
+        zIndex: 1,
         ...getOverlayEntranceStyle(4),
       }}
     >
       {scene.pageImagePath ? (
-        <Img
-          src={staticFile(scene.pageImagePath)}
-          style={{
-            width: "100%",
-            height: "100%",
-            objectFit: "contain",
-            borderRadius: 22,
-            background: "#020617",
-            transform: motionStyle.transform,
-            opacity: motionStyle.opacity,
-          }}
-        />
+        <>
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              background:
+                "radial-gradient(circle at 50% 45%, rgba(59,130,246,0.12), transparent 42%)",
+              pointerEvents: "none",
+            }}
+          />
+
+          <div
+            style={{
+              position: "absolute",
+              inset: 18,
+              borderRadius: 24,
+              overflow: "hidden",
+              transform: motionStyle.transform,
+              opacity: motionStyle.opacity,
+              transformOrigin: "center center",
+            }}
+          >
+            <Img
+              src={staticFile(scene.pageImagePath)}
+              style={{
+                width: "100%",
+                height: "100%",
+                objectFit: "contain",
+                objectPosition: "center center",
+                borderRadius: 22,
+                background: "#020617",
+              }}
+            />
+
+            {focusStyle ? (
+                <div
+                    style={{
+                    position: "absolute",
+                    left: focusStyle.left,
+                    top: focusStyle.top,
+                    width: focusStyle.width,
+                    height: focusStyle.height,
+                    border:
+                        scene.focusRegion?.confidence === "low"
+                        ? "1px solid rgba(96,165,250,0.18)"
+                        : "2px solid rgba(96,165,250,0.88)",
+                    borderRadius: scene.focusRegion?.confidence === "low" ? 28 : 16,
+                    boxShadow:
+                        scene.focusRegion?.confidence === "low"
+                        ? "0 0 90px rgba(96,165,250,0.22)"
+                        : "0 0 46px rgba(96,165,250,0.42)",
+                    background:
+                        scene.focusRegion?.confidence === "low"
+                        ? "radial-gradient(circle at 50% 50%, rgba(96,165,250,0.16), rgba(96,165,250,0.025) 68%, transparent 100%)"
+                        : "rgba(96,165,250,0.07)",
+                    pointerEvents: "none",
+                    }}
+                />
+                ) : null}
+          </div>
+        </>
       ) : (
         <div
           style={{
+            height: "100%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
             fontSize: 42,
             color: "#94a3b8",
           }}
@@ -484,14 +613,14 @@ function FloatingTeachingCard({
         position: "absolute",
         top,
         right,
-        width: 560,
+        width: 420,
         borderRadius: 30,
-        padding: 34,
+        padding: 24,
         background: theme.bg,
         border: `1px solid ${theme.border}`,
         boxShadow: "0 28px 90px rgba(0,0,0,0.5)",
         zIndex: 10,
-        ...getOverlayEntranceStyle(12),
+        ...getOverlayEntranceStyle(18),
       }}
     >
       <div
@@ -508,7 +637,7 @@ function FloatingTeachingCard({
       </div>
       <div
         style={{
-          fontSize: 38,
+          fontSize: 30,
           lineHeight: 1.08,
           color: "#f8fafc",
           fontWeight: 950,
@@ -519,7 +648,7 @@ function FloatingTeachingCard({
       </div>
       <div
         style={{
-          fontSize: 28,
+          fontSize: 22,
           lineHeight: 1.26,
           color: "#dbeafe",
           fontWeight: 700,
@@ -533,7 +662,7 @@ function FloatingTeachingCard({
 
 function PagePreviewScene({ scene }) {
   return (
-    <Shell>
+    <Shell scene={scene}>
       <Header scene={scene} />
       <PageImagePanel scene={scene} />
       <CaptionStrip scene={scene} />
@@ -543,7 +672,7 @@ function PagePreviewScene({ scene }) {
 
 function ArchitectureFocusScene({ scene }) {
   return (
-    <Shell>
+    <Shell scene={scene}>
       <Header scene={scene} label="Architecture Focus" />
       <PageImagePanel scene={scene} />
       <FloatingTeachingCard
@@ -559,7 +688,7 @@ function ArchitectureFocusScene({ scene }) {
 
 function DiagramGuidedScene({ scene }) {
   return (
-    <Shell>
+    <Shell scene={scene}>
       <Header scene={scene} label="Guided Diagram Walkthrough" />
       <PageImagePanel scene={scene} />
       <FloatingTeachingCard
@@ -575,7 +704,7 @@ function DiagramGuidedScene({ scene }) {
 
 function AnalogyOverlayScene({ scene }) {
   return (
-    <Shell>
+    <Shell scene={scene}>
       <Header scene={scene} label="Teaching Analogy" />
       <PageImagePanel scene={scene} dim />
       <FloatingTeachingCard
@@ -593,26 +722,25 @@ function CommandScene({ scene }) {
   const command = getCommand(scene) || scene.caption || "Command focus";
 
   return (
-    <Shell>
+    <Shell scene={scene}>
       <Header scene={scene} label="Command Focus" />
 
-      {scene.pageImagePath ? (
-        <PageImagePanel scene={scene} dim />
-      ) : null}
+      {scene.pageImagePath ? <PageImagePanel scene={scene} dim /> : null}
 
       <div
         style={{
           position: "absolute",
           right: 90,
           top: 220,
-          width: 760,
+          width: 520,
           bottom: 230,
           borderRadius: 36,
-          padding: 46,
+          padding: 28,
           background: "rgba(2,6,23,0.9)",
           border: "1px solid rgba(34,197,94,0.42)",
           boxShadow: "0 34px 120px rgba(0,0,0,0.6)",
-          ...getOverlayEntranceStyle(10),
+          zIndex: 10,
+          ...getOverlayEntranceStyle(16),
         }}
       >
         <div
@@ -634,12 +762,13 @@ function CommandScene({ scene }) {
             padding: "30px 34px",
             background: "rgba(15,23,42,0.96)",
             border: "1px solid rgba(74,222,128,0.32)",
-            fontFamily:
-              "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
             color: "#bbf7d0",
-            fontSize: 30,
+            fontSize: 22,
             lineHeight: 1.25,
-            whiteSpace: "pre-wrap",
+            whiteSpace: "pre-line",
+            wordBreak: "break-word",
+            overflowWrap: "anywhere",
             marginBottom: 36,
           }}
         >
@@ -648,7 +777,7 @@ function CommandScene({ scene }) {
 
         <div
           style={{
-            fontSize: 32,
+            fontSize: 24,
             lineHeight: 1.18,
             color: "#f8fafc",
             fontWeight: 850,
@@ -670,17 +799,13 @@ function WorkflowScene({ scene }) {
     .filter(Boolean);
 
   const displaySteps =
-    steps.length > 1
-      ? steps
-      : [getFocus(scene), getReference(scene)].filter(Boolean);
+    steps.length > 1 ? steps : [getFocus(scene), getReference(scene)].filter(Boolean);
 
   return (
-    <Shell>
+    <Shell scene={scene}>
       <Header scene={scene} label="Operational Flow" />
 
-      {scene.pageImagePath ? (
-        <PageImagePanel scene={scene} dim />
-      ) : null}
+      {scene.pageImagePath ? <PageImagePanel scene={scene} dim /> : null}
 
       <div
         style={{
@@ -698,7 +823,8 @@ function WorkflowScene({ scene }) {
           flexDirection: "column",
           justifyContent: "center",
           gap: 20,
-          ...getOverlayEntranceStyle(10),
+          zIndex: 10,
+          ...getOverlayEntranceStyle(14),
         }}
       >
         {displaySteps.slice(0, 3).map((step, index) => (
@@ -709,6 +835,7 @@ function WorkflowScene({ scene }) {
               padding: 24,
               background: "rgba(30,64,175,0.28)",
               border: "1px solid rgba(147,197,253,0.32)",
+              ...getStepRevealStyle(index, 18),
             }}
           >
             <div
@@ -744,7 +871,7 @@ function WorkflowScene({ scene }) {
 
 function WarningCalloutScene({ scene }) {
   return (
-    <Shell>
+    <Shell scene={scene}>
       <Header scene={scene} label="Common Mistake" />
       {scene.pageImagePath ? <PageImagePanel scene={scene} dim /> : null}
       <FloatingTeachingCard
@@ -762,7 +889,7 @@ function WarningCalloutScene({ scene }) {
 
 function DebuggingFocusScene({ scene }) {
   return (
-    <Shell>
+    <Shell scene={scene}>
       <Header scene={scene} label="Debugging Focus" />
       {scene.pageImagePath ? <PageImagePanel scene={scene} dim /> : null}
       <FloatingTeachingCard
@@ -780,7 +907,7 @@ function DebuggingFocusScene({ scene }) {
 
 function RecapSummaryScene({ scene }) {
   return (
-    <Shell>
+    <Shell scene={scene}>
       <Header scene={scene} label="Key Takeaways" />
 
       <div
@@ -794,6 +921,7 @@ function RecapSummaryScene({ scene }) {
           background: "rgba(15,23,42,0.86)",
           border: "1px solid rgba(148,163,184,0.28)",
           boxShadow: "0 34px 120px rgba(0,0,0,0.55)",
+          zIndex: 10,
           ...getOverlayEntranceStyle(8),
         }}
       >
@@ -833,87 +961,85 @@ function TeachingCardScene({ scene }) {
     scene.visualIntent?.mode === "speaker_question";
 
   return (
-    <AbsoluteFill
-      style={{
-        background:
-          "radial-gradient(circle at top left, rgba(37,99,235,0.35), transparent 34%), radial-gradient(circle at bottom right, rgba(20,184,166,0.16), transparent 30%), linear-gradient(135deg, #020617 0%, #07111f 50%, #000 100%)",
-        color: "white",
-        fontFamily:
-          "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
-        padding: 72,
-        justifyContent: "center",
-      }}
-    >
+    <Shell scene={scene}>
       <div
         style={{
           maxWidth: 1360,
           margin: "0 auto",
           width: "100%",
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
           ...getOverlayEntranceStyle(6),
         }}
       >
-        <div
-          style={{
-            fontSize: 18,
-            color: "#60a5fa",
-            letterSpacing: 1.4,
-            textTransform: "uppercase",
-            fontWeight: 800,
-            marginBottom: 16,
-          }}
-        >
-          Notebook · Section {scene.sectionNumber}
-        </div>
-
-        <div
-          style={{
-            borderRadius: 36,
-            padding: 54,
-            background: isQuestion
-              ? "rgba(13, 148, 136, 0.16)"
-              : "rgba(15, 23, 42, 0.84)",
-            border: isQuestion
-              ? "1px solid rgba(45, 212, 191, 0.36)"
-              : "1px solid rgba(148, 163, 184, 0.26)",
-            boxShadow: "0 34px 120px rgba(0,0,0,0.52)",
-          }}
-        >
-          <SpeakerBadge speaker={scene.speaker} />
-
+        <div style={{ width: "100%" }}>
           <div
             style={{
-              marginTop: 34,
-              fontSize: 64,
-              fontWeight: 950,
-              lineHeight: 1.02,
-              letterSpacing: -1.8,
-              color: "#f8fafc",
-              maxWidth: 1180,
+              fontSize: 18,
+              color: "#60a5fa",
+              letterSpacing: 1.4,
+              textTransform: "uppercase",
+              fontWeight: 800,
+              marginBottom: 16,
             }}
           >
-            {getSceneTitle(scene)}
+            Notebook · Section {scene.sectionNumber}
           </div>
 
           <div
             style={{
-              marginTop: 34,
-              fontSize: 42,
-              lineHeight: 1.22,
-              fontWeight: 750,
-              color: isQuestion ? "#ccfbf1" : "#dbeafe",
-              maxWidth: 1180,
+              borderRadius: 36,
+              padding: 54,
+              background: isQuestion
+                ? "rgba(13, 148, 136, 0.16)"
+                : "rgba(15, 23, 42, 0.84)",
+              border: isQuestion
+                ? "1px solid rgba(45, 212, 191, 0.36)"
+                : "1px solid rgba(148, 163, 184, 0.26)",
+              boxShadow: "0 34px 120px rgba(0,0,0,0.52)",
             }}
           >
-            {scene.caption}
+            <SpeakerBadge speaker={scene.speaker} />
+
+            <div
+              style={{
+                marginTop: 34,
+                fontSize: 64,
+                fontWeight: 950,
+                lineHeight: 1.02,
+                letterSpacing: -1.8,
+                color: "#f8fafc",
+                maxWidth: 1180,
+              }}
+            >
+              {getSceneTitle(scene)}
+            </div>
+
+            <div
+              style={{
+                marginTop: 34,
+                fontSize: 42,
+                lineHeight: 1.22,
+                fontWeight: 750,
+                color: isQuestion ? "#ccfbf1" : "#dbeafe",
+                maxWidth: 1180,
+              }}
+            >
+              {scene.caption}
+            </div>
           </div>
         </div>
       </div>
-    </AbsoluteFill>
+    </Shell>
   );
 }
 
 function SceneCard({ scene }) {
   switch (scene.visualType) {
+    case "focus_guided_document_scene":
+      return <PagePreviewScene scene={scene} />;
+
     case "command_reference_scene":
       return <CommandScene scene={scene} />;
 
@@ -988,6 +1114,7 @@ function CinematicScene({ scene, durationFrames }) {
         background: "#020617",
         opacity: entranceStyle.opacity,
         transform: entranceStyle.transform,
+        overflow: "hidden",
       }}
     >
       <SceneCard scene={scene} />
@@ -997,28 +1124,16 @@ function CinematicScene({ scene, durationFrames }) {
 
 function NotebookVideo({ renderPlan }) {
   return (
-    <AbsoluteFill>
+    <AbsoluteFill style={{ background: "#020617" }}>
       {renderPlan.scenes.map((scene) => {
-        const durationFrames = msToFrames(
-          scene.durationMs || scene.estimatedDurationMs || 4000
-        );
-
+        const durationFrames = msToFrames(scene.durationMs || scene.estimatedDurationMs || 4000);
         const from = msToFrames(scene.startMs || 0);
 
         return (
-          <Sequence
-            key={scene.sectionNumber}
-            from={from}
-            durationInFrames={durationFrames}
-          >
-            <CinematicScene
-              scene={scene}
-              durationFrames={durationFrames}
-            />
+          <Sequence key={scene.sectionNumber} from={from} durationInFrames={durationFrames}>
+            <CinematicScene scene={scene} durationFrames={durationFrames} />
 
-            {scene.audioPath ? (
-              <Audio src={staticFile(scene.audioPath)} />
-            ) : null}
+            {scene.audioPath ? <Audio src={staticFile(scene.audioPath)} /> : null}
           </Sequence>
         );
       })}

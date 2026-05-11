@@ -1,23 +1,18 @@
 // notebook/worker/services/lessonGraphBuilder.js
 
 /**
- * Phase 8C.1B — Runtime Compression + Anti-Repetition
+ * Phase 8C.3A / 8C.3D — Focus-Guided + Adaptive Pedagogy Infrastructure
  *
  * Goal:
- * - Stop small cheat sheets from becoming long AI lectures.
- * - Keep walkthroughs dense, operational, and useful.
- * - Prevent every command/subconcept from becoming its own mini-documentary.
- *
- * Borrowed idea:
- * - Motion Canvas discipline: every scene must justify its timeline.
- *
- * Cachey adaptation:
- * - Compact cheat-sheet mode.
- * - Hard scene/runtime caps for small docs.
- * - Command grouping by operational category.
- * - Shorter target durations.
- * - Less mentor/meta narration.
+ * - Stop repeated same-page scenes from feeling visually identical.
+ * - Make each teaching unit carry a clear focus/camera intent.
+ * - Keep PDF/page content as the primary visual actor.
+ * - Reduce overlay dominance by giving renderPlan/Root enough intent.
+ * - Introduce adaptive pedagogy so different document types are not taught the same way.
  */
+
+const { buildPedagogyProfile } = require("./pedagogyProfileBuilder");
+const { buildSourceGrounding } = require("./sourceGroundingBuilder");
 
 function safeString(value) {
   return String(value || "").trim();
@@ -160,12 +155,7 @@ function getCommandDetails(subConcept) {
         });
       } else if (item && typeof item === "object") {
         commandDetails.push({
-          command: safeString(
-            item.command ||
-            item.name ||
-            item.text ||
-            ""
-          ),
+          command: safeString(item.command || item.name || item.text || ""),
           meaning: safeString(item.meaning),
           whenToUse: safeString(item.whenToUse),
           debuggingSignal: safeString(item.debuggingSignal),
@@ -185,12 +175,7 @@ function getCommandDetails(subConcept) {
         });
       } else if (item && typeof item === "object") {
         commandDetails.push({
-          command: safeString(
-            item.command ||
-            item.name ||
-            item.text ||
-            ""
-          ),
+          command: safeString(item.command || item.name || item.text || ""),
           meaning: safeString(item.meaning),
           whenToUse: safeString(item.whenToUse),
           debuggingSignal: safeString(item.debuggingSignal),
@@ -207,12 +192,6 @@ function getCommandDetails(subConcept) {
     seen.add(key);
     return true;
   });
-}
-
-function getCommands(subConcept) {
-  return getCommandDetails(subConcept).map(
-    (item) => item.command
-  );
 }
 
 function getSourcePagesFromObject(value) {
@@ -275,6 +254,12 @@ function markCoveredConcept({ title, commands, coveredConcepts }) {
   }
 }
 
+/**
+ * Temporary domain fallback.
+ * BUG-35 note:
+ * This should only remain as a fallback for compact command-reference docs.
+ * It should not be the default topic brain for every PDF.
+ */
 function getCommandCategory(value) {
   const text = safeLower(value);
 
@@ -370,12 +355,141 @@ function getCommandCategory(value) {
   };
 }
 
+function getFocusRegionForCategory(categoryKey) {
+  const regions = {
+    cluster_context: {
+      type: "semantic_band",
+      confidence: "low",
+      label: "Cluster and context area",
+      x: 0.06,
+      y: 0.08,
+      width: 0.88,
+      height: 0.22,
+    },
+    pods_status: {
+      type: "semantic_band",
+      confidence: "low",
+      label: "Pods and runtime status area",
+      x: 0.06,
+      y: 0.18,
+      width: 0.88,
+      height: 0.34,
+    },
+    services_networking: {
+      type: "semantic_band",
+      confidence: "low",
+      label: "Services and connectivity area",
+      x: 0.06,
+      y: 0.34,
+      width: 0.88,
+      height: 0.30,
+    },
+    labels_selectors: {
+      type: "semantic_band",
+      confidence: "low",
+      label: "Labels and selectors area",
+      x: 0.06,
+      y: 0.50,
+      width: 0.88,
+      height: 0.28,
+    },
+    yaml_workflow: {
+      type: "semantic_band",
+      confidence: "low",
+      label: "YAML and change workflow area",
+      x: 0.06,
+      y: 0.60,
+      width: 0.88,
+      height: 0.32,
+    },
+    debugging_flow: {
+      type: "semantic_band",
+      confidence: "low",
+      label: "Debugging flow area",
+      x: 0.06,
+      y: 0.72,
+      width: 0.88,
+      height: 0.24,
+    },
+  };
+
+  return regions[categoryKey] || {
+    type: "semantic_band",
+    confidence: "low",
+    label: "Relevant document area",
+    x: 0.06,
+    y: 0.16,
+    width: 0.88,
+    height: 0.68,
+  };
+}
+
+function getCameraIntentForCategory(categoryKey) {
+  if (categoryKey === "cluster_context") return "zoom_top_section";
+  if (categoryKey === "pods_status") return "zoom_upper_middle_section";
+  if (categoryKey === "services_networking") return "zoom_middle_section";
+  if (categoryKey === "labels_selectors") return "zoom_lower_middle_section";
+  if (categoryKey === "yaml_workflow") return "zoom_lower_section";
+  if (categoryKey === "debugging_flow") return "zoom_bottom_section";
+  return "guided_document_focus";
+}
+
+function getOverlayModeForPresentationStyle(presentationStyle) {
+  if (presentationStyle === "command_reference_dominant") return "minimal_command_callout";
+  if (presentationStyle === "operational_signal_overlay") return "small_signal_callout";
+  if (presentationStyle === "workflow_context_card") return "compact_workflow_steps";
+  if (presentationStyle === "document_reference_dominant") return "document_first_minimal_caption";
+  if (presentationStyle === "recap_summary_card") return "summary_card";
+  return "minimal_context_callout";
+}
+
+function buildFocusHint({
+  title,
+  summary,
+  commands,
+  metadata = {},
+  presentationStyle,
+  sourcePages,
+}) {
+  const text = [
+    title,
+    summary,
+    ...(commands || []),
+    metadata.categoryKey,
+  ].join(" ");
+
+  const category = metadata.categoryKey
+    ? { key: metadata.categoryKey, title }
+    : getCommandCategory(text);
+
+  const hasCommands = Array.isArray(commands) && commands.length > 0;
+  const focusRegion = getFocusRegionForCategory(category.key);
+
+  return {
+    version: "focus-hint-v1",
+    source: "lessonGraphBuilder",
+    borrowedIdea: "tldraw_zoom_to_bounds_motion_canvas_visual_beat",
+    target: category.key || slugify(title),
+    label: category.title || title,
+    strategy: hasCommands ? "zoom_to_command_group" : "zoom_to_document_region",
+    cameraIntent: getCameraIntentForCategory(category.key),
+    overlayMode: getOverlayModeForPresentationStyle(presentationStyle),
+    overlayPriority: hasCommands ? "supporting" : "minimal",
+    keepDocumentPrimary: true,
+    reduceOverlayDominance: true,
+    avoidFullSceneReset: true,
+    sourcePages,
+    focusRegion,
+  };
+}
+
 function getCompactNarrationGoals({ hasCommands }) {
   if (hasCommands) {
     return [
       "explain the practical use in one or two sentences",
       "group related commands instead of explaining each command line by line",
       "state the production/debugging signal only if it adds new value",
+      "do not repeat visible command text unless necessary",
     ];
   }
 
@@ -419,6 +533,10 @@ function getDefaultAvoidNarration(documentIntelligence) {
     "filler narration",
     "meta-teaching phrases like do not memorize this",
     "generic phrases like operational guide or useful move unless they add new information",
+    "repeating possible issue in every section",
+    "turning every section into the same problem-solution template",
+    "inventing headings that are not grounded in the uploaded document",
+    "forcing Kubernetes-specific categories onto unrelated documents",
   ];
 
   if (Array.isArray(grammar.avoid) && grammar.avoid.length > 0) {
@@ -436,8 +554,8 @@ function getPreferredVisuals(documentIntelligence, hasCommands) {
   }
 
   return hasCommands
-    ? ["command_focus", "grouped_reference_card"]
-    : ["topic_card", "page_focus"];
+    ? ["document_focus", "command_focus", "minimal_callout"]
+    : ["page_focus", "topic_card"];
 }
 
 function getPresentationStyle({ documentIntelligence, hasCommands, unitIndex = 0 }) {
@@ -445,8 +563,10 @@ function getPresentationStyle({ documentIntelligence, hasCommands, unitIndex = 0
 
   if (primaryType === "cheat_sheet") {
     const commandStyles = [
+      "document_reference_dominant",
       "command_reference_dominant",
       "operational_signal_overlay",
+      "document_reference_dominant",
       "workflow_context_card",
       "document_reference_dominant",
     ];
@@ -456,6 +576,7 @@ function getPresentationStyle({ documentIntelligence, hasCommands, unitIndex = 0
 
   if (hasCommands) {
     const commandStyles = [
+      "document_reference_dominant",
       "command_reference_dominant",
       "operational_signal_overlay",
       "workflow_context_card",
@@ -491,7 +612,7 @@ function getPresentationStyle({ documentIntelligence, hasCommands, unitIndex = 0
 
 function getSceneIntent({ documentIntelligence, hasCommands }) {
   if (isCheatSheet(documentIntelligence) && hasCommands) {
-    return "group_commands_explain_only_high_value_context";
+    return "guide_attention_to_command_group_without_replacing_page";
   }
 
   return hasCommands
@@ -583,6 +704,8 @@ function buildIntroUnit({ documentIntelligence, pageCount }) {
   const primaryType = documentIntelligence?.primaryType || "technical_document";
   const grammar = documentIntelligence?.presentationGrammar || {};
   const compactCheatSheet = isCompactCheatSheet(documentIntelligence, pageCount);
+  const presentationStyle = "document_reference_dominant";
+  const sourcePages = getFallbackSourcePages({ documentIntelligence, pageCount });
 
   return {
     id: "intro_purpose",
@@ -606,10 +729,18 @@ function buildIntroUnit({ documentIntelligence, pageCount }) {
           "avoid over-explaining obvious visible text",
         ],
     avoidNarration: getDefaultAvoidNarration(documentIntelligence),
-    preferredVisuals: grammar.preferredVisuals || ["topic_card"],
-    presentationStyle: "document_reference_dominant",
+    preferredVisuals: grammar.preferredVisuals || ["page_focus", "minimal_callout"],
+    presentationStyle,
     sceneIntent: "set_context_without_reading_document",
-    sourcePages: [],
+    sourcePages,
+    focusHint: buildFocusHint({
+      title: "Document overview",
+      summary: "Orient the viewer to the page before focusing on details.",
+      commands: [],
+      metadata: { categoryKey: "reference_commands" },
+      presentationStyle,
+      sourcePages,
+    }),
     metadata: {
       primaryType,
       role: "intro",
@@ -621,6 +752,8 @@ function buildIntroUnit({ documentIntelligence, pageCount }) {
 function buildRecapUnit({ documentIntelligence, pageCount }) {
   const grammar = documentIntelligence?.presentationGrammar || {};
   const compactCheatSheet = isCompactCheatSheet(documentIntelligence, pageCount);
+  const presentationStyle = "recap_summary_card";
+  const sourcePages = getFallbackSourcePages({ documentIntelligence, pageCount });
 
   return {
     id: "recap_key_takeaways",
@@ -643,9 +776,17 @@ function buildRecapUnit({ documentIntelligence, pageCount }) {
         ],
     avoidNarration: getDefaultAvoidNarration(documentIntelligence),
     preferredVisuals: grammar.preferredVisuals || ["summary_card"],
-    presentationStyle: "recap_summary_card",
+    presentationStyle,
     sceneIntent: "summarize_without_repeating_full_lesson",
-    sourcePages: [],
+    sourcePages,
+    focusHint: buildFocusHint({
+      title: "Recap",
+      summary: "Zoom back out and summarize the lesson.",
+      commands: [],
+      metadata: { categoryKey: "reference_commands" },
+      presentationStyle,
+      sourcePages,
+    }),
     metadata: {
       role: "recap",
       compactCheatSheet,
@@ -667,6 +808,11 @@ function makeTeachingUnit({
   metadata = {},
 }) {
   const hasCommands = commands.length > 0;
+  const presentationStyle = getPresentationStyle({
+    documentIntelligence,
+    hasCommands,
+    unitIndex,
+  });
 
   return {
     id: `unit_${slugify(topicTitle)}_${slugify(title) || unitIndex}`,
@@ -683,13 +829,19 @@ function makeTeachingUnit({
     }),
     avoidNarration: getDefaultAvoidNarration(documentIntelligence),
     preferredVisuals: getPreferredVisuals(documentIntelligence, hasCommands),
-    presentationStyle: getPresentationStyle({
-      documentIntelligence,
-      hasCommands,
-      unitIndex,
-    }),
+    presentationStyle,
     sceneIntent: getSceneIntent({ documentIntelligence, hasCommands }),
     sourcePages,
+    focusHint: buildFocusHint({
+      title,
+      summary,
+      commands,
+      commandDetails,
+      sourcePages,
+      unitIndex,
+      metadata,
+      presentationStyle,
+    }),
     metadata: {
       topicTitle,
       summary,
@@ -841,10 +993,10 @@ function buildCompactCheatSheetUnits({
   const groupedUnits = Array.from(grouped.values())
     .sort((a, b) => a.category.rank - b.category.rank)
     .map((bucket, index) => {
-      const commands = uniq(bucket.commands).slice(0, 5);
+      const commands = uniq(bucket.commands).slice(0, 4);
       const commandDetails = bucket.commandDetails
         .filter((item) => commands.includes(item.command))
-        .slice(0, 5);
+        .slice(0, 4);
 
       return makeTeachingUnit({
         documentIntelligence,
@@ -964,9 +1116,17 @@ function allocateRuntime({ units, documentIntelligence, pageCount }) {
 function buildLessonGraph({
   documentIntelligence = {},
   conceptsData = {},
+  extractedData = {},
   diagramAnalysis = {},
 } = {}) {
   const pageCount = getPageCount(diagramAnalysis);
+
+  const pedagogyProfile = buildPedagogyProfile({
+    documentIntelligence,
+    conceptsData,
+    diagramAnalysis,
+  });
+
   const compactCheatSheet = isCompactCheatSheet(documentIntelligence, pageCount);
   const effectiveRuntimeBudgetMinutes = getEffectiveRuntimeBudgetMinutes(
     documentIntelligence,
@@ -991,27 +1151,49 @@ function buildLessonGraph({
     ...(includeRecap ? [buildRecapUnit({ documentIntelligence, pageCount })] : []),
   ];
 
-  const teachingUnits = allocateRuntime({
+  const runtimeAllocatedUnits = allocateRuntime({
     units: orderedUnits,
     documentIntelligence,
     pageCount,
-  });
+    });
+
+    const sourceGrounding = buildSourceGrounding({
+    teachingUnits: runtimeAllocatedUnits,
+    extractedData,
+    diagramAnalysis,
+    pageImageCount: pageCount,
+    });
+
+    const teachingUnits = sourceGrounding.teachingUnits;
 
   return {
-    version: "lesson-graph-v2-compact-runtime",
+    version: "lesson-graph-v3-focus-guided",
     documentType: documentIntelligence?.primaryType || "unknown",
     secondaryTypes: documentIntelligence?.secondaryTypes || [],
     teachingStrategy:
       compactCheatSheet
-        ? "compact_high_density_operational_walkthrough"
+        ? "compact_high_density_operational_focus_walkthrough"
         : documentIntelligence?.teachingStrategy || "technical_walkthrough",
     presentationGrammar: documentIntelligence?.presentationGrammar || {},
+    pedagogyProfile,
     runtimeBudgetMinutes: effectiveRuntimeBudgetMinutes,
     requestedRuntimeBudgetMinutes: documentIntelligence?.runtimeBudgetMinutes || null,
     maxRuntimeMinutes: documentIntelligence?.maxRuntimeMinutes,
     targetSceneCount: documentIntelligence?.targetSceneCount,
     pageCount,
     compactCheatSheet,
+    sourceGrounding: {
+    version: sourceGrounding.version,
+    groundedUnitCount: sourceGrounding.groundedUnitCount,
+    pageTextCount: sourceGrounding.pageTextCount,
+    },
+    focusGuidance: {
+      version: "focus-guidance-v1",
+      borrowedIdeas: ["tldraw_zoom_to_bounds", "motion_canvas_visual_beats"],
+      rule: "Scenes should represent a new focus, not just a new card.",
+      keepDocumentPrimary: true,
+      reduceOverlayDominance: true,
+    },
     teachingUnits,
     stats: {
       teachingUnitCount: teachingUnits.length,
@@ -1027,6 +1209,7 @@ function buildLessonGraph({
           )
         : 0,
       compactRuntimeCompressionApplied: compactCheatSheet,
+      focusGuidanceApplied: true,
     },
   };
 }
