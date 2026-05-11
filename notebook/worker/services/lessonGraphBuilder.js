@@ -13,6 +13,7 @@
 
 const { buildPedagogyProfile } = require("./pedagogyProfileBuilder");
 const { buildSourceGrounding } = require("./sourceGroundingBuilder");
+const { buildDocumentStructure } = require("./documentStructureBuilder");
 
 function safeString(value) {
   return String(value || "").trim();
@@ -47,6 +48,135 @@ function getPrimaryTopics(conceptsData) {
   return Array.isArray(conceptsData?.primaryTopics)
     ? conceptsData.primaryTopics
     : [];
+}
+
+function getDocumentSections({
+  extractedData,
+  documentIntelligence,
+}) {
+  const structure = buildDocumentStructure({
+    extractedData,
+    documentIntelligence,
+  });
+
+  return Array.isArray(structure?.sections)
+    ? structure.sections
+    : [];
+}
+
+function normalizeSectionKey(value) {
+  return safeLower(value)
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function findBestSectionForUnit(unit, sections = []) {
+  if (!sections.length) return null;
+
+  const unitTerms = [
+    unit.title,
+    unit.metadata?.summary,
+    ...(unit.visibleElements || []),
+  ]
+    .map((value) => normalizeSectionKey(value))
+    .filter(Boolean);
+
+  let bestSection = null;
+  let bestScore = 0;
+
+  for (const section of sections) {
+    // ---------------------------------------------------
+    // Ignore tiny/noisy sections
+    // ---------------------------------------------------
+
+    if (
+      section.childCount <= 0 ||
+      section.title.length < 3
+    ) {
+      continue;
+    }
+
+    // ---------------------------------------------------
+    // Penalize command-heavy pseudo-sections
+    // ---------------------------------------------------
+
+    const commandDensity =
+      (section.commandCount || 0) /
+      Math.max(1, section.childCount);
+
+    const looksLikeCommandHeading =
+      /^\d+\s+(kubectl|minikube|docker|helm|terraform)/i.test(
+        section.title
+      );
+
+    if (looksLikeCommandHeading) {
+      continue;
+    }
+
+    let score = 0;
+
+    const sectionTitle = normalizeSectionKey(section.title);
+    const sectionText = normalizeSectionKey(
+      section.textPreview || ""
+    );
+
+    for (const term of unitTerms) {
+      if (!term) continue;
+
+      // ---------------------------------------------
+      // Strong preference for semantic title matches
+      // ---------------------------------------------
+
+      if (sectionTitle.includes(term)) {
+        score += 20;
+      }
+
+      // ---------------------------------------------
+      // Moderate body match
+      // ---------------------------------------------
+
+      else if (sectionText.includes(term)) {
+        score += 6;
+      }
+
+      const words = term.split(/\s+/).filter(Boolean);
+
+      for (const word of words) {
+        if (word.length < 4) continue;
+
+        if (sectionTitle.includes(word)) {
+          score += 5;
+        } else if (sectionText.includes(word)) {
+          score += 1;
+        }
+      }
+    }
+
+    // ---------------------------------------------------
+    // Prefer semantically meaningful sections
+    // ---------------------------------------------------
+
+    if (
+      /(pods|services|workflow|debugging|labels|selectors|golden rules|cluster|context)/i.test(
+        section.title
+      )
+    ) {
+      score += 8;
+    }
+
+    // ---------------------------------------------------
+    // Penalize noisy command-dense sections
+    // ---------------------------------------------------
+
+    score -= commandDensity * 10;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestSection = section;
+    }
+  }
+
+  return bestSection;
 }
 
 function getPageCount(diagramAnalysis) {
@@ -459,8 +589,11 @@ function buildFocusHint({
   ].join(" ");
 
   const category = metadata.categoryKey
-    ? { key: metadata.categoryKey, title }
-    : getCommandCategory(text);
+  ? { key: metadata.categoryKey, title }
+  : {
+      key: metadata.semanticRole || slugify(title) || "document_section",
+      title: metadata.sourceHeading || title,
+    };
 
   const hasCommands = Array.isArray(commands) && commands.length > 0;
   const focusRegion = getFocusRegionForCategory(category.key);
@@ -469,8 +602,10 @@ function buildFocusHint({
     version: "focus-hint-v1",
     source: "lessonGraphBuilder",
     borrowedIdea: "tldraw_zoom_to_bounds_motion_canvas_visual_beat",
-    target: category.key || slugify(title),
-    label: category.title || title,
+    target: metadata.sourceHeading
+        ? slugify(metadata.sourceHeading)
+        : category.key || slugify(title),
+    label: metadata.sourceHeading || title || category.title,
     strategy: hasCommands ? "zoom_to_command_group" : "zoom_to_document_region",
     cameraIntent: getCameraIntentForCategory(category.key),
     overlayMode: getOverlayModeForPresentationStyle(presentationStyle),
@@ -948,33 +1083,117 @@ function buildCompactCheatSheetUnits({
   conceptsData,
   diagramAnalysis,
   documentIntelligence,
+  extractedData,
 }) {
-  const rawUnits = collectRawConceptUnits({
-    conceptsData,
-    diagramAnalysis,
-    documentIntelligence,
-  });
-
   const pageCount = getPageCount(diagramAnalysis);
   const fallbackSourcePages = getFallbackSourcePages({
     documentIntelligence,
     pageCount,
   });
 
+  const documentStructure = buildDocumentStructure({
+    extractedData,
+    documentIntelligence,
+  });
+
+  const sections = Array.isArray(documentStructure?.sections)
+    ? documentStructure.sections
+    : [];
+
+  const structuredSections = sections.filter((section) => {
+    const title = safeString(section.title);
+    if (!title) return false;
+    if (title === "Document overview") return false;
+    if (/^\d+\s+(kubectl|minikube|docker|helm|terraform|aws|gcloud|az)\b/i.test(title)) {
+      return false;
+    }
+
+    const hasUsefulContent =
+      Number(section.commandCount || 0) > 0 ||
+      Number(section.childCount || 0) > 0 ||
+      safeString(section.textPreview);
+
+    return hasUsefulContent;
+  });
+
+  if (structuredSections.length > 0) {
+    const maxUnits = getMaxTeachingUnits(documentIntelligence, pageCount);
+
+    return structuredSections
+      .slice(0, maxUnits)
+      .map((section, index) => {
+        const commandElements = Array.isArray(section.elements)
+          ? section.elements.filter((element) => {
+              return (
+                element.type === "code_or_command" ||
+                /kubectl|minikube|docker|helm|terraform|aws|gcloud|az/i.test(
+                  safeString(element.text)
+                )
+              );
+            })
+          : [];
+
+        const commands = uniq(
+          commandElements
+            .map((element) => safeString(element.text))
+            .filter(Boolean)
+        ).slice(0, 4);
+
+        const commandDetails = commands.map((command) => ({
+          command,
+          meaning: "",
+          whenToUse: "",
+          debuggingSignal: "",
+        }));
+
+        return makeTeachingUnit({
+          documentIntelligence,
+          topicTitle: section.title,
+          title: section.title,
+          summary: safeString(section.textPreview),
+          commands,
+          commandDetails,
+          sourcePages:
+            Array.isArray(section.sourcePages) && section.sourcePages.length > 0
+              ? section.sourcePages
+              : fallbackSourcePages,
+          unitIndex: index,
+          importance: 0.95 - index * 0.04,
+          runtimeWeight: index <= 2 ? 0.75 : 0.55,
+          metadata: {
+            compactGrouped: true,
+            structureFirst: true,
+            semanticRole: section.role || "reference",
+            sourceHeading: section.title,
+            usedFallbackCategory: false,
+            fallbackCategoryKey: null,
+            sectionElementTypes: section.elementTypes || [],
+            sectionCommandCount: section.commandCount || 0,
+            sectionChildCount: section.childCount || 0,
+          },
+        });
+      });
+  }
+
+  // Fallback path only if document structure extraction fails.
+  const rawUnits = collectRawConceptUnits({
+    conceptsData,
+    diagramAnalysis,
+    documentIntelligence,
+  });
+
   const grouped = new Map();
 
   for (const unit of rawUnits) {
-    const allCommandText = [
+    const fallbackCategory = getCommandCategory([
       unit.title,
       unit.metadata?.summary,
       ...(unit.visibleElements || []),
-    ].join(" ");
+    ].join(" "));
 
-    const category = getCommandCategory(allCommandText);
-
-    if (!grouped.has(category.key)) {
-      grouped.set(category.key, {
-        category,
+    if (!grouped.has(fallbackCategory.key)) {
+      grouped.set(fallbackCategory.key, {
+        category: fallbackCategory,
         commands: [],
         commandDetails: [],
         sourcePages: [],
@@ -982,7 +1201,7 @@ function buildCompactCheatSheetUnits({
       });
     }
 
-    const bucket = grouped.get(category.key);
+    const bucket = grouped.get(fallbackCategory.key);
 
     bucket.commands.push(...(unit.visibleElements || []));
     bucket.commandDetails.push(...(unit.metadata?.commandDetails || []));
@@ -998,6 +1217,10 @@ function buildCompactCheatSheetUnits({
         .filter((item) => commands.includes(item.command))
         .slice(0, 4);
 
+      const sourcePages = uniq(bucket.sourcePages.map(String))
+        .map(Number)
+        .filter(Boolean);
+
       return makeTeachingUnit({
         documentIntelligence,
         topicTitle: bucket.category.title,
@@ -1005,16 +1228,17 @@ function buildCompactCheatSheetUnits({
         summary: bucket.category.summary,
         commands,
         commandDetails,
-        sourcePages: uniq(bucket.sourcePages.map(String)).map(Number).filter(Boolean).length
-          ? uniq(bucket.sourcePages.map(String)).map(Number).filter(Boolean)
-          : fallbackSourcePages,
+        sourcePages: sourcePages.length ? sourcePages : fallbackSourcePages,
         unitIndex: index,
         importance: 0.95 - index * 0.04,
         runtimeWeight: index <= 2 ? 0.75 : 0.55,
         metadata: {
           compactGrouped: true,
-          categoryKey: bucket.category.key,
+          structureFirst: false,
+          semanticRole: "reference",
           groupedFrom: uniq(bucket.sourceTitles).slice(0, 6),
+          usedFallbackCategory: true,
+          fallbackCategoryKey: bucket.category.key,
         },
       });
     })
@@ -1031,6 +1255,7 @@ function buildTeachingUnitsFromConcepts({
   conceptsData,
   diagramAnalysis,
   documentIntelligence,
+  extractedData,
 }) {
   const pageCount = getPageCount(diagramAnalysis);
 
@@ -1039,6 +1264,7 @@ function buildTeachingUnitsFromConcepts({
       conceptsData,
       diagramAnalysis,
       documentIntelligence,
+      extractedData,
     });
   }
 
@@ -1095,7 +1321,10 @@ function allocateRuntime({ units, documentIntelligence, pageCount }) {
       maxSceneSec = compactCheatSheet ? 12 : 18;
     }
 
-    const grammarMax = Number(documentIntelligence?.presentationGrammar?.maxSceneDurationSec || 0);
+    const grammarMax = Number(
+      documentIntelligence?.presentationGrammar?.maxSceneDurationSec || 0
+    );
+
     if (grammarMax > 0) {
       maxSceneSec = Math.min(maxSceneSec, grammarMax);
     }
@@ -1133,10 +1362,16 @@ function buildLessonGraph({
     pageCount
   );
 
+  const documentStructure = buildDocumentStructure({
+    extractedData,
+    documentIntelligence,
+  });
+
   const coreUnits = buildTeachingUnitsFromConcepts({
     conceptsData,
     diagramAnalysis,
     documentIntelligence,
+    extractedData,
   });
 
   const includeIntro = true;
@@ -1155,19 +1390,19 @@ function buildLessonGraph({
     units: orderedUnits,
     documentIntelligence,
     pageCount,
-    });
+  });
 
-    const sourceGrounding = buildSourceGrounding({
+  const sourceGrounding = buildSourceGrounding({
     teachingUnits: runtimeAllocatedUnits,
     extractedData,
     diagramAnalysis,
     pageImageCount: pageCount,
-    });
+  });
 
-    const teachingUnits = sourceGrounding.teachingUnits;
+  const teachingUnits = sourceGrounding.teachingUnits;
 
   return {
-    version: "lesson-graph-v3-focus-guided",
+    version: "lesson-graph-v4-document-structured",
     documentType: documentIntelligence?.primaryType || "unknown",
     secondaryTypes: documentIntelligence?.secondaryTypes || [],
     teachingStrategy:
@@ -1176,6 +1411,13 @@ function buildLessonGraph({
         : documentIntelligence?.teachingStrategy || "technical_walkthrough",
     presentationGrammar: documentIntelligence?.presentationGrammar || {},
     pedagogyProfile,
+    documentStructure: {
+      version: documentStructure.version,
+      sectionCount: documentStructure.sectionCount,
+      elementCount: documentStructure.elementCount,
+      stats: documentStructure.stats,
+      borrowedIdeas: documentStructure.borrowedIdeas,
+    },
     runtimeBudgetMinutes: effectiveRuntimeBudgetMinutes,
     requestedRuntimeBudgetMinutes: documentIntelligence?.runtimeBudgetMinutes || null,
     maxRuntimeMinutes: documentIntelligence?.maxRuntimeMinutes,
@@ -1183,9 +1425,9 @@ function buildLessonGraph({
     pageCount,
     compactCheatSheet,
     sourceGrounding: {
-    version: sourceGrounding.version,
-    groundedUnitCount: sourceGrounding.groundedUnitCount,
-    pageTextCount: sourceGrounding.pageTextCount,
+      version: sourceGrounding.version,
+      groundedUnitCount: sourceGrounding.groundedUnitCount,
+      pageTextCount: sourceGrounding.pageTextCount,
     },
     focusGuidance: {
       version: "focus-guidance-v1",
@@ -1210,6 +1452,7 @@ function buildLessonGraph({
         : 0,
       compactRuntimeCompressionApplied: compactCheatSheet,
       focusGuidanceApplied: true,
+      documentStructureApplied: true,
     },
   };
 }

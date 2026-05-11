@@ -45,20 +45,6 @@ function stripTrailingPeriod(value) {
   return cleanText(value, 500).replace(/\.+$/g, "");
 }
 
-function formatWhenToUse(value, label) {
-  const text = stripTrailingPeriod(
-    lowerFirst(value).replace(/^to\s+/i, "")
-  );
-
-  if (!text) return "";
-
-  if (/^(before|after|when|while|during|if)\b/i.test(text)) {
-    return `You typically use ${label} ${text}.`;
-  }
-
-  return `You typically use ${label} to ${text}.`;
-}
-
 function buildShortCaption(value, maxLength = 110) {
   const text = cleanText(value, maxLength + 40);
   if (text.length <= maxLength) return text;
@@ -76,6 +62,7 @@ function buildVisualIntent({
   presentationStyle = null,
   sceneIntent = null,
   focusHint = null,
+  avoidNarration = [],
 }) {
   return {
     mode,
@@ -88,6 +75,7 @@ function buildVisualIntent({
     presentationStyle,
     sceneIntent,
     focusHint,
+    avoidNarration,
   };
 }
 
@@ -143,11 +131,8 @@ function normalizeDebuggingSignal(value) {
     .replace(/^missing\s+/i, "missing ")
     .trim();
 
-  if (!text) return "";
-
   return text;
 }
-
 
 function buildCommandAwareText(unit, documentIntelligence) {
   const title = cleanText(unit.title, 180);
@@ -161,35 +146,33 @@ function buildCommandAwareText(unit, documentIntelligence) {
 
   const operationalContext = highlightedCommands
     .map((commandDetail, index) => {
-        const parts = [];
+      const parts = [];
 
-        if (commandDetail.meaning) {
+      if (commandDetail.meaning) {
         parts.push(stripTrailingPeriod(commandDetail.meaning));
-        }
+      }
 
-        if (commandDetail.whenToUse) {
-        const usage = stripTrailingPeriod(
-            lowerFirst(commandDetail.whenToUse)
-        );
+      if (commandDetail.whenToUse) {
+        const usage = stripTrailingPeriod(lowerFirst(commandDetail.whenToUse));
 
         if (usage) {
-            parts.push(
+          parts.push(
             index === 0
-                ? `Usually used ${usage}`
-                : `Often helpful ${usage}`
-            );
+              ? `Usually used ${usage}`
+              : `Often helpful ${usage}`
+          );
         }
+      }
+
+      if (commandDetail.debuggingSignal) {
+        const signal = normalizeDebuggingSignal(commandDetail.debuggingSignal);
+
+        if (signal) {
+          parts.push(`Possible issue: ${signal}`);
         }
+      }
 
-        if (commandDetail.debuggingSignal) {
-            const signal = normalizeDebuggingSignal(commandDetail.debuggingSignal);
-
-            if (signal) {
-                parts.push(`Possible issue: ${signal}`);
-            }
-        }
-
-        return parts.join(". ");
+      return parts.join(". ");
     })
     .filter(Boolean)
     .join(". ");
@@ -304,17 +287,17 @@ function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntellige
     narrationGoals: unit.narrationGoals || [],
     avoidNarration: unit.avoidNarration || [],
     visualIntent: buildVisualIntent({
-    mode: visualMode,
-    page,
-    focus: unit.title,
-    command: visibleElements.join(" | "),
-    reference: unit?.metadata?.summary || null,
-    step: index + 1,
-    totalSteps: totalUnits,
-    presentationStyle: unit.presentationStyle || null,
-    sceneIntent: unit.sceneIntent || null,
-    focusHint: unit.focusHint || null,
-    avoidNarration: unit.avoidNarration || [],
+      mode: visualMode,
+      page,
+      focus: unit.title,
+      command: visibleElements.join(" | "),
+      reference: unit?.metadata?.summary || null,
+      step: index + 1,
+      totalSteps: totalUnits,
+      presentationStyle: unit.presentationStyle || null,
+      sceneIntent: unit.sceneIntent || null,
+      focusHint: unit.focusHint || null,
+      avoidNarration: unit.avoidNarration || [],
     }),
   };
 }
@@ -339,6 +322,7 @@ function buildRareLearnerCheckIn(documentIntelligence) {
 }
 
 function buildDialogue({
+  extractedData = {},
   extractedText,
   diagramAnalysis,
   conceptsData,
@@ -353,12 +337,12 @@ function buildDialogue({
   const lessonGraph =
     lessonPlan?.lessonGraph &&
     Array.isArray(lessonPlan.lessonGraph.teachingUnits)
-        ? lessonPlan.lessonGraph
-        : buildLessonGraph({
-            documentIntelligence,
-            conceptsData,
-            diagramAnalysis,
-            lessonPlan,
+      ? lessonPlan.lessonGraph
+      : buildLessonGraph({
+          documentIntelligence,
+          conceptsData,
+          extractedData,
+          diagramAnalysis,
         });
 
   console.log("[notebook] document intelligence", {
@@ -377,6 +361,8 @@ function buildDialogue({
     totalTargetDurationSec: lessonGraph.stats?.totalTargetDurationSec,
     compactRuntimeCompressionApplied:
       lessonGraph.stats?.compactRuntimeCompressionApplied,
+    documentStructureApplied:
+      lessonGraph.stats?.documentStructureApplied,
   });
 
   const teachingUnits = Array.isArray(lessonGraph.teachingUnits)
@@ -407,7 +393,7 @@ function buildDialogue({
       lessonGraph.compactCheatSheet
         ? "compact_instructor_led_operational_reference"
         : "instructor_led_lesson_graph_walkthrough",
-    version: "dialogue-v9-compact-runtime",
+    version: "dialogue-v10-document-structured",
     speakers:
       documentIntelligence.primaryType === "cheat_sheet"
         ? ["Senior Engineer"]
@@ -430,6 +416,7 @@ function buildDialogue({
     },
     sourceArtifacts: {
       usesExtractedText: true,
+      usesExtractedData: true,
       usesDiagramAnalysis: true,
       usesConcepts: true,
       usesPrimaryTopics: Array.isArray(conceptsData.primaryTopics),
@@ -443,6 +430,9 @@ function buildDialogue({
       usesLessonPlan: Array.isArray(lessonPlan.lessonStructure),
       usesDocumentIntelligence: true,
       usesLessonGraph: true,
+      usesDocumentStructure:
+        Boolean(lessonGraph.documentStructure) ||
+        Boolean(lessonGraph.stats?.documentStructureApplied),
     },
     teachingRules: {
       dialogueOwnsWordingOnly: true,
@@ -466,6 +456,7 @@ function buildDialogue({
       compactRuntimeCompressionApplied:
         lessonGraph.stats?.compactRuntimeCompressionApplied,
       avoidRepeatedMentorPhrases: true,
+      documentStructureGuidesTeachingUnits: true,
     },
     sections,
   };
@@ -488,6 +479,7 @@ function generateDialogue(jobDir) {
   });
 
   return buildDialogue({
+    extractedData,
     extractedText:
       extractedData.text ||
       extractedData.fullText ||
