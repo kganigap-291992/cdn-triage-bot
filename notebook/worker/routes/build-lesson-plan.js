@@ -4,6 +4,10 @@ const express = require("express");
 const path = require("path");
 
 const {
+  buildDocumentUnderstanding,
+} = require("../services/documentUnderstandingBuilder");
+
+const {
   generateLessonPlan,
   saveLessonPlan,
 } = require("../services/lessonPlanner");
@@ -26,6 +30,16 @@ router.post("/:jobId", async (req, res) => {
       jobId
     );
 
+    const documentUnderstanding = buildDocumentUnderstanding({
+      jobDir,
+    });
+
+    console.log("[document-understanding]", {
+      entities: documentUnderstanding.stats.entityCount,
+      relationships: documentUnderstanding.stats.relationshipCount,
+      sequences: documentUnderstanding.stats.sequenceCount,
+    });
+
     const lessonPlan = generateLessonPlan(jobDir);
 
     const outputPath = saveLessonPlan(
@@ -38,6 +52,11 @@ router.post("/:jobId", async (req, res) => {
       phase: "lesson-plan",
       version: lessonPlan.version,
       jobId,
+      documentUnderstanding: {
+        version: documentUnderstanding.version,
+        stats: documentUnderstanding.stats,
+        confidence: documentUnderstanding.confidence,
+      },
       sectionCount: lessonPlan.lessonStructure.length,
       conceptCount: lessonPlan.prioritizedConcepts.length,
       output: outputPath,
