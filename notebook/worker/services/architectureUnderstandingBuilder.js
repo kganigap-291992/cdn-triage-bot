@@ -523,8 +523,39 @@ function buildNarrationHints(relationships = []) {
   };
 }
 
-function buildArchitectureUnderstanding(documentUnderstanding = {}) {
+
+function collectSpatialRelationshipCandidates(spatialUnderstanding) {
+  if (!spatialUnderstanding || !Array.isArray(spatialUnderstanding.pages)) {
+    return [];
+  }
+
+  return spatialUnderstanding.pages.flatMap((page) => {
+    return (page.relationships || []).map((relationship) => ({
+      id: relationship.id,
+      page: relationship.page,
+      regionId: relationship.regionId,
+      connectorId: relationship.connectorId,
+      type: relationship.type,
+      source: relationship.source,
+      confidence: relationship.confidence,
+      signalCount: relationship.signalCount,
+      signals: relationship.signals,
+      evidenceText: relationship.evidenceText,
+      bounds: relationship.bounds,
+      derivedFrom: relationship.derivedFrom || [],
+      architectureUse: "candidate_only",
+    }));
+  });
+}
+
+function buildArchitectureUnderstanding(
+  documentUnderstanding = {},
+  spatialUnderstanding = {}
+) {
   const components = extractComponents(documentUnderstanding);
+
+  const spatialRelationshipCandidates =
+    collectSpatialRelationshipCandidates(spatialUnderstanding);
 
   const relationships = dedupeRelationships([
   ...extractExplicitRelationships(documentUnderstanding, components),
@@ -540,10 +571,12 @@ function buildArchitectureUnderstanding(documentUnderstanding = {}) {
     sourceVersion: documentUnderstanding.version || null,
 
     deterministicGraph: {
-      components,
-      relationships,
-      flows,
+    components,
+    relationships,
+    flows,
     },
+
+    spatialRelationshipCandidates,
 
     semanticEnrichment: {
       hypotheses: [],
@@ -578,9 +611,13 @@ function buildArchitectureUnderstanding(documentUnderstanding = {}) {
     narrationHints: buildNarrationHints(relationships),
 
     stats: {
-      componentCount: components.length,
-      relationshipCount: relationships.length,
-      flowCount: flows.length,
+        componentCount: components.length,
+        relationshipCount: relationships.length,
+        flowCount: flows.length,
+
+        spatialRelationshipCandidateCount:
+            spatialRelationshipCandidates.length,
+
       inferredRelationshipCount: relationships.filter((item) => item.inferred).length,
       explicitRelationshipCount: relationships.filter((item) => !item.inferred).length,
       roleBreakdown: components.reduce((acc, item) => {

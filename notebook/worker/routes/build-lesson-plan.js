@@ -67,7 +67,7 @@ router.post("/:jobId", async (req, res) => {
     console.log("[spatial-understanding]", spatialUnderstanding.stats);
 
     const architectureUnderstanding =
-      buildArchitectureUnderstanding(documentUnderstanding);
+        buildArchitectureUnderstanding(documentUnderstanding, spatialUnderstanding);
 
     const architectureUnderstandingPath = writeJson(
       path.join(jobDir, "architecture-understanding.json"),
