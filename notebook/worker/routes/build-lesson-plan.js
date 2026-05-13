@@ -2,10 +2,20 @@
 
 const express = require("express");
 const path = require("path");
+const fs = require("fs");
 
 const {
   buildDocumentUnderstanding,
 } = require("../services/documentUnderstandingBuilder");
+
+const {
+  buildSpatialUnderstanding,
+  saveSpatialUnderstanding,
+} = require("../services/spatialUnderstandingBuilder");
+
+const {
+  buildArchitectureUnderstanding,
+} = require("../services/architectureUnderstandingBuilder");
 
 const {
   generateLessonPlan,
@@ -13,6 +23,11 @@ const {
 } = require("../services/lessonPlanner");
 
 const router = express.Router();
+
+function writeJson(filePath, data) {
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+  return filePath;
+}
 
 router.post("/:jobId", async (req, res) => {
   try {
@@ -40,6 +55,33 @@ router.post("/:jobId", async (req, res) => {
       sequences: documentUnderstanding.stats.sequenceCount,
     });
 
+    const spatialUnderstanding = buildSpatialUnderstanding({
+      jobDir,
+    });
+
+    const spatialUnderstandingPath = saveSpatialUnderstanding(
+      jobDir,
+      spatialUnderstanding
+    );
+
+    console.log("[spatial-understanding]", spatialUnderstanding.stats);
+
+    const architectureUnderstanding =
+      buildArchitectureUnderstanding(documentUnderstanding);
+
+    const architectureUnderstandingPath = writeJson(
+      path.join(jobDir, "architecture-understanding.json"),
+      architectureUnderstanding
+    );
+
+    console.log("[architecture-understanding]", {
+      components: architectureUnderstanding.stats.componentCount,
+      relationships: architectureUnderstanding.stats.relationshipCount,
+      flows: architectureUnderstanding.stats.flowCount,
+      inferred: architectureUnderstanding.stats.inferredRelationshipCount,
+      explicit: architectureUnderstanding.stats.explicitRelationshipCount,
+    });
+
     const lessonPlan = generateLessonPlan(jobDir);
 
     const outputPath = saveLessonPlan(
@@ -56,6 +98,16 @@ router.post("/:jobId", async (req, res) => {
         version: documentUnderstanding.version,
         stats: documentUnderstanding.stats,
         confidence: documentUnderstanding.confidence,
+      },
+      spatialUnderstanding: {
+        version: spatialUnderstanding.version,
+        stats: spatialUnderstanding.stats,
+        output: spatialUnderstandingPath,
+      },
+      architectureUnderstanding: {
+        version: architectureUnderstanding.version,
+        stats: architectureUnderstanding.stats,
+        output: architectureUnderstandingPath,
       },
       sectionCount: lessonPlan.lessonStructure.length,
       conceptCount: lessonPlan.prioritizedConcepts.length,

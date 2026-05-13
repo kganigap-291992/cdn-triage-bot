@@ -66,13 +66,19 @@ function collectLayoutEvidence(layoutBoxes = {}) {
     candidates.forEach((item, itemIndex) => {
       const text = normalizeText(
         item.text ||
-          item.content ||
-          item.value ||
-          item.title ||
-          item.heading
-      );
+            item.content ||
+            item.value ||
+            item.title ||
+            item.heading
+        );
 
-      if (!text) return;
+        if (!text) return;
+
+        // filter numeric-only layout fragments like "1", "2", "3"
+        if (/^\d+$/.test(text)) return;
+
+        // filter tiny accidental layout fragments
+        if (text.length <= 1) return;
 
       evidence.push({
         id: `ev_layout_${String(evidence.length + 1).padStart(4, "0")}`,
@@ -99,8 +105,17 @@ function collectStructureEvidence(documentStructure = {}) {
     : [];
 
   sections.forEach((section, index) => {
-    const title = normalizeText(section.title || section.heading || section.text);
+    const title = normalizeText(
+      section.title || section.heading || section.text
+    );
+
     if (!title) return;
+
+    // filter garbage numeric headings like "1", "2", "3"
+    if (/^\d+$/.test(title)) return;
+
+    // filter extremely tiny accidental headings
+    if (title.length <= 1) return;
 
     evidence.push({
       id: `ev_section_${String(index + 1).padStart(4, "0")}`,
@@ -120,8 +135,16 @@ function collectStructureEvidence(documentStructure = {}) {
     : [];
 
   elements.forEach((element, index) => {
-    const text = normalizeText(element.text || element.content || element.value);
+    const text = normalizeText(
+      element.text || element.content || element.value
+    );
+
     if (!text) return;
+
+    // avoid tiny numeric-only structure noise
+    if (/^\d+$/.test(text)) return;
+
+    if (text.length <= 1) return;
 
     evidence.push({
       id: `ev_element_${String(index + 1).padStart(4, "0")}`,
@@ -133,7 +156,8 @@ function collectStructureEvidence(documentStructure = {}) {
       sectionId: element.sectionId || null,
       order: element.order ?? index,
       confidence:
-        element.type === "heading" || element.type === "code_or_command"
+        element.type === "heading" ||
+        element.type === "code_or_command"
           ? "high"
           : "medium",
     });
@@ -172,7 +196,7 @@ function mergeEvidence(...groups) {
     const text = normalizeText(item.text);
     if (!text) return;
 
-    const key = `${item.page || "unknown"}:${text.toLowerCase()}:${item.source}`;
+    const key = `${item.page || "unknown"}:${text.toLowerCase()}`;
     if (seen.has(key)) return;
     seen.add(key);
 
