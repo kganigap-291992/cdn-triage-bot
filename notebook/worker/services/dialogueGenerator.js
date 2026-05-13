@@ -11,6 +11,8 @@ const {
   buildLessonGraph,
 } = require("./lessonGraphBuilder");
 
+const DIALOGUE_VERSION = "dialogue-v11-spoken-focus-sync";
+
 function getDialoguePath(jobDir) {
   return path.join(jobDir, "dialogue.json");
 }
@@ -62,6 +64,8 @@ function buildVisualIntent({
   presentationStyle = null,
   sceneIntent = null,
   focusHint = null,
+  spokenFocus = null,
+  spokenFocusTargets = [],
   avoidNarration = [],
 }) {
   return {
@@ -75,6 +79,8 @@ function buildVisualIntent({
     presentationStyle,
     sceneIntent,
     focusHint,
+    spokenFocus,
+    spokenFocusTargets,
     avoidNarration,
   };
 }
@@ -99,6 +105,59 @@ function getConcepts(unit) {
   return Array.isArray(unit?.concepts)
     ? unit.concepts.map((item) => cleanText(item, 220)).filter(Boolean)
     : [];
+}
+
+function getCommandDetails(unit) {
+  return Array.isArray(unit?.metadata?.commandDetails)
+    ? unit.metadata.commandDetails
+    : [];
+}
+
+function normalizeCommandText(value) {
+  return cleanText(value, 220)
+    .replace(/^`+|`+$/g, "")
+    .trim();
+}
+
+function isCommandLike(value) {
+  const text = normalizeCommandText(value);
+
+  if (!text) return false;
+
+  return /^(kubectl|helm|docker|curl|ssh|git|npm|node|python|go|java|terraform|ansible)\b/i.test(text);
+}
+
+
+function splitCommandBlob(value) {
+  const text = cleanText(value, 900);
+
+  if (!text) return [];
+
+  const normalized = text
+    .replace(/\s+/g, " ")
+    .replace(/\s+—\s+/g, " — ")
+    .trim();
+
+  const chunks = normalized
+    .split(/\s+(?=\d+[.)]?\s+(kubectl|helm|docker|curl|ssh|git|npm|node|python|go|java|terraform|ansible)\b)/i)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return chunks
+    .map((chunk) => {
+      const cleaned = chunk
+        .replace(/^\d+[.)]?\s+/, "")
+        .trim();
+
+      const commandOnly = cleaned.split(/\s+—\s+/)[0]?.trim() || cleaned;
+
+      return commandOnly;
+    })
+    .filter((command) => {
+      if (!isCommandLike(command)) return false;
+      if (/^kubectl$/i.test(command)) return false;
+      return command.split(/\s+/).length >= 2;
+    });
 }
 
 function getPreferredVisualMode(unit) {
@@ -134,14 +193,149 @@ function normalizeDebuggingSignal(value) {
   return text;
 }
 
+function buildSpokenFocusTarget({
+  type,
+  text,
+  label,
+  reason,
+  priority = 1,
+  focusMode = "line",
+  source = "dialogueGenerator",
+}) {
+  const cleanTargetText = cleanText(text, 260);
+  const cleanLabel = cleanText(label || text, 140);
+
+  if (!cleanTargetText && !cleanLabel) return null;
+
+  return {
+    type,
+    text: cleanTargetText,
+    label: cleanLabel || "Focus",
+    reason: cleanText(reason, 260),
+    priority,
+    focusMode,
+    source,
+  };
+}
+
+function buildCommandSpokenFocusTargets(unit) {
+  const commandDetails = getCommandDetails(unit);
+  const visibleElements = getVisibleElements(unit);
+
+  const detailTargets = commandDetails
+    .flatMap((commandDetail, detailIndex) => {
+      const commands = splitCommandBlob(commandDetail.command);
+
+      return commands.map((command, commandIndex) =>
+        buildSpokenFocusTarget({
+          type: "command",
+          text: command,
+          label: command,
+          reason:
+            commandDetail.whenToUse ||
+            commandDetail.debuggingSignal ||
+            commandDetail.meaning ||
+            "Command discussed in narration",
+          priority: detailIndex * 10 + commandIndex + 1,
+          focusMode: "line",
+        })
+      );
+    })
+    .filter(Boolean);
+
+  const visibleCommandTargets = visibleElements
+    .flatMap((item) => splitCommandBlob(item))
+    .slice(0, 8)
+    .map((command, index) =>
+      buildSpokenFocusTarget({
+        type: "command",
+        text: command,
+        label: command,
+        reason: "Visible command referenced by this teaching unit",
+        priority: detailTargets.length + index + 1,
+        focusMode: "line",
+      })
+    )
+    .filter(Boolean);
+
+  const seen = new Set();
+
+  return [...detailTargets, ...visibleCommandTargets].filter((target) => {
+    const key = target.text.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function buildConceptSpokenFocusTargets(unit, documentIntelligence) {
+  const title = cleanText(unit.title, 180);
+  const concepts = getConcepts(unit).filter((item) => item !== title);
+
+  const targets = [];
+
+  if (title) {
+    targets.push(
+      buildSpokenFocusTarget({
+        type:
+          documentIntelligence.primaryType === "architecture_doc"
+            ? "component"
+            : "concept",
+        text: title,
+        label: title,
+        reason: "Primary topic being explained in this scene",
+        priority: 1,
+        focusMode:
+          documentIntelligence.primaryType === "architecture_doc"
+            ? "region"
+            : "section",
+      })
+    );
+  }
+
+  concepts.slice(0, 2).forEach((concept, index) => {
+    targets.push(
+      buildSpokenFocusTarget({
+        type: "concept",
+        text: concept,
+        label: concept,
+        reason: "Supporting concept mentioned in narration",
+        priority: index + 2,
+        focusMode: "section",
+      })
+    );
+  });
+
+  return targets.filter(Boolean);
+}
+
+function buildSpokenFocusForUnit(unit, documentIntelligence) {
+  const visibleElements = getVisibleElements(unit);
+  const hasCommands = visibleElements.length > 0 || unit?.metadata?.hasCommands;
+
+  const commandTargets =
+    hasCommands ||
+    unit.type === "command_group" ||
+    unit.type === "compact_command_group"
+      ? buildCommandSpokenFocusTargets(unit)
+      : [];
+
+  const conceptTargets = buildConceptSpokenFocusTargets(unit, documentIntelligence);
+
+  const targets = commandTargets.length ? commandTargets : conceptTargets;
+  const primary = targets[0] || null;
+
+  return {
+    spokenFocus: primary,
+    spokenFocusTargets: targets,
+  };
+}
+
 function buildCommandAwareText(unit, documentIntelligence) {
   const title = cleanText(unit.title, 180);
   const summary = cleanText(unit?.metadata?.summary, 320);
 
-  const commandDetails = Array.isArray(unit?.metadata?.commandDetails)
-    ? unit.metadata.commandDetails
-    : [];
-
+  const commandDetails = getCommandDetails(unit);
   const highlightedCommands = commandDetails.slice(0, 2);
 
   const operationalContext = highlightedCommands
@@ -179,7 +373,7 @@ function buildCommandAwareText(unit, documentIntelligence) {
 
   if (documentIntelligence.primaryType === "cheat_sheet") {
     return [
-      `${title} is a quick operational reference section.`,
+      `${title} is the operational area to use when this part of the system is being checked or connected.`,
       operationalContext,
       summary ? sentence(summary) : "",
     ]
@@ -274,6 +468,10 @@ function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntellige
   const page = firstSourcePage(unit);
   const visibleElements = getVisibleElements(unit);
   const visualMode = getPreferredVisualMode(unit);
+  const { spokenFocus, spokenFocusTargets } = buildSpokenFocusForUnit(
+    unit,
+    documentIntelligence
+  );
 
   return {
     speaker: "Senior Engineer",
@@ -286,10 +484,12 @@ function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntellige
     teachingMode: unit.teachingMode,
     narrationGoals: unit.narrationGoals || [],
     avoidNarration: unit.avoidNarration || [],
+    spokenFocus,
+    spokenFocusTargets,
     visualIntent: buildVisualIntent({
       mode: visualMode,
       page,
-      focus: unit.title,
+      focus: spokenFocus?.label || unit.title,
       command: visibleElements.join(" | "),
       reference: unit?.metadata?.summary || null,
       step: index + 1,
@@ -297,8 +497,22 @@ function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntellige
       presentationStyle: unit.presentationStyle || null,
       sceneIntent: unit.sceneIntent || null,
       focusHint: unit.focusHint || null,
+      spokenFocus,
+      spokenFocusTargets,
       avoidNarration: unit.avoidNarration || [],
     }),
+    metadata: {
+      ...(unit.metadata || {}),
+      spokenFocus,
+      spokenFocusTargets,
+      spokenFocusSync: {
+        version: "spoken-focus-v1",
+        source: "dialogueGenerator",
+        targetCount: spokenFocusTargets.length,
+        primaryTargetType: spokenFocus?.type || null,
+        primaryTargetText: spokenFocus?.text || null,
+      },
+    },
   };
 }
 
@@ -312,6 +526,16 @@ function buildRareLearnerCheckIn(documentIntelligence) {
     type: "learner_check_in",
     text: "So I should focus on how the pieces work together, not memorize the page?",
     caption: "Focus on the system",
+    spokenFocus: {
+      type: "concept",
+      text: "learning approach",
+      label: "Learning approach",
+      reason: "Brief learner clarification",
+      priority: 1,
+      focusMode: "section",
+      source: "dialogueGenerator",
+    },
+    spokenFocusTargets: [],
     visualIntent: buildVisualIntent({
       mode: "learner_overlay",
       focus: "learning approach",
@@ -339,10 +563,11 @@ function buildDialogue({
     Array.isArray(lessonPlan.lessonGraph.teachingUnits)
       ? lessonPlan.lessonGraph
       : buildLessonGraph({
-          documentIntelligence,
-          conceptsData,
-          extractedData,
-          diagramAnalysis,
+            documentIntelligence,
+            conceptsData,
+            extractedData,
+            diagramAnalysis,
+            jobDir,
         });
 
   console.log("[notebook] document intelligence", {
@@ -393,7 +618,7 @@ function buildDialogue({
       lessonGraph.compactCheatSheet
         ? "compact_instructor_led_operational_reference"
         : "instructor_led_lesson_graph_walkthrough",
-    version: "dialogue-v10-document-structured",
+    version: DIALOGUE_VERSION,
     speakers:
       documentIntelligence.primaryType === "cheat_sheet"
         ? ["Senior Engineer"]
@@ -444,6 +669,7 @@ function buildDialogue({
       avoidReadingVisibleTextVerbatim: true,
       controlDialoguePacing: true,
       generateVisualIntent: true,
+      generateSpokenFocusTargets: true,
       keepRealDocumentPrimary: true,
       useInstructorLedFlow: true,
       learnerInterjectionsAreRare:
@@ -457,6 +683,7 @@ function buildDialogue({
         lessonGraph.stats?.compactRuntimeCompressionApplied,
       avoidRepeatedMentorPhrases: true,
       documentStructureGuidesTeachingUnits: true,
+      spokenFocusSyncFeedsRenderPlan: true,
     },
     sections,
   };

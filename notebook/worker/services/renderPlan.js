@@ -372,6 +372,102 @@ function buildFocusGuidedBehavior(visualIntent) {
   };
 }
 
+function resolveFocusQuality(focusRegion) {
+  const confidence = focusRegion?.confidence || "low";
+
+  if (
+    confidence === "high" &&
+    focusRegion?.fitMode === "tight_heading_section"
+  ) {
+    return "tight";
+  }
+
+  if (confidence === "medium") {
+    return "balanced";
+  }
+
+  return "broad";
+}
+
+function resolveViewportStyle(focusRegion) {
+  const fitMode = focusRegion?.fitMode || "";
+
+  switch (fitMode) {
+    case "tight_heading_section":
+      return "fit_tight";
+
+    case "tight_semantic_section":
+      return "fit_balanced";
+
+    default:
+      return "fit_contextual";
+  }
+}
+
+function resolveFocusPadding(focusRegion) {
+  if (focusRegion?.padding) {
+    return focusRegion.padding;
+  }
+
+  const confidence = focusRegion?.confidence || "low";
+
+  switch (confidence) {
+    case "high":
+      return { x: 0.004, y: 0.006 };
+
+    case "medium":
+      return { x: 0.008, y: 0.012 };
+
+    default:
+      return { x: 0.014, y: 0.022 };
+  }
+}
+
+function resolveCameraProfile(focusRegion) {
+  const quality = resolveFocusQuality(focusRegion);
+
+  switch (quality) {
+    case "tight":
+      return "tight_section_focus";
+
+    case "balanced":
+      return "balanced_document_focus";
+
+    default:
+      return "broad_context_focus";
+  }
+}
+
+function resolveSpokenFocus(section) {
+  return (
+    section.spokenFocus ||
+    section.visualIntent?.spokenFocus ||
+    null
+  );
+}
+
+function resolveSpokenFocusTargets(section) {
+  if (Array.isArray(section.spokenFocusTargets)) {
+    return section.spokenFocusTargets;
+  }
+
+  if (Array.isArray(section.visualIntent?.spokenFocusTargets)) {
+    return section.visualIntent.spokenFocusTargets;
+  }
+
+  return [];
+}
+
+function resolvePrimarySpokenFocusTarget(section) {
+  const spokenFocus = resolveSpokenFocus(section);
+
+  if (spokenFocus) return spokenFocus;
+
+  const targets = resolveSpokenFocusTargets(section);
+
+  return targets[0] || null;
+}
+
 function buildSceneBehavior(visualIntent) {
   if (visualIntent?.focusHint && visualIntent?.keepDocumentPrimary) {
     return buildFocusGuidedBehavior(visualIntent);
@@ -732,10 +828,28 @@ function createRenderPlan(jobDir) {
       pageImagePath,
       visualType,
       visualIntent,
+
+      spokenFocus: resolvePrimarySpokenFocusTarget(section),
+      spokenFocusTargets: resolveSpokenFocusTargets(section),
+
       focusHint: visualIntent.focusHint || null,
       focusRegion: visualIntent.focusRegion || sceneBehavior.focusRegion || null,
       cameraIntent: visualIntent.cameraIntent || sceneBehavior.cameraIntent || null,
       overlayMode: visualIntent.overlayMode || sceneBehavior.overlayMode || null,
+      
+      focusQuality: resolveFocusQuality(
+        visualIntent.focusRegion || sceneBehavior.focusRegion || null
+        ),
+        viewportStyle: resolveViewportStyle(
+        visualIntent.focusRegion || sceneBehavior.focusRegion || null
+        ),
+        focusPadding: resolveFocusPadding(
+        visualIntent.focusRegion || sceneBehavior.focusRegion || null
+        ),
+        cameraProfile: resolveCameraProfile(
+        visualIntent.focusRegion || sceneBehavior.focusRegion || null
+        ),
+
       sceneBehavior: {
         ...sceneBehavior,
         transitionInMs: timing.transitionInMs,
@@ -767,7 +881,7 @@ function createRenderPlan(jobDir) {
 
   const renderPlan = {
     generatedAt: new Date().toISOString(),
-    version: "render-plan-v7-focus-guided",
+    version: "render-plan-v8-spoken-focus-sync",
     sceneCount: scenes.length,
     totalDurationMs,
     scenes,
@@ -795,6 +909,13 @@ function createRenderPlan(jobDir) {
       ),
       hasFocusHints: scenes.some((scene) => Boolean(scene.focusHint)),
       hasFocusRegions: scenes.some((scene) => Boolean(scene.focusRegion)),
+      hasSpokenFocusTargets: scenes.some(
+        (scene) => Array.isArray(scene.spokenFocusTargets) &&
+            scene.spokenFocusTargets.length > 0
+        ),
+      spokenFocusSceneCount: scenes.filter(
+        (scene) => Boolean(scene.spokenFocus)
+      ).length,  
       focusGuidedSceneCount: scenes.filter(
         (scene) => Boolean(scene.sceneBehavior?.focusGuided)
       ).length,

@@ -284,15 +284,41 @@ function getContainedImageRect(containerWidth, containerHeight, imageAspectRatio
   };
 }
 
-function getFocusRegionStyle(focusRegion, imageRect) {
+function getFocusRegionStyle(scene, imageRect) {
+  const focusRegion = scene?.focusRegion || null;
+
   if (!focusRegion || !imageRect) return null;
 
-  const confidence = focusRegion.confidence || "medium";
-  const padX = confidence === "low" ? 0.006 : 0.002;
-  const padY = confidence === "low" ? 0.008 : 0.003;
+  const viewportStyle = scene?.viewportStyle || "fit_contextual";
+  const focusPadding = scene?.focusPadding || null;
+
+  let padX = 0.035;
+  let padY = 0.032;
+
+  if (focusPadding) {
+    padX = focusPadding.x;
+    padY = focusPadding.y;
+  } else {
+    switch (viewportStyle) {
+      case "fit_tight":
+        padX = 0.025;
+        padY = 0.018;
+        break;
+
+      case "fit_balanced":
+        padX = 0.006;
+        padY = 0.009;
+        break;
+
+      default:
+        padX = 0.012;
+        padY = 0.018;
+        break;
+    }
+  }
 
   const x = clamp(focusRegion.x - padX, 0, 1);
-  const y = clamp(focusRegion.y - padY, 0, 1);
+  const y = clamp(focusRegion.y - padY - 0.012, 0, 1);
   const right = clamp(focusRegion.x + focusRegion.width + padX, 0, 1);
   const bottom = clamp(focusRegion.y + focusRegion.height + padY, 0, 1);
 
@@ -304,56 +330,114 @@ function getFocusRegionStyle(focusRegion, imageRect) {
   };
 }
 
+function getVisualFocusRegion(scene) {
+  const baseRegion = scene?.focusRegion || null;
+  const spokenFocus = scene?.spokenFocus || null;
+
+  if (!baseRegion || !spokenFocus) return baseRegion;
+
+  if (spokenFocus.focusMode !== "line" && spokenFocus.type !== "command") {
+    return baseRegion;
+  }
+
+  const targets = Array.isArray(scene.spokenFocusTargets)
+    ? scene.spokenFocusTargets
+    : [];
+
+  const targetIndex = Math.max(
+    0,
+    targets.findIndex((target) => target?.text === spokenFocus.text)
+  );
+
+  const lineHeight = Math.max(0.032, Math.min(0.055, baseRegion.height * 0.18));
+  const topPadding = Math.min(0.035, baseRegion.height * 0.16);
+  const yOffset = topPadding + targetIndex * lineHeight;
+
+  return {
+    ...baseRegion,
+    type: "spoken_focus_line",
+    source: "Root.jsx/spokenFocus",
+    label: spokenFocus.label || spokenFocus.text || baseRegion.label,
+    y: clamp(baseRegion.y + yOffset, 0, 0.96),
+    height: lineHeight,
+    confidence: baseRegion.confidence === "low" ? "medium" : baseRegion.confidence,
+  };
+}
+
 function getCameraMotionStyle(scene, dim = false) {
   const durationFrames = getSceneDurationFrames(scene);
   const progress = Easing.inOut(Easing.cubic)(getProgress(durationFrames));
 
   const behavior = scene?.sceneBehavior || {};
   const focusRegion = scene?.focusRegion || behavior?.focusRegion || null;
+  const cameraProfile = scene?.cameraProfile || "broad_context_focus";
 
-  let scale = 1.018;
-  let x = 0;
-  let y = 0;
+    let scale = 1.014;
+    let x = 0;
+    let y = 0;
 
-  if (focusRegion && focusRegion.confidence !== "low") {
+    if (focusRegion && focusRegion.confidence !== "low") {
     const regionCenterX = focusRegion.x + focusRegion.width / 2;
     const regionCenterY = focusRegion.y + focusRegion.height / 2;
 
-    const targetX = interpolate(regionCenterX, [0, 1], [62, -62]);
-    const targetY = interpolate(regionCenterY, [0, 1], [42, -42]);
+    // desired viewport center
+    const viewportCenterX = 0.5;
+    const viewportCenterY = 0.42;
 
-    x = interpolate(progress, [0, 1], [targetX * 0.22, targetX]);
-    y = interpolate(progress, [0, 1], [targetY * 0.2, targetY]);
+    // move document toward focus region
+    const offsetX = (viewportCenterX - regionCenterX) * 70;
+    const offsetY = (viewportCenterY - regionCenterY) * 110;
 
-    scale = interpolate(progress, [0, 1], [1.003, 1.018], {
-      extrapolateLeft: "clamp",
-      extrapolateRight: "clamp",
-      easing: Easing.out(Easing.cubic),
+    x = interpolate(progress, [0, 1], [offsetX * 0.15, offsetX], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+        easing: Easing.out(Easing.cubic),
     });
-  } else {
-    const cameraMotion = behavior.cameraMotion || "slow_zoom";
 
-    switch (cameraMotion) {
-      case "soft_pan":
-        scale = interpolate(progress, [0, 1], [1.002, 1.016]);
-        x = interpolate(progress, [0, 1], [-12, 12]);
-        break;
-      case "guided_pan":
-        scale = interpolate(progress, [0, 1], [1.003, 1.018]);
-        x = interpolate(progress, [0, 1], [-16, 16]);
-        y = interpolate(progress, [0, 1], [8, -8]);
-        break;
-      case "soft_focus":
-      case "slow_focus":
-        scale = interpolate(progress, [0, 1], [1.002, 1.016]);
-        y = interpolate(progress, [0, 1], [8, -8]);
-        break;
-      case "slow_zoom":
-      default:
-        scale = interpolate(progress, [0, 1], [1.001, 1.014]);
-        break;
+    y = interpolate(progress, [0, 1], [offsetY * 0.15, offsetY], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+        easing: Easing.out(Easing.cubic),
+    });
+
+    // zoom based on focus area size
+    const focusArea = focusRegion.width * focusRegion.height;
+
+   let targetScale = 1.035;
+
+    if (cameraProfile === "tight_section_focus") {
+        targetScale += 0.02;
     }
-  }
+
+    scale = interpolate(progress, [0, 1], [1.01, targetScale], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+        easing: Easing.out(Easing.cubic),
+    });
+    } else {
+        const cameraMotion = behavior.cameraMotion || "slow_zoom";
+
+        switch (cameraMotion) {
+        case "soft_pan":
+            scale = interpolate(progress, [0, 1], [1.002, 1.016]);
+            x = interpolate(progress, [0, 1], [-12, 12]);
+            break;
+        case "guided_pan":
+            scale = interpolate(progress, [0, 1], [1.003, 1.018]);
+            x = interpolate(progress, [0, 1], [-16, 16]);
+            y = interpolate(progress, [0, 1], [8, -8]);
+            break;
+        case "soft_focus":
+        case "slow_focus":
+            scale = interpolate(progress, [0, 1], [1.002, 1.016]);
+            y = interpolate(progress, [0, 1], [8, -8]);
+            break;
+        case "slow_zoom":
+        default:
+            scale = interpolate(progress, [0, 1], [1.001, 1.014]);
+            break;
+        }
+    }
 
   return {
     transform: `translate(${x}px, ${y}px) scale(${scale})`,
@@ -420,7 +504,7 @@ function Shell({ scene, children }) {
     <AbsoluteFill
       style={{
         background:
-          "radial-gradient(circle at 18% 0%, rgba(37,99,235,0.32), transparent 32%), radial-gradient(circle at 82% 18%, rgba(14,165,233,0.16), transparent 28%), linear-gradient(135deg, #020617 0%, #07111f 48%, #000 100%)",
+            "radial-gradient(circle at 18% 0%, rgba(37,99,235,0.12), transparent 30%), radial-gradient(circle at 82% 18%, rgba(14,165,233,0.07), transparent 24%), linear-gradient(135deg, #020617 0%, #07111f 48%, #000 100%)",
         color: "white",
         fontFamily:
           "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
@@ -431,8 +515,8 @@ function Shell({ scene, children }) {
         style={{
           ...backgroundMotion,
           background:
-            "linear-gradient(115deg, rgba(59,130,246,0.07), transparent 36%, rgba(20,184,166,0.045))",
-          opacity: 0.9,
+            "linear-gradient(115deg, rgba(59,130,246,0.03), transparent 40%, rgba(20,184,166,0.018))",
+            opacity: 0.55,
         }}
       />
 
@@ -680,6 +764,80 @@ function TopContext({ scene, durationFrames }) {
   );
 }
 
+function SoftFocusOverlay({ focusStyle, confidence, label }) {
+  const frame = useCurrentFrame();
+  const isLowConfidence = confidence === "low";
+
+  const breath = interpolate(frame % 150, [0, 75, 150], [0, 1, 0], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.inOut(Easing.cubic),
+  });
+
+  const glowOpacity = isLowConfidence
+    ? interpolate(breath, [0, 1], [0.12, 0.2])
+    : interpolate(breath, [0, 1], [0.18, 0.3]);
+
+  const glassOpacity = isLowConfidence
+    ? interpolate(breath, [0, 1], [0.08, 0.13])
+    : interpolate(breath, [0, 1], [0.12, 0.2]);
+
+  const scale = interpolate(breath, [0, 1], [1, 1.012]);
+  const radius = isLowConfidence ? 34 : 24;
+
+  return (
+    <>
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "radial-gradient(circle at 50% 46%, transparent 38%, rgba(2,6,23,0.018) 74%, rgba(2,6,23,0.045) 100%)",
+          pointerEvents: "none",
+        }}
+      />
+
+      <div
+        style={{
+          position: "absolute",
+          left: focusStyle.left - 24,
+          top: focusStyle.top - 24,
+          width: focusStyle.width + 48,
+          height: focusStyle.height + 48,
+          borderRadius: radius + 18,
+          background: `radial-gradient(circle at 50% 50%, rgba(96,165,250,${glowOpacity}), rgba(45,212,191,${glowOpacity * 0.34}) 48%, transparent 76%)`,
+          filter: "blur(4px)",
+          transform: `scale(${scale})`,
+          transformOrigin: "center center",
+          pointerEvents: "none",
+        }}
+      />
+
+      <div
+        style={{
+          position: "absolute",
+          left: focusStyle.left,
+          top: focusStyle.top,
+          width: focusStyle.width,
+          height: focusStyle.height,
+          borderRadius: radius,
+          border: isLowConfidence
+            ? "1px solid rgba(191,219,254,0.16)"
+            : "1px solid rgba(191,219,254,0.34)",
+          background: "rgba(147,197,253,0.05)",
+          boxShadow: isLowConfidence
+            ? "0 0 52px rgba(96,165,250,0.14), inset 0 1px 0 rgba(255,255,255,0.08)"
+            : "0 0 76px rgba(96,165,250,0.24), inset 0 1px 0 rgba(255,255,255,0.12)",
+          backdropFilter: "none",
+          transform: `scale(${scale})`,
+          transformOrigin: "center center",
+          pointerEvents: "none",
+        }}
+      />
+    </>
+  );
+}
+
 function PageImagePanel({ scene, durationFrames, dim = false }) {
   const motionStyle = getCameraMotionStyle(scene, dim);
   const stage = getStageRect();
@@ -693,7 +851,7 @@ function PageImagePanel({ scene, durationFrames, dim = false }) {
     scene.pageAspectRatio || scene.imageAspectRatio || 8.5 / 11
   );
 
-  const focusStyle = getFocusRegionStyle(scene.focusRegion, imageRect);
+  const focusStyle = getFocusRegionStyle(scene, imageRect);
   const confidence = scene.focusRegion?.confidence || "medium";
 
   return (
@@ -749,66 +907,17 @@ function PageImagePanel({ scene, durationFrames, dim = false }) {
                 objectPosition: "center center",
                 borderRadius: 22,
                 background: "#020617",
-                boxShadow: "0 18px 80px rgba(0,0,0,0.44)",
+                boxShadow: "0 8px 28px rgba(0,0,0,0.22)",
               }}
             />
 
             {focusStyle ? (
               <>
-                <div
-                  style={{
-                    position: "absolute",
-                    inset: 0,
-                    background:
-                      confidence === "low"
-                        ? "radial-gradient(circle at 50% 50%, transparent 34%, rgba(2,6,23,0.14) 78%)"
-                        : "rgba(2,6,23,0.08)",
-                    pointerEvents: "none",
-                  }}
+                <SoftFocusOverlay
+                  focusStyle={focusStyle}
+                  confidence={confidence}
+                  label={scene.focusRegion?.label || "Focus"}
                 />
-
-                <div
-                  style={{
-                    position: "absolute",
-                    left: focusStyle.left,
-                    top: focusStyle.top,
-                    width: focusStyle.width,
-                    height: focusStyle.height,
-                    border:
-                      confidence === "low"
-                        ? "1px solid rgba(96,165,250,0.18)"
-                        : "2px solid rgba(96,165,250,0.82)",
-                    borderRadius: confidence === "low" ? 28 : 18,
-                    boxShadow:
-                      confidence === "low"
-                        ? "0 0 90px rgba(96,165,250,0.18)"
-                        : "0 0 44px rgba(96,165,250,0.42), inset 0 0 32px rgba(96,165,250,0.08)",
-                    background:
-                      confidence === "low"
-                        ? "radial-gradient(circle at 50% 50%, rgba(96,165,250,0.13), rgba(96,165,250,0.02) 70%, transparent 100%)"
-                        : "rgba(96,165,250,0.055)",
-                    pointerEvents: "none",
-                  }}
-                />
-
-                <div
-                  style={{
-                    position: "absolute",
-                    left: focusStyle.left + 14,
-                    top: Math.max(12, focusStyle.top - 38),
-                    borderRadius: 999,
-                    padding: "8px 12px",
-                    background: "rgba(15,23,42,0.74)",
-                    border: "1px solid rgba(96,165,250,0.32)",
-                    color: "#bfdbfe",
-                    fontSize: 15,
-                    fontWeight: 850,
-                    letterSpacing: 0.2,
-                    pointerEvents: "none",
-                  }}
-                >
-                  {scene.focusRegion?.label || "Focus"}
-                </div>
               </>
             ) : null}
           </div>

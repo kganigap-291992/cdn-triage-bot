@@ -190,16 +190,18 @@ function buildLessonPlan({
   documentIntelligence = {},
   extractedData = {},
   diagramAnalysis = {},
+  jobDir = null,
 } = {}) {
   const concepts = getConceptList(conceptsData);
   const topConcepts = concepts.slice(0, 5);
 
   const lessonGraph = buildLessonGraph({
-    documentIntelligence,
-    conceptsData,
-    extractedData,
-    diagramAnalysis,
-    });
+  documentIntelligence,
+  conceptsData,
+  extractedData,
+  diagramAnalysis,
+  jobDir,
+  });
 
   return {
     generatedAt: new Date().toISOString(),
@@ -312,11 +314,12 @@ function generateLessonPlan(jobDir) {
 };
 
   return buildLessonPlan({
-    conceptsData,
-    documentIntelligence,
-    extractedData,
-    diagramAnalysis,
-});
+  conceptsData,
+  documentIntelligence,
+  extractedData,
+  diagramAnalysis,
+  jobDir,
+ });
 }
 
 function saveLessonPlan(jobDir, lessonPlan) {

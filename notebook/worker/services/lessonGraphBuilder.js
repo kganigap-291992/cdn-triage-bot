@@ -1347,6 +1347,7 @@ function buildLessonGraph({
   conceptsData = {},
   extractedData = {},
   diagramAnalysis = {},
+  jobDir = null,
 } = {}) {
   const pageCount = getPageCount(diagramAnalysis);
 
@@ -1397,7 +1398,8 @@ function buildLessonGraph({
     extractedData,
     diagramAnalysis,
     pageImageCount: pageCount,
-  });
+    jobDir,
+    });
 
   const teachingUnits = sourceGrounding.teachingUnits;
 
