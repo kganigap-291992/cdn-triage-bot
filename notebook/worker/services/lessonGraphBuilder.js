@@ -1342,6 +1342,79 @@ function allocateRuntime({ units, documentIntelligence, pageCount }) {
   });
 }
 
+
+function buildArchitectureFlowGroups(architectureUnderstanding = {}) {
+  const deterministicRelationships =
+    architectureUnderstanding?.deterministicGraph?.relationships || [];
+
+  const spatialCandidates =
+    architectureUnderstanding?.spatialRelationshipCandidates || [];
+
+  const traversalEligible = [
+    ...deterministicRelationships
+      .filter((relationship) => {
+        return (
+          relationship?.confidence === "deterministic" ||
+          relationship?.confidence === "high" ||
+          relationship?.reason === "explicit_flow"
+        );
+      })
+      .map((relationship, index) => ({
+        id: relationship.id || `deterministic_flow_${index + 1}`,
+        source: "deterministic_graph",
+        confidence: relationship.confidence || "deterministic",
+        type: relationship.type || "relationship",
+        from: relationship.from || relationship.source || relationship.sourceId || null,
+        to: relationship.to || relationship.target || relationship.targetId || null,
+        label: relationship.label || relationship.reason || "deterministic relationship",
+        reason: relationship.reason || "deterministic_flow",
+      })),
+
+    ...spatialCandidates
+        .filter((candidate) => {
+            const from =
+            candidate.from || candidate.source || candidate.sourceId || null;
+            const to =
+            candidate.to || candidate.target || candidate.targetId || null;
+
+            return candidate?.confidence === "high" && from && to;
+        })
+      .map((candidate, index) => ({
+        id: candidate.id || `spatial_flow_${index + 1}`,
+        source: "spatial_relationship_candidate",
+        confidence: candidate.confidence,
+        type: candidate.type || "candidate_flow",
+        from: candidate.from || candidate.source || candidate.sourceId || null,
+        to: candidate.to || candidate.target || candidate.targetId || null,
+        label: candidate.label || candidate.reason || "high-confidence spatial flow",
+        reason: candidate.reason || "high_confidence_spatial_flow",
+      })),
+  ];
+
+  if (traversalEligible.length === 0) {
+    return [];
+  }
+
+  return [
+    {
+      flowGroupId: "primary_architecture_flow",
+      flowType: "architecture_flow",
+      confidence: traversalEligible.some((item) => item.confidence === "deterministic")
+        ? "deterministic"
+        : "high",
+      source: "lessonGraphBuilder",
+      nodes: uniq(
+        traversalEligible
+          .flatMap((item) => [item.from, item.to])
+          .filter(Boolean)
+      ),
+      relationships: traversalEligible,
+      traversalRule:
+        "Teach this as one coherent architecture subtopic before moving to unrelated document sections.",
+    },
+  ];
+}
+
 function buildLessonGraph({
   documentIntelligence = {},
   conceptsData = {},
@@ -1404,6 +1477,10 @@ function buildLessonGraph({
 
   const teachingUnits = sourceGrounding.teachingUnits;
 
+  const architectureFlowGroups = buildArchitectureFlowGroups(
+    architectureUnderstanding
+);
+
     const architectureTraversal = {
     version: "architecture-traversal-v1",
     enabled: documentIntelligence?.primaryType === "architecture_doc",
@@ -1433,6 +1510,8 @@ function buildLessonGraph({
         0,
     spatialCandidateCount:
         architectureUnderstanding?.spatialRelationshipCandidates?.length || 0,
+    flowGroupCount: architectureFlowGroups.length,
+    flowGroups: architectureFlowGroups,
     futureOutputs: [
         "flowGroups",
         "teachingFocusSequence",
