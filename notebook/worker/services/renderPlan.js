@@ -730,6 +730,21 @@ function getAvailablePageCount(jobDir) {
     .length;
 }
 
+function findChoreographyForScene({
+  choreographyIntent = [],
+  sceneIndex,
+}) {
+  return choreographyIntent[sceneIndex] || null;
+}
+
+function findTeachingFocusForScene({
+  teachingFocusSequence = [],
+  sceneIndex,
+}) {
+  return teachingFocusSequence[sceneIndex] || null;
+}
+
+
 function createRenderPlan(jobDir) {
   const dialoguePath = path.join(jobDir, "dialogue.json");
   const audioManifestPath = path.join(jobDir, "audio-manifest.json");
@@ -737,6 +752,10 @@ function createRenderPlan(jobDir) {
   const renderPlanPath = path.join(jobDir, "renderPlan.json");
 
   const dialogue = readJson(dialoguePath);
+  const lessonGraph = 
+    dialogue?.lessonGraph || {};
+  const architectureTraversal =
+    lessonGraph?.architectureTraversal || {}; 
   const audioManifest = readJson(audioManifestPath, {});
   const diagramAnalysis = readJson(diagramAnalysisPath, {});
 
@@ -755,6 +774,20 @@ function createRenderPlan(jobDir) {
   let timelineCursorMs = 0;
 
   const scenes = sections.map((section, index) => {
+    const choreographyMetadata =
+    findChoreographyForScene({
+        choreographyIntent:
+        architectureTraversal.choreographyIntent || [],
+        sceneIndex: index,
+    });
+
+    const teachingFocusMetadata =
+    findTeachingFocusForScene({
+        teachingFocusSequence:
+        architectureTraversal.teachingFocusSequence || [],
+        sceneIndex: index,
+    });
+
     const sectionNumber = normalizeSectionNumber(section.sectionNumber, index);
     const visualIntentForPage = section.visualIntent || {};
     const focusHintForPage =
@@ -829,6 +862,11 @@ function createRenderPlan(jobDir) {
       visualType,
       visualIntent,
 
+      semanticTraversal: {
+        teachingFocus: teachingFocusMetadata,
+        choreography: choreographyMetadata,
+     },
+
       spokenFocus: resolvePrimarySpokenFocusTarget(section),
       spokenFocusTargets: resolveSpokenFocusTargets(section),
 
@@ -892,10 +930,24 @@ function createRenderPlan(jobDir) {
       audioManifestValidated: true,
     },
     metadata: {
-      dialogueVersion: dialogue?.version || null,
-      audioManifestVersion: audioManifest?.version || null,
-      hasLessonGraph: Boolean(dialogue?.lessonGraph),
-      hasTeachingUnitMetadata: scenes.some(
+        dialogueVersion: dialogue?.version || null,
+        audioManifestVersion: audioManifest?.version || null,
+
+        hasLessonGraph: Boolean(dialogue?.lessonGraph),
+
+        hasArchitectureTraversal: Boolean(
+            architectureTraversal?.enabled
+        ),
+
+        hasChoreographyIntent: Array.isArray(
+            architectureTraversal?.choreographyIntent
+        ),
+
+        hasTeachingFocusSequence: Array.isArray(
+            architectureTraversal?.teachingFocusSequence
+        ),
+
+        hasTeachingUnitMetadata: scenes.some(
         (scene) => Boolean(scene.teachingUnitId)
       ),
       hasVisualIntent: scenes.some(
