@@ -190,18 +190,20 @@ function buildLessonPlan({
   documentIntelligence = {},
   extractedData = {},
   diagramAnalysis = {},
+  architectureUnderstanding = {},
   jobDir = null,
 } = {}) {
   const concepts = getConceptList(conceptsData);
   const topConcepts = concepts.slice(0, 5);
 
   const lessonGraph = buildLessonGraph({
-  documentIntelligence,
-  conceptsData,
-  extractedData,
-  diagramAnalysis,
-  jobDir,
-  });
+    documentIntelligence,
+    conceptsData,
+    extractedData,
+    diagramAnalysis,
+    architectureUnderstanding,
+    jobDir,
+    });
 
   return {
     generatedAt: new Date().toISOString(),
@@ -285,6 +287,11 @@ function generateLessonPlan(jobDir) {
   );
   const diagramAnalysisPath = path.join(jobDir, "diagram-analysis.json");
 
+  const architectureUnderstandingPath = path.join(
+    jobDir,
+    "architecture-understanding.json"
+    );
+
   const conceptsData = readJsonIfExists(conceptsPath, {});
   const extractedData = readJsonIfExists(extractedPath, {});
   const pageImageCount = countPageImages(jobDir);
@@ -301,9 +308,14 @@ function generateLessonPlan(jobDir) {
   );
 
   const rawDiagramAnalysis = readJsonIfExists(
-    diagramAnalysisPath,
+        diagramAnalysisPath,
+        {}
+    );
+
+ const architectureUnderstanding = readJsonIfExists(
+    architectureUnderstandingPath,
     {}
- );
+    );
 
   const diagramAnalysis = {
     ...rawDiagramAnalysis,
@@ -314,12 +326,13 @@ function generateLessonPlan(jobDir) {
 };
 
   return buildLessonPlan({
-  conceptsData,
-  documentIntelligence,
-  extractedData,
-  diagramAnalysis,
-  jobDir,
- });
+    conceptsData,
+    documentIntelligence,
+    extractedData,
+    diagramAnalysis,
+    architectureUnderstanding,
+    jobDir,
+    });
 }
 
 function saveLessonPlan(jobDir, lessonPlan) {

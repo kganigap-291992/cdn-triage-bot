@@ -1347,6 +1347,7 @@ function buildLessonGraph({
   conceptsData = {},
   extractedData = {},
   diagramAnalysis = {},
+  architectureUnderstanding = {},
   jobDir = null,
 } = {}) {
   const pageCount = getPageCount(diagramAnalysis);
@@ -1403,7 +1404,43 @@ function buildLessonGraph({
 
   const teachingUnits = sourceGrounding.teachingUnits;
 
-  return {
+    const architectureTraversal = {
+    version: "architecture-traversal-v1",
+    enabled: documentIntelligence?.primaryType === "architecture_doc",
+    ownership: "lessonGraphBuilder",
+    rule: "Lesson graph decides traversal; spatial and architecture layers provide evidence only.",
+    priorityHierarchy: [
+        "pedagogical_priority",
+        "deterministic_flow",
+        "high_confidence_spatial_flow",
+        "semantic_importance",
+        "spatial_adjacency",
+        "reading_order",
+    ],
+    confidenceContract: {
+        deterministic: "can_drive_traversal",
+        high: "can_drive_traversal",
+        medium: "limited_supporting_signal",
+        low: "narration_only_never_camera_authority",
+    },
+    componentCount:
+        architectureUnderstanding?.deterministicGraph?.components?.length || 0,
+    deterministicRelationshipCount:
+        architectureUnderstanding?.deterministicGraph?.relationships?.length || 0,
+    explicitFlowCount:
+        architectureUnderstanding?.flows?.length ||
+        architectureUnderstanding?.deterministicGraph?.flows?.length ||
+        0,
+    spatialCandidateCount:
+        architectureUnderstanding?.spatialRelationshipCandidates?.length || 0,
+    futureOutputs: [
+        "flowGroups",
+        "teachingFocusSequence",
+        "choreographyIntent",
+    ],
+    };
+
+    return {
     version: "lesson-graph-v4-document-structured",
     documentType: documentIntelligence?.primaryType || "unknown",
     secondaryTypes: documentIntelligence?.secondaryTypes || [],
@@ -1432,12 +1469,13 @@ function buildLessonGraph({
       pageTextCount: sourceGrounding.pageTextCount,
     },
     focusGuidance: {
-      version: "focus-guidance-v1",
-      borrowedIdeas: ["tldraw_zoom_to_bounds", "motion_canvas_visual_beats"],
-      rule: "Scenes should represent a new focus, not just a new card.",
-      keepDocumentPrimary: true,
-      reduceOverlayDominance: true,
+    version: "focus-guidance-v1",
+    borrowedIdeas: ["tldraw_zoom_to_bounds", "motion_canvas_visual_beats"],
+    rule: "Scenes should represent a new focus, not just a new card.",
+    keepDocumentPrimary: true,
+    reduceOverlayDominance: true,
     },
+    architectureTraversal,
     teachingUnits,
     stats: {
       teachingUnitCount: teachingUnits.length,
