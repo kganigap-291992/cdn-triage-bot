@@ -1491,6 +1491,41 @@ function buildTeachingFocusSequence({ flowGroups = [] } = {}) {
   return sequence;
 }
 
+function buildChoreographyIntent({ teachingFocusSequence = [] } = {}) {
+  return teachingFocusSequence.map((focus, index) => {
+    let motionIntent = "guided_focus";
+
+    if (focus.reason === "flow_entry_point") {
+      motionIntent = "zoom_to_flow_entry";
+    } else if (focus.reason === "flow_intermediate_component") {
+      motionIntent = "follow_flow_to_component";
+    } else if (focus.reason === "flow_destination") {
+      motionIntent = "settle_on_flow_destination";
+    }
+
+    return {
+      choreographyId: `${focus.focusId}_choreography`,
+      focusId: focus.focusId,
+      entityId: focus.entityId,
+      flowGroupId: focus.flowGroupId,
+      sequenceIndex: index,
+      motionIntent,
+      cameraBehavior:
+        index === 0
+          ? "establish_context_then_zoom"
+          : "smooth_pan_or_zoom_from_previous_focus",
+      overlayBehavior: "minimal_context_label",
+      pacing: focus.durationWeight >= 0.8 ? "slower_establishing_beat" : "steady_flow_beat",
+      confidence: focus.confidence,
+      source: "lessonGraphBuilder",
+      borrowedIdeas: [
+        "tldraw_zoom_to_bounds",
+        "motion_canvas_timeline_choreography",
+      ],
+    };
+  });
+}
+
 function buildLessonGraph({
   documentIntelligence = {},
   conceptsData = {},
@@ -1561,6 +1596,10 @@ function buildLessonGraph({
     flowGroups: architectureFlowGroups,
     });
 
+    const choreographyIntent = buildChoreographyIntent({
+    teachingFocusSequence,
+    });
+
     const architectureTraversal = {
     version: "architecture-traversal-v1",
     enabled: documentIntelligence?.primaryType === "architecture_doc",
@@ -1594,10 +1633,12 @@ function buildLessonGraph({
     flowGroups: architectureFlowGroups,
     teachingFocusSequenceCount: teachingFocusSequence.length,
     teachingFocusSequence,
+    choreographyIntentCount: choreographyIntent.length,
+    choreographyIntent,
     futureOutputs: [
-        "flowGroups",
-        "teachingFocusSequence",
-        "choreographyIntent",
+    "flowGroups",
+    "teachingFocusSequence",
+    "choreographyIntent",
     ],
     };
 
