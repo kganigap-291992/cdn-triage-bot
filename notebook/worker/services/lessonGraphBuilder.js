@@ -1343,6 +1343,55 @@ function allocateRuntime({ units, documentIntelligence, pageCount }) {
 }
 
 
+function orderFlowNodes(relationships = []) {
+  const edges = relationships
+    .filter((item) => item.from && item.to)
+    .map((item) => ({
+      from: item.from,
+      to: item.to,
+    }));
+
+  if (edges.length === 0) {
+    return [];
+  }
+
+  const fromSet = new Set(edges.map((edge) => edge.from));
+  const toSet = new Set(edges.map((edge) => edge.to));
+
+  const start =
+    edges.find((edge) => !toSet.has(edge.from))?.from ||
+    edges[0].from;
+
+  const ordered = [];
+  const visited = new Set();
+  let current = start;
+
+  while (current && !visited.has(current)) {
+    ordered.push(current);
+    visited.add(current);
+
+    const nextEdge = edges.find((edge) => {
+      return edge.from === current && !visited.has(edge.to);
+    });
+
+    current = nextEdge?.to || null;
+  }
+
+  for (const edge of edges) {
+    if (!visited.has(edge.from)) {
+      ordered.push(edge.from);
+      visited.add(edge.from);
+    }
+
+    if (!visited.has(edge.to)) {
+      ordered.push(edge.to);
+      visited.add(edge.to);
+    }
+  }
+
+  return ordered;
+}
+
 function buildArchitectureFlowGroups(architectureUnderstanding = {}) {
   const deterministicRelationships =
     architectureUnderstanding?.deterministicGraph?.relationships || [];
@@ -1403,16 +1452,43 @@ function buildArchitectureFlowGroups(architectureUnderstanding = {}) {
         ? "deterministic"
         : "high",
       source: "lessonGraphBuilder",
-      nodes: uniq(
-        traversalEligible
-          .flatMap((item) => [item.from, item.to])
-          .filter(Boolean)
-      ),
+      nodes: orderFlowNodes(traversalEligible),
       relationships: traversalEligible,
       traversalRule:
         "Teach this as one coherent architecture subtopic before moving to unrelated document sections.",
     },
   ];
+}
+
+
+function buildTeachingFocusSequence({ flowGroups = [] } = {}) {
+  const sequence = [];
+
+  for (const flowGroup of flowGroups) {
+    const orderedNodes = Array.isArray(flowGroup.nodes)
+      ? flowGroup.nodes
+      : [];
+
+    orderedNodes.forEach((nodeId, index) => {
+      sequence.push({
+        focusId: `${flowGroup.flowGroupId}_focus_${index + 1}`,
+        entityId: nodeId,
+        flowGroupId: flowGroup.flowGroupId,
+        reason:
+          index === 0
+            ? "flow_entry_point"
+            : index === orderedNodes.length - 1
+              ? "flow_destination"
+              : "flow_intermediate_component",
+        priority: Number((0.95 - index * 0.05).toFixed(2)),
+        durationWeight: index === 0 ? 0.8 : 0.7,
+        confidence: flowGroup.confidence || "medium",
+        source: "lessonGraphBuilder",
+      });
+    });
+  }
+
+  return sequence;
 }
 
 function buildLessonGraph({
@@ -1478,8 +1554,12 @@ function buildLessonGraph({
   const teachingUnits = sourceGrounding.teachingUnits;
 
   const architectureFlowGroups = buildArchitectureFlowGroups(
-    architectureUnderstanding
-);
+        architectureUnderstanding
+    );
+
+    const teachingFocusSequence = buildTeachingFocusSequence({
+    flowGroups: architectureFlowGroups,
+    });
 
     const architectureTraversal = {
     version: "architecture-traversal-v1",
@@ -1508,10 +1588,12 @@ function buildLessonGraph({
         architectureUnderstanding?.flows?.length ||
         architectureUnderstanding?.deterministicGraph?.flows?.length ||
         0,
-    spatialCandidateCount:
+      spatialCandidateCount:
         architectureUnderstanding?.spatialRelationshipCandidates?.length || 0,
     flowGroupCount: architectureFlowGroups.length,
     flowGroups: architectureFlowGroups,
+    teachingFocusSequenceCount: teachingFocusSequence.length,
+    teachingFocusSequence,
     futureOutputs: [
         "flowGroups",
         "teachingFocusSequence",
