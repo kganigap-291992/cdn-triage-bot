@@ -1251,6 +1251,284 @@ function buildCompactCheatSheetUnits({
   return groupedUnits.slice(0, maxUnits);
 }
 
+
+function isArchitectureDocument(documentIntelligence) {
+  return documentIntelligence?.primaryType === "architecture_doc";
+}
+
+function shouldUseArchitectureFirstUnits({
+  documentIntelligence,
+  architectureFlowGroups,
+}) {
+  return (
+    isArchitectureDocument(documentIntelligence) &&
+    Array.isArray(architectureFlowGroups) &&
+    architectureFlowGroups.length > 0
+  );
+}
+
+function formatArchitectureEntityTitle(value) {
+  const text = safeString(value)
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!text) return "Architecture component";
+
+  return text.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function getArchitectureAvoidNarration(documentIntelligence) {
+  return uniq([
+    ...getDefaultAvoidNarration(documentIntelligence),
+    "saying this is an important part of the architecture in every scene",
+    "saying this is an important step in the document",
+    "generic document-summary narration",
+    "excessive junior engineer questions",
+    "unnecessary real-world analogies",
+    "explaining topics instead of walking the visible architecture flow",
+    "replacing the diagram with abstract topic summaries",
+  ]);
+}
+
+function getArchitectureSourcePages({ diagramAnalysis, architectureUnderstanding }) {
+  const pageCandidates = [
+    architectureUnderstanding?.primaryDiagramPage,
+    architectureUnderstanding?.diagramPage,
+    architectureUnderstanding?.sourcePage,
+    architectureUnderstanding?.page,
+  ];
+
+  const flowPages = [];
+
+  const flows = [
+    ...(Array.isArray(architectureUnderstanding?.flows)
+      ? architectureUnderstanding.flows
+      : []),
+    ...(Array.isArray(architectureUnderstanding?.deterministicGraph?.flows)
+      ? architectureUnderstanding.deterministicGraph.flows
+      : []),
+  ];
+
+  for (const flow of flows) {
+    flowPages.push(...getSourcePagesFromObject(flow));
+  }
+
+  const componentPages = Array.isArray(
+    architectureUnderstanding?.deterministicGraph?.components
+  )
+    ? architectureUnderstanding.deterministicGraph.components.flatMap((component) => {
+        return getSourcePagesFromObject(component);
+      })
+    : [];
+
+  const normalized = uniq([
+    ...pageCandidates,
+    ...flowPages,
+    ...componentPages,
+  ].map(String))
+    .map(Number)
+    .filter((page) => Number.isFinite(page) && page > 0);
+
+  if (normalized.length > 0) return normalized;
+
+  const pageCount = getPageCount(diagramAnalysis);
+
+  return pageCount > 0 ? [1] : [];
+}
+
+function getFullPageFocusRegion(label = "Architecture diagram") {
+  return {
+    type: "full_page_region",
+    confidence: "medium",
+    label,
+    x: 0.03,
+    y: 0.03,
+    width: 0.94,
+    height: 0.9,
+  };
+}
+
+function getArchitectureBroadFocusRegion(index, total) {
+  if (total <= 1) {
+    return getFullPageFocusRegion("Architecture flow");
+  }
+
+  const progress = total > 1 ? index / (total - 1) : 0;
+
+  return {
+    type: "architecture_broad_region",
+    confidence: "medium",
+    label: "Architecture flow region",
+    x: clamp(0.08 + progress * 0.38, 0.04, 0.58),
+    y: 0.12,
+    width: 0.38,
+    height: 0.68,
+  };
+}
+
+function buildArchitectureFocusHint({
+  title,
+  sourcePages,
+  presentationStyle,
+  focusRegion,
+}) {
+  return {
+    version: "focus-hint-v1",
+    source: "lessonGraphBuilder",
+    borrowedIdea:
+      "diagram_first_tldraw_zoom_to_bounds_motion_canvas_visual_beat",
+    target: slugify(title),
+    label: title,
+    strategy: "zoom_to_architecture_region",
+    cameraIntent: "architecture_diagram_region_focus",
+    overlayMode: getOverlayModeForPresentationStyle(presentationStyle),
+    overlayPriority: "minimal",
+    keepDocumentPrimary: true,
+    reduceOverlayDominance: true,
+    avoidFullSceneReset: true,
+    sourcePages,
+    focusRegion,
+  };
+}
+
+function buildArchitectureFlowTeachingUnits({
+  documentIntelligence,
+  diagramAnalysis,
+  architectureUnderstanding,
+  architectureFlowGroups,
+}) {
+  const sourcePages = getArchitectureSourcePages({
+    diagramAnalysis,
+    architectureUnderstanding,
+  });
+
+  const avoidNarration = getArchitectureAvoidNarration(documentIntelligence);
+  const units = [];
+
+  units.push({
+    id: "architecture_full_diagram_overview",
+    type: "architecture_overview",
+    title: "Architecture overview",
+    importance: 0.99,
+    teachingMode: "architecture_diagram_walkthrough",
+    runtimeWeight: 0.95,
+    concepts: ["architecture overview"],
+    visibleElements: [],
+    narrationGoals: [
+      "show the real architecture diagram first",
+      "explain the overall system flow briefly",
+      "use component and flow names from the source document",
+      "keep the diagram as the primary visual truth",
+      "do not summarize this as generic topics",
+    ],
+    avoidNarration,
+    preferredVisuals: ["full_diagram", "document_focus"],
+    presentationStyle: "architecture_full_diagram",
+    sceneIntent: "show_full_architecture_diagram_before_details",
+    sourcePages,
+    focusHint: buildArchitectureFocusHint({
+      title: "Architecture overview",
+      sourcePages,
+      presentationStyle: "architecture_full_diagram",
+      focusRegion: getFullPageFocusRegion("Architecture diagram"),
+    }),
+    metadata: {
+      role: "architecture_overview",
+      architectureFirst: true,
+      source: "architecture_flow_teaching_units",
+      summary:
+        "Start with the actual architecture diagram before walking individual flow regions.",
+    },
+  });
+
+  for (const flowGroup of architectureFlowGroups) {
+    const nodes = Array.isArray(flowGroup.nodes) ? flowGroup.nodes : [];
+
+    nodes.forEach((nodeId, index) => {
+      const title = formatArchitectureEntityTitle(nodeId);
+      const flowReason =
+        index === 0
+          ? "flow_entry_point"
+          : index === nodes.length - 1
+            ? "flow_destination"
+            : "flow_intermediate_component";
+
+      units.push({
+        id: `architecture_flow_${slugify(flowGroup.flowGroupId)}_${slugify(nodeId)}_${index + 1}`,
+        type: "architecture_flow_step",
+        title,
+        importance: Number((0.96 - index * 0.04).toFixed(2)),
+        teachingMode: "architecture_flow_walkthrough",
+        runtimeWeight: index === 0 ? 0.82 : 0.7,
+        concepts: uniq([nodeId, title, flowGroup.flowGroupId]),
+        visibleElements: [],
+        narrationGoals: [
+          "explain what this component does in the actual architecture",
+          "explain how the flow moves through this component",
+          "connect it to the previous or next component only when grounded",
+          "keep the real diagram visible as the teaching source",
+          "simplify only when the component or flow is genuinely hard to understand",
+        ],
+        avoidNarration,
+        preferredVisuals: ["diagram_region_focus", "document_focus"],
+        presentationStyle: "architecture_flow_region",
+        sceneIntent: "walk_real_architecture_flow_step",
+        sourcePages,
+        focusHint: buildArchitectureFocusHint({
+          title,
+          sourcePages,
+          presentationStyle: "architecture_flow_region",
+          focusRegion: getArchitectureBroadFocusRegion(index, nodes.length),
+        }),
+        metadata: {
+          role: "architecture_flow_step",
+          architectureFirst: true,
+          entityId: nodeId,
+          flowGroupId: flowGroup.flowGroupId,
+          flowIndex: index,
+          flowReason,
+          summary:
+            "Walk this node as part of the actual architecture flow, not as a generic document topic.",
+          source: "architecture_flow_teaching_units",
+        },
+      });
+    });
+  }
+
+  return units;
+}
+
+function buildArchitectureFirstTeachingUnits({
+  conceptsData,
+  diagramAnalysis,
+  documentIntelligence,
+  extractedData,
+  architectureUnderstanding,
+  architectureFlowGroups,
+}) {
+  if (
+    !shouldUseArchitectureFirstUnits({
+      documentIntelligence,
+      architectureFlowGroups,
+    })
+  ) {
+    return buildTeachingUnitsFromConcepts({
+      conceptsData,
+      diagramAnalysis,
+      documentIntelligence,
+      extractedData,
+    });
+  }
+
+  return buildArchitectureFlowTeachingUnits({
+    documentIntelligence,
+    diagramAnalysis,
+    architectureUnderstanding,
+    architectureFlowGroups,
+  });
+}
+
 function buildTeachingUnitsFromConcepts({
   conceptsData,
   diagramAnalysis,
@@ -1553,11 +1831,17 @@ function buildLessonGraph({
     documentIntelligence,
   });
 
-  const coreUnits = buildTeachingUnitsFromConcepts({
+  const architectureFlowGroups = buildArchitectureFlowGroups(
+    architectureUnderstanding
+  );
+
+  const coreUnits = buildArchitectureFirstTeachingUnits({
     conceptsData,
     diagramAnalysis,
     documentIntelligence,
     extractedData,
+    architectureUnderstanding,
+    architectureFlowGroups,
   });
 
   const includeIntro = true;
@@ -1584,51 +1868,47 @@ function buildLessonGraph({
     diagramAnalysis,
     pageImageCount: pageCount,
     jobDir,
-    });
+  });
 
   const teachingUnits = sourceGrounding.teachingUnits;
 
-  const architectureFlowGroups = buildArchitectureFlowGroups(
-        architectureUnderstanding
-    );
-
-    const teachingFocusSequence = buildTeachingFocusSequence({
+  const teachingFocusSequence = buildTeachingFocusSequence({
     flowGroups: architectureFlowGroups,
-    });
+  });
 
-    const choreographyIntent = buildChoreographyIntent({
+  const choreographyIntent = buildChoreographyIntent({
     teachingFocusSequence,
-    });
+  });
 
-    const architectureTraversal = {
+  const architectureTraversal = {
     version: "architecture-traversal-v1",
     enabled: documentIntelligence?.primaryType === "architecture_doc",
     ownership: "lessonGraphBuilder",
     rule: "Lesson graph decides traversal; spatial and architecture layers provide evidence only.",
     priorityHierarchy: [
-        "pedagogical_priority",
-        "deterministic_flow",
-        "high_confidence_spatial_flow",
-        "semantic_importance",
-        "spatial_adjacency",
-        "reading_order",
+      "pedagogical_priority",
+      "deterministic_flow",
+      "high_confidence_spatial_flow",
+      "semantic_importance",
+      "spatial_adjacency",
+      "reading_order",
     ],
     confidenceContract: {
-        deterministic: "can_drive_traversal",
-        high: "can_drive_traversal",
-        medium: "limited_supporting_signal",
-        low: "narration_only_never_camera_authority",
+      deterministic: "can_drive_traversal",
+      high: "can_drive_traversal",
+      medium: "limited_supporting_signal",
+      low: "narration_only_never_camera_authority",
     },
     componentCount:
-        architectureUnderstanding?.deterministicGraph?.components?.length || 0,
+      architectureUnderstanding?.deterministicGraph?.components?.length || 0,
     deterministicRelationshipCount:
-        architectureUnderstanding?.deterministicGraph?.relationships?.length || 0,
+      architectureUnderstanding?.deterministicGraph?.relationships?.length || 0,
     explicitFlowCount:
-        architectureUnderstanding?.flows?.length ||
-        architectureUnderstanding?.deterministicGraph?.flows?.length ||
-        0,
-      spatialCandidateCount:
-        architectureUnderstanding?.spatialRelationshipCandidates?.length || 0,
+      architectureUnderstanding?.flows?.length ||
+      architectureUnderstanding?.deterministicGraph?.flows?.length ||
+      0,
+    spatialCandidateCount:
+      architectureUnderstanding?.spatialRelationshipCandidates?.length || 0,
     flowGroupCount: architectureFlowGroups.length,
     flowGroups: architectureFlowGroups,
     teachingFocusSequenceCount: teachingFocusSequence.length,
@@ -1636,13 +1916,13 @@ function buildLessonGraph({
     choreographyIntentCount: choreographyIntent.length,
     choreographyIntent,
     futureOutputs: [
-    "flowGroups",
-    "teachingFocusSequence",
-    "choreographyIntent",
+      "flowGroups",
+      "teachingFocusSequence",
+      "choreographyIntent",
     ],
-    };
+  };
 
-    return {
+  return {
     version: "lesson-graph-v4-document-structured",
     documentType: documentIntelligence?.primaryType || "unknown",
     secondaryTypes: documentIntelligence?.secondaryTypes || [],
@@ -1671,11 +1951,11 @@ function buildLessonGraph({
       pageTextCount: sourceGrounding.pageTextCount,
     },
     focusGuidance: {
-    version: "focus-guidance-v1",
-    borrowedIdeas: ["tldraw_zoom_to_bounds", "motion_canvas_visual_beats"],
-    rule: "Scenes should represent a new focus, not just a new card.",
-    keepDocumentPrimary: true,
-    reduceOverlayDominance: true,
+      version: "focus-guidance-v1",
+      borrowedIdeas: ["tldraw_zoom_to_bounds", "motion_canvas_visual_beats"],
+      rule: "Scenes should represent a new focus, not just a new card.",
+      keepDocumentPrimary: true,
+      reduceOverlayDominance: true,
     },
     architectureTraversal,
     teachingUnits,
@@ -1695,6 +1975,10 @@ function buildLessonGraph({
       compactRuntimeCompressionApplied: compactCheatSheet,
       focusGuidanceApplied: true,
       documentStructureApplied: true,
+      architectureFirstApplied: shouldUseArchitectureFirstUnits({
+        documentIntelligence,
+        architectureFlowGroups,
+      }),
     },
   };
 }

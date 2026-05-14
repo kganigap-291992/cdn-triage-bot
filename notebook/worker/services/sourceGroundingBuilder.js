@@ -28,6 +28,28 @@ const MAX_FOCUS_HEIGHT = 0.3;
 
 const SECTION_BOUNDARY_GAP = 0.018;
 
+const BANNED_FOCUS_TERMS = [
+  "confidential",
+  "copyright",
+  "page",
+  "proprietary",
+  "unauthorized disclosure",
+  "strictly prohibited",
+  "all rights reserved",
+  "do not distribute",
+  "estimate for",
+  "hour estimate",
+];
+
+function isBannedFocusText(value) {
+  const text = normalizeText(value);
+  if (!text) return false;
+
+  const bannedTerms = BANNED_FOCUS_TERMS.map(normalizeText);
+
+  return bannedTerms.some((term) => text.includes(term));
+}
+
 function safeString(value) {
   return String(value || "").trim();
 }
@@ -66,6 +88,57 @@ function normalizeLine(value) {
   return safeString(value)
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function getUnitSceneType(unit = {}) {
+  return safeString(
+    unit.sceneType ||
+      unit.metadata?.sceneType ||
+      unit.metadata?.architectureSceneType ||
+      ""
+  );
+}
+
+function getUnitPresentationStyle(unit = {}) {
+  return safeString(
+    unit.presentationStyle ||
+      unit.metadata?.presentationStyle ||
+      unit.visualIntent?.presentationStyle ||
+      ""
+  );
+}
+
+function shouldUseBroadVisualRegion(unit = {}) {
+  const sceneType = safeLower(getUnitSceneType(unit));
+  const presentationStyle = safeLower(getUnitPresentationStyle(unit));
+  const title = safeLower(unit.title);
+  const label = safeLower(unit.focusHint?.label);
+  const intent = safeLower(unit.visualIntent?.intent || unit.sceneIntent || "");
+
+  return (
+    sceneType.includes("architecture_overview") ||
+    sceneType.includes("overview") ||
+    sceneType.includes("recap") ||
+    presentationStyle.includes("architecture_full_diagram") ||
+    title.includes("architecture overview") ||
+    title.includes("recap") ||
+    label.includes("architecture overview") ||
+    label.includes("recap") ||
+    intent.includes("show_full_architecture_diagram") ||
+    intent.includes("recap")
+  );
+}
+
+function isRecapLikeUnit(unit = {}) {
+  const sceneType = getUnitSceneType(unit);
+  const title = safeLower(unit.title);
+
+  return (
+    sceneType === "recap" ||
+    title.includes("recap") ||
+    title.includes("summary") ||
+    title.includes("takeaway")
+  );
 }
 
 function getPageCount({ extractedData = {}, diagramAnalysis = {}, pageImageCount = 0 } = {}) {
@@ -321,6 +394,7 @@ function findBestLineMatch({ unit = {}, pageText = "" } = {}) {
 
   for (const line of lineIndex.lines) {
     if (!line.normalized) continue;
+    if (isBannedFocusText(line.original)) continue;
 
     let score = 0;
     let bestTerm = "";
@@ -390,6 +464,7 @@ function findBestLineMatch({ unit = {}, pageText = "" } = {}) {
     exactHeadingMatch: best.exactHeadingMatch,
   };
 }
+
 
 function findNearestHeadingBefore(lineIndex, lineNumber) {
   for (let index = lineNumber; index >= 0; index -= 1) {
@@ -619,6 +694,25 @@ function getLayoutSearchTerms(unit = {}) {
     .filter(Boolean);
 }
 
+
+function getExactEntityTerms(unit = {}) {
+  return uniq([
+    unit.focusHint?.target,
+    unit.focusHint?.label,
+    unit.metadata?.entityId,
+    unit.metadata?.entityName,
+    unit.semanticTraversal?.teachingFocus?.entityId,
+    unit.semanticTraversal?.teachingFocus?.label,
+    unit.title,
+  ])
+    .map(normalizeLine)
+    .filter((term) => {
+      if (term.length < 2 || term.length > 40) return false;
+      if (isBannedFocusText(term)) return false;
+      return true;
+    });
+}
+
 function scoreLayoutBlock(block, terms, unit = {}) {
   const text = normalizeText(block?.text || "");
 
@@ -725,38 +819,134 @@ function findBestLayoutBoxMatch(unit, layoutBoxes, groundedPage) {
 
   if (!page) return null;
 
+  const exactEntityTerms = getExactEntityTerms(unit);
+
+  for (const block of page.blocks || []) {
+    if (isBannedFocusText(block.text)) continue;
+
+    const blockText = normalizeText(block.text || "");
+
+    for (const term of exactEntityTerms) {
+      const normalizedTerm = normalizeText(term);
+      if (!normalizedTerm) continue;
+
+      const escapedTerm = normalizedTerm.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+
+      const exactTokenRegex = new RegExp(
+        `(^|\\s)${escapedTerm}(\\s|$)`,
+        "i"
+      );
+
+      if (
+        blockText === normalizedTerm ||
+        exactTokenRegex.test(blockText)
+      ) {
+        return {
+          block: {
+            ...block,
+            matchType: "exact_entity_label",
+          },
+          score: 2000,
+          headingBlock: null,
+        };
+      }
+    }
+  }
+
+  const entityLikeTerms = exactEntityTerms.filter((term) => {
+    const normalized = normalizeText(term);
+    if (!normalized) return false;
+
+    const words = normalized.split(/\s+/).filter(Boolean);
+
+    return (
+      words.length === 1 &&
+      normalized.length >= 2 &&
+      normalized.length <= 40
+    );
+  });
+
+  if (entityLikeTerms.length > 0) {
+    return null;
+  }
+
   let best = null;
 
   const headingBlock = findBestHeadingBlock(unit, page);
-  const candidateBlocks = headingBlock
+
+  if (headingBlock && isBannedFocusText(headingBlock.text)) {
+    return null;
+  }
+
+  const rawCandidateBlocks = headingBlock
     ? getBlocksOwnedByHeading(page, headingBlock)
     : page.blocks || [];
-    if (headingBlock) {
-        return {
-            block: headingBlock,
-            score: 999,
-            headingBlock,
-        };
-  }
+
+  const candidateBlocks = rawCandidateBlocks.filter(
+    (block) => !isBannedFocusText(block.text)
+  );
+
   for (const block of candidateBlocks) {
     const score = scoreLayoutBlock(
-        block,
-        terms,
-        unit
+      block,
+      terms,
+      unit
     );
 
     if (!best || score > best.score) {
-        best = {
-        block,
+      best = {
+        block: {
+          ...block,
+          matchType: "layout_box_match",
+        },
         score,
         headingBlock,
-        };
+      };
     }
-}
+  }
 
   if (!best || best.score <= 0) return null;
 
   return best;
+}
+
+
+
+function buildBroadVisualFocusRegion({ unit, groundedPage }) {
+  const recapLike = isRecapLikeUnit(unit);
+
+  return {
+    type: "broad_visual_region",
+    source: "sourceGroundingBuilder",
+    version: SOURCE_GROUNDING_VERSION,
+    confidence: "medium",
+    label:
+      unit.focusHint?.label ||
+      unit.title ||
+      "Relevant document region",
+    x: 0.05,
+    y: 0.12,
+    width: 0.9,
+    height: 0.68,
+    fitMode: "broad_visual_context_region",
+    viewportIntent: "fit_focus_region_with_context",
+    padding: {
+      x: 0.012,
+      y: 0.018,
+    },
+    grounding: {
+      reason: recapLike
+        ? "recap_reuses_broad_visual_context"
+        : "broad_visual_region_preferred",
+      matchedLine: null,
+      anchorLine: null,
+      nextBoundaryLine: null,
+    },
+    page: groundedPage,
+  };
 }
 
 function buildFocusRegionFromLayoutBox({
@@ -828,7 +1018,7 @@ function buildFocusRegionFromLayoutBox({
       y: 0.01,
     },
     grounding: {
-      reason: "layout_box_match",
+      reason: block.matchType || "layout_box_match",
       matchedLine: block.text,
       anchorLine: block.text,
       nextBoundaryLine: null,
@@ -859,24 +1049,31 @@ function groundTeachingUnit(unit, pageTexts, layoutBoxes) {
     unit.focusHint?.focusRegion ||
     null;
 
-  const layoutMatch = findBestLayoutBoxMatch(
-    unit,
-    layoutBoxes,
-    groundedPage
-  );
+  const layoutMatch = shouldUseBroadVisualRegion(unit)
+    ? null
+    : findBestLayoutBoxMatch(
+        unit,
+        layoutBoxes,
+        groundedPage
+        );
 
-  const focusRegion = layoutMatch
-    ? buildFocusRegionFromLayoutBox({
+    const focusRegion = shouldUseBroadVisualRegion(unit)
+    ? buildBroadVisualFocusRegion({
         unit,
-        block: layoutMatch.block,
-        fallbackFocusRegion,
-      })
-    : buildGroundedFocusRegion({
-        unit,
-        pageText,
-        fallbackFocusRegion,
-        pageMatchConfidence: pageMatch.confidence,
-      });
+        groundedPage,
+        })
+    : layoutMatch
+        ? buildFocusRegionFromLayoutBox({
+            unit,
+            block: layoutMatch.block,
+            fallbackFocusRegion,
+        })
+        : buildGroundedFocusRegion({
+            unit,
+            pageText,
+            fallbackFocusRegion,
+            pageMatchConfidence: pageMatch.confidence,
+        });
 
   const sourcePages = groundedPage ? [groundedPage] : existingSourcePages;
 

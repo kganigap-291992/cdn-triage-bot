@@ -174,6 +174,8 @@ function getPreferredVisualMode(unit) {
   if (preferred.includes("component_focus")) return "component_focus";
   if (preferred.includes("request_flow")) return "request_flow";
   if (preferred.includes("diagram_walkthrough")) return "diagram_guided_focus";
+  if (preferred.includes("full_diagram")) return "architecture_full_diagram";
+  if (preferred.includes("diagram_region_focus")) return "architecture_region_focus";
   if (preferred.includes("summary_card")) return "recap_summary";
 
   return "teaching_unit_focus";
@@ -392,15 +394,41 @@ function buildCommandAwareText(unit, documentIntelligence) {
 
 function buildConceptAwareText(unit, documentIntelligence) {
   const title = cleanText(unit.title, 180);
-  const concepts = getConcepts(unit).filter((item) => item !== title);
-  const summary = cleanText(unit?.metadata?.summary, 420);
+  const titleKey = title.toLowerCase();
+
+  const rawConcepts = getConcepts(unit);
+
+  const concepts = rawConcepts.filter((item) => {
+    const text = String(item || "")
+      .trim()
+      .toLowerCase();
+
+    return (
+      text &&
+      text !== titleKey &&
+      text !== "architecture overview" &&
+      text !== "primary_architecture_flow" &&
+      !text.endsWith("_architecture_flow")
+    );
+  });
+
+  const rawSummary = cleanText(unit?.metadata?.summary, 420);
+  const summary =
+    documentIntelligence.primaryType === "architecture_doc" &&
+    unit?.metadata?.source === "architecture_flow_teaching_units"
+      ? ""
+      : rawSummary;
 
   if (unit.type === "purpose") {
     if (documentIntelligence.primaryType === "cheat_sheet") {
       return "This walkthrough groups the most useful commands and operational reference points into a short guided flow.";
     }
 
-    return "This walkthrough focuses on the important workflow, concepts, and operational reasoning from the document.";
+    if (documentIntelligence.primaryType === "architecture_doc") {
+      return "This walkthrough uses the real architecture diagram as the source of truth and follows the main system flow.";
+    }
+
+    return "This walkthrough focuses on the workflow, concepts, and operational reasoning from the document.";
   }
 
   if (unit.type === "recap") {
@@ -408,16 +436,48 @@ function buildConceptAwareText(unit, documentIntelligence) {
       return "Use the sheet as a fast operational reference and return to the source when exact syntax is needed.";
     }
 
+    if (documentIntelligence.primaryType === "architecture_doc") {
+      return "The key takeaway is the flow: start from the diagram, follow the connected components, and understand where the system hands off downstream.";
+    }
+
     return "Focus on understanding the workflow and relationships between the major concepts.";
   }
 
   if (documentIntelligence.primaryType === "architecture_doc") {
+    const role = unit?.metadata?.role;
+    const flowReason = unit?.metadata?.flowReason;
+
+    if (role === "architecture_overview") {
+      return [
+        "This diagram shows the overall system architecture and the primary service flow.",
+        concepts.length
+          ? `The walkthrough will follow ${concepts.slice(0, 3).join(", ")}.`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
+
+    if (role === "architecture_flow_step") {
+      const flowText =
+        flowReason === "flow_entry_point"
+          ? `${title} is where this part of the architecture flow begins.`
+          : flowReason === "flow_destination"
+            ? `${title} is one of the downstream handoff or destination points in the flow.`
+            : `${title} sits in the middle of the main service flow.`;
+
+      return [
+        flowText,
+        concepts.length
+          ? `In this diagram, it connects with ${concepts.slice(0, 2).join(" and ")}.`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
+
     return [
-      `${title} is an important architecture component.`,
-      summary ? sentence(summary) : "",
-      concepts.length
-        ? `It connects closely with ${concepts.slice(0, 2).join(" and ")}.`
-        : "",
+      summary || `${title} participates in the broader architecture flow.`,
     ]
       .filter(Boolean)
       .join(" ");
@@ -517,9 +577,12 @@ function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntellige
 }
 
 function buildRareLearnerCheckIn(documentIntelligence) {
-  if (documentIntelligence.primaryType === "cheat_sheet") {
+  if (
+    documentIntelligence.primaryType === "cheat_sheet" ||
+    documentIntelligence.primaryType === "architecture_doc"
+    ) {
     return null;
-  }
+    }
 
   return {
     speaker: "New Joiner",

@@ -34,13 +34,24 @@ async function generateTtsForDialogue(jobDir) {
   );
 
   const audioDir = ensureAudioDir(jobDir);
-
   const audioSections = [];
+
+  console.log("[tts] starting", {
+    sectionCount: dialogueData.sections.length,
+    audioDir,
+  });
 
   for (const [index, section] of dialogueData.sections.entries()) {
     const sectionNumber = String(index + 1).padStart(3, "0");
     const outputFileName = `section-${sectionNumber}.mp3`;
     const outputPath = path.join(audioDir, outputFileName);
+
+    console.log("[tts] section start", {
+      sectionNumber,
+      speaker: section.speaker,
+      type: section.type,
+      chars: String(section.text || "").length,
+    });
 
     const response = await client.audio.speech.create({
       model: "gpt-4o-mini-tts",
@@ -52,6 +63,12 @@ async function generateTtsForDialogue(jobDir) {
     const buffer = Buffer.from(await response.arrayBuffer());
     fs.writeFileSync(outputPath, buffer);
 
+    console.log("[tts] section done", {
+      sectionNumber,
+      outputFileName,
+      bytes: buffer.length,
+    });
+
     audioSections.push({
       sectionIndex: index,
       speaker: section.speaker,
@@ -60,6 +77,10 @@ async function generateTtsForDialogue(jobDir) {
       path: outputPath,
     });
   }
+
+  console.log("[tts] complete", {
+    sectionCount: audioSections.length,
+  });
 
   return {
     generatedAt: new Date().toISOString(),

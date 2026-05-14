@@ -364,6 +364,122 @@ function getVisualFocusRegion(scene) {
   };
 }
 
+function getSemanticTraversal(scene) {
+  const semanticTraversal = scene?.semanticTraversal || null;
+
+  if (!semanticTraversal || typeof semanticTraversal !== "object") {
+    return null;
+  }
+
+  return semanticTraversal;
+}
+
+function getSemanticTeachingFocus(scene) {
+  return getSemanticTraversal(scene)?.teachingFocus || null;
+}
+
+function getSemanticChoreography(scene) {
+  return getSemanticTraversal(scene)?.choreography || null;
+}
+
+function resolveSemanticMotionIntent(scene) {
+  const choreography = getSemanticChoreography(scene);
+  const motionIntent = choreography?.motionIntent || null;
+
+  switch (motionIntent) {
+    case "zoom_to_flow_entry":
+      return {
+        motionIntent,
+        cameraMode: "semantic_flow_entry",
+        cameraBehavior: choreography.cameraBehavior || "establish_context_then_zoom",
+        overlayBehavior: choreography.overlayBehavior || "minimal_context_label",
+      };
+
+    case "follow_flow_to_component":
+      return {
+        motionIntent,
+        cameraMode: "semantic_flow_follow",
+        cameraBehavior: choreography.cameraBehavior || "guided_pan",
+        overlayBehavior: choreography.overlayBehavior || "minimal_context_label",
+      };
+
+    case "settle_on_flow_destination":
+      return {
+        motionIntent,
+        cameraMode: "semantic_flow_destination",
+        cameraBehavior: choreography.cameraBehavior || "slow_settle_focus",
+        overlayBehavior: choreography.overlayBehavior || "minimal_context_label",
+      };
+
+    default:
+      return {
+        motionIntent: motionIntent || "default_existing_motion",
+        cameraMode: "existing_camera_behavior",
+        cameraBehavior: choreography?.cameraBehavior || null,
+        overlayBehavior: choreography?.overlayBehavior || null,
+      };
+  }
+}
+
+function getSemanticTraversalDebug(scene) {
+  const semanticTraversal = getSemanticTraversal(scene);
+
+  if (!semanticTraversal) {
+    return {
+      hasSemanticTraversal: false,
+      motionIntent: null,
+      cameraMode: "existing_camera_behavior",
+      cameraBehavior: null,
+      overlayBehavior: null,
+      entityId: null,
+      flowGroupId: null,
+    };
+  }
+
+  const teachingFocus = getSemanticTeachingFocus(scene);
+  const choreography = getSemanticChoreography(scene);
+  const resolvedMotion = resolveSemanticMotionIntent(scene);
+
+  return {
+    hasSemanticTraversal: true,
+    motionIntent: resolvedMotion.motionIntent,
+    cameraMode: resolvedMotion.cameraMode,
+    cameraBehavior: resolvedMotion.cameraBehavior,
+    overlayBehavior: resolvedMotion.overlayBehavior,
+    entityId: teachingFocus?.entityId || choreography?.entityId || null,
+    flowGroupId: teachingFocus?.flowGroupId || choreography?.flowGroupId || null,
+    focusId: teachingFocus?.focusId || choreography?.focusId || null,
+    confidence: teachingFocus?.confidence || choreography?.confidence || null,
+    source: teachingFocus?.source || choreography?.source || null,
+  };
+}
+
+function maybeLogSemanticTraversal(scene) {
+  const debug = getSemanticTraversalDebug(scene);
+
+  if (!debug.hasSemanticTraversal) return;
+
+  const shouldLog = shouldShowSemanticTraversalDebug();
+
+  if (!shouldLog) return;
+
+  // Metadata-only debug hook for Phase 8C.10.
+  // This must not change camera behavior or rendering output.
+  console.log("[Cachey Notebook] semanticTraversal", {
+    sectionNumber: scene?.sectionNumber || null,
+    title: scene?.title || scene?.focusRegion?.label || null,
+    ...debug,
+  });
+}
+
+function shouldShowSemanticTraversalDebug() {
+  return (
+    typeof process !== "undefined" &&
+    process.env &&
+    process.env.CACHEY_NOTEBOOK_DEBUG_SEMANTIC_TRAVERSAL === "1"
+  );
+}
+
 function getCameraMotionStyle(scene, dim = false) {
   const durationFrames = getSceneDurationFrames(scene);
   const progress = Easing.inOut(Easing.cubic)(getProgress(durationFrames));
@@ -1112,6 +1228,44 @@ function PlaybackBar({ scene, sceneIndex, sceneCount, durationFrames }) {
   );
 }
 
+function SemanticTraversalDebugBadge({ scene, durationFrames }) {
+  if (!shouldShowSemanticTraversalDebug()) return null;
+
+  const debug = getSemanticTraversalDebug(scene);
+
+  if (!debug.hasSemanticTraversal) return null;
+
+  const entityLabel = debug.entityId || "unknown-entity";
+  const motionLabel = debug.motionIntent || "unknown-motion";
+  const cameraLabel = debug.cameraMode || "existing_camera_behavior";
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        right: OUTER_PAD + 18,
+        bottom: OUTER_PAD + 54,
+        maxWidth: 520,
+        borderRadius: 999,
+        padding: "7px 11px",
+        background: "rgba(2,6,23,0.46)",
+        border: "1px solid rgba(148,163,184,0.12)",
+        color: "rgba(226,232,240,0.46)",
+        fontSize: 11,
+        lineHeight: 1.15,
+        fontWeight: 750,
+        letterSpacing: 0.2,
+        zIndex: 60,
+        pointerEvents: "none",
+        backdropFilter: "blur(6px)",
+        ...getOverlayEntranceStyle(10, durationFrames),
+      }}
+    >
+      {entityLabel} · {motionLabel} · {cameraLabel}
+    </div>
+  );
+}
+
 function WorkspaceScene({ scene, renderPlan, sceneIndex, durationFrames }) {
   const topics = getTopicsFromRenderPlan(renderPlan);
   const activeTopicIndex = getActiveTopicIndex(topics, scene, sceneIndex);
@@ -1128,6 +1282,7 @@ function WorkspaceScene({ scene, renderPlan, sceneIndex, durationFrames }) {
         sceneCount={(renderPlan.scenes || []).length}
         durationFrames={durationFrames}
       />
+      <SemanticTraversalDebugBadge scene={scene} durationFrames={durationFrames} />
     </Shell>
   );
 }
@@ -1194,6 +1349,7 @@ function FallbackTeachingScene({ scene, renderPlan, sceneIndex, durationFrames }
         sceneCount={(renderPlan.scenes || []).length}
         durationFrames={durationFrames}
       />
+      <SemanticTraversalDebugBadge scene={scene} durationFrames={durationFrames} />
     </Shell>
   );
 }
@@ -1201,6 +1357,8 @@ function FallbackTeachingScene({ scene, renderPlan, sceneIndex, durationFrames }
 function CinematicScene({ scene, renderPlan, sceneIndex, durationFrames }) {
   const entranceStyle = getSceneEntranceStyle(scene, durationFrames);
   const hasDocument = Boolean(scene.pageImagePath);
+
+  maybeLogSemanticTraversal(scene);
 
   return (
     <AbsoluteFill
