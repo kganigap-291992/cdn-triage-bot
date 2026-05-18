@@ -69,6 +69,14 @@ function getSceneDurationFrames(scene) {
   return msToFrames(scene.durationMs || scene.estimatedDurationMs || 4000);
 }
 
+function getSceneNarrationDelayFrames(scene) {
+  return msToFrames(
+    scene?.narrationDelayMs ||
+    scene?.sceneBehavior?.narrationDelayMs ||
+    0
+  );
+}
+
 function getProgress(durationFrames) {
   const frame = useCurrentFrame();
   if (durationFrames <= 1) return 1;
@@ -1851,7 +1859,15 @@ function NotebookVideo({ renderPlan }) {
               durationFrames={durationFrames}
             />
 
-            {scene.audioPath ? <Audio src={staticFile(getStaticAssetPath(scene.audioPath))} /> : null}
+            {scene.audioPath ? (
+                getSceneNarrationDelayFrames(scene) > 0 ? (
+                    <Sequence from={getSceneNarrationDelayFrames(scene)}>
+                    <Audio src={staticFile(getStaticAssetPath(scene.audioPath))} />
+                    </Sequence>
+                ) : (
+                    <Audio src={staticFile(getStaticAssetPath(scene.audioPath))} />
+                )
+                ) : null}
           </Sequence>
         );
       })}

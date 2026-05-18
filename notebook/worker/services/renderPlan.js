@@ -31,6 +31,9 @@ const MAX_TARGET_EXTENSION_MS = 1400;
 const DEFAULT_TRANSITION_IN_MS = 360;
 const DEFAULT_TRANSITION_OUT_MS = 420;
 const DEFAULT_TAIL_HOLD_MS = 420;
+const ARCHITECTURE_OVERVIEW_ORIENTATION_MS = 1800;
+const ARCHITECTURE_OVERVIEW_MIN_DURATION_MS = 5200;
+
 
 const CAMERA_CONFIDENCE = {
   HIGH: "high",
@@ -200,6 +203,31 @@ function resolveSceneTiming(section, audioItem) {
     transitionOutMs: DEFAULT_TRANSITION_OUT_MS,
     tailHoldMs: FALLBACK_AUDIO_PADDING_MS,
     motionWindowMs: Math.max(1000, fallbackDurationMs - DEFAULT_TRANSITION_IN_MS),
+  };
+}
+
+function applyArchitectureEstablishTiming(timing, sceneRole) {
+  if (sceneRole !== "architecture_overview") {
+    return {
+      ...timing,
+      narrationDelayMs: 0,
+      orientationHoldMs: 0,
+    };
+  }
+
+  const narrationDelayMs = ARCHITECTURE_OVERVIEW_ORIENTATION_MS;
+  const durationMs = Math.max(
+    ARCHITECTURE_OVERVIEW_MIN_DURATION_MS,
+    timing.durationMs + narrationDelayMs
+  );
+
+  return {
+    ...timing,
+    durationMs,
+    narrationDelayMs,
+    orientationHoldMs: narrationDelayMs,
+    motionWindowMs: Math.max(1000, durationMs - timing.transitionInMs),
+    timingSource: `${timing.timingSource}_architecture_establish_hold`,
   };
 }
 
@@ -732,21 +760,26 @@ function buildMotionBeats({
   const motionWindowMs = timing?.motionWindowMs || 1000;
 
   if (sceneRole === "architecture_overview") {
-    return [
-      {
-        at: 0,
-        durationMs: Math.round(motionWindowMs * 0.45),
-        action: "establish",
-        cameraStyle: "broad_establishing_hold",
-      },
-      {
-        at: Math.round(motionWindowMs * 0.45),
-        durationMs: Math.round(motionWindowMs * 0.55),
-        action: "subtle_push_in",
-        cameraStyle: "progressive_semantic_zoom",
-      },
-    ];
-  }
+  const orientationHoldMs = timing?.orientationHoldMs || ARCHITECTURE_OVERVIEW_ORIENTATION_MS;
+  const pushStartMs = Math.min(orientationHoldMs, Math.round(motionWindowMs * 0.45));
+
+  return [
+    {
+      at: 0,
+      durationMs: pushStartMs,
+      action: "orientation_hold",
+      cameraStyle: "broad_establishing_hold",
+      narration: "silent",
+    },
+    {
+      at: pushStartMs,
+      durationMs: Math.max(800, motionWindowMs - pushStartMs),
+      action: "subtle_push_in",
+      cameraStyle: "progressive_semantic_zoom",
+      narration: "begin_after_orientation",
+    },
+  ];
+}
 
   if (sceneRole === "architecture_recap") {
     return [
@@ -1270,7 +1303,8 @@ function createRenderPlan(jobDir) {
       teachingFocusMetadata?.focusRegion ||
       null;
 
-    const timing = resolveSceneTiming(section, audioItem);
+    const baseTiming = resolveSceneTiming(section, audioItem);
+    const timing = applyArchitectureEstablishTiming(baseTiming, sceneRole);
 
     const cameraPlan = architectureScene
       ? buildCameraPlan({
@@ -1327,6 +1361,8 @@ function createRenderPlan(jobDir) {
       durationMs: timing.durationMs,
       startMs,
       endMs,
+      narrationDelayMs: timing.narrationDelayMs || 0,
+      orientationHoldMs: timing.orientationHoldMs || 0,
 
       page,
       pageImageFile,
@@ -1366,6 +1402,9 @@ function createRenderPlan(jobDir) {
         tailHoldMs: timing.tailHoldMs,
         motionWindowMs: timing.motionWindowMs,
         timingSource: timing.timingSource,
+
+        narrationDelayMs: timing.narrationDelayMs || 0,
+        orientationHoldMs: timing.orientationHoldMs || 0,
       },
 
       transition: {
