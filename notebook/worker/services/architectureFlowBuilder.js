@@ -694,10 +694,12 @@ function buildFlowGroupsFromExplicitSequences(
       const nextEntities = next.entities || [];
 
       const currentEntity =
-        currentEntities[currentEntities.length - 1];
+        currentEntities[0];
 
       let nextEntity =
-        nextEntities[0];
+        nextEntities.find(
+            (candidate) => candidate.id !== currentEntity?.id
+        ) || nextEntities[0];
 
       if (
         currentEntity &&

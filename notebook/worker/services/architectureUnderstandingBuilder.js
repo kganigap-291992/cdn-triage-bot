@@ -387,6 +387,27 @@ function extractTitleCasePhrases(text) {
     });
 }
 
+function extractExternalActorFromSequenceText(text) {
+  const value = normalizeText(text);
+
+  const match = value.match(
+    /\b([A-Z][A-Za-z0-9]*(?:\s+(?:User|Client|Browser|Consumer|App|Application|System|Service|Operator|Device|Viewer|Customer)){0,3}\s+(?:User|Client|Browser|Consumer|App|Application|System|Service|Operator|Device|Viewer|Customer)|(?:User|Client|Browser|Consumer|App|Application|System|Service|Operator|Device|Viewer|Customer)(?:\s+[A-Z][A-Za-z0-9]*){0,3})\b(?=\s+(?:sends|send|calls|call|requests|request|forwards|forward|routes|route|connects|connects to|hits|accesses|enters|initiates))/i
+  );
+
+  if (!match) return null;
+
+  const name = normalizeText(match[1]);
+
+  if (!name || name.length < 3) return null;
+
+  return {
+    id: `external_actor_${normalizeKey(name).slice(0, 40)}`,
+    name,
+    role: "external_actor",
+    source: "explicit_sequence_external_actor",
+  };
+}
+
 function buildFallbackSequenceEntities(text) {
   const phrases = extractTitleCasePhrases(text);
 
@@ -420,13 +441,16 @@ function extractSequencePromotedComponents(explicitSequences = [], existingCompo
       for (const entity of item.entities || []) {
         if (!entity?.id || !entity?.name) continue;
         if (existingIds.has(entity.id)) continue;
-        if (entity.role !== "document_sequence_entity") continue;
+        if (
+        entity.role !== "document_sequence_entity" &&
+        entity.role !== "external_actor"
+        ) continue;
 
         promoted.push({
-          id: entity.id,
-          name: entity.name,
-          type: "sequence_entity",
-          role: "process_step",
+        id: entity.id,
+        name: entity.name,
+        type: entity.role === "external_actor" ? "external_actor" : "sequence_entity",
+        role: entity.role === "external_actor" ? "external_actor" : "process_step",
           graphEligible: true,
           structuralScore: 1,
           source: "explicit_sequence",
@@ -456,6 +480,24 @@ function extractExplicitSequences(documentUnderstanding = {}, components = []) {
             const rawText = getEvidenceText(item);
             const text = cleanSequenceText(rawText);
             let mentioned = findMentionedComponents(text, components);
+
+            const externalActor = extractExternalActorFromSequenceText(text);
+
+            if (externalActor) {
+            const alreadyMentioned = mentioned.some(
+                (entry) => entry?.component?.id === externalActor.id ||
+                lower(entry?.component?.name) === lower(externalActor.name)
+            );
+
+            if (!alreadyMentioned) {
+                mentioned = [
+                {
+                    component: externalActor,
+                },
+                ...mentioned,
+                ];
+            }
+            }
 
             if (mentioned.length === 0) {
             mentioned = buildFallbackSequenceEntities(text);

@@ -436,24 +436,49 @@ function buildNaturalResponsibilityText(conceptLabel, fromName, toName) {
   return "";
 }
 
-function buildArchitectureAwareText(unit) {
+function getFirstArchitectureHandoff(metadata = {}, lessonGraph = {}) {
+  const enrichedSegments = asArray(metadata.enrichedSegments);
+
+  if (enrichedSegments.length > 0) {
+    return enrichedSegments[0];
+  }
+
+  const teachingUnits = asArray(lessonGraph.teachingUnits);
+
+  for (const unit of teachingUnits) {
+    const segments = asArray(unit?.metadata?.enrichedSegments);
+    if (segments.length > 0) {
+      return segments[0];
+    }
+  }
+
+  return null;
+}
+
+function buildArchitectureAwareText(unit, lessonGraph = {}) {
   const metadata = unit?.metadata || {};
   const role = metadata.role;
   const segments = asArray(metadata.enrichedSegments);
   const recapMentalModel = cleanText(metadata.recapMentalModel, 520);
 
   if (role === "architecture_overview") {
-    const { fromName, toName } = getSegmentNames(segments);
+    const firstHandoff = getFirstArchitectureHandoff(metadata, lessonGraph);
+
+    const fromName = cleanText(firstHandoff?.from?.name, 120);
+    const toName = cleanText(firstHandoff?.to?.name, 120);
 
     return [
-      fromName && toName
-        ? `At a high level, the flow starts around ${fromName} and moves toward ${toName}.`
-        : "At a high level, this diagram shows how traffic moves through the system.",
-      "From there, we follow the main handoffs and watch where responsibility shifts from one part of the architecture to the next.",
+        "At a high level, this diagram shows how traffic moves through the system.",
+
+        fromName && toName
+        ? `The request begins from ${fromName} and first enters through ${toName} before moving deeper into the architecture.`
+        : "",
+
+        "From there, we follow the main handoffs and watch where responsibility shifts from one part of the architecture to the next.",
     ]
-      .filter(Boolean)
-      .join(" ");
-  }
+        .filter(Boolean)
+        .join(" ");
+}
 
   if (role === "architecture_recap") {
     return [
@@ -482,7 +507,7 @@ function buildArchitectureAwareText(unit) {
 
 function buildConceptAwareText(unit, documentIntelligence, lessonGraph) {
   if (isArchitectureLesson(documentIntelligence, lessonGraph)) {
-    return buildArchitectureAwareText(unit);
+    return buildArchitectureAwareText(unit, lessonGraph);
   }
 
   const title = cleanText(unit.title, 180);
@@ -540,7 +565,7 @@ function buildConceptAwareText(unit, documentIntelligence, lessonGraph) {
 
 function buildTeachingUnitText(unit, documentIntelligence, lessonGraph) {
   if (isArchitectureLesson(documentIntelligence, lessonGraph)) {
-    return buildArchitectureAwareText(unit);
+    return buildArchitectureAwareText(unit, lessonGraph);
   }
 
   const visibleElements = getVisibleElements(unit);
