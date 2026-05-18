@@ -334,18 +334,19 @@ function maxConfidence(rels) {
   return best?.confidence || "unknown";
 }
 
+
 function classifyStructuralRole(component, metrics) {
   const text = collectTextHints(
+    component?.name,
     component?.declaredRole,
     component?.evidenceText,
     metrics?.evidenceText
-  );
+    );
 
   const incoming = metrics?.incomingCount || 0;
   const outgoing = metrics?.outgoingCount || 0;
 
   const hasStateEvidence = containsAny(text, [
-    "state",
     "store",
     "stored",
     "storage",
@@ -353,13 +354,8 @@ function classifyStructuralRole(component, metrics) {
     "persistence",
     "record",
     "records",
-    "read",
-    "write",
     "database",
-    "data",
     "cache",
-    "index",
-    "queue",
     "bucket",
   ]);
 
@@ -400,28 +396,33 @@ function classifyStructuralRole(component, metrics) {
     return STRUCTURAL_ROLES.ISOLATED;
   }
 
-  if (hasStateEvidence && incoming > 0 && outgoing <= 1) {
-    return STRUCTURAL_ROLES.STATE;
-  }
-
-  if (outgoing === 0 && incoming > 0) {
-    return hasStateEvidence ? STRUCTURAL_ROLES.STATE : STRUCTURAL_ROLES.TERMINAL;
-  }
-
   if (incoming === 0 && outgoing > 0) {
     return STRUCTURAL_ROLES.SOURCE;
   }
 
-  if (outgoing > 1) {
-    return STRUCTURAL_ROLES.FANOUT;
+  if (
+    hasBoundaryEvidence &&
+    incoming <= 1 &&
+    outgoing > 0 &&
+    !hasStateEvidence
+  ) {
+    return STRUCTURAL_ROLES.BOUNDARY;
   }
 
   if (hasControlEvidence && incoming > 0 && outgoing > 0) {
     return STRUCTURAL_ROLES.CONTROL;
   }
 
-  if (hasBoundaryEvidence && incoming <= 1 && outgoing > 0) {
-    return STRUCTURAL_ROLES.BOUNDARY;
+  if (outgoing > 1) {
+    return STRUCTURAL_ROLES.FANOUT;
+  }
+
+  if (hasStateEvidence && incoming > 0 && outgoing === 0) {
+    return STRUCTURAL_ROLES.STATE;
+  }
+
+  if (outgoing === 0 && incoming > 0) {
+    return hasStateEvidence ? STRUCTURAL_ROLES.STATE : STRUCTURAL_ROLES.TERMINAL;
   }
 
   if (incoming > 0 && outgoing > 0) {
@@ -671,6 +672,58 @@ function buildPrimaryArchitectureFlow(componentIndex, adjacency) {
 }
 
 
+function classifyExplicitSequence(sequence = {}) {
+  const text = collectTextHints(
+    sequence.title,
+    asArray(sequence.items).map((item) => item.text)
+  );
+
+  const hasFlowLanguage = containsAny(text, [
+    "request",
+    "requests",
+    "send",
+    "sends",
+    "forward",
+    "forwards",
+    "route",
+    "routes",
+    "routing",
+    "validate",
+    "authentication",
+    "traffic",
+    "reads",
+    "writes",
+    "connect",
+    "connects",
+    "deliver",
+    "distribute",
+  ]);
+
+  const hasDescriptiveLanguage = containsAny(text, [
+    "reduces",
+    "latency",
+    "scales",
+    "persistent",
+    "system of record",
+    "centralizes",
+    "acts as",
+    "manages",
+    "supports",
+    "handles",
+  ]);
+
+  if (hasFlowLanguage && !hasDescriptiveLanguage) {
+    return "primary_request_flow";
+  }
+
+  if (hasFlowLanguage) {
+    return "supporting_flow";
+  }
+
+  return "descriptive_context";
+}
+
+
 function buildFlowGroupsFromExplicitSequences(
   architectureUnderstanding = {},
   componentIndex
@@ -682,7 +735,11 @@ function buildFlowGroupsFromExplicitSequences(
 
   if (!explicitSequences.length) return [];
 
-  return explicitSequences.map((sequence, sequenceIndex) => {
+  return explicitSequences
+    .filter((sequence) => classifyExplicitSequence(sequence) !== "descriptive_context")
+    .map((sequence, sequenceIndex) => {
+        const sequenceClassification = classifyExplicitSequence(sequence);
+
     const items = sequence.items || [];
     const segments = [];
 
@@ -761,7 +818,8 @@ function buildFlowGroupsFromExplicitSequences(
       title: sequence.title || `Sequence ${sequenceIndex + 1}`,
       confidence: sequence.confidence || "deterministic",
       segments,
-      isPrimary: sequenceIndex === 0,
+      sequenceClassification,
+      isPrimary: sequenceClassification === "primary_request_flow",
       source: sequence.source || "document_sequence",
     };
   });
@@ -964,7 +1022,13 @@ function buildRecapMentalModel(flowChapters) {
 
 function flattenFlowSegments(flowGroups) {
   return uniqueBy(
-    flowGroups.flatMap((group) => group.segments || []),
+    flowGroups.flatMap((group) => {
+        if (group.isPrimary) {
+        return group.segments || [];
+        }
+
+        return (group.segments || []).slice(0, 1);
+    }),
     (segment) => `${segment.from.id}->${segment.to.id}:${segment.relationshipType}`
   );
 }

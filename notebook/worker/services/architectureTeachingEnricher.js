@@ -390,7 +390,67 @@ function inferGenericConcept(segment = {}) {
   const fromRole = normalizeKey(segment.from?.structuralRole || segment.from?.role);
   const toRole = normalizeKey(segment.to?.structuralRole || segment.to?.role);
 
-  const text = `${handoff} ${purpose} ${fromRole} ${toRole}`;
+  const fromName = normalizeKey(segment.from?.name);
+  const toName = normalizeKey(segment.to?.name);
+  const relationshipType = normalizeKey(segment.relationshipType);
+  const evidenceText = normalizeKey(
+    collectTextHints(
+      segment.documentSays,
+      segment.evidenceSummary?.text,
+      segment.transitionNarrationHint,
+      segment.plainEnglish,
+      segment.whyItMatters
+    )
+  );
+
+  const text = [
+    handoff,
+    fromRole,
+    toRole,
+    fromName,
+    toName,
+    relationshipType,
+    evidenceText,
+    ].join(" ");
+
+  if (
+    text.includes("validate") ||
+    text.includes("validation") ||
+    text.includes("auth") ||
+    text.includes("authenticate") ||
+    text.includes("authorization") ||
+    text.includes("authorize") ||
+    text.includes("validate") ||
+    text.includes("validation") ||
+    text.includes("checkpoint") ||
+    text.includes("policy")
+  ) {
+    return "validation_checkpoint";
+  }
+
+  if (
+    text.includes("database") ||
+    text.includes("state_node") ||
+    text.includes("terminal_node") ||
+    text.includes("persistence") ||
+    text.includes("persist") ||
+    text.includes("storage") ||
+    text.includes("store")
+    ) {
+    return "persistence_state";
+    }
+
+    if (
+    text.includes("gateway") ||
+    text.includes("routing") ||
+    text.includes("route") ||
+    text.includes("control") ||
+    text.includes("decision") ||
+    text.includes("direct") ||
+    text.includes("coordinate")
+    ) {
+    return "routing_control";
+    }
 
   if (
     text.includes("source_node") ||
@@ -403,33 +463,12 @@ function inferGenericConcept(segment = {}) {
   }
 
   if (
-    text.includes("control_node") ||
     text.includes("fanout_node") ||
-    text.includes("routing") ||
-    text.includes("control") ||
-    text.includes("decision")
+    text.includes("fanout") ||
+    text.includes("distribution") ||
+    text.includes("branch")
   ) {
-    return text.includes("fanout_node") ? "fanout_distribution" : "routing_control";
-  }
-
-  if (
-    text.includes("validate") ||
-    text.includes("validation") ||
-    text.includes("auth") ||
-    text.includes("checkpoint") ||
-    text.includes("check")
-  ) {
-    return "validation_checkpoint";
-  }
-
-  if (
-    text.includes("state_node") ||
-    text.includes("terminal_node") ||
-    text.includes("state") ||
-    text.includes("persistence") ||
-    text.includes("destination")
-  ) {
-    return "persistence_state";
+    return "fanout_distribution";
   }
 
   if (

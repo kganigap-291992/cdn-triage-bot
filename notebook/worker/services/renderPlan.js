@@ -447,6 +447,32 @@ function findTeachingFocusForScene({ teachingFocusSequence = [], sceneIndex }) {
   return teachingFocusSequence[sceneIndex] || null;
 }
 
+function findArchitectureRegionForScene({
+  architectureTeachingRegions = [],
+  section,
+  sceneIndex,
+}) {
+  const chapterId =
+    section?.metadata?.architectureTeachingChapterId ||
+    section?.metadata?.sourceChapterId ||
+    section?.architectureTeachingChapterId ||
+    section?.sourceChapterId ||
+    null;
+
+  if (chapterId) {
+    const matched = architectureTeachingRegions.find((region) => {
+      return (
+        region.sourceChapterId === chapterId ||
+        region.sourceChapterTitle === section?.title
+      );
+    });
+
+    if (matched) return matched;
+  }
+
+  return architectureTeachingRegions[sceneIndex] || null;
+}
+
 function normalizeConfidence(value) {
   const confidence = String(value || "").toLowerCase();
 
@@ -666,6 +692,7 @@ function buildCameraPlan({
   sceneRole,
   teachingFocus,
   choreography,
+  architectureRegion,
   timing,
 }) {
   const confidence = normalizeConfidence(
@@ -708,6 +735,10 @@ function buildCameraPlan({
     motionIntent,
     cameraStyle,
     focusPriority,
+
+    regionLabel: architectureRegion?.regionLabel || null,
+    responsibilityLayer: architectureRegion?.responsibilityLayer || null,
+    cameraStrategy: architectureRegion?.cameraStrategy || null,
 
     confidence,
     cameraScope,
@@ -1225,10 +1256,16 @@ function createRenderPlan(jobDir) {
   const audioManifestPath = path.join(jobDir, "audio-manifest.json");
   const diagramAnalysisPath = path.join(jobDir, "diagram-analysis.json");
   const renderPlanPath = path.join(jobDir, "renderPlan.json");
+    const lessonPlanPath = path.join(jobDir, "lesson-plan.json");
 
-  const dialogue = readJson(dialoguePath);
-  const lessonGraph = dialogue?.lessonGraph || {};
-  const architectureTraversal = lessonGraph?.architectureTraversal || {};
+    const dialogue = readJson(dialoguePath);
+    const lessonPlan = readJson(lessonPlanPath, {});
+    const lessonGraph = dialogue?.lessonGraph || lessonPlan?.lessonGraph || {};
+    const architectureTraversal = lessonGraph?.architectureTraversal || {};
+    const architectureTeachingRegions =
+    dialogue?.lessonGraph?.architectureTeachingRegions ||
+    lessonPlan?.lessonGraph?.architectureTeachingRegions ||
+    [];
   const audioManifest = readJson(audioManifestPath, {});
   const diagramAnalysis = readJson(diagramAnalysisPath, {});
 
@@ -1256,6 +1293,12 @@ function createRenderPlan(jobDir) {
     const teachingFocusMetadata = findTeachingFocusForScene({
       teachingFocusSequence: architectureTraversal.teachingFocusSequence || [],
       sceneIndex: index,
+    });
+
+    const architectureRegionMetadata = findArchitectureRegionForScene({
+    architectureTeachingRegions,
+    section,
+    sceneIndex: index,
     });
 
     const sectionNumber = normalizeSectionNumber(section.sectionNumber, index);
@@ -1307,16 +1350,17 @@ function createRenderPlan(jobDir) {
     const timing = applyArchitectureEstablishTiming(baseTiming, sceneRole);
 
     const cameraPlan = architectureScene
-      ? buildCameraPlan({
-          section,
-          visualIntent,
-          focusRegion: rawFocusRegion,
-          sceneRole,
-          teachingFocus: teachingFocusMetadata,
-          choreography: choreographyMetadata,
-          timing,
+    ? buildCameraPlan({
+        section,
+        visualIntent,
+        focusRegion: rawFocusRegion,
+        sceneRole,
+        teachingFocus: teachingFocusMetadata,
+        choreography: choreographyMetadata,
+        architectureRegion: architectureRegionMetadata,
+        timing,
         })
-      : null;
+    : null;
 
     const visualType = resolveVisualTypeFromIntent(
       type,

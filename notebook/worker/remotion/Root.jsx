@@ -674,9 +674,29 @@ function getSemanticCameraTuning(scene) {
   }
 
   const isMedium = confidence === "medium";
-  const isExact = cameraScope === "exact_focus" && confidence === "high";
+    const isExact = cameraScope === "exact_focus" && confidence === "high";
 
-  switch (motionIntent) {
+    const isRegionFirst =
+    scene?.cameraPlan?.cameraStrategy === "broad_region_first" ||
+    scene?.cameraPlan?.cameraScope === "architecture_region";
+
+    if (isRegionFirst) {
+    return {
+        isSemanticCamera: true,
+        motionIntent,
+        cameraStyle,
+        viewportCenterX: 0.5,
+        viewportCenterY: 0.44,
+        panXMultiplier: 26,
+        panYMultiplier: 42,
+        startPanRatio: 0.08,
+        startScale: 1.002,
+        targetScale: 1.014,
+        viewport,
+    };
+    }
+
+    switch (motionIntent) {
     case "zoom_to_flow_entry":
       return {
         isSemanticCamera: true,

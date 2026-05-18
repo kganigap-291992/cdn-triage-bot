@@ -22,6 +22,132 @@ const { buildPedagogyProfile } = require("./pedagogyProfileBuilder");
 const { buildSourceGrounding } = require("./sourceGroundingBuilder");
 const { buildDocumentStructure } = require("./documentStructureBuilder");
 
+const ARCHITECTURE_REGION_TYPES = {
+  TRAFFIC_ENTRY_AND_ROUTING: "traffic_entry_and_routing",
+  VALIDATION_OR_CONTROL: "validation_or_control",
+  PROCESSING: "processing",
+  STATE_OR_PERSISTENCE: "state_or_persistence",
+  RECAP_OR_MENTAL_MODEL: "recap_or_mental_model",
+};
+
+const ARCHITECTURE_REGION_LABELS = {
+  [ARCHITECTURE_REGION_TYPES.TRAFFIC_ENTRY_AND_ROUTING]: "Traffic Entry and Routing",
+  [ARCHITECTURE_REGION_TYPES.VALIDATION_OR_CONTROL]: "Validation or Control",
+  [ARCHITECTURE_REGION_TYPES.PROCESSING]: "Processing",
+  [ARCHITECTURE_REGION_TYPES.STATE_OR_PERSISTENCE]: "State or Persistence",
+  [ARCHITECTURE_REGION_TYPES.RECAP_OR_MENTAL_MODEL]: "Architecture Mental Model",
+};
+
+
+function getArchitectureRegionLabel(regionType) {
+  return ARCHITECTURE_REGION_LABELS[regionType] || "Architecture Region";
+}
+
+function getArchitectureRegionTypeFromChapter(chapter = {}) {
+  const text = [
+    chapter.chapterType,
+    chapter.type,
+    chapter.title,
+    chapter.teachingPurpose,
+    chapter.summary,
+  ]
+    .map(safeLower)
+    .join(" ");
+
+  if (
+    text.includes("control") ||
+    text.includes("validation") ||
+    text.includes("validate") ||
+    text.includes("auth") ||
+    text.includes("policy") ||
+    text.includes("gateway")
+    ) {
+    return ARCHITECTURE_REGION_TYPES.VALIDATION_OR_CONTROL;
+    }
+
+    if (
+    text.includes("entry") ||
+    text.includes("boundary") ||
+    text.includes("ingress") ||
+    text.includes("routing")
+    ) {
+    return ARCHITECTURE_REGION_TYPES.TRAFFIC_ENTRY_AND_ROUTING;
+    }
+
+  if (
+    text.includes("state") ||
+    text.includes("terminal") ||
+    text.includes("persistence") ||
+    text.includes("storage") ||
+    text.includes("database")
+  ) {
+    return ARCHITECTURE_REGION_TYPES.STATE_OR_PERSISTENCE;
+  }
+
+  if (
+    text.includes("recap") ||
+    text.includes("mental model") ||
+    text.includes("putting")
+  ) {
+    return ARCHITECTURE_REGION_TYPES.RECAP_OR_MENTAL_MODEL;
+  }
+
+  return ARCHITECTURE_REGION_TYPES.PROCESSING;
+}
+
+
+function collectArchitectureRegionEntities(chapter = {}) {
+  const entities = [];
+
+  for (const segment of asArray(chapter.enrichedSegments || chapter.segments)) {
+    if (segment?.from?.name) entities.push(segment.from.name);
+    if (segment?.to?.name) entities.push(segment.to.name);
+    if (segment?.fromName) entities.push(segment.fromName);
+    if (segment?.toName) entities.push(segment.toName);
+  }
+
+  for (const entity of asArray(chapter.entities || chapter.components)) {
+    if (typeof entity === "string") entities.push(entity);
+    else if (entity?.name) entities.push(entity.name);
+    else if (entity?.label) entities.push(entity.label);
+  }
+
+  return uniq(entities);
+}
+
+function buildArchitectureTeachingRegion(chapter = {}, index = 0) {
+  const responsibilityLayer = getArchitectureRegionTypeFromChapter(chapter);
+  const regionLabel = getArchitectureRegionLabel(responsibilityLayer);
+  const entities = collectArchitectureRegionEntities(chapter);
+
+  return {
+    id: `architecture_region_${index + 1}_${slugify(regionLabel)}`,
+    version: "architecture-teaching-region-v1",
+    source: "lessonGraphBuilder",
+    regionOwnership: "lessonGraphBuilder",
+    regionLabel,
+    responsibilityLayer,
+    cameraStrategy: "broad_region_first",
+    entities,
+    segmentCount: asArray(chapter.enrichedSegments || chapter.segments).length,
+    confidence: chapter.confidence || "medium",
+    sourceChapterId: chapter.id || chapter.chapterId || null,
+    sourceChapterTitle: chapter.title || null,
+  };
+}
+
+function buildArchitectureTeachingRegions({ documentIntelligence, architectureTeaching }) {
+  if (!isArchitectureDocument(documentIntelligence)) return [];
+
+  const chapters = asArray(architectureTeaching?.enrichedChapters);
+
+  return chapters
+    .map((chapter, index) => buildArchitectureTeachingRegion(chapter, index))
+    .filter((region) => region.entities.length > 0 || region.segmentCount > 0);
+}
+
+
+
 function safeString(value) {
   return String(value || "").trim();
 }
@@ -1028,6 +1154,7 @@ function buildArchitectureTeachingUnitFromChapter({
   const motionIntent = getArchitectureMotionIntent(chapter, chapterIndex);
   const isOverview = chapter?.type === "architecture_overview";
   const isRecap = chapter?.type === "architecture_recap";
+  const teachingRegion = buildArchitectureTeachingRegion(chapter, chapterIndex);
 
   return {
     id: `architecture_teaching_${slugify(chapter?.id || title || chapterIndex)}`,
@@ -1064,7 +1191,11 @@ function buildArchitectureTeachingUnitFromChapter({
       architectureTeachingChapterId: chapter?.id || null,
       sourceChapterId: chapter?.sourceChapterId || null,
       chapterType: chapter?.type || null,
-      confidence: chapter?.confidence || "unknown",
+        teachingRegion,
+        responsibilityLayer: teachingRegion.responsibilityLayer,
+        regionLabel: teachingRegion.regionLabel,
+        cameraStrategy: teachingRegion.cameraStrategy,
+        confidence: chapter?.confidence || "unknown",
       confidenceLanguage: chapter?.confidenceLanguage || null,
       operationalMeaning: chapter?.teachingContext?.operationalMeaning || null,
       transitionNarrationHint: chapter?.teachingContext?.transitionNarrationHint || chapter?.teachingContext?.suggestedNarrationHint || null,
@@ -1425,6 +1556,11 @@ function buildLessonGraph({
 
   const architectureFlowGroups = buildArchitectureFlowGroups(architectureUnderstanding);
 
+  const architectureTeachingRegions = buildArchitectureTeachingRegions({
+    documentIntelligence,
+    architectureTeaching,
+    });
+
   const coreUnits = buildCoreTeachingUnits({
     conceptsData,
     diagramAnalysis,
@@ -1556,6 +1692,7 @@ function buildLessonGraph({
       reduceOverlayDominance: true,
     },
     architectureTraversal,
+    architectureTeachingRegions,
     teachingUnits,
     stats: {
       teachingUnitCount: teachingUnits.length,

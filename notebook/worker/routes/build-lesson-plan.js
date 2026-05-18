@@ -174,6 +174,22 @@ router.post("/:jobId", async (req, res) => {
 
     const outputPath = saveLessonPlan(jobDir, lessonPlan);
 
+    const architectureTeachingRegions = Array.isArray(
+    lessonPlan?.lessonGraph?.architectureTeachingRegions
+    )
+    ? lessonPlan.lessonGraph.architectureTeachingRegions
+    : [];
+
+    const regionTeachingPath = writeJson(
+    path.join(jobDir, "region-teaching.json"),
+    {
+        version: "region-teaching-v1",
+        source: "lessonGraphBuilder",
+        regionCount: architectureTeachingRegions.length,
+        regions: architectureTeachingRegions,
+    }
+    );
+
     return res.json({
       ok: true,
       phase: "lesson-plan",
@@ -212,6 +228,7 @@ router.post("/:jobId", async (req, res) => {
       sectionCount: lessonPlan.lessonStructure.length,
       conceptCount: lessonPlan.prioritizedConcepts.length,
       output: outputPath,
+        regionTeachingOutput: regionTeachingPath,
     });
   } catch (error) {
     console.error("build-lesson-plan error:", error);
