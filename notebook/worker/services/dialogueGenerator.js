@@ -3,15 +3,10 @@
 const fs = require("fs");
 const path = require("path");
 
-const {
-  buildDocumentIntelligence,
-} = require("./documentIntelligence");
+const { buildDocumentIntelligence } = require("./documentIntelligence");
+const { buildLessonGraph } = require("./lessonGraphBuilder");
 
-const {
-  buildLessonGraph,
-} = require("./lessonGraphBuilder");
-
-const DIALOGUE_VERSION = "dialogue-v11-spoken-focus-sync";
+const DIALOGUE_VERSION = "dialogue-v13-natural-architecture-storytelling";
 
 function getDialoguePath(jobDir) {
   return path.join(jobDir, "dialogue.json");
@@ -24,11 +19,7 @@ function readJsonIfExists(filePath, fallback = {}) {
 
 function cleanText(value, maxLength = 900) {
   if (!value) return "";
-
-  return String(value)
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, maxLength);
+  return String(value).replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
 function sentence(value) {
@@ -53,46 +44,39 @@ function buildShortCaption(value, maxLength = 110) {
   return `${text.slice(0, maxLength - 3).trim()}...`;
 }
 
-function buildVisualIntent({
-  mode,
-  page = null,
-  focus = null,
-  command = null,
-  reference = null,
-  step = null,
-  totalSteps = null,
-  presentationStyle = null,
-  sceneIntent = null,
-  focusHint = null,
-  spokenFocus = null,
-  spokenFocusTargets = [],
-  avoidNarration = [],
-}) {
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function isArchitectureLesson(documentIntelligence, lessonGraph) {
+  return (
+    documentIntelligence?.primaryType === "architecture_doc" ||
+    lessonGraph?.documentType === "architecture_doc" ||
+    lessonGraph?.stats?.architectureTeachingApplied === true
+  );
+}
+
+function buildVisualIntent(args) {
   return {
-    mode,
-    page,
-    focus,
-    command,
-    reference,
-    step,
-    totalSteps,
-    presentationStyle,
-    sceneIntent,
-    focusHint,
-    spokenFocus,
-    spokenFocusTargets,
-    avoidNarration,
+    mode: args.mode,
+    page: args.page ?? null,
+    focus: args.focus ?? null,
+    command: args.command ?? null,
+    reference: args.reference ?? null,
+    step: args.step ?? null,
+    totalSteps: args.totalSteps ?? null,
+    presentationStyle: args.presentationStyle ?? null,
+    sceneIntent: args.sceneIntent ?? null,
+    focusHint: args.focusHint ?? null,
+    spokenFocus: args.spokenFocus ?? null,
+    spokenFocusTargets: args.spokenFocusTargets || [],
+    avoidNarration: args.avoidNarration || [],
   };
 }
 
 function firstSourcePage(unit) {
   if (!Array.isArray(unit?.sourcePages)) return null;
-
-  const match = unit.sourcePages.find((page) => {
-    return typeof page === "number" && Number.isFinite(page);
-  });
-
-  return match ?? null;
+  return unit.sourcePages.find((page) => typeof page === "number" && Number.isFinite(page)) ?? null;
 }
 
 function getVisibleElements(unit) {
@@ -108,50 +92,33 @@ function getConcepts(unit) {
 }
 
 function getCommandDetails(unit) {
-  return Array.isArray(unit?.metadata?.commandDetails)
-    ? unit.metadata.commandDetails
-    : [];
+  return Array.isArray(unit?.metadata?.commandDetails) ? unit.metadata.commandDetails : [];
 }
 
 function normalizeCommandText(value) {
-  return cleanText(value, 220)
-    .replace(/^`+|`+$/g, "")
-    .trim();
+  return cleanText(value, 220).replace(/^`+|`+$/g, "").trim();
 }
 
 function isCommandLike(value) {
   const text = normalizeCommandText(value);
-
   if (!text) return false;
-
   return /^(kubectl|helm|docker|curl|ssh|git|npm|node|python|go|java|terraform|ansible)\b/i.test(text);
 }
 
-
 function splitCommandBlob(value) {
   const text = cleanText(value, 900);
-
   if (!text) return [];
 
-  const normalized = text
+  return text
     .replace(/\s+/g, " ")
     .replace(/\s+—\s+/g, " — ")
-    .trim();
-
-  const chunks = normalized
+    .trim()
     .split(/\s+(?=\d+[.)]?\s+(kubectl|helm|docker|curl|ssh|git|npm|node|python|go|java|terraform|ansible)\b)/i)
     .map((item) => item.trim())
-    .filter(Boolean);
-
-  return chunks
+    .filter(Boolean)
     .map((chunk) => {
-      const cleaned = chunk
-        .replace(/^\d+[.)]?\s+/, "")
-        .trim();
-
-      const commandOnly = cleaned.split(/\s+—\s+/)[0]?.trim() || cleaned;
-
-      return commandOnly;
+      const cleaned = chunk.replace(/^\d+[.)]?\s+/, "").trim();
+      return cleaned.split(/\s+—\s+/)[0]?.trim() || cleaned;
     })
     .filter((command) => {
       if (!isCommandLike(command)) return false;
@@ -161,38 +128,27 @@ function splitCommandBlob(value) {
 }
 
 function getPreferredVisualMode(unit) {
-  const preferred = Array.isArray(unit?.preferredVisuals)
-    ? unit.preferredVisuals
-    : [];
+  const preferred = Array.isArray(unit?.preferredVisuals) ? unit.preferredVisuals : [];
 
   if (preferred.includes("command_focus")) return "command_focus";
-  if (preferred.includes("grouped_reference_card")) return "grouped_reference_card";
-  if (preferred.includes("quick_debugging_flow")) return "quick_debugging_flow";
-  if (preferred.includes("step_focus")) return "step_focus";
-  if (preferred.includes("verification_card")) return "verification_card";
-  if (preferred.includes("decision_point")) return "decision_point";
-  if (preferred.includes("component_focus")) return "component_focus";
-  if (preferred.includes("request_flow")) return "request_flow";
-  if (preferred.includes("diagram_walkthrough")) return "diagram_guided_focus";
   if (preferred.includes("full_diagram")) return "architecture_full_diagram";
   if (preferred.includes("diagram_region_focus")) return "architecture_region_focus";
   if (preferred.includes("summary_card")) return "recap_summary";
+  if (preferred.includes("step_focus")) return "step_focus";
+  if (preferred.includes("verification_card")) return "verification_card";
+  if (preferred.includes("decision_point")) return "decision_point";
 
   return "teaching_unit_focus";
 }
 
 function normalizeDebuggingSignal(value) {
-  let text = stripTrailingPeriod(lowerFirst(value));
-
-  text = text
+  return stripTrailingPeriod(lowerFirst(value))
     .replace(/^failure indicates\s+/i, "")
     .replace(/^failures indicate\s+/i, "")
     .replace(/^errors indicate\s+/i, "")
     .replace(/^error indicates\s+/i, "")
     .replace(/^missing\s+/i, "missing ")
     .trim();
-
-  return text;
 }
 
 function buildSpokenFocusTarget({
@@ -206,7 +162,6 @@ function buildSpokenFocusTarget({
 }) {
   const cleanTargetText = cleanText(text, 260);
   const cleanLabel = cleanText(label || text, 140);
-
   if (!cleanTargetText && !cleanLabel) return null;
 
   return {
@@ -225,10 +180,8 @@ function buildCommandSpokenFocusTargets(unit) {
   const visibleElements = getVisibleElements(unit);
 
   const detailTargets = commandDetails
-    .flatMap((commandDetail, detailIndex) => {
-      const commands = splitCommandBlob(commandDetail.command);
-
-      return commands.map((command, commandIndex) =>
+    .flatMap((commandDetail, detailIndex) =>
+      splitCommandBlob(commandDetail.command).map((command, commandIndex) =>
         buildSpokenFocusTarget({
           type: "command",
           text: command,
@@ -241,11 +194,11 @@ function buildCommandSpokenFocusTargets(unit) {
           priority: detailIndex * 10 + commandIndex + 1,
           focusMode: "line",
         })
-      );
-    })
+      )
+    )
     .filter(Boolean);
 
-  const visibleCommandTargets = visibleElements
+  const visibleTargets = visibleElements
     .flatMap((item) => splitCommandBlob(item))
     .slice(0, 8)
     .map((command, index) =>
@@ -261,8 +214,7 @@ function buildCommandSpokenFocusTargets(unit) {
     .filter(Boolean);
 
   const seen = new Set();
-
-  return [...detailTargets, ...visibleCommandTargets].filter((target) => {
+  return [...detailTargets, ...visibleTargets].filter((target) => {
     const key = target.text.toLowerCase();
     if (seen.has(key)) return false;
     seen.add(key);
@@ -270,27 +222,66 @@ function buildCommandSpokenFocusTargets(unit) {
   });
 }
 
-function buildConceptSpokenFocusTargets(unit, documentIntelligence) {
+function buildArchitectureSpokenFocusTargets(unit) {
+  const metadata = unit?.metadata || {};
+  const segments = asArray(metadata.enrichedSegments);
+
+  const segmentTargets = segments
+    .map((segment, index) => {
+      const fromName = cleanText(segment?.from?.name, 120);
+      const toName = cleanText(segment?.to?.name, 120);
+      const conceptLabel = cleanText(segment?.teachingContext?.conceptLabel, 120);
+      if (!fromName && !toName && !conceptLabel) return null;
+
+      return buildSpokenFocusTarget({
+        type: "architecture_handoff",
+        text: fromName && toName ? `${fromName} → ${toName}` : conceptLabel,
+        label: conceptLabel || `${fromName} to ${toName}`,
+        reason:
+          segment?.teachingContext?.operationalMeaning ||
+          segment?.transitionNarrationHint ||
+          "Architecture handoff discussed in this scene",
+        priority: index + 1,
+        focusMode: "region",
+        source: "architectureTeaching",
+      });
+    })
+    .filter(Boolean);
+
+  if (segmentTargets.length) return segmentTargets;
+
+  const title = cleanText(unit.title, 180);
+  return [
+    buildSpokenFocusTarget({
+      type: metadata.role === "architecture_recap" ? "architecture_recap" : "architecture_chapter",
+      text: title,
+      label: title,
+      reason: metadata.operationalMeaning || metadata.recapMentalModel || "Architecture teaching chapter",
+      priority: 1,
+      focusMode: "region",
+      source: "architectureTeaching",
+    }),
+  ].filter(Boolean);
+}
+
+function buildConceptSpokenFocusTargets(unit, documentIntelligence, lessonGraph) {
+  if (isArchitectureLesson(documentIntelligence, lessonGraph)) {
+    return buildArchitectureSpokenFocusTargets(unit);
+  }
+
   const title = cleanText(unit.title, 180);
   const concepts = getConcepts(unit).filter((item) => item !== title);
-
   const targets = [];
 
   if (title) {
     targets.push(
       buildSpokenFocusTarget({
-        type:
-          documentIntelligence.primaryType === "architecture_doc"
-            ? "component"
-            : "concept",
+        type: "concept",
         text: title,
         label: title,
         reason: "Primary topic being explained in this scene",
         priority: 1,
-        focusMode:
-          documentIntelligence.primaryType === "architecture_doc"
-            ? "region"
-            : "section",
+        focusMode: "section",
       })
     );
   }
@@ -311,24 +302,20 @@ function buildConceptSpokenFocusTargets(unit, documentIntelligence) {
   return targets.filter(Boolean);
 }
 
-function buildSpokenFocusForUnit(unit, documentIntelligence) {
+function buildSpokenFocusForUnit(unit, documentIntelligence, lessonGraph) {
   const visibleElements = getVisibleElements(unit);
   const hasCommands = visibleElements.length > 0 || unit?.metadata?.hasCommands;
 
   const commandTargets =
-    hasCommands ||
-    unit.type === "command_group" ||
-    unit.type === "compact_command_group"
+    hasCommands || unit.type === "command_group" || unit.type === "compact_command_group"
       ? buildCommandSpokenFocusTargets(unit)
       : [];
 
-  const conceptTargets = buildConceptSpokenFocusTargets(unit, documentIntelligence);
-
+  const conceptTargets = buildConceptSpokenFocusTargets(unit, documentIntelligence, lessonGraph);
   const targets = commandTargets.length ? commandTargets : conceptTargets;
-  const primary = targets[0] || null;
 
   return {
-    spokenFocus: primary,
+    spokenFocus: targets[0] || null,
     spokenFocusTargets: targets,
   };
 }
@@ -336,36 +323,22 @@ function buildSpokenFocusForUnit(unit, documentIntelligence) {
 function buildCommandAwareText(unit, documentIntelligence) {
   const title = cleanText(unit.title, 180);
   const summary = cleanText(unit?.metadata?.summary, 320);
+  const commandDetails = getCommandDetails(unit).slice(0, 2);
 
-  const commandDetails = getCommandDetails(unit);
-  const highlightedCommands = commandDetails.slice(0, 2);
-
-  const operationalContext = highlightedCommands
+  const operationalContext = commandDetails
     .map((commandDetail, index) => {
       const parts = [];
 
-      if (commandDetail.meaning) {
-        parts.push(stripTrailingPeriod(commandDetail.meaning));
-      }
+      if (commandDetail.meaning) parts.push(stripTrailingPeriod(commandDetail.meaning));
 
       if (commandDetail.whenToUse) {
         const usage = stripTrailingPeriod(lowerFirst(commandDetail.whenToUse));
-
-        if (usage) {
-          parts.push(
-            index === 0
-              ? `Usually used ${usage}`
-              : `Often helpful ${usage}`
-          );
-        }
+        if (usage) parts.push(index === 0 ? `Usually used ${usage}` : `Often helpful ${usage}`);
       }
 
       if (commandDetail.debuggingSignal) {
         const signal = normalizeDebuggingSignal(commandDetail.debuggingSignal);
-
-        if (signal) {
-          parts.push(`Possible issue: ${signal}`);
-        }
+        if (signal) parts.push(`Possible issue: ${signal}`);
       }
 
       return parts.join(". ");
@@ -383,26 +356,140 @@ function buildCommandAwareText(unit, documentIntelligence) {
       .join(" ");
   }
 
-  return [
-    `${title} focuses on practical operational usage.`,
-    operationalContext,
-    summary ? sentence(summary) : "",
-  ]
+  return [`${title} focuses on practical operational usage.`, operationalContext, summary ? sentence(summary) : ""]
     .filter(Boolean)
     .join(" ");
 }
 
-function buildConceptAwareText(unit, documentIntelligence) {
+function getSegmentNames(segments) {
+  const firstSegment = segments[0];
+  const lastSegment = segments[segments.length - 1];
+
+  return {
+    fromName: cleanText(firstSegment?.from?.name, 120),
+    toName: cleanText(lastSegment?.to?.name, 120),
+  };
+}
+
+function getSegmentConceptLabel(segments, fallback) {
+  return cleanText(
+    segments[0]?.teachingContext?.conceptLabel ||
+      segments[0]?.genericConcept ||
+      fallback,
+    140
+  );
+}
+
+
+function buildArchitectureTeachingTextFromSegments(segments = []) {
+  const usefulSegments = asArray(segments).filter(
+    (segment) =>
+      segment?.plainEnglish ||
+      segment?.whyItMatters ||
+      segment?.memoryHook
+  );
+
+  if (!usefulSegments.length) return "";
+
+  return usefulSegments
+    .slice(0, 2)
+    .map((segment) =>
+      [
+        sentence(segment.plainEnglish),
+        sentence(segment.whyItMatters),
+        segment.memoryHook ? `A useful way to remember it: ${stripTrailingPeriod(segment.memoryHook)}.` : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    )
+    .join(" ");
+}
+
+
+function buildNaturalResponsibilityText(conceptLabel, fromName, toName) {
+  const key = cleanText(conceptLabel, 140).toLowerCase();
+
+  if (key.includes("ingress") || key.includes("boundary")) {
+    return "This is the point where traffic leaves the public edge and enters a more controlled boundary inside the platform.";
+  }
+
+  if (key.includes("routing") || key.includes("control")) {
+    return "At this stage, the architecture starts deciding where the request or work should go next.";
+  }
+
+  if (key.includes("fanout") || key.includes("distribution")) {
+    return "At this point, the flow can branch, with work handed off toward more than one downstream path.";
+  }
+
+  if (key.includes("state") || key.includes("persistence") || key.includes("terminal")) {
+    return "Eventually the flow reaches a backend destination, where stateful or terminal systems start taking over.";
+  }
+
+  if (key.includes("processing") || key.includes("transform")) {
+    return "This is where the system continues the work inside the processing path.";
+  }
+
+  if (fromName && toName) {
+    return "The important detail is the responsibility shift between the upstream side and the downstream side.";
+  }
+
+  return "";
+}
+
+function buildArchitectureAwareText(unit) {
+  const metadata = unit?.metadata || {};
+  const role = metadata.role;
+  const segments = asArray(metadata.enrichedSegments);
+  const recapMentalModel = cleanText(metadata.recapMentalModel, 520);
+
+  if (role === "architecture_overview") {
+    const { fromName, toName } = getSegmentNames(segments);
+
+    return [
+      fromName && toName
+        ? `At a high level, the flow starts around ${fromName} and moves toward ${toName}.`
+        : "At a high level, this diagram shows how traffic moves through the system.",
+      "From there, we follow the main handoffs and watch where responsibility shifts from one part of the architecture to the next.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  if (role === "architecture_recap") {
+    return [
+        "Putting it together, the architecture moves from the entry boundary, through routing and control, and finally toward stateful backend systems.",
+        "What matters most is how responsibility shifts across the system as the flow moves downstream.",
+    ]
+        .filter(Boolean)
+        .join(" ");
+    }
+
+    const teachingText = buildArchitectureTeachingTextFromSegments(segments);
+        if (teachingText) return teachingText;
+
+        const { fromName, toName } = getSegmentNames(segments);
+        const conceptLabel = getSegmentConceptLabel(segments, unit.title);
+
+        return [
+            fromName && toName
+            ? `From here, the flow moves from ${fromName} toward ${toName}.`
+            : "",
+            buildNaturalResponsibilityText(conceptLabel, fromName, toName),
+        ]
+            .filter(Boolean)
+            .join(" ");
+}
+
+function buildConceptAwareText(unit, documentIntelligence, lessonGraph) {
+  if (isArchitectureLesson(documentIntelligence, lessonGraph)) {
+    return buildArchitectureAwareText(unit);
+  }
+
   const title = cleanText(unit.title, 180);
   const titleKey = title.toLowerCase();
 
-  const rawConcepts = getConcepts(unit);
-
-  const concepts = rawConcepts.filter((item) => {
-    const text = String(item || "")
-      .trim()
-      .toLowerCase();
-
+  const concepts = getConcepts(unit).filter((item) => {
+    const text = String(item || "").trim().toLowerCase();
     return (
       text &&
       text !== titleKey &&
@@ -412,20 +499,11 @@ function buildConceptAwareText(unit, documentIntelligence) {
     );
   });
 
-  const rawSummary = cleanText(unit?.metadata?.summary, 420);
-  const summary =
-    documentIntelligence.primaryType === "architecture_doc" &&
-    unit?.metadata?.source === "architecture_flow_teaching_units"
-      ? ""
-      : rawSummary;
+  const summary = cleanText(unit?.metadata?.summary, 420);
 
   if (unit.type === "purpose") {
     if (documentIntelligence.primaryType === "cheat_sheet") {
       return "This walkthrough groups the most useful commands and operational reference points into a short guided flow.";
-    }
-
-    if (documentIntelligence.primaryType === "architecture_doc") {
-      return "This walkthrough uses the real architecture diagram as the source of truth and follows the main system flow.";
     }
 
     return "This walkthrough focuses on the workflow, concepts, and operational reasoning from the document.";
@@ -436,67 +514,17 @@ function buildConceptAwareText(unit, documentIntelligence) {
       return "Use the sheet as a fast operational reference and return to the source when exact syntax is needed.";
     }
 
-    if (documentIntelligence.primaryType === "architecture_doc") {
-      return "The key takeaway is the flow: start from the diagram, follow the connected components, and understand where the system hands off downstream.";
-    }
-
     return "Focus on understanding the workflow and relationships between the major concepts.";
   }
 
-  if (documentIntelligence.primaryType === "architecture_doc") {
-    const role = unit?.metadata?.role;
-    const flowReason = unit?.metadata?.flowReason;
-
-    if (role === "architecture_overview") {
-      return [
-        "This diagram shows the overall system architecture and the primary service flow.",
-        concepts.length
-          ? `The walkthrough will follow ${concepts.slice(0, 3).join(", ")}.`
-          : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-    }
-
-    if (role === "architecture_flow_step") {
-      const flowText =
-        flowReason === "flow_entry_point"
-          ? `${title} is where this part of the architecture flow begins.`
-          : flowReason === "flow_destination"
-            ? `${title} is one of the downstream handoff or destination points in the flow.`
-            : `${title} sits in the middle of the main service flow.`;
-
-      return [
-        flowText,
-        concepts.length
-          ? `In this diagram, it connects with ${concepts.slice(0, 2).join(" and ")}.`
-          : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-    }
-
-    return [
-      summary || `${title} participates in the broader architecture flow.`,
-    ]
-      .filter(Boolean)
-      .join(" ");
-  }
-
   if (documentIntelligence.primaryType === "design_doc") {
-    return [
-      `${title} represents a design decision or tradeoff.`,
-      summary ? sentence(summary) : "",
-    ]
+    return [`${title} represents a design decision or tradeoff.`, summary ? sentence(summary) : ""]
       .filter(Boolean)
       .join(" ");
   }
 
   if (documentIntelligence.primaryType === "runbook") {
-    return [
-      `${title} is part of the operational execution flow.`,
-      summary ? sentence(summary) : "",
-    ]
+    return [`${title} is part of the operational execution flow.`, summary ? sentence(summary) : ""]
       .filter(Boolean)
       .join(" ");
   }
@@ -504,40 +532,41 @@ function buildConceptAwareText(unit, documentIntelligence) {
   return [
     `${title} is the next core concept.`,
     summary ? sentence(summary) : "",
+    concepts.length ? `It connects to ${concepts.slice(0, 2).join(" and ")}.` : "",
   ]
     .filter(Boolean)
     .join(" ");
 }
 
-function buildTeachingUnitText(unit, documentIntelligence) {
+function buildTeachingUnitText(unit, documentIntelligence, lessonGraph) {
+  if (isArchitectureLesson(documentIntelligence, lessonGraph)) {
+    return buildArchitectureAwareText(unit);
+  }
+
   const visibleElements = getVisibleElements(unit);
   const hasCommands = visibleElements.length > 0 || unit?.metadata?.hasCommands;
 
-  if (
-    hasCommands ||
-    unit.type === "command_group" ||
-    unit.type === "compact_command_group"
-  ) {
+  if (hasCommands || unit.type === "command_group" || unit.type === "compact_command_group") {
     return buildCommandAwareText(unit, documentIntelligence);
   }
 
-  return buildConceptAwareText(unit, documentIntelligence);
+  return buildConceptAwareText(unit, documentIntelligence, lessonGraph);
 }
 
-function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntelligence) {
+function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntelligence, lessonGraph) {
   const page = firstSourcePage(unit);
   const visibleElements = getVisibleElements(unit);
   const visualMode = getPreferredVisualMode(unit);
-  const { spokenFocus, spokenFocusTargets } = buildSpokenFocusForUnit(
-    unit,
-    documentIntelligence
-  );
+  const { spokenFocus, spokenFocusTargets } = buildSpokenFocusForUnit(unit, documentIntelligence, lessonGraph);
+
+  const sectionNumber = String(index + 1).padStart(3, "0");
 
   return {
+    sectionNumber,
     speaker: "Senior Engineer",
     type: `lesson_${unit.type || "teaching_unit"}`,
     page,
-    text: buildTeachingUnitText(unit, documentIntelligence),
+    text: buildTeachingUnitText(unit, documentIntelligence, lessonGraph),
     caption: buildShortCaption(unit.title || "Teaching unit"),
     targetDurationSec: unit.targetDurationSec,
     teachingUnitId: unit.id,
@@ -551,7 +580,11 @@ function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntellige
       page,
       focus: spokenFocus?.label || unit.title,
       command: visibleElements.join(" | "),
-      reference: unit?.metadata?.summary || null,
+      reference:
+        unit?.metadata?.operationalMeaning ||
+        unit?.metadata?.transitionNarrationHint ||
+        unit?.metadata?.summary ||
+        null,
       step: index + 1,
       totalSteps: totalUnits,
       presentationStyle: unit.presentationStyle || null,
@@ -566,7 +599,7 @@ function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntellige
       spokenFocus,
       spokenFocusTargets,
       spokenFocusSync: {
-        version: "spoken-focus-v1",
+        version: "spoken-focus-v3-natural-architecture",
         source: "dialogueGenerator",
         targetCount: spokenFocusTargets.length,
         primaryTargetType: spokenFocus?.type || null,
@@ -576,13 +609,13 @@ function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntellige
   };
 }
 
-function buildRareLearnerCheckIn(documentIntelligence) {
+function buildRareLearnerCheckIn(documentIntelligence, lessonGraph) {
   if (
     documentIntelligence.primaryType === "cheat_sheet" ||
-    documentIntelligence.primaryType === "architecture_doc"
-    ) {
+    isArchitectureLesson(documentIntelligence, lessonGraph)
+  ) {
     return null;
-    }
+  }
 
   return {
     speaker: "New Joiner",
@@ -614,8 +647,9 @@ function buildDialogue({
   diagramAnalysis,
   conceptsData,
   lessonPlan,
+  jobDir = null,
 }) {
-  const documentIntelligence = buildDocumentIntelligence({
+  const builtDocumentIntelligence = buildDocumentIntelligence({
     extractedText,
     conceptsData,
     diagramAnalysis,
@@ -626,64 +660,45 @@ function buildDialogue({
     Array.isArray(lessonPlan.lessonGraph.teachingUnits)
       ? lessonPlan.lessonGraph
       : buildLessonGraph({
-            documentIntelligence,
-            conceptsData,
-            extractedData,
-            diagramAnalysis,
-            jobDir,
+          documentIntelligence: builtDocumentIntelligence,
+          conceptsData,
+          extractedData,
+          diagramAnalysis,
+          jobDir,
         });
 
-  console.log("[notebook] document intelligence", {
-    primaryType: documentIntelligence.primaryType,
-    secondaryTypes: documentIntelligence.secondaryTypes,
-    teachingStrategy: documentIntelligence.teachingStrategy,
-    documentDensity: documentIntelligence.documentDensity,
-    runtimeBudgetMinutes: documentIntelligence.runtimeBudgetMinutes,
-    targetSceneCount: documentIntelligence.targetSceneCount,
-    presentationGrammar: documentIntelligence.presentationGrammar?.style,
-  });
+  const documentIntelligence = {
+    ...builtDocumentIntelligence,
+    primaryType: lessonGraph?.documentType || builtDocumentIntelligence.primaryType,
+    secondaryTypes: lessonGraph?.secondaryTypes || builtDocumentIntelligence.secondaryTypes || [],
+  };
 
-  console.log("[notebook] lesson graph", {
-    version: lessonGraph.version,
-    teachingUnitCount: lessonGraph.stats?.teachingUnitCount,
-    totalTargetDurationSec: lessonGraph.stats?.totalTargetDurationSec,
-    compactRuntimeCompressionApplied:
-      lessonGraph.stats?.compactRuntimeCompressionApplied,
-    documentStructureApplied:
-      lessonGraph.stats?.documentStructureApplied,
-  });
-
-  const teachingUnits = Array.isArray(lessonGraph.teachingUnits)
-    ? lessonGraph.teachingUnits
-    : [];
-
+  const teachingUnits = Array.isArray(lessonGraph.teachingUnits) ? lessonGraph.teachingUnits : [];
   const sections = [];
 
   for (const [index, unit] of teachingUnits.entries()) {
     sections.push(
-      buildSectionFromTeachingUnit(
-        unit,
-        index,
-        teachingUnits.length,
-        documentIntelligence
-      )
+      buildSectionFromTeachingUnit(unit, index, teachingUnits.length, documentIntelligence, lessonGraph)
     );
 
     if (index === 0) {
-      const learnerCheckIn = buildRareLearnerCheckIn(documentIntelligence);
+      const learnerCheckIn = buildRareLearnerCheckIn(documentIntelligence, lessonGraph);
       if (learnerCheckIn) sections.push(learnerCheckIn);
     }
   }
 
+  const architectureLesson = isArchitectureLesson(documentIntelligence, lessonGraph);
+
   return {
     generatedAt: new Date().toISOString(),
-    style:
-      lessonGraph.compactCheatSheet
-        ? "compact_instructor_led_operational_reference"
+    style: lessonGraph.compactCheatSheet
+      ? "compact_instructor_led_operational_reference"
+      : architectureLesson
+        ? "architecture_senior_engineer_flow_walkthrough"
         : "instructor_led_lesson_graph_walkthrough",
     version: DIALOGUE_VERSION,
     speakers:
-      documentIntelligence.primaryType === "cheat_sheet"
+      documentIntelligence.primaryType === "cheat_sheet" || architectureLesson
         ? ["Senior Engineer"]
         : ["Senior Engineer", "New Joiner"],
     documentIntelligence,
@@ -692,14 +707,12 @@ function buildDialogue({
       sectionCount: sections.length,
       teachingUnitCount: teachingUnits.length,
       runtimeBudgetMinutes: lessonGraph.runtimeBudgetMinutes,
-      requestedRuntimeBudgetMinutes:
-        lessonGraph.requestedRuntimeBudgetMinutes,
+      requestedRuntimeBudgetMinutes: lessonGraph.requestedRuntimeBudgetMinutes,
       maxRuntimeMinutes: documentIntelligence.maxRuntimeMinutes,
       targetSceneCount: documentIntelligence.targetSceneCount,
       totalTargetDurationSec: lessonGraph.stats?.totalTargetDurationSec,
       averageTargetDurationSec: lessonGraph.stats?.averageTargetDurationSec,
-      compactRuntimeCompressionApplied:
-        lessonGraph.stats?.compactRuntimeCompressionApplied,
+      compactRuntimeCompressionApplied: lessonGraph.stats?.compactRuntimeCompressionApplied,
       presentationGrammar: documentIntelligence.presentationGrammar?.style,
     },
     sourceArtifacts: {
@@ -710,14 +723,13 @@ function buildDialogue({
       usesPrimaryTopics: Array.isArray(conceptsData.primaryTopics),
       usesSubConcepts: Array.isArray(conceptsData.primaryTopics)
         ? conceptsData.primaryTopics.some(
-            (topic) =>
-              Array.isArray(topic.subConcepts) &&
-              topic.subConcepts.length > 0
+            (topic) => Array.isArray(topic.subConcepts) && topic.subConcepts.length > 0
           )
         : false,
       usesLessonPlan: Array.isArray(lessonPlan.lessonStructure),
       usesDocumentIntelligence: true,
       usesLessonGraph: true,
+      usesArchitectureTeaching: lessonGraph.stats?.architectureTeachingApplied === true,
       usesDocumentStructure:
         Boolean(lessonGraph.documentStructure) ||
         Boolean(lessonGraph.stats?.documentStructureApplied),
@@ -725,6 +737,7 @@ function buildDialogue({
     teachingRules: {
       dialogueOwnsWordingOnly: true,
       lessonGraphOwnsPedagogy: true,
+      architectureTeachingOwnsMeaning: lessonGraph.stats?.architectureTeachingApplied === true,
       documentIntelligenceOwnsClassificationBudgetAndGrammar: true,
       avoidReadingDocument: true,
       explainWhyItMatters: true,
@@ -735,18 +748,20 @@ function buildDialogue({
       generateSpokenFocusTargets: true,
       keepRealDocumentPrimary: true,
       useInstructorLedFlow: true,
-      learnerInterjectionsAreRare:
-        documentIntelligence.primaryType !== "cheat_sheet",
+      learnerInterjectionsAreRare: documentIntelligence.primaryType !== "cheat_sheet" && !architectureLesson,
       avoidEducationalTheater:
         documentIntelligence.documentDensity === "low" ||
-        documentIntelligence.primaryType === "cheat_sheet",
+        documentIntelligence.primaryType === "cheat_sheet" ||
+        architectureLesson,
       primaryTypeDrivesBehavior: true,
       secondaryTypesAreSignalsOnly: true,
-      compactRuntimeCompressionApplied:
-        lessonGraph.stats?.compactRuntimeCompressionApplied,
+      compactRuntimeCompressionApplied: lessonGraph.stats?.compactRuntimeCompressionApplied,
       avoidRepeatedMentorPhrases: true,
       documentStructureGuidesTeachingUnits: true,
       spokenFocusSyncFeedsRenderPlan: true,
+      architectureDialogueIsHandoffFirst: architectureLesson,
+      noInventedArchitectureBehavior: architectureLesson,
+      naturalOperationalStorytelling: architectureLesson,
     },
     sections,
   };
@@ -778,17 +793,13 @@ function generateDialogue(jobDir) {
     diagramAnalysis: diagramData,
     conceptsData,
     lessonPlan,
+    jobDir,
   });
 }
 
 function saveDialogue(jobDir, dialogueData) {
   const outputPath = getDialoguePath(jobDir);
-
-  fs.writeFileSync(
-    outputPath,
-    JSON.stringify(dialogueData, null, 2)
-  );
-
+  fs.writeFileSync(outputPath, JSON.stringify(dialogueData, null, 2));
   return outputPath;
 }
 

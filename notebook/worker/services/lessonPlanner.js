@@ -38,10 +38,9 @@ function inferDocumentIntelligence({
   extractedData = {},
   pageCount = 0,
 } = {}) {
-  const text = [
-    JSON.stringify(conceptsData),
-    JSON.stringify(extractedData),
-  ].join(" ").toLowerCase();
+  const text = [JSON.stringify(conceptsData), JSON.stringify(extractedData)]
+    .join(" ")
+    .toLowerCase();
 
   const commandSignals = [
     "kubectl",
@@ -76,17 +75,9 @@ function inferDocumentIntelligence({
     "system",
   ];
 
-  const commandScore = commandSignals.filter((signal) =>
-    text.includes(signal)
-  ).length;
-
-  const runbookScore = runbookSignals.filter((signal) =>
-    text.includes(signal)
-  ).length;
-
-  const architectureScore = architectureSignals.filter((signal) =>
-    text.includes(signal)
-  ).length;
+  const commandScore = commandSignals.filter((signal) => text.includes(signal)).length;
+  const runbookScore = runbookSignals.filter((signal) => text.includes(signal)).length;
+  const architectureScore = architectureSignals.filter((signal) => text.includes(signal)).length;
 
   let primaryType = "unknown";
 
@@ -191,6 +182,7 @@ function buildLessonPlan({
   extractedData = {},
   diagramAnalysis = {},
   architectureUnderstanding = {},
+  architectureTeaching = {},
   jobDir = null,
 } = {}) {
   const concepts = getConceptList(conceptsData);
@@ -202,8 +194,9 @@ function buildLessonPlan({
     extractedData,
     diagramAnalysis,
     architectureUnderstanding,
+    architectureTeaching,
     jobDir,
-    });
+  });
 
   return {
     generatedAt: new Date().toISOString(),
@@ -290,7 +283,12 @@ function generateLessonPlan(jobDir) {
   const architectureUnderstandingPath = path.join(
     jobDir,
     "architecture-understanding.json"
-    );
+  );
+
+  const architectureTeachingPath = path.join(
+    jobDir,
+    "architecture-teaching.json"
+  );
 
   const conceptsData = readJsonIfExists(conceptsPath, {});
   const extractedData = readJsonIfExists(extractedPath, {});
@@ -307,23 +305,25 @@ function generateLessonPlan(jobDir) {
     fallbackDocumentIntelligence
   );
 
-  const rawDiagramAnalysis = readJsonIfExists(
-        diagramAnalysisPath,
-        {}
-    );
+  const rawDiagramAnalysis = readJsonIfExists(diagramAnalysisPath, {});
 
- const architectureUnderstanding = readJsonIfExists(
+  const architectureUnderstanding = readJsonIfExists(
     architectureUnderstandingPath,
     {}
-    );
+  );
+
+  const architectureTeaching = readJsonIfExists(
+    architectureTeachingPath,
+    {}
+  );
 
   const diagramAnalysis = {
     ...rawDiagramAnalysis,
     pageCount:
-        Number.isFinite(pageImageCount) && pageImageCount > 0
+      Number.isFinite(pageImageCount) && pageImageCount > 0
         ? pageImageCount
         : Number(rawDiagramAnalysis?.pageCount || 0),
-};
+  };
 
   return buildLessonPlan({
     conceptsData,
@@ -331,17 +331,15 @@ function generateLessonPlan(jobDir) {
     extractedData,
     diagramAnalysis,
     architectureUnderstanding,
+    architectureTeaching,
     jobDir,
-    });
+  });
 }
 
 function saveLessonPlan(jobDir, lessonPlan) {
   const outputPath = getLessonPlanPath(jobDir);
 
-  fs.writeFileSync(
-    outputPath,
-    JSON.stringify(lessonPlan, null, 2)
-  );
+  fs.writeFileSync(outputPath, JSON.stringify(lessonPlan, null, 2));
 
   return outputPath;
 }

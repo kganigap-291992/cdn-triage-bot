@@ -258,6 +258,20 @@ function getStageRect() {
   };
 }
 
+function getArchitectureStageRect() {
+  const left = 28;
+  const top = 54;
+  const width = VIDEO_WIDTH - 56;
+  const height = VIDEO_HEIGHT - 112;
+
+  return {
+    left,
+    top,
+    width,
+    height,
+  };
+}
+
 function getContainedImageRect(containerWidth, containerHeight, imageAspectRatio = 8.5 / 11) {
   const containerAspectRatio = containerWidth / containerHeight;
 
@@ -287,7 +301,7 @@ function getContainedImageRect(containerWidth, containerHeight, imageAspectRatio
 function getFocusRegionStyle(scene, imageRect) {
   const focusRegion = scene?.focusRegion || null;
 
-  if (!focusRegion || !imageRect) return null;
+  if (!isCameraEligibleFocusRegion(focusRegion) || !imageRect) return null;
 
   const viewportStyle = scene?.viewportStyle || "fit_contextual";
   const focusPadding = scene?.focusPadding || null;
@@ -364,6 +378,55 @@ function getVisualFocusRegion(scene) {
   };
 }
 
+
+function getCameraPlan(scene) {
+  const cameraPlan = scene?.cameraPlan || null;
+
+  if (!cameraPlan || typeof cameraPlan !== "object" || cameraPlan.enabled === false) {
+    return null;
+  }
+
+  return cameraPlan;
+}
+
+function getCameraPlanTargetRegion(scene) {
+  const cameraPlan = getCameraPlan(scene);
+  return cameraPlan?.target?.focusRegion || scene?.focusRegion || null;
+}
+
+function resolveCameraPlanMotionIntent(scene) {
+  const cameraPlan = getCameraPlan(scene);
+
+  return (
+    cameraPlan?.motionIntent ||
+    scene?.sceneBehavior?.cameraMotion ||
+    "default_existing_motion"
+  );
+}
+
+function resolveCameraPlanStyle(scene) {
+  const cameraPlan = getCameraPlan(scene);
+
+  return {
+    motionIntent: resolveCameraPlanMotionIntent(scene),
+    cameraStyle: cameraPlan?.cameraStyle || scene?.sceneBehavior?.cameraStyle || "soft_contextual_camera_move",
+    cameraScope: cameraPlan?.cameraScope || scene?.sceneBehavior?.cameraScope || "default",
+    confidence: cameraPlan?.confidence || scene?.focusRegion?.confidence || "medium",
+    viewport: cameraPlan?.viewport || {},
+    beats: Array.isArray(cameraPlan?.beats) ? cameraPlan.beats : [],
+  };
+}
+
+function isFullArchitectureCamera(scene) {
+  const { cameraScope, motionIntent } = resolveCameraPlanStyle(scene);
+
+  return (
+    cameraScope === "full_architecture" ||
+    motionIntent === "establish_full_architecture" ||
+    motionIntent === "return_to_full_architecture"
+  );
+}
+
 function getSemanticTraversal(scene) {
   const semanticTraversal = scene?.semanticTraversal || null;
 
@@ -383,39 +446,56 @@ function getSemanticChoreography(scene) {
 }
 
 function resolveSemanticMotionIntent(scene) {
+  const cameraPlan = getCameraPlan(scene);
   const choreography = getSemanticChoreography(scene);
-  const motionIntent = choreography?.motionIntent || null;
+  const motionIntent = resolveCameraPlanMotionIntent(scene);
 
   switch (motionIntent) {
+    case "establish_full_architecture":
+      return {
+        motionIntent,
+        cameraMode: "camera_plan_full_architecture_overview",
+        cameraBehavior: cameraPlan?.cameraStyle || "broad_establishing_hold",
+        overlayBehavior: choreography?.overlayBehavior || "minimal_context_label",
+      };
+
+    case "return_to_full_architecture":
+      return {
+        motionIntent,
+        cameraMode: "camera_plan_full_architecture_recap",
+        cameraBehavior: cameraPlan?.cameraStyle || "slow_zoom_out_recap",
+        overlayBehavior: choreography?.overlayBehavior || "minimal_context_label",
+      };
+
     case "zoom_to_flow_entry":
       return {
         motionIntent,
-        cameraMode: "semantic_flow_entry",
-        cameraBehavior: choreography.cameraBehavior || "establish_context_then_zoom",
-        overlayBehavior: choreography.overlayBehavior || "minimal_context_label",
+        cameraMode: "camera_plan_flow_entry",
+        cameraBehavior: cameraPlan?.cameraStyle || "gentle_zoom_to_entry",
+        overlayBehavior: choreography?.overlayBehavior || "minimal_context_label",
       };
 
     case "follow_flow_to_component":
       return {
         motionIntent,
-        cameraMode: "semantic_flow_follow",
-        cameraBehavior: choreography.cameraBehavior || "guided_pan",
-        overlayBehavior: choreography.overlayBehavior || "minimal_context_label",
+        cameraMode: "camera_plan_flow_follow",
+        cameraBehavior: cameraPlan?.cameraStyle || "smooth_pan_soft_zoom",
+        overlayBehavior: choreography?.overlayBehavior || "minimal_context_label",
       };
 
     case "settle_on_flow_destination":
       return {
         motionIntent,
-        cameraMode: "semantic_flow_destination",
-        cameraBehavior: choreography.cameraBehavior || "slow_settle_focus",
-        overlayBehavior: choreography.overlayBehavior || "minimal_context_label",
+        cameraMode: "camera_plan_flow_destination",
+        cameraBehavior: cameraPlan?.cameraStyle || "gentle_settle_on_destination",
+        overlayBehavior: choreography?.overlayBehavior || "minimal_context_label",
       };
 
     default:
       return {
-        motionIntent: motionIntent || "default_existing_motion",
-        cameraMode: "existing_camera_behavior",
-        cameraBehavior: choreography?.cameraBehavior || null,
+        motionIntent,
+        cameraMode: cameraPlan ? "camera_plan_existing_motion" : "existing_camera_behavior",
+        cameraBehavior: cameraPlan?.cameraStyle || choreography?.cameraBehavior || null,
         overlayBehavior: choreography?.overlayBehavior || null,
       };
   }
@@ -480,80 +560,248 @@ function shouldShowSemanticTraversalDebug() {
   );
 }
 
+function isFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function hasValidFocusRegionCoordinates(focusRegion) {
+  if (!focusRegion || typeof focusRegion !== "object") return false;
+
+  const { x, y, width, height } = focusRegion;
+
+  if (
+    !isFiniteNumber(x) ||
+    !isFiniteNumber(y) ||
+    !isFiniteNumber(width) ||
+    !isFiniteNumber(height)
+  ) {
+    return false;
+  }
+
+  if (width <= 0 || height <= 0) return false;
+  if (x < 0 || y < 0) return false;
+  if (x + width > 1.02 || y + height > 1.02) return false;
+
+  return true;
+}
+
+function isCameraEligibleFocusRegion(focusRegion) {
+  if (!hasValidFocusRegionCoordinates(focusRegion)) return false;
+  if (focusRegion.confidence === "low") return false;
+  if (focusRegion.cameraEligible === false) return false;
+  if (focusRegion.safeForCamera === false) return false;
+
+  return true;
+}
+
+function getDefaultCameraMotionStyle(scene, progress) {
+  const behavior = scene?.sceneBehavior || {};
+  const cameraMotion = behavior.cameraMotion || "slow_zoom";
+
+  let scale = 1.014;
+  let x = 0;
+  let y = 0;
+
+  switch (cameraMotion) {
+    case "soft_pan":
+      scale = interpolate(progress, [0, 1], [1.002, 1.016]);
+      x = interpolate(progress, [0, 1], [-12, 12]);
+      break;
+
+    case "guided_pan":
+      scale = interpolate(progress, [0, 1], [1.003, 1.018]);
+      x = interpolate(progress, [0, 1], [-16, 16]);
+      y = interpolate(progress, [0, 1], [8, -8]);
+      break;
+
+    case "soft_focus":
+    case "slow_focus":
+      scale = interpolate(progress, [0, 1], [1.002, 1.016]);
+      y = interpolate(progress, [0, 1], [8, -8]);
+      break;
+
+    case "slow_zoom":
+    default:
+      scale = interpolate(progress, [0, 1], [1.001, 1.014]);
+      break;
+  }
+
+  return { x, y, scale };
+}
+
+function getSemanticCameraTuning(scene) {
+  const { motionIntent, cameraStyle, cameraScope, confidence, viewport } = resolveCameraPlanStyle(scene);
+
+  if (
+    cameraScope === "full_architecture" ||
+    motionIntent === "establish_full_architecture"
+  ) {
+    return {
+      isSemanticCamera: true,
+      motionIntent,
+      viewportCenterX: 0.5,
+      viewportCenterY: 0.5,
+      panXMultiplier: 0,
+      panYMultiplier: 0,
+      startPanRatio: 0,
+      startScale: 1,
+      targetScale: 1.012,
+      fullArchitecture: true,
+    };
+  }
+
+  if (motionIntent === "return_to_full_architecture") {
+    return {
+      isSemanticCamera: true,
+      motionIntent,
+      viewportCenterX: 0.5,
+      viewportCenterY: 0.5,
+      panXMultiplier: 0,
+      panYMultiplier: 0,
+      startPanRatio: 0,
+      startScale: 1.026,
+      targetScale: 1,
+      fullArchitecture: true,
+    };
+  }
+
+  const isMedium = confidence === "medium";
+  const isExact = cameraScope === "exact_focus" && confidence === "high";
+
+  switch (motionIntent) {
+    case "zoom_to_flow_entry":
+      return {
+        isSemanticCamera: true,
+        motionIntent,
+        cameraStyle,
+        viewportCenterX: 0.5,
+        viewportCenterY: 0.43,
+        panXMultiplier: isMedium ? 42 : 52,
+        panYMultiplier: isMedium ? 68 : 82,
+        startPanRatio: 0.08,
+        startScale: 1.004,
+        targetScale: isExact ? 1.026 : 1.018,
+        viewport,
+      };
+
+    case "follow_flow_to_component":
+      return {
+        isSemanticCamera: true,
+        motionIntent,
+        cameraStyle,
+        viewportCenterX: 0.5,
+        viewportCenterY: 0.42,
+        panXMultiplier: isMedium ? 48 : 62,
+        panYMultiplier: isMedium ? 76 : 96,
+        startPanRatio: 0.12,
+        startScale: 1.006,
+        targetScale: isExact ? 1.032 : 1.022,
+        viewport,
+      };
+
+    case "settle_on_flow_destination":
+      return {
+        isSemanticCamera: true,
+        motionIntent,
+        cameraStyle,
+        viewportCenterX: 0.5,
+        viewportCenterY: 0.42,
+        panXMultiplier: isMedium ? 34 : 44,
+        panYMultiplier: isMedium ? 58 : 72,
+        startPanRatio: 0.35,
+        startScale: 1.014,
+        targetScale: isExact ? 1.028 : 1.02,
+        viewport,
+      };
+
+    default:
+      return {
+        isSemanticCamera: false,
+        motionIntent,
+      };
+  }
+}
+
+
+function getFocusRegionCameraMotion(scene, progress, focusRegion) {
+  const cameraProfile = scene?.cameraProfile || "broad_context_focus";
+  const semanticTuning = getSemanticCameraTuning(scene);
+
+  const regionCenterX = focusRegion.x + focusRegion.width / 2;
+  const regionCenterY = focusRegion.y + focusRegion.height / 2;
+
+  const viewportCenterX = semanticTuning.isSemanticCamera
+    ? semanticTuning.viewportCenterX
+    : 0.5;
+  const viewportCenterY = semanticTuning.isSemanticCamera
+    ? semanticTuning.viewportCenterY
+    : 0.42;
+
+  const panXMultiplier = semanticTuning.isSemanticCamera ? semanticTuning.panXMultiplier : 70;
+  const panYMultiplier = semanticTuning.isSemanticCamera ? semanticTuning.panYMultiplier : 110;
+  const startPanRatio = semanticTuning.isSemanticCamera ? semanticTuning.startPanRatio : 0.15;
+
+  const offsetX = (viewportCenterX - regionCenterX) * panXMultiplier;
+  const offsetY = (viewportCenterY - regionCenterY) * panYMultiplier;
+
+  const x = interpolate(progress, [0, 1], [offsetX * startPanRatio, offsetX], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.out(Easing.cubic),
+  });
+
+  const y = interpolate(progress, [0, 1], [offsetY * startPanRatio, offsetY], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.out(Easing.cubic),
+  });
+
+  let targetScale = semanticTuning.isSemanticCamera ? semanticTuning.targetScale : 1.035;
+
+  if (!semanticTuning.isSemanticCamera && cameraProfile === "tight_section_focus") {
+    targetScale += 0.02;
+  }
+
+  const startScale = semanticTuning.isSemanticCamera ? semanticTuning.startScale : 1.01;
+
+  const scale = interpolate(progress, [0, 1], [startScale, targetScale], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.out(Easing.cubic),
+  });
+
+  return { x, y, scale };
+}
+
 function getCameraMotionStyle(scene, dim = false) {
   const durationFrames = getSceneDurationFrames(scene);
   const progress = Easing.inOut(Easing.cubic)(getProgress(durationFrames));
 
-  const behavior = scene?.sceneBehavior || {};
-  const focusRegion = scene?.focusRegion || behavior?.focusRegion || null;
-  const cameraProfile = scene?.cameraProfile || "broad_context_focus";
+  if (isFullArchitectureCamera(scene)) {
+    const semanticTuning = getSemanticCameraTuning(scene);
 
-    let scale = 1.014;
-    let x = 0;
-    let y = 0;
-
-    if (focusRegion && focusRegion.confidence !== "low") {
-    const regionCenterX = focusRegion.x + focusRegion.width / 2;
-    const regionCenterY = focusRegion.y + focusRegion.height / 2;
-
-    // desired viewport center
-    const viewportCenterX = 0.5;
-    const viewportCenterY = 0.42;
-
-    // move document toward focus region
-    const offsetX = (viewportCenterX - regionCenterX) * 70;
-    const offsetY = (viewportCenterY - regionCenterY) * 110;
-
-    x = interpolate(progress, [0, 1], [offsetX * 0.15, offsetX], {
+    const scale = interpolate(
+      progress,
+      [0, 1],
+      [semanticTuning.startScale || 1, semanticTuning.targetScale || 1],
+      {
         extrapolateLeft: "clamp",
         extrapolateRight: "clamp",
-        easing: Easing.out(Easing.cubic),
-    });
+        easing: Easing.inOut(Easing.cubic),
+      }
+    );
 
-    y = interpolate(progress, [0, 1], [offsetY * 0.15, offsetY], {
-        extrapolateLeft: "clamp",
-        extrapolateRight: "clamp",
-        easing: Easing.out(Easing.cubic),
-    });
+    return {
+      transform: `translate(0px, 0px) scale(${scale})`,
+      opacity: dim ? 0.76 : 1,
+    };
+  }
 
-    // zoom based on focus area size
-    const focusArea = focusRegion.width * focusRegion.height;
+  const focusRegion = getCameraPlanTargetRegion(scene);
 
-   let targetScale = 1.035;
-
-    if (cameraProfile === "tight_section_focus") {
-        targetScale += 0.02;
-    }
-
-    scale = interpolate(progress, [0, 1], [1.01, targetScale], {
-        extrapolateLeft: "clamp",
-        extrapolateRight: "clamp",
-        easing: Easing.out(Easing.cubic),
-    });
-    } else {
-        const cameraMotion = behavior.cameraMotion || "slow_zoom";
-
-        switch (cameraMotion) {
-        case "soft_pan":
-            scale = interpolate(progress, [0, 1], [1.002, 1.016]);
-            x = interpolate(progress, [0, 1], [-12, 12]);
-            break;
-        case "guided_pan":
-            scale = interpolate(progress, [0, 1], [1.003, 1.018]);
-            x = interpolate(progress, [0, 1], [-16, 16]);
-            y = interpolate(progress, [0, 1], [8, -8]);
-            break;
-        case "soft_focus":
-        case "slow_focus":
-            scale = interpolate(progress, [0, 1], [1.002, 1.016]);
-            y = interpolate(progress, [0, 1], [8, -8]);
-            break;
-        case "slow_zoom":
-        default:
-            scale = interpolate(progress, [0, 1], [1.001, 1.014]);
-            break;
-        }
-    }
+  const { x, y, scale } = isCameraEligibleFocusRegion(focusRegion)
+    ? getFocusRegionCameraMotion(scene, progress, focusRegion)
+    : getDefaultCameraMotionStyle(scene, progress);
 
   return {
     transform: `translate(${x}px, ${y}px) scale(${scale})`,
@@ -954,9 +1202,9 @@ function SoftFocusOverlay({ focusStyle, confidence, label }) {
   );
 }
 
-function PageImagePanel({ scene, durationFrames, dim = false }) {
+function PageImagePanel({ scene, durationFrames, dim = false, stageOverride = null }) {
   const motionStyle = getCameraMotionStyle(scene, dim);
-  const stage = getStageRect();
+  const stage = stageOverride || getStageRect();
 
   const innerWidth = stage.width - PAGE_STAGE_INSET * 2;
   const innerHeight = stage.height - PAGE_STAGE_INSET * 2;
@@ -1053,6 +1301,73 @@ function PageImagePanel({ scene, durationFrames, dim = false }) {
           Page preview unavailable
         </div>
       )}
+    </div>
+  );
+}
+
+
+function ArchitectureCanvasPanel({ scene, durationFrames, stageOverride = null }) {
+  const motionStyle = getCameraMotionStyle(scene, false);
+  const stage = stageOverride || getArchitectureStageRect();
+
+  const imageRect = getContainedImageRect(
+    stage.width,
+    stage.height,
+    scene.pageAspectRatio || scene.imageAspectRatio || 16 / 9
+  );
+
+  const focusStyle = getFocusRegionStyle(scene, imageRect);
+  const confidence = scene.focusRegion?.confidence || "medium";
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: stage.top,
+        left: stage.left,
+        width: stage.width,
+        height: stage.height,
+        overflow: "hidden",
+        borderRadius: 18,
+        background: "rgba(2,6,23,0.28)",
+        zIndex: 1,
+        ...getOverlayEntranceStyle(4, durationFrames),
+      }}
+    >
+      {scene.pageImagePath ? (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            transform: motionStyle.transform,
+            opacity: motionStyle.opacity,
+            transformOrigin: "center center",
+          }}
+        >
+          <Img
+            src={staticFile(scene.pageImagePath)}
+            style={{
+              position: "absolute",
+              left: imageRect.left,
+              top: imageRect.top,
+              width: imageRect.width,
+              height: imageRect.height,
+              objectFit: "contain",
+              objectPosition: "center center",
+              borderRadius: 10,
+              background: "#020617",
+            }}
+          />
+
+          {focusStyle ? (
+            <SoftFocusOverlay
+              focusStyle={focusStyle}
+              confidence={confidence}
+              label={scene.focusRegion?.label || "Focus"}
+            />
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1228,6 +1543,85 @@ function PlaybackBar({ scene, sceneIndex, sceneCount, durationFrames }) {
   );
 }
 
+function ArchitectureBrandHud({ durationFrames }) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 24,
+        left: 32,
+        zIndex: 20,
+        fontSize: 14,
+        letterSpacing: 1.4,
+        textTransform: "uppercase",
+        fontWeight: 900,
+        color: "rgba(226,232,240,0.58)",
+        ...getOverlayEntranceStyle(8, durationFrames),
+      }}
+    >
+      Cachey Notebook
+    </div>
+  );
+}
+
+
+function ArchitecturePlaybackBar({ scene, sceneIndex, sceneCount, durationFrames }) {
+  const progress = getProgress(durationFrames);
+  const percent = clamp(progress * 100, 0, 100);
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: 120,
+        right: 120,
+        bottom: 26,
+        height: 24,
+        zIndex: 20,
+        display: "flex",
+        alignItems: "center",
+        gap: 14,
+        ...getOverlayEntranceStyle(10, durationFrames),
+      }}
+    >
+      <div
+        style={{
+          fontSize: 13,
+          color: "rgba(203,213,225,0.58)",
+          fontWeight: 800,
+          minWidth: 58,
+        }}
+      >
+        {sceneIndex + 1}/{sceneCount}
+      </div>
+
+      <div
+        style={{
+          position: "relative",
+          flex: 1,
+          height: 4,
+          borderRadius: 999,
+          background: "rgba(148,163,184,0.16)",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: `${percent}%`,
+            borderRadius: 999,
+            background: "rgba(147,197,253,0.82)",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+
 function SemanticTraversalDebugBadge({ scene, durationFrames }) {
   if (!shouldShowSemanticTraversalDebug()) return null;
 
@@ -1238,6 +1632,8 @@ function SemanticTraversalDebugBadge({ scene, durationFrames }) {
   const entityLabel = debug.entityId || "unknown-entity";
   const motionLabel = debug.motionIntent || "unknown-motion";
   const cameraLabel = debug.cameraMode || "existing_camera_behavior";
+  const focusTypeLabel = scene?.focusRegion?.type || "no-focus-region";
+  const confidenceLabel = scene?.focusRegion?.confidence || debug.confidence || "unknown-confidence";
 
   return (
     <div
@@ -1261,8 +1657,34 @@ function SemanticTraversalDebugBadge({ scene, durationFrames }) {
         ...getOverlayEntranceStyle(10, durationFrames),
       }}
     >
-      {entityLabel} · {motionLabel} · {cameraLabel}
+      {entityLabel} · {motionLabel} · {cameraLabel} · {focusTypeLabel} · {confidenceLabel}
     </div>
+  );
+}
+
+
+function ArchitectureDiagramScene({ scene, renderPlan, sceneIndex, durationFrames }) {
+  const stage = getArchitectureStageRect();
+
+  return (
+    <Shell scene={scene}>
+      <ArchitectureBrandHud durationFrames={durationFrames} />
+
+      <ArchitectureCanvasPanel
+        scene={scene}
+        durationFrames={durationFrames}
+        stageOverride={stage}
+      />
+
+      <ArchitecturePlaybackBar
+        scene={scene}
+        sceneIndex={sceneIndex}
+        sceneCount={(renderPlan.scenes || []).length}
+        durationFrames={durationFrames}
+      />
+
+      <SemanticTraversalDebugBadge scene={scene} durationFrames={durationFrames} />
+    </Shell>
   );
 }
 
@@ -1354,6 +1776,17 @@ function FallbackTeachingScene({ scene, renderPlan, sceneIndex, durationFrames }
   );
 }
 
+
+function isArchitectureRenderScene(scene) {
+  return (
+    String(scene?.sceneRole || "").startsWith("architecture_") ||
+    String(scene?.visualType || "").startsWith("architecture_") ||
+    scene?.cameraPlan?.cameraScope === "full_architecture" ||
+    scene?.sceneBehavior?.visualPriority === "architecture_full_context"
+  );
+}
+
+
 function CinematicScene({ scene, renderPlan, sceneIndex, durationFrames }) {
   const entranceStyle = getSceneEntranceStyle(scene, durationFrames);
   const hasDocument = Boolean(scene.pageImagePath);
@@ -1369,21 +1802,28 @@ function CinematicScene({ scene, renderPlan, sceneIndex, durationFrames }) {
         overflow: "hidden",
       }}
     >
-      {hasDocument ? (
+      {hasDocument && isArchitectureRenderScene(scene) ? (
+        <ArchitectureDiagramScene
+            scene={scene}
+            renderPlan={renderPlan}
+            sceneIndex={sceneIndex}
+            durationFrames={durationFrames}
+        />
+        ) : hasDocument ? (
         <WorkspaceScene
-          scene={scene}
-          renderPlan={renderPlan}
-          sceneIndex={sceneIndex}
-          durationFrames={durationFrames}
+            scene={scene}
+            renderPlan={renderPlan}
+            sceneIndex={sceneIndex}
+            durationFrames={durationFrames}
         />
-      ) : (
+        ) : (
         <FallbackTeachingScene
-          scene={scene}
-          renderPlan={renderPlan}
-          sceneIndex={sceneIndex}
-          durationFrames={durationFrames}
+            scene={scene}
+            renderPlan={renderPlan}
+            sceneIndex={sceneIndex}
+            durationFrames={durationFrames}
         />
-      )}
+        )}
     </AbsoluteFill>
   );
 }

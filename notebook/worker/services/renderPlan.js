@@ -2,22 +2,23 @@ const fs = require("fs");
 const path = require("path");
 
 /**
- * Phase 8C.3B — Focus-Guided Render Plan
+ * Phase 8D.15 — Render / Camera Alignment
  *
  * Goal:
- * - Consume lessonGraph/dialogue focusHint metadata.
- * - Convert pedagogical focus intent into renderable scene metadata.
- * - Keep document/page as the primary visual whenever focusHint says so.
- * - Reduce overlay dominance and fake scene variety.
+ * - Translate lessonGraph pedagogical intent into cinematic camera metadata.
+ * - Keep Root.jsx dumb: it should execute scene.cameraPlan / scene.sceneBehavior only.
+ * - Architecture overview = broad establishing shot.
+ * - Middle architecture scenes = flow-aware focus regions.
+ * - Recap = return to full architecture context.
  *
  * Borrowed ideas:
- * - tldraw: focus region / zoom-to-bounds style viewport intent.
- * - Motion Canvas: explicit visual beats and scene choreography.
+ * - tldraw: zoom-to-bounds / viewport framing / confidence-aware camera targets.
+ * - Motion Canvas: explicit beats, timing windows, cinematic choreography metadata.
  *
- * Cachey adaptation:
- * - lessonGraphBuilder owns pedagogy/focus intent.
- * - renderPlan owns cinematic interpretation.
- * - Root.jsx owns visual rendering only.
+ * Cachey ownership:
+ * - lessonGraphBuilder owns pedagogical intent.
+ * - renderPlan owns cinematic translation.
+ * - Root.jsx owns visual execution only.
  */
 
 const REAL_AUDIO_PADDING_MS = 650;
@@ -30,6 +31,20 @@ const MAX_TARGET_EXTENSION_MS = 1400;
 const DEFAULT_TRANSITION_IN_MS = 360;
 const DEFAULT_TRANSITION_OUT_MS = 420;
 const DEFAULT_TAIL_HOLD_MS = 420;
+
+const CAMERA_CONFIDENCE = {
+  HIGH: "high",
+  MEDIUM: "medium",
+  LOW: "low",
+};
+
+const CAMERA_SCOPE = {
+  EXACT: "exact_focus",
+  FLOW_REGION: "flow_region",
+  BROAD: "broad_context",
+  FULL_PAGE: "full_page",
+  FULL_ARCHITECTURE: "full_architecture",
+};
 
 function readJson(filePath, fallback = null) {
   if (!fs.existsSync(filePath)) return fallback;
@@ -188,12 +203,91 @@ function resolveSceneTiming(section, audioItem) {
   };
 }
 
-function resolveVisualType(type, page) {
-  if (type === "intro" || type === "closing") return "title_card";
-  if (type === "document_summary") return "summary_card";
-  if (type === "diagram_walkthrough" && page != null) return "page_preview_card";
-  if (type === "question") return "speaker_card";
-  return page != null ? "page_preview_card" : "speaker_card";
+function normalizeDialogue(dialogue) {
+  if (Array.isArray(dialogue)) return dialogue;
+  if (Array.isArray(dialogue?.sections)) return dialogue.sections;
+  if (Array.isArray(dialogue?.dialogue)) return dialogue.dialogue;
+  if (Array.isArray(dialogue?.messages)) return dialogue.messages;
+  return [];
+}
+
+function getAvailablePageCount(jobDir) {
+  const pageImagesDir = path.join(jobDir, "page-images");
+
+  if (!fs.existsSync(pageImagesDir)) {
+    return 0;
+  }
+
+  return fs
+    .readdirSync(pageImagesDir)
+    .filter((file) => /^page-\d+\.png$/.test(file))
+    .length;
+}
+
+function findPageImage(jobDir, page) {
+  if (page == null) {
+    return { pageImageFile: null, pageImagePath: null };
+  }
+
+  const pageImagesDir = path.join(jobDir, "page-images");
+
+  const candidates = [
+    `page-${String(page).padStart(3, "0")}.png`,
+    `page-${page}.png`,
+    `${page}.png`,
+  ];
+
+  for (const file of candidates) {
+    const fullPath = path.join(pageImagesDir, file);
+    if (fs.existsSync(fullPath)) {
+      return {
+        pageImageFile: file,
+        pageImagePath: fullPath,
+      };
+    }
+  }
+
+  return {
+    pageImageFile: null,
+    pageImagePath: null,
+  };
+}
+
+function findAudioForSection(audioManifest, sectionNumber, index) {
+  const items = Array.isArray(audioManifest?.sections)
+    ? audioManifest.sections
+    : Array.isArray(audioManifest?.items)
+      ? audioManifest.items
+      : Array.isArray(audioManifest?.audio)
+        ? audioManifest.audio
+        : Array.isArray(audioManifest?.files)
+          ? audioManifest.files
+          : [];
+
+  return (
+    items.find(
+      (item) =>
+        String(item.sectionNumber).padStart(3, "0") === sectionNumber
+    ) ||
+    items.find(
+      (item) =>
+        item.sectionIndex === index ||
+        item.index === index
+    ) ||
+    items[index] ||
+    null
+  );
+}
+
+function buildCaption(section) {
+  const text = String(section.text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!text) return "";
+  if (text.length <= 120) return text;
+
+  return `${text.slice(0, 117).trim()}...`;
 }
 
 function resolveFocusHint(section) {
@@ -233,6 +327,511 @@ function resolveVisualIntent(section) {
   };
 }
 
+function resolveVisualType(type, page) {
+  if (type === "intro" || type === "closing") return "title_card";
+  if (type === "document_summary") return "summary_card";
+  if (type === "diagram_walkthrough" && page != null) return "page_preview_card";
+  if (type === "question") return "speaker_card";
+  return page != null ? "page_preview_card" : "speaker_card";
+}
+
+function isArchitectureScene(section, architectureTraversal) {
+  return Boolean(
+    architectureTraversal?.enabled ||
+    section?.documentType === "architecture" ||
+    section?.primaryType === "architecture" ||
+    section?.teachingMode === "architecture" ||
+    section?.teachingUnitType === "architecture" ||
+    section?.visualIntent?.mode === "architecture_focus" ||
+    section?.visualIntent?.presentationStyle === "flow_walkthrough"
+  );
+}
+
+function classifyArchitectureSceneRole(section, index, totalSections) {
+  const text = String(section?.text || "").toLowerCase();
+  const title = String(section?.title || section?.heading || "").toLowerCase();
+  const type = String(section?.type || "").toLowerCase();
+  const mode = String(section?.visualIntent?.mode || "").toLowerCase();
+  const sceneIntent = String(section?.visualIntent?.sceneIntent || "").toLowerCase();
+  const teachingUnitId = String(section?.teachingUnitId || "").toLowerCase();
+
+  const haystack = [
+    text,
+    title,
+    type,
+    mode,
+    sceneIntent,
+    teachingUnitId,
+  ].join(" ");
+
+  if (
+    index === 0 ||
+    haystack.includes("overview") ||
+    haystack.includes("at a high level") ||
+    haystack.includes("architecture overview")
+  ) {
+    return "architecture_overview";
+  }
+
+  if (
+    index === totalSections - 1 ||
+    haystack.includes("recap") ||
+    haystack.includes("putting") ||
+    haystack.includes("together") ||
+    haystack.includes("full architecture")
+  ) {
+    return "architecture_recap";
+  }
+
+  if (
+    haystack.includes("entry") ||
+    haystack.includes("boundary") ||
+    haystack.includes("ingress")
+  ) {
+    return "architecture_entry_boundary";
+  }
+
+  if (
+    haystack.includes("routing") ||
+    haystack.includes("control") ||
+    haystack.includes("gateway")
+  ) {
+    return "architecture_control_routing";
+  }
+
+  if (
+    haystack.includes("state") ||
+    haystack.includes("terminal") ||
+    haystack.includes("database") ||
+    haystack.includes("persistence")
+  ) {
+    return "architecture_state_terminal";
+  }
+
+  return "architecture_flow_segment";
+}
+
+function findChoreographyForScene({ choreographyIntent = [], sceneIndex }) {
+  return choreographyIntent[sceneIndex] || null;
+}
+
+function findTeachingFocusForScene({ teachingFocusSequence = [], sceneIndex }) {
+  return teachingFocusSequence[sceneIndex] || null;
+}
+
+function normalizeConfidence(value) {
+  const confidence = String(value || "").toLowerCase();
+
+  if (confidence === CAMERA_CONFIDENCE.HIGH) return CAMERA_CONFIDENCE.HIGH;
+  if (confidence === CAMERA_CONFIDENCE.MEDIUM) return CAMERA_CONFIDENCE.MEDIUM;
+
+  return CAMERA_CONFIDENCE.LOW;
+}
+
+function isUsableFocusRegion(focusRegion) {
+  if (!focusRegion || typeof focusRegion !== "object") return false;
+
+  const x = Number(focusRegion.x);
+  const y = Number(focusRegion.y);
+  const width = Number(focusRegion.width);
+  const height = Number(focusRegion.height);
+
+  return (
+    Number.isFinite(x) &&
+    Number.isFinite(y) &&
+    Number.isFinite(width) &&
+    Number.isFinite(height) &&
+    width > 0 &&
+    height > 0 &&
+    x >= 0 &&
+    y >= 0 &&
+    x <= 1 &&
+    y <= 1
+  );
+}
+
+function resolveFocusQuality(focusRegion) {
+  const confidence = normalizeConfidence(focusRegion?.confidence);
+
+  if (
+    confidence === CAMERA_CONFIDENCE.HIGH &&
+    focusRegion?.fitMode === "tight_heading_section"
+  ) {
+    return "tight";
+  }
+
+  if (confidence === CAMERA_CONFIDENCE.HIGH) {
+    return "exact";
+  }
+
+  if (confidence === CAMERA_CONFIDENCE.MEDIUM) {
+    return "balanced";
+  }
+
+  return "broad";
+}
+
+function resolveViewportStyle(focusRegion) {
+  const confidence = normalizeConfidence(focusRegion?.confidence);
+  const fitMode = focusRegion?.fitMode || "";
+
+  if (confidence === CAMERA_CONFIDENCE.LOW) {
+    return "fit_full_context";
+  }
+
+  switch (fitMode) {
+    case "tight_heading_section":
+      return "fit_tight";
+
+    case "tight_semantic_section":
+      return "fit_balanced";
+
+    case "architecture_diagram_region":
+    case "broad_architecture_region":
+      return "fit_architecture_context";
+
+    default:
+      return confidence === CAMERA_CONFIDENCE.HIGH
+        ? "fit_precise"
+        : "fit_contextual";
+  }
+}
+
+function resolveFocusPadding(focusRegion) {
+  if (focusRegion?.padding) {
+    return focusRegion.padding;
+  }
+
+  const confidence = normalizeConfidence(focusRegion?.confidence);
+
+  switch (confidence) {
+    case CAMERA_CONFIDENCE.HIGH:
+      return { x: 0.018, y: 0.024 };
+
+    case CAMERA_CONFIDENCE.MEDIUM:
+      return { x: 0.04, y: 0.055 };
+
+    default:
+      return { x: 0.08, y: 0.1 };
+  }
+}
+
+function resolveCameraProfile(focusRegion) {
+  const quality = resolveFocusQuality(focusRegion);
+
+  switch (quality) {
+    case "tight":
+    case "exact":
+      return "exact_entity_focus";
+
+    case "balanced":
+      return "broader_flow_region_focus";
+
+    default:
+      return "safe_full_context_focus";
+  }
+}
+
+function resolveCameraScope(focusRegion, sceneRole) {
+  if (
+    sceneRole === "architecture_overview" ||
+    sceneRole === "architecture_recap"
+  ) {
+    return CAMERA_SCOPE.FULL_ARCHITECTURE;
+  }
+
+  if (!isUsableFocusRegion(focusRegion)) {
+    return CAMERA_SCOPE.FULL_PAGE;
+  }
+
+  const confidence = normalizeConfidence(focusRegion?.confidence);
+
+  if (confidence === CAMERA_CONFIDENCE.HIGH) {
+    return CAMERA_SCOPE.EXACT;
+  }
+
+  if (confidence === CAMERA_CONFIDENCE.MEDIUM) {
+    return CAMERA_SCOPE.FLOW_REGION;
+  }
+
+  return CAMERA_SCOPE.FULL_PAGE;
+}
+
+function resolveMotionIntent({ section, sceneRole, teachingFocus, choreography }) {
+  if (sceneRole === "architecture_overview") {
+    return "establish_full_architecture";
+  }
+
+  if (sceneRole === "architecture_recap") {
+    return "return_to_full_architecture";
+  }
+
+  const explicit =
+    choreography?.motionIntent ||
+    choreography?.cameraMotion ||
+    section?.visualIntent?.motionIntent ||
+    section?.visualIntent?.cameraIntent ||
+    section?.focusHint?.cameraIntent ||
+    section?.visualIntent?.focusHint?.cameraIntent ||
+    null;
+
+  if (explicit) return explicit;
+
+  if (teachingFocus?.reason === "flow_entry_point") {
+    return "zoom_to_flow_entry";
+  }
+
+  if (teachingFocus?.reason === "flow_destination") {
+    return "settle_on_flow_destination";
+  }
+
+  if (teachingFocus?.reason === "handoff" || teachingFocus?.reason === "flow_transition") {
+    return "follow_flow_to_component";
+  }
+
+  return "follow_flow_to_component";
+}
+
+function resolveCameraStyle({ motionIntent, cameraScope }) {
+  if (cameraScope === CAMERA_SCOPE.FULL_ARCHITECTURE) {
+    if (motionIntent === "return_to_full_architecture") {
+      return "slow_zoom_out_recap";
+    }
+
+    return "broad_establishing_hold";
+  }
+
+  if (cameraScope === CAMERA_SCOPE.FULL_PAGE) {
+    return "safe_full_page_hold";
+  }
+
+  switch (motionIntent) {
+    case "zoom_to_flow_entry":
+      return "gentle_zoom_to_entry";
+
+    case "follow_flow_to_component":
+      return "smooth_pan_soft_zoom";
+
+    case "settle_on_flow_destination":
+      return "gentle_settle_on_destination";
+
+    default:
+      return "soft_contextual_camera_move";
+  }
+}
+
+function resolveFocusPriority({ sceneRole, teachingFocus, choreography }) {
+  if (sceneRole === "architecture_overview") return "system_orientation";
+  if (sceneRole === "architecture_recap") return "system_recap";
+
+  return (
+    choreography?.focusPriority ||
+    teachingFocus?.reason ||
+    "handoff"
+  );
+}
+
+function buildCameraPlan({
+  section,
+  visualIntent,
+  focusRegion,
+  sceneRole,
+  teachingFocus,
+  choreography,
+  timing,
+}) {
+  const confidence = normalizeConfidence(
+    focusRegion?.confidence ||
+    teachingFocus?.confidence ||
+    choreography?.confidence
+  );
+
+  const cameraScope = resolveCameraScope(focusRegion, sceneRole);
+  const motionIntent = resolveMotionIntent({
+    section,
+    sceneRole,
+    teachingFocus,
+    choreography,
+  });
+
+  const cameraStyle = resolveCameraStyle({
+    motionIntent,
+    cameraScope,
+  });
+
+  const focusPriority = resolveFocusPriority({
+    sceneRole,
+    teachingFocus,
+    choreography,
+  });
+
+  const hasUsableFocusRegion = isUsableFocusRegion(focusRegion);
+
+  return {
+    version: "camera-plan-v1-render-aligned",
+    enabled: true,
+
+    ownership: {
+      pedagogicalIntentSource: "lessonGraph",
+      cinematicTranslationOwner: "renderPlan",
+      executionOwner: "Root.jsx",
+    },
+
+    motionIntent,
+    cameraStyle,
+    focusPriority,
+
+    confidence,
+    cameraScope,
+    stabilityRule:
+      "high=exact zoom | medium=broad flow region | low=section/full-page fallback",
+
+    target: {
+      mode: hasUsableFocusRegion ? "focus_region" : "safe_default",
+      focusRegion: hasUsableFocusRegion ? focusRegion : null,
+      fallback:
+        cameraScope === CAMERA_SCOPE.FULL_ARCHITECTURE
+          ? "full_architecture"
+          : "full_page",
+      label:
+        visualIntent?.focus ||
+        visualIntent?.focusHint?.label ||
+        teachingFocus?.entityId ||
+        null,
+      entityId: teachingFocus?.entityId || null,
+      flowGroupId: teachingFocus?.flowGroupId || null,
+    },
+
+    viewport: {
+      style: resolveViewportStyle(focusRegion),
+      padding: resolveFocusPadding(focusRegion),
+      profile: resolveCameraProfile(focusRegion),
+      preserveFullPage:
+        cameraScope === CAMERA_SCOPE.FULL_ARCHITECTURE ||
+        cameraScope === CAMERA_SCOPE.FULL_PAGE,
+      avoidConfidentWrongFocus: true,
+    },
+
+    beats: buildMotionBeats({
+      sceneRole,
+      motionIntent,
+      cameraStyle,
+      cameraScope,
+      timing,
+    }),
+  };
+}
+
+function buildMotionBeats({
+  sceneRole,
+  motionIntent,
+  cameraStyle,
+  cameraScope,
+  timing,
+}) {
+  const motionWindowMs = timing?.motionWindowMs || 1000;
+
+  if (sceneRole === "architecture_overview") {
+    return [
+      {
+        at: 0,
+        durationMs: Math.round(motionWindowMs * 0.45),
+        action: "establish",
+        cameraStyle: "broad_establishing_hold",
+      },
+      {
+        at: Math.round(motionWindowMs * 0.45),
+        durationMs: Math.round(motionWindowMs * 0.55),
+        action: "subtle_push_in",
+        cameraStyle: "progressive_semantic_zoom",
+      },
+    ];
+  }
+
+  if (sceneRole === "architecture_recap") {
+    return [
+      {
+        at: 0,
+        durationMs: Math.round(motionWindowMs * 0.55),
+        action: "zoom_out",
+        cameraStyle: "slow_zoom_out_recap",
+      },
+      {
+        at: Math.round(motionWindowMs * 0.55),
+        durationMs: Math.round(motionWindowMs * 0.45),
+        action: "hold_full_system",
+        cameraStyle: "broad_establishing_hold",
+      },
+    ];
+  }
+
+  if (cameraScope === CAMERA_SCOPE.FULL_PAGE) {
+    return [
+      {
+        at: 0,
+        durationMs: motionWindowMs,
+        action: "safe_hold",
+        cameraStyle: "safe_full_page_hold",
+      },
+    ];
+  }
+
+  return [
+    {
+      at: 0,
+      durationMs: Math.round(motionWindowMs * 0.3),
+      action: "orient",
+      cameraStyle: "soft_contextual_camera_move",
+    },
+    {
+      at: Math.round(motionWindowMs * 0.3),
+      durationMs: Math.round(motionWindowMs * 0.7),
+      action: motionIntent,
+      cameraStyle,
+    },
+  ];
+}
+
+function getCameraMotionFromFocusHint(focusHint) {
+  switch (focusHint?.cameraIntent) {
+    case "zoom_top_section":
+      return "focus_top";
+    case "zoom_upper_middle_section":
+      return "focus_upper_middle";
+    case "zoom_middle_section":
+      return "focus_middle";
+    case "zoom_lower_middle_section":
+      return "focus_lower_middle";
+    case "zoom_lower_section":
+      return "focus_lower";
+    case "zoom_bottom_section":
+      return "focus_bottom";
+    case "guided_document_focus":
+      return "guided_focus";
+    default:
+      return "guided_focus";
+  }
+}
+
+function buildFocusGuidedBehavior(visualIntent) {
+  const focusHint = visualIntent.focusHint || {};
+
+  return {
+    cameraMotion: getCameraMotionFromFocusHint(focusHint),
+    overlayMode: focusHint.overlayMode || "minimal_context_callout",
+    preserveFullPage: true,
+    visualPriority: "document_primary_focus_guided",
+    focusGuided: true,
+    focusTarget: focusHint.target || null,
+    focusLabel: focusHint.label || visualIntent.focus || null,
+    focusRegion: focusHint.focusRegion || null,
+    cameraIntent: focusHint.cameraIntent || null,
+    keepDocumentPrimary: true,
+    reduceOverlayDominance: true,
+    avoidFullSceneReset: true,
+  };
+}
+
 function shouldUseFocusGuidedVisual(page, visualIntent) {
   return Boolean(
     page != null &&
@@ -241,7 +840,15 @@ function shouldUseFocusGuidedVisual(page, visualIntent) {
   );
 }
 
-function resolveVisualTypeFromIntent(type, page, visualIntent) {
+function resolveVisualTypeFromIntent(type, page, visualIntent, sceneRole) {
+  if (sceneRole === "architecture_overview") {
+    return "architecture_overview_scene";
+  }
+
+  if (sceneRole === "architecture_recap") {
+    return "architecture_recap_scene";
+  }
+
   if (shouldUseFocusGuidedVisual(page, visualIntent)) {
     return "focus_guided_document_scene";
   }
@@ -332,143 +939,33 @@ function resolveVisualTypeFromIntent(type, page, visualIntent) {
   }
 }
 
-function getCameraMotionFromFocusHint(focusHint) {
-  switch (focusHint?.cameraIntent) {
-    case "zoom_top_section":
-      return "focus_top";
-    case "zoom_upper_middle_section":
-      return "focus_upper_middle";
-    case "zoom_middle_section":
-      return "focus_middle";
-    case "zoom_lower_middle_section":
-      return "focus_lower_middle";
-    case "zoom_lower_section":
-      return "focus_lower";
-    case "zoom_bottom_section":
-      return "focus_bottom";
-    case "guided_document_focus":
-      return "guided_focus";
-    default:
-      return "guided_focus";
-  }
-}
-
-function buildFocusGuidedBehavior(visualIntent) {
-  const focusHint = visualIntent.focusHint || {};
-
-  return {
-    cameraMotion: getCameraMotionFromFocusHint(focusHint),
-    overlayMode: focusHint.overlayMode || "minimal_context_callout",
-    preserveFullPage: true,
-    visualPriority: "document_primary_focus_guided",
-    focusGuided: true,
-    focusTarget: focusHint.target || null,
-    focusLabel: focusHint.label || visualIntent.focus || null,
-    focusRegion: focusHint.focusRegion || null,
-    cameraIntent: focusHint.cameraIntent || null,
-    keepDocumentPrimary: true,
-    reduceOverlayDominance: true,
-    avoidFullSceneReset: true,
-  };
-}
-
-function resolveFocusQuality(focusRegion) {
-  const confidence = focusRegion?.confidence || "low";
-
-  if (
-    confidence === "high" &&
-    focusRegion?.fitMode === "tight_heading_section"
-  ) {
-    return "tight";
+function buildSceneBehavior(visualIntent, cameraPlan) {
+  if (cameraPlan?.enabled) {
+    return {
+      cameraMotion: cameraPlan.motionIntent,
+      cameraStyle: cameraPlan.cameraStyle,
+      cameraScope: cameraPlan.cameraScope,
+      overlayMode:
+        visualIntent.overlayMode ||
+        visualIntent.focusHint?.overlayMode ||
+        "minimal_context_callout",
+      preserveFullPage: cameraPlan.viewport?.preserveFullPage !== false,
+      visualPriority:
+        cameraPlan.cameraScope === CAMERA_SCOPE.FULL_ARCHITECTURE
+          ? "architecture_full_context"
+          : "architecture_flow_aligned",
+      focusGuided: cameraPlan.target?.mode === "focus_region",
+      focusTarget: cameraPlan.target?.entityId || null,
+      focusLabel: cameraPlan.target?.label || null,
+      focusRegion: cameraPlan.target?.focusRegion || null,
+      cameraIntent: cameraPlan.motionIntent,
+      keepDocumentPrimary: true,
+      reduceOverlayDominance: true,
+      avoidFullSceneReset: true,
+      avoidConfidentWrongFocus: true,
+    };
   }
 
-  if (confidence === "medium") {
-    return "balanced";
-  }
-
-  return "broad";
-}
-
-function resolveViewportStyle(focusRegion) {
-  const fitMode = focusRegion?.fitMode || "";
-
-  switch (fitMode) {
-    case "tight_heading_section":
-      return "fit_tight";
-
-    case "tight_semantic_section":
-      return "fit_balanced";
-
-    default:
-      return "fit_contextual";
-  }
-}
-
-function resolveFocusPadding(focusRegion) {
-  if (focusRegion?.padding) {
-    return focusRegion.padding;
-  }
-
-  const confidence = focusRegion?.confidence || "low";
-
-  switch (confidence) {
-    case "high":
-      return { x: 0.004, y: 0.006 };
-
-    case "medium":
-      return { x: 0.008, y: 0.012 };
-
-    default:
-      return { x: 0.014, y: 0.022 };
-  }
-}
-
-function resolveCameraProfile(focusRegion) {
-  const quality = resolveFocusQuality(focusRegion);
-
-  switch (quality) {
-    case "tight":
-      return "tight_section_focus";
-
-    case "balanced":
-      return "balanced_document_focus";
-
-    default:
-      return "broad_context_focus";
-  }
-}
-
-function resolveSpokenFocus(section) {
-  return (
-    section.spokenFocus ||
-    section.visualIntent?.spokenFocus ||
-    null
-  );
-}
-
-function resolveSpokenFocusTargets(section) {
-  if (Array.isArray(section.spokenFocusTargets)) {
-    return section.spokenFocusTargets;
-  }
-
-  if (Array.isArray(section.visualIntent?.spokenFocusTargets)) {
-    return section.visualIntent.spokenFocusTargets;
-  }
-
-  return [];
-}
-
-function resolvePrimarySpokenFocusTarget(section) {
-  const spokenFocus = resolveSpokenFocus(section);
-
-  if (spokenFocus) return spokenFocus;
-
-  const targets = resolveSpokenFocusTargets(section);
-
-  return targets[0] || null;
-}
-
-function buildSceneBehavior(visualIntent) {
   if (visualIntent?.focusHint && visualIntent?.keepDocumentPrimary) {
     return buildFocusGuidedBehavior(visualIntent);
   }
@@ -642,108 +1139,53 @@ function buildSceneBehavior(visualIntent) {
   }
 }
 
-function findAudioForSection(audioManifest, sectionNumber, index) {
-  const items = Array.isArray(audioManifest?.sections)
-    ? audioManifest.sections
-    : Array.isArray(audioManifest?.items)
-      ? audioManifest.items
-      : Array.isArray(audioManifest?.audio)
-        ? audioManifest.audio
-        : Array.isArray(audioManifest?.files)
-          ? audioManifest.files
-          : [];
-
+function resolveSpokenFocus(section) {
   return (
-    items.find(
-      (item) =>
-        String(item.sectionNumber).padStart(3, "0") === sectionNumber
-    ) ||
-    items.find(
-      (item) =>
-        item.sectionIndex === index ||
-        item.index === index
-    ) ||
-    items[index] ||
+    section.spokenFocus ||
+    section.visualIntent?.spokenFocus ||
     null
   );
 }
 
-function findPageImage(jobDir, page) {
-  if (page == null) {
-    return { pageImageFile: null, pageImagePath: null };
+function resolveSpokenFocusTargets(section) {
+  if (Array.isArray(section.spokenFocusTargets)) {
+    return section.spokenFocusTargets;
   }
 
-  const pageImagesDir = path.join(jobDir, "page-images");
-
-  const candidates = [
-    `page-${String(page).padStart(3, "0")}.png`,
-    `page-${page}.png`,
-    `${page}.png`,
-  ];
-
-  for (const file of candidates) {
-    const fullPath = path.join(pageImagesDir, file);
-    if (fs.existsSync(fullPath)) {
-      return {
-        pageImageFile: file,
-        pageImagePath: fullPath,
-      };
-    }
+  if (Array.isArray(section.visualIntent?.spokenFocusTargets)) {
+    return section.visualIntent.spokenFocusTargets;
   }
 
-  return {
-    pageImageFile: null,
-    pageImagePath: null,
-  };
-}
-
-function buildCaption(section) {
-  const text = String(section.text || "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (!text) return "";
-  if (text.length <= 120) return text;
-
-  return `${text.slice(0, 117).trim()}...`;
-}
-
-function normalizeDialogue(dialogue) {
-  if (Array.isArray(dialogue)) return dialogue;
-  if (Array.isArray(dialogue?.sections)) return dialogue.sections;
-  if (Array.isArray(dialogue?.dialogue)) return dialogue.dialogue;
-  if (Array.isArray(dialogue?.messages)) return dialogue.messages;
   return [];
 }
 
+function resolvePrimarySpokenFocusTarget(section) {
+  const spokenFocus = resolveSpokenFocus(section);
 
-function getAvailablePageCount(jobDir) {
-  const pageImagesDir = path.join(jobDir, "page-images");
+  if (spokenFocus) return spokenFocus;
 
-  if (!fs.existsSync(pageImagesDir)) {
-    return 0;
-  }
+  const targets = resolveSpokenFocusTargets(section);
 
-  return fs
-    .readdirSync(pageImagesDir)
-    .filter((file) => /^page-\d+\.png$/.test(file))
-    .length;
+  return targets[0] || null;
 }
 
-function findChoreographyForScene({
-  choreographyIntent = [],
-  sceneIndex,
+function resolveScenePage({
+  section,
+  visualIntentForPage,
+  focusHintForPage,
+  availablePageCount,
 }) {
-  return choreographyIntent[sceneIndex] || null;
-}
+  const explicitPage =
+    section.page ??
+    section.pageNumber ??
+    visualIntentForPage.page ??
+    focusHintForPage?.sourcePages?.[0] ??
+    null;
 
-function findTeachingFocusForScene({
-  teachingFocusSequence = [],
-  sceneIndex,
-}) {
-  return teachingFocusSequence[sceneIndex] || null;
-}
+  const fallbackPage = availablePageCount > 0 ? 1 : null;
 
+  return explicitPage ?? fallbackPage;
+}
 
 function createRenderPlan(jobDir) {
   const dialoguePath = path.join(jobDir, "dialogue.json");
@@ -752,10 +1194,8 @@ function createRenderPlan(jobDir) {
   const renderPlanPath = path.join(jobDir, "renderPlan.json");
 
   const dialogue = readJson(dialoguePath);
-  const lessonGraph = 
-    dialogue?.lessonGraph || {};
-  const architectureTraversal =
-    lessonGraph?.architectureTraversal || {}; 
+  const lessonGraph = dialogue?.lessonGraph || {};
+  const architectureTraversal = lessonGraph?.architectureTraversal || {};
   const audioManifest = readJson(audioManifestPath, {});
   const diagramAnalysis = readJson(diagramAnalysisPath, {});
 
@@ -771,45 +1211,34 @@ function createRenderPlan(jobDir) {
 
   validateManifestAgainstDialogue(sections, audioManifest);
 
+  const availablePageCount = getAvailablePageCount(jobDir);
   let timelineCursorMs = 0;
 
   const scenes = sections.map((section, index) => {
-    const choreographyMetadata =
-    findChoreographyForScene({
-        choreographyIntent:
-        architectureTraversal.choreographyIntent || [],
-        sceneIndex: index,
+    const choreographyMetadata = findChoreographyForScene({
+      choreographyIntent: architectureTraversal.choreographyIntent || [],
+      sceneIndex: index,
     });
 
-    const teachingFocusMetadata =
-    findTeachingFocusForScene({
-        teachingFocusSequence:
-        architectureTraversal.teachingFocusSequence || [],
-        sceneIndex: index,
+    const teachingFocusMetadata = findTeachingFocusForScene({
+      teachingFocusSequence: architectureTraversal.teachingFocusSequence || [],
+      sceneIndex: index,
     });
 
     const sectionNumber = normalizeSectionNumber(section.sectionNumber, index);
     const visualIntentForPage = section.visualIntent || {};
     const focusHintForPage =
-    section.focusHint ||
-    section.visualIntent?.focusHint ||
-    section.metadata?.focusHint ||
-    null;
+      section.focusHint ||
+      section.visualIntent?.focusHint ||
+      section.metadata?.focusHint ||
+      null;
 
-    const explicitPage =
-    section.page ??
-    section.pageNumber ??
-    visualIntentForPage.page ??
-    focusHintForPage?.sourcePages?.[0] ??
-    null;
-
-    const availablePageCount = getAvailablePageCount(jobDir);
-
-    const fallbackPage =
-    availablePageCount > 0 ? 1 : null;
-
-    
-    const page = explicitPage ?? fallbackPage;
+    const page = resolveScenePage({
+      section,
+      visualIntentForPage,
+      focusHintForPage,
+      availablePageCount,
+    });
 
     const audioItem = findAudioForSection(audioManifest, sectionNumber, index);
 
@@ -827,14 +1256,53 @@ function createRenderPlan(jobDir) {
     const { pageImageFile, pageImagePath } = findPageImage(jobDir, page);
     const type = section.type || "speaker_card";
     const visualIntent = resolveVisualIntent(section);
-    const visualType = resolveVisualTypeFromIntent(type, page, visualIntent);
-    const sceneBehavior = buildSceneBehavior(visualIntent);
+
+    const architectureScene = isArchitectureScene(section, architectureTraversal);
+    const sceneRole = architectureScene
+      ? classifyArchitectureSceneRole(section, index, sections.length)
+      : "standard_scene";
+
+    const rawFocusRegion =
+      visualIntent.focusRegion ||
+      section.focusRegion ||
+      section.metadata?.focusRegion ||
+      choreographyMetadata?.focusRegion ||
+      teachingFocusMetadata?.focusRegion ||
+      null;
+
     const timing = resolveSceneTiming(section, audioItem);
+
+    const cameraPlan = architectureScene
+      ? buildCameraPlan({
+          section,
+          visualIntent,
+          focusRegion: rawFocusRegion,
+          sceneRole,
+          teachingFocus: teachingFocusMetadata,
+          choreography: choreographyMetadata,
+          timing,
+        })
+      : null;
+
+    const visualType = resolveVisualTypeFromIntent(
+      type,
+      page,
+      visualIntent,
+      sceneRole
+    );
+
+    const sceneBehavior = buildSceneBehavior(visualIntent, cameraPlan);
 
     const startMs = timelineCursorMs;
     const endMs = startMs + timing.durationMs;
 
     timelineCursorMs = endMs;
+
+    const resolvedFocusRegion =
+      cameraPlan?.target?.focusRegion ||
+      visualIntent.focusRegion ||
+      sceneBehavior.focusRegion ||
+      null;
 
     return {
       sceneIndex: index,
@@ -842,10 +1310,13 @@ function createRenderPlan(jobDir) {
       speaker: section.speaker || "Senior Engineer",
       type,
       scenePurpose: type,
+      sceneRole,
+
       teachingUnitId: section.teachingUnitId || null,
       teachingMode: section.teachingMode || null,
       narrationGoals: section.narrationGoals || [],
       avoidNarration: section.avoidNarration || [],
+
       text: section.text || "",
       audioFile,
       audioPath,
@@ -856,37 +1327,37 @@ function createRenderPlan(jobDir) {
       durationMs: timing.durationMs,
       startMs,
       endMs,
+
       page,
       pageImageFile,
       pageImagePath,
+
       visualType,
       visualIntent,
 
       semanticTraversal: {
         teachingFocus: teachingFocusMetadata,
         choreography: choreographyMetadata,
-     },
+      },
+
+      cameraPlan,
 
       spokenFocus: resolvePrimarySpokenFocusTarget(section),
       spokenFocusTargets: resolveSpokenFocusTargets(section),
 
       focusHint: visualIntent.focusHint || null,
-      focusRegion: visualIntent.focusRegion || sceneBehavior.focusRegion || null,
-      cameraIntent: visualIntent.cameraIntent || sceneBehavior.cameraIntent || null,
+      focusRegion: resolvedFocusRegion,
+      cameraIntent:
+        cameraPlan?.motionIntent ||
+        visualIntent.cameraIntent ||
+        sceneBehavior.cameraIntent ||
+        null,
       overlayMode: visualIntent.overlayMode || sceneBehavior.overlayMode || null,
-      
-      focusQuality: resolveFocusQuality(
-        visualIntent.focusRegion || sceneBehavior.focusRegion || null
-        ),
-        viewportStyle: resolveViewportStyle(
-        visualIntent.focusRegion || sceneBehavior.focusRegion || null
-        ),
-        focusPadding: resolveFocusPadding(
-        visualIntent.focusRegion || sceneBehavior.focusRegion || null
-        ),
-        cameraProfile: resolveCameraProfile(
-        visualIntent.focusRegion || sceneBehavior.focusRegion || null
-        ),
+
+      focusQuality: resolveFocusQuality(resolvedFocusRegion),
+      viewportStyle: resolveViewportStyle(resolvedFocusRegion),
+      focusPadding: resolveFocusPadding(resolvedFocusRegion),
+      cameraProfile: resolveCameraProfile(resolvedFocusRegion),
 
       sceneBehavior: {
         ...sceneBehavior,
@@ -896,12 +1367,18 @@ function createRenderPlan(jobDir) {
         motionWindowMs: timing.motionWindowMs,
         timingSource: timing.timingSource,
       },
+
       transition: {
-        type: sceneBehavior.focusGuided ? "focus_guided_soft_fade" : "soft_fade",
+        type: cameraPlan?.enabled
+          ? "semantic_camera_soft_fade"
+          : sceneBehavior.focusGuided
+            ? "focus_guided_soft_fade"
+            : "soft_fade",
         inMs: timing.transitionInMs,
         outMs: timing.transitionOutMs,
         tailHoldMs: timing.tailHoldMs,
       },
+
       timingSource: timing.timingSource,
       hasRealAudio: timing.hasRealAudio,
       caption: section.caption || buildCaption(section),
@@ -917,37 +1394,67 @@ function createRenderPlan(jobDir) {
     return acc;
   }, {});
 
+  const cameraPlanSceneCount = scenes.filter(
+    (scene) => Boolean(scene.cameraPlan?.enabled)
+  ).length;
+
+  const architectureSceneCount = scenes.filter(
+    (scene) => scene.sceneRole && scene.sceneRole.startsWith("architecture_")
+  ).length;
+
   const renderPlan = {
     generatedAt: new Date().toISOString(),
-    version: "render-plan-v8-spoken-focus-sync",
+    version: "render-plan-v9-architecture-camera-alignment",
     sceneCount: scenes.length,
     totalDurationMs,
     scenes,
+
     validation: {
       sceneCountMatchesDialogue: scenes.length === sections.length,
       sceneCountMatchesAudioManifest:
         scenes.length === audioManifest.sections.length,
       audioManifestValidated: true,
     },
+
     metadata: {
-        dialogueVersion: dialogue?.version || null,
-        audioManifestVersion: audioManifest?.version || null,
+      dialogueVersion: dialogue?.version || null,
+      audioManifestVersion: audioManifest?.version || null,
 
-        hasLessonGraph: Boolean(dialogue?.lessonGraph),
+      phase: "8D.15-render-camera-alignment",
 
-        hasArchitectureTraversal: Boolean(
-            architectureTraversal?.enabled
-        ),
+      ownership: {
+        lessonGraph: "pedagogical intent",
+        renderPlan: "cinematic translation",
+        rootJsx: "execution only",
+      },
 
-        hasChoreographyIntent: Array.isArray(
-            architectureTraversal?.choreographyIntent
-        ),
+      hasLessonGraph: Boolean(dialogue?.lessonGraph),
 
-        hasTeachingFocusSequence: Array.isArray(
-            architectureTraversal?.teachingFocusSequence
-        ),
+      hasArchitectureTraversal: Boolean(
+        architectureTraversal?.enabled
+      ),
 
-        hasTeachingUnitMetadata: scenes.some(
+      hasChoreographyIntent: Array.isArray(
+        architectureTraversal?.choreographyIntent
+      ),
+
+      hasTeachingFocusSequence: Array.isArray(
+        architectureTraversal?.teachingFocusSequence
+      ),
+
+      architectureSceneCount,
+      cameraPlanSceneCount,
+
+      cameraAlignmentRules: {
+        overview: "broad establishing shot",
+        middleScenes: "flow-aware region traversal",
+        recap: "return to full architecture",
+        confidence:
+          "high confidence = exact zoom | medium = broader flow region | low = section/full-page fallback",
+        safety: "never let the camera be confidently wrong",
+      },
+
+      hasTeachingUnitMetadata: scenes.some(
         (scene) => Boolean(scene.teachingUnitId)
       ),
       hasVisualIntent: scenes.some(
@@ -962,19 +1469,22 @@ function createRenderPlan(jobDir) {
       hasFocusHints: scenes.some((scene) => Boolean(scene.focusHint)),
       hasFocusRegions: scenes.some((scene) => Boolean(scene.focusRegion)),
       hasSpokenFocusTargets: scenes.some(
-        (scene) => Array.isArray(scene.spokenFocusTargets) &&
-            scene.spokenFocusTargets.length > 0
-        ),
+        (scene) =>
+          Array.isArray(scene.spokenFocusTargets) &&
+          scene.spokenFocusTargets.length > 0
+      ),
       spokenFocusSceneCount: scenes.filter(
         (scene) => Boolean(scene.spokenFocus)
-      ).length,  
+      ).length,
       focusGuidedSceneCount: scenes.filter(
         (scene) => Boolean(scene.sceneBehavior?.focusGuided)
       ).length,
+
       hasAudioManifest: fs.existsSync(audioManifestPath),
       hasDiagramAnalysis: fs.existsSync(diagramAnalysisPath),
       hasPageImages: fs.existsSync(path.join(jobDir, "page-images")),
       diagramAnalysisVersion: diagramAnalysis?.version || null,
+
       realAudioPaddingMs: REAL_AUDIO_PADDING_MS,
       fallbackAudioPaddingMs: FALLBACK_AUDIO_PADDING_MS,
       minSceneDurationMs: MIN_SCENE_DURATION_MS,
@@ -984,11 +1494,14 @@ function createRenderPlan(jobDir) {
       defaultTransitionOutMs: DEFAULT_TRANSITION_OUT_MS,
       defaultTailHoldMs: DEFAULT_TAIL_HOLD_MS,
       timingSources,
+
       timelineSource:
         "audioManifest.durationMs primary | lessonGraph.targetDurationSec advisory | estimatedDurationMs fallback",
+
       borrowedIdeas: [
-        "Motion Canvas-inspired timeline pacing translated into Remotion metadata",
-        "tldraw-inspired focusRegion/cameraIntent translated into Cachey scene behavior",
+        "Motion Canvas-inspired visual beats and scene choreography translated into renderPlan.cameraPlan.beats",
+        "tldraw-inspired zoom-to-bounds / viewport framing translated into renderPlan.cameraPlan.viewport",
+        "Cachey confidence contract: high exact zoom, medium broad flow region, low safe fallback",
       ],
     },
   };

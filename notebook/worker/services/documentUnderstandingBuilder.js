@@ -683,6 +683,8 @@ function buildDocumentUnderstanding({
 
   const artifact = {
     version: VERSION,
+    layoutBoxes,
+    documentStructure,
     entities,
     relationships,
     sequences,

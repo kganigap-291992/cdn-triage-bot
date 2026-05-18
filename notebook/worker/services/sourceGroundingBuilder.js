@@ -1,6 +1,9 @@
 // notebook/worker/services/sourceGroundingBuilder.js
 
 
+const fs = require("fs");
+const path = require("path");
+
 const SOURCE_GROUNDING_VERSION = "source-grounding-v2-lite";
 
 const {
@@ -57,6 +60,42 @@ function safeString(value) {
 function safeLower(value) {
   return safeString(value).toLowerCase();
 }
+
+function readSpatialEntityGrounding(jobDir) {
+  if (!jobDir) {
+    return {
+      bestCandidates: {},
+    };
+  }
+
+  const artifactPath = path.join(
+    jobDir,
+    "spatial-entity-grounding.json"
+  );
+
+  try {
+    if (!fs.existsSync(artifactPath)) {
+      return {
+        bestCandidates: {},
+      };
+    }
+
+    const parsed = JSON.parse(
+      fs.readFileSync(artifactPath, "utf8")
+    );
+
+    return {
+      ...(parsed || {}),
+      bestCandidates: parsed?.bestCandidates || {},
+    };
+  } catch (error) {
+    return {
+      bestCandidates: {},
+      readError: error.message,
+    };
+  }
+}
+
 
 function uniq(values) {
   return Array.from(
@@ -713,6 +752,41 @@ function getExactEntityTerms(unit = {}) {
     });
 }
 
+function findBestSpatialEntityCandidate(
+  unit,
+  spatialEntityGrounding = {}
+) {
+  const bestCandidates =
+    spatialEntityGrounding.bestCandidates || {};
+
+  const terms = getExactEntityTerms(unit)
+    .map(normalizeText)
+    .filter(Boolean);
+
+  for (const term of terms) {
+    const candidate = bestCandidates[term];
+
+    if (!candidate) continue;
+
+    if (candidate.cameraEligible !== true) {
+      continue;
+    }
+
+    if (
+      !["high", "medium"].includes(candidate.confidence)
+    ) {
+      continue;
+    }
+
+    if (!candidate.region) continue;
+
+    return candidate;
+  }
+
+  return null;
+}
+
+
 function scoreLayoutBlock(block, terms, unit = {}) {
   const text = normalizeText(block?.text || "");
 
@@ -912,9 +986,6 @@ function findBestLayoutBoxMatch(unit, layoutBoxes, groundedPage) {
 
   return best;
 }
-
-
-
 function buildBroadVisualFocusRegion({ unit, groundedPage }) {
   const recapLike = isRecapLikeUnit(unit);
 
@@ -983,16 +1054,16 @@ function buildFocusRegionFromLayoutBox({
     : block.type === "heading"
         ? 0.045
         : block.type === "section"
-        ? 0.095
-        : 0.07;
+          ? 0.095
+          : 0.07;
 
   const height = clampNumber(
     block.type === "heading"
-        ? Math.max(rawHeight, 0.045)
-        : rawHeight,
+      ? Math.max(rawHeight, 0.045)
+      : rawHeight,
     block.type === "heading" ? 0.04 : 0.045,
     block.type === "heading" ? 0.07 : 0.16
-);
+  );
 
   return {
     type: "layout_box_focus",
@@ -1028,7 +1099,56 @@ function buildFocusRegionFromLayoutBox({
   };
 }
 
-function groundTeachingUnit(unit, pageTexts, layoutBoxes) {
+function buildFocusRegionFromSpatialCandidate({
+  unit,
+  candidate,
+}) {
+  const region = candidate.region || {};
+
+  return {
+    type: "spatial_entity_focus",
+    source: "spatialEntityGroundingBuilder",
+    version: SOURCE_GROUNDING_VERSION,
+    confidence: candidate.confidence,
+    label:
+      unit.focusHint?.label ||
+      unit.title ||
+      candidate.label ||
+      "Relevant document area",
+    x: clampNumber(region.x, 0.02, 0.9),
+    y: clampNumber(region.y, PAGE_TOP_SAFE_Y, 0.92),
+    width: clampNumber(region.width, 0.08, 0.94),
+    height: clampNumber(region.height, 0.045, 0.22),
+    fitMode: "spatial_entity_focus",
+    viewportIntent: "fit_focus_region_with_context",
+    padding: {
+      x: 0.01,
+      y: 0.014,
+    },
+    grounding: {
+      reason:
+        candidate.reason ||
+        "spatial_entity_candidate",
+      matchedLine:
+        candidate.text ||
+        candidate.label ||
+        null,
+      anchorLine:
+        candidate.text ||
+        candidate.label ||
+        null,
+      nextBoundaryLine: null,
+      candidateSource: candidate.source || null,
+    },
+  };
+}
+
+function groundTeachingUnit(
+  unit,
+  pageTexts,
+  layoutBoxes,
+  spatialEntityGrounding
+) {
   const existingSourcePages = Array.isArray(unit.sourcePages)
     ? unit.sourcePages.filter(Boolean)
     : [];
@@ -1049,31 +1169,43 @@ function groundTeachingUnit(unit, pageTexts, layoutBoxes) {
     unit.focusHint?.focusRegion ||
     null;
 
+  const spatialCandidate = shouldUseBroadVisualRegion(unit)
+    ? null
+    : findBestSpatialEntityCandidate(
+        unit,
+        spatialEntityGrounding
+      );
+
   const layoutMatch = shouldUseBroadVisualRegion(unit)
     ? null
     : findBestLayoutBoxMatch(
         unit,
         layoutBoxes,
         groundedPage
-        );
+      );
 
-    const focusRegion = shouldUseBroadVisualRegion(unit)
+  const focusRegion = shouldUseBroadVisualRegion(unit)
     ? buildBroadVisualFocusRegion({
         unit,
         groundedPage,
+      })
+    : spatialCandidate
+      ? buildFocusRegionFromSpatialCandidate({
+          unit,
+          candidate: spatialCandidate,
         })
-    : layoutMatch
+      : layoutMatch
         ? buildFocusRegionFromLayoutBox({
             unit,
             block: layoutMatch.block,
             fallbackFocusRegion,
-        })
+          })
         : buildGroundedFocusRegion({
             unit,
             pageText,
             fallbackFocusRegion,
             pageMatchConfidence: pageMatch.confidence,
-        });
+          });
 
   const sourcePages = groundedPage ? [groundedPage] : existingSourcePages;
 
@@ -1081,7 +1213,11 @@ function groundTeachingUnit(unit, pageTexts, layoutBoxes) {
     version: SOURCE_GROUNDING_VERSION,
     source: focusRegion.source || "sourceGroundingBuilder",
     page: groundedPage,
-    confidence: layoutMatch ? layoutMatch.score : pageMatch.confidence,
+    confidence: spatialCandidate
+      ? spatialCandidate.confidence
+      : layoutMatch
+        ? layoutMatch.score
+        : pageMatch.confidence,
     matchedTerms: pageMatch.matchedTerms,
     focusRegionConfidence: focusRegion.confidence,
     focusRegionFitMode: focusRegion.fitMode,
@@ -1091,6 +1227,9 @@ function groundTeachingUnit(unit, pageTexts, layoutBoxes) {
     layoutBoxMatched: Boolean(layoutMatch),
     layoutBoxScore: layoutMatch?.score || 0,
     layoutBoxType: layoutMatch?.block?.type || null,
+    spatialEntityMatched: Boolean(spatialCandidate),
+    spatialEntityConfidence: spatialCandidate?.confidence || null,
+    spatialEntityReason: spatialCandidate?.reason || null,
   };
 
   return {
@@ -1103,7 +1242,7 @@ function groundTeachingUnit(unit, pageTexts, layoutBoxes) {
           sourceGrounding,
           focusRegion: {
             ...focusRegion,
-            page: groundedPage,
+            page: focusRegion.page || groundedPage,
           },
         }
       : unit.focusHint,
@@ -1122,9 +1261,14 @@ function buildSourceGrounding({
   jobDir = null,
 } = {}) {
   const pageTexts = extractPageTexts(extractedData);
+
   const layoutBoxes = jobDir
-  ? buildLayoutBoxes(jobDir)
-  : buildLayoutBoxesFromExtractedData(extractedData);
+    ? buildLayoutBoxes(jobDir)
+    : buildLayoutBoxesFromExtractedData(extractedData);
+
+  const spatialEntityGrounding =
+    readSpatialEntityGrounding(jobDir);
+
   const pageCount = getPageCount({
     extractedData,
     diagramAnalysis,
@@ -1133,11 +1277,12 @@ function buildSourceGrounding({
 
   const groundedTeachingUnits = teachingUnits.map((unit) =>
     groundTeachingUnit(
-        unit,
-        pageTexts,
-        layoutBoxes
+      unit,
+      pageTexts,
+      layoutBoxes,
+      spatialEntityGrounding
     )
- );
+  );
 
   return {
     version: SOURCE_GROUNDING_VERSION,

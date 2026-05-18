@@ -14,8 +14,24 @@ const {
 } = require("../services/spatialUnderstandingBuilder");
 
 const {
+  buildSpatialEntityGrounding,
+} = require("../services/spatialEntityGroundingBuilder");
+
+const {
   buildArchitectureUnderstanding,
 } = require("../services/architectureUnderstandingBuilder");
+
+const {
+  buildArchitectureFlow,
+} = require("../services/architectureFlowBuilder");
+
+const {
+  buildArchitectureTeaching,
+} = require("../services/architectureTeachingEnricher");
+
+const {
+  createArchitectureTeachingLlmClient,
+} = require("../services/architectureTeachingLlmClient");
 
 const {
   generateLessonPlan,
@@ -27,6 +43,15 @@ const router = express.Router();
 function writeJson(filePath, data) {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
   return filePath;
+}
+
+function readJson(filePath, fallback = {}) {
+  try {
+    if (!fs.existsSync(filePath)) return fallback;
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return fallback;
+  }
 }
 
 router.post("/:jobId", async (req, res) => {
@@ -55,6 +80,12 @@ router.post("/:jobId", async (req, res) => {
       sequences: documentUnderstanding.stats.sequenceCount,
     });
 
+    const layoutBoxes = readJson(path.join(jobDir, "layout-boxes.json"), {});
+    const documentStructure = readJson(
+      path.join(jobDir, "document-structure.json"),
+      {}
+    );
+
     const spatialUnderstanding = buildSpatialUnderstanding({
       jobDir,
     });
@@ -66,8 +97,24 @@ router.post("/:jobId", async (req, res) => {
 
     console.log("[spatial-understanding]", spatialUnderstanding.stats);
 
-    const architectureUnderstanding =
-        buildArchitectureUnderstanding(documentUnderstanding, spatialUnderstanding);
+    const spatialEntityGrounding = buildSpatialEntityGrounding({
+      documentUnderstanding,
+      spatialUnderstanding,
+      layoutBoxes,
+      documentStructure,
+    });
+
+    const spatialEntityGroundingPath = writeJson(
+      path.join(jobDir, "spatial-entity-grounding.json"),
+      spatialEntityGrounding
+    );
+
+    console.log("[spatial-entity-grounding]", spatialEntityGrounding.stats);
+
+    const architectureUnderstanding = buildArchitectureUnderstanding(
+      documentUnderstanding,
+      spatialUnderstanding
+    );
 
     const architectureUnderstandingPath = writeJson(
       path.join(jobDir, "architecture-understanding.json"),
@@ -82,12 +129,50 @@ router.post("/:jobId", async (req, res) => {
       explicit: architectureUnderstanding.stats.explicitRelationshipCount,
     });
 
+    const architectureFlow = buildArchitectureFlow(architectureUnderstanding, {
+      includeDebug: true,
+    });
+
+    const architectureFlowPath = writeJson(
+      path.join(jobDir, "architecture-flow.json"),
+      architectureFlow
+    );
+
+    console.log("[architecture-flow]", {
+      components: architectureFlow.stats.componentCount,
+      relationships: architectureFlow.stats.relationshipCount,
+      flowGroups: architectureFlow.stats.flowGroupCount,
+      segments: architectureFlow.stats.segmentCount,
+      chapters: architectureFlow.stats.chapterCount,
+    });
+
+    const architectureTeachingLlmClient = createArchitectureTeachingLlmClient();
+
+    const architectureTeaching = await buildArchitectureTeaching(
+    architectureUnderstanding,
+    architectureFlow,
+    {
+        includeDebug: true,
+        outputDir: jobDir,
+        llmClient: architectureTeachingLlmClient,
+    }
+    );
+
+    const architectureTeachingPath = writeJson(
+      path.join(jobDir, "architecture-teaching.json"),
+      architectureTeaching
+    );
+
+    console.log("[architecture-teaching]", {
+      chapters: architectureTeaching.stats.chapterCount,
+      segments: architectureTeaching.stats.segmentCount,
+      narratableSegments: architectureTeaching.stats.narratableSegmentCount,
+      nonNarratableSegments: architectureTeaching.stats.nonNarratableSegmentCount,
+    });
+
     const lessonPlan = generateLessonPlan(jobDir);
 
-    const outputPath = saveLessonPlan(
-      jobDir,
-      lessonPlan
-    );
+    const outputPath = saveLessonPlan(jobDir, lessonPlan);
 
     return res.json({
       ok: true,
@@ -104,10 +189,25 @@ router.post("/:jobId", async (req, res) => {
         stats: spatialUnderstanding.stats,
         output: spatialUnderstandingPath,
       },
+      spatialEntityGrounding: {
+        version: spatialEntityGrounding.version,
+        stats: spatialEntityGrounding.stats,
+        output: spatialEntityGroundingPath,
+      },
       architectureUnderstanding: {
         version: architectureUnderstanding.version,
         stats: architectureUnderstanding.stats,
         output: architectureUnderstandingPath,
+      },
+      architectureFlow: {
+        version: architectureFlow.schemaVersion,
+        stats: architectureFlow.stats,
+        output: architectureFlowPath,
+      },
+      architectureTeaching: {
+        version: architectureTeaching.schemaVersion,
+        stats: architectureTeaching.stats,
+        output: architectureTeachingPath,
       },
       sectionCount: lessonPlan.lessonStructure.length,
       conceptCount: lessonPlan.prioritizedConcepts.length,
