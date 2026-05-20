@@ -18,12 +18,28 @@ const {
 } = require("../services/spatialEntityGroundingBuilder");
 
 const {
+  buildArchitectureEvidence,
+} = require("../services/architectureEvidenceExtractor");
+
+const {
+  buildTermResolutions,
+} = require("../services/architectureEvidenceResolver");
+
+const {
+  buildBoundarySummary,
+} = require("../services/architectureBoundaryTyping");
+
+const {
   buildArchitectureUnderstanding,
 } = require("../services/architectureUnderstandingBuilder");
 
 const {
   buildArchitectureFlow,
 } = require("../services/architectureFlowBuilder");
+
+const {
+  buildResponsibilityInference,
+} = require("../services/responsibilityInferenceBuilder");
 
 const {
   buildArchitectureTeaching,
@@ -70,6 +86,8 @@ router.post("/:jobId", async (req, res) => {
       jobId
     );
 
+    const extracted = readJson(path.join(jobDir, "extracted.json"), {});
+
     const documentUnderstanding = buildDocumentUnderstanding({
       jobDir,
     });
@@ -111,9 +129,58 @@ router.post("/:jobId", async (req, res) => {
 
     console.log("[spatial-entity-grounding]", spatialEntityGrounding.stats);
 
+    const architectureEvidence = buildArchitectureEvidence({
+      extracted,
+      documentUnderstanding,
+      documentStructure,
+      spatialUnderstanding,
+      spatialEntityGrounding,
+      layoutBoxes,
+    });
+
+    const architectureEvidencePath = writeJson(
+      path.join(jobDir, "architecture-evidence.json"),
+      architectureEvidence
+    );
+
+    console.log("[architecture-evidence]", {
+      glossaryTerms: architectureEvidence.stats.glossaryTermCount,
+      legendItems: architectureEvidence.stats.legendItemCount,
+      boundaryEvidence: architectureEvidence.stats.boundaryEvidenceCount,
+      publicTerms: architectureEvidence.stats.publicTermCount,
+      internalTerms: architectureEvidence.stats.internalTermCount,
+      evidenceRecords: architectureEvidence.stats.evidenceRecordCount,
+    });
+
+    const architectureTermResolutions =
+      buildTermResolutions(architectureEvidence);
+
+    const architectureTermResolutionsPath = writeJson(
+      path.join(jobDir, "architecture-term-resolutions.json"),
+      architectureTermResolutions
+    );
+
+    console.log(
+      "[architecture-term-resolutions]",
+      architectureTermResolutions.stats
+    );
+
+    const architectureBoundaries = buildBoundarySummary(architectureEvidence);
+
+    const architectureBoundariesPath = writeJson(
+    path.join(jobDir, "architecture-boundaries.json"),
+    architectureBoundaries
+    );
+
+    console.log("[architecture-boundaries]", architectureBoundaries.stats);
+
     const architectureUnderstanding = buildArchitectureUnderstanding(
       documentUnderstanding,
-      spatialUnderstanding
+      spatialUnderstanding,
+      {
+        architectureEvidence,
+        architectureTermResolutions,
+      }
     );
 
     const architectureUnderstandingPath = writeJson(
@@ -131,6 +198,8 @@ router.post("/:jobId", async (req, res) => {
 
     const architectureFlow = buildArchitectureFlow(architectureUnderstanding, {
       includeDebug: true,
+      architectureEvidence,
+      architectureTermResolutions,
     });
 
     const architectureFlowPath = writeJson(
@@ -146,16 +215,40 @@ router.post("/:jobId", async (req, res) => {
       chapters: architectureFlow.stats.chapterCount,
     });
 
+    const responsibilityInference = buildResponsibilityInference({
+      architectureUnderstanding,
+      architectureFlow,
+      documentUnderstanding,
+      architectureEvidence,
+      architectureTermResolutions,
+    });
+
+    const responsibilityInferencePath = writeJson(
+      path.join(jobDir, "responsibility-inference.json"),
+      responsibilityInference
+    );
+
+    console.log("[responsibility-inference]", {
+      components: responsibilityInference.stats.componentCount,
+      relationships: responsibilityInference.stats.relationshipCount,
+      segments: responsibilityInference.stats.segmentCount,
+      known: responsibilityInference.stats.knownResponsibilityCount,
+      unknown: responsibilityInference.stats.unknownResponsibilityCount,
+    });
+
     const architectureTeachingLlmClient = createArchitectureTeachingLlmClient();
 
     const architectureTeaching = await buildArchitectureTeaching(
-    architectureUnderstanding,
-    architectureFlow,
-    {
+      architectureUnderstanding,
+      architectureFlow,
+      {
         includeDebug: true,
         outputDir: jobDir,
         llmClient: architectureTeachingLlmClient,
-    }
+        responsibilityInference,
+        architectureEvidence,
+        architectureTermResolutions,
+      }
     );
 
     const architectureTeachingPath = writeJson(
@@ -167,7 +260,8 @@ router.post("/:jobId", async (req, res) => {
       chapters: architectureTeaching.stats.chapterCount,
       segments: architectureTeaching.stats.segmentCount,
       narratableSegments: architectureTeaching.stats.narratableSegmentCount,
-      nonNarratableSegments: architectureTeaching.stats.nonNarratableSegmentCount,
+      nonNarratableSegments:
+        architectureTeaching.stats.nonNarratableSegmentCount,
     });
 
     const lessonPlan = generateLessonPlan(jobDir);
@@ -175,19 +269,19 @@ router.post("/:jobId", async (req, res) => {
     const outputPath = saveLessonPlan(jobDir, lessonPlan);
 
     const architectureTeachingRegions = Array.isArray(
-    lessonPlan?.lessonGraph?.architectureTeachingRegions
+      lessonPlan?.lessonGraph?.architectureTeachingRegions
     )
-    ? lessonPlan.lessonGraph.architectureTeachingRegions
-    : [];
+      ? lessonPlan.lessonGraph.architectureTeachingRegions
+      : [];
 
     const regionTeachingPath = writeJson(
-    path.join(jobDir, "region-teaching.json"),
-    {
+      path.join(jobDir, "region-teaching.json"),
+      {
         version: "region-teaching-v1",
         source: "lessonGraphBuilder",
         regionCount: architectureTeachingRegions.length,
         regions: architectureTeachingRegions,
-    }
+      }
     );
 
     return res.json({
@@ -210,6 +304,21 @@ router.post("/:jobId", async (req, res) => {
         stats: spatialEntityGrounding.stats,
         output: spatialEntityGroundingPath,
       },
+      architectureEvidence: {
+        version: architectureEvidence.version,
+        stats: architectureEvidence.stats,
+        output: architectureEvidencePath,
+      },
+      architectureTermResolutions: {
+        version: architectureTermResolutions.version,
+        stats: architectureTermResolutions.stats,
+        output: architectureTermResolutionsPath,
+        },
+        architectureBoundaries: {
+        version: architectureBoundaries.version,
+        stats: architectureBoundaries.stats,
+        output: architectureBoundariesPath,
+    },
       architectureUnderstanding: {
         version: architectureUnderstanding.version,
         stats: architectureUnderstanding.stats,
@@ -220,6 +329,11 @@ router.post("/:jobId", async (req, res) => {
         stats: architectureFlow.stats,
         output: architectureFlowPath,
       },
+      responsibilityInference: {
+        version: responsibilityInference.version,
+        stats: responsibilityInference.stats,
+        output: responsibilityInferencePath,
+      },
       architectureTeaching: {
         version: architectureTeaching.schemaVersion,
         stats: architectureTeaching.stats,
@@ -228,7 +342,7 @@ router.post("/:jobId", async (req, res) => {
       sectionCount: lessonPlan.lessonStructure.length,
       conceptCount: lessonPlan.prioritizedConcepts.length,
       output: outputPath,
-        regionTeachingOutput: regionTeachingPath,
+      regionTeachingOutput: regionTeachingPath,
     });
   } catch (error) {
     console.error("build-lesson-plan error:", error);

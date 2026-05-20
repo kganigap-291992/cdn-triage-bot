@@ -51,6 +51,12 @@ const CHAPTER_TYPES = {
   RECAP: "architecture_recap",
 };
 
+const {
+  scoreRelationship,
+  scoreTraversalPath,
+  scoreRegionAffinity,
+} = require("./architectureTraversalWeights");
+
 function normalizeText(value) {
   return String(value || "").trim();
 }
@@ -242,6 +248,13 @@ function buildRelationshipList(architectureUnderstanding = {}, componentIndex) {
         sourceName: sourceComponent.name,
         targetName: targetComponent.name,
         type: getRelationshipType(rel),
+        edgeLabel: rel?.edgeLabel || rel?.label || rel?.relationshipLabel || "",
+        interactionMode: rel?.interactionMode || "unknown",
+        flowPriority: rel?.flowPriority || "unknown",
+        directionality: rel?.directionality || "directed",
+        reason: rel?.reason || "",
+        inferred: rel?.inferred === true,
+        evidenceType: rel?.evidenceType || rel?.sourceType || "",
         confidence,
         confidenceScore: confidenceScore(confidence),
         evidenceIds: asArray(rel?.evidenceIds),
@@ -488,11 +501,19 @@ function choosePrimaryEntryComponent(componentIndex, adjacency) {
 
 function rankCandidatePaths(paths) {
   return paths.sort((a, b) => {
-    const lengthDelta = b.segments.length - a.segments.length;
-    if (lengthDelta !== 0) return lengthDelta;
+    const traversalDelta =
+      (b.traversalScore || 0) - (a.traversalScore || 0);
 
-    const confidenceDelta = b.averageConfidenceScore - a.averageConfidenceScore;
+    if (traversalDelta !== 0) return traversalDelta;
+
+    const confidenceDelta =
+      b.averageConfidenceScore - a.averageConfidenceScore;
+
     if (confidenceDelta !== 0) return confidenceDelta;
+
+    const lengthDelta = b.segments.length - a.segments.length;
+
+    if (lengthDelta !== 0) return lengthDelta;
 
     return a.entryComponent.name.localeCompare(b.entryComponent.name);
   });
@@ -508,18 +529,15 @@ function buildCandidatePath(entryComponent, componentIndex, adjacency, maxDepth 
   while (current && depth < maxDepth) {
     visited.add(current.id);
 
-    const nextEdges = asArray(adjacency.outgoing.get(current.id))
-      .filter((edge) => !visited.has(edge.targetId))
-      .sort((a, b) => {
-        const confidenceDelta = b.confidenceScore - a.confidenceScore;
-        if (confidenceDelta !== 0) return confidenceDelta;
+    const candidateEdges = asArray(adjacency.outgoing.get(current.id))
+    .filter((edge) => !visited.has(edge.targetId));
 
-        const targetA = componentIndex.byId.get(a.targetId);
-        const targetB = componentIndex.byId.get(b.targetId);
+    const rankedEdges = rankOutgoingEdges(
+    candidateEdges,
+    segments.length ? segments[segments.length - 1].rawEdge : null
+    );
 
-        return structuralRolePriority(targetB?.structuralRole) -
-          structuralRolePriority(targetA?.structuralRole);
-      });
+    const nextEdges = rankedEdges.map((item) => item.edge);
 
     if (!nextEdges.length) break;
 
@@ -528,7 +546,17 @@ function buildCandidatePath(entryComponent, componentIndex, adjacency, maxDepth 
 
     if (!nextComponent) break;
 
-    segments.push(buildSegment(segments.length, current, nextComponent, edge));
+    const segment = buildSegment(
+    segments.length,
+    current,
+    nextComponent,
+    edge
+    );
+
+    segment.rawEdge = edge;
+    segment.traversalScoring = scoreRelationship(edge);
+
+    segments.push(segment);
 
     current = nextComponent;
     depth += 1;
@@ -539,13 +567,19 @@ function buildCandidatePath(entryComponent, componentIndex, adjacency, maxDepth 
     0
   );
 
-  return {
+  const traversalScoring = scoreTraversalPath(
+    segments.map((segment) => segment.rawEdge)
+    );
+
+    return {
     entryComponent,
     segments,
     averageConfidenceScore: segments.length
-      ? totalConfidence / segments.length
-      : 0,
-  };
+        ? totalConfidence / segments.length
+        : 0,
+    traversalScoring,
+    traversalScore: traversalScoring.totalScore,
+    };
 }
 
 function structuralRolePriority(role) {
@@ -567,6 +601,50 @@ function structuralRolePriority(role) {
     default:
       return 0;
   }
+}
+
+
+function getRelationshipRegion(rel) {
+  return (
+    rel?.raw?.boundaryId ||
+    rel?.raw?.regionId ||
+    rel?.raw?.groupId ||
+    rel?.raw?.domain ||
+    null
+  );
+}
+
+function scoreCandidateEdge(edge, previousEdge = null) {
+  const scoring = scoreRelationship(edge);
+
+  let regionBonus = 0;
+
+  if (previousEdge) {
+    regionBonus = scoreRegionAffinity(
+      getRelationshipRegion(previousEdge),
+      getRelationshipRegion(edge)
+    );
+  }
+
+  const finalScore = scoring.score + regionBonus;
+
+  return {
+    edge,
+    scoring,
+    regionBonus,
+    finalScore,
+  };
+}
+
+function rankOutgoingEdges(edges, previousEdge = null) {
+  return edges
+    .map((edge) => scoreCandidateEdge(edge, previousEdge))
+    .sort((a, b) => {
+      const scoreDelta = b.finalScore - a.finalScore;
+      if (scoreDelta !== 0) return scoreDelta;
+
+      return b.edge.confidenceScore - a.edge.confidenceScore;
+    });
 }
 
 function buildSegment(index, fromComponent, toComponent, edge) {
@@ -666,7 +744,9 @@ function buildPrimaryArchitectureFlow(componentIndex, adjacency) {
         primary.segments.map((segment) => segment.confidence)
       ),
       segments: primary.segments,
-      isPrimary: true,
+        traversalScoring: primary.traversalScoring,
+        traversalScore: primary.traversalScore,
+        isPrimary: true,
     },
   ];
 }
@@ -791,37 +871,64 @@ function buildFlowGroupsFromExplicitSequences(
         continue;
         }
 
-        segments.push({
-        id: `explicit_sequence_segment_${sequenceIndex + 1}_${i + 1}`,
-        from: serializeComponentForFlow(fromComponent),
-        to: serializeComponentForFlow(toComponent),
-        relationshipType: "explicit_document_sequence",
-        confidence: sequence.confidence || "deterministic",
-        evidenceIds: [current.evidenceId, next.evidenceId].filter(Boolean),
-        structuralHandoff: inferStructuralHandoff(
-          fromComponent,
-          toComponent
-        ),
-        teachingPurpose: inferTeachingPurpose(
-          fromComponent,
-          toComponent
-        ),
-        source: "explicit_document_sequence",
-      });
+        const syntheticEdge = {
+            id: `explicit_sequence_edge_${sequenceIndex + 1}_${i + 1}`,
+            sourceId: fromComponent.id,
+            targetId: toComponent.id,
+            sourceName: fromComponent.name,
+            targetName: toComponent.name,
+            type: "explicit_document_sequence",
+            edgeLabel: `${fromComponent.name} ${toComponent.name}`,
+            interactionMode:
+                sequenceClassification === "primary_request_flow"
+                ? "request_response"
+                : "topology_continuity",
+            flowPriority:
+                sequenceClassification === "primary_request_flow"
+                ? "primary"
+                : "supporting",
+            directionality: "directed",
+            confidence: sequence.confidence || "deterministic",
+            confidenceScore: confidenceScore(sequence.confidence || "deterministic"),
+            evidenceIds: [current.evidenceId, next.evidenceId].filter(Boolean),
+            source: "explicit_document_sequence",
+            };
+
+            const segment = {
+            id: `explicit_sequence_segment_${sequenceIndex + 1}_${i + 1}`,
+            from: serializeComponentForFlow(fromComponent),
+            to: serializeComponentForFlow(toComponent),
+            relationshipType: "explicit_document_sequence",
+            confidence: sequence.confidence || "deterministic",
+            evidenceIds: syntheticEdge.evidenceIds,
+            structuralHandoff: inferStructuralHandoff(fromComponent, toComponent),
+            teachingPurpose: inferTeachingPurpose(fromComponent, toComponent),
+            source: "explicit_document_sequence",
+            rawEdge: syntheticEdge,
+            traversalScoring: scoreRelationship(syntheticEdge),
+            };
+
+            segments.push(segment);
     }
 
-    return {
-      flowGroupId:
-        sequence.id ||
-        `explicit_sequence_flow_${sequenceIndex + 1}`,
-      flowType: "explicit_document_sequence",
-      title: sequence.title || `Sequence ${sequenceIndex + 1}`,
-      confidence: sequence.confidence || "deterministic",
-      segments,
-      sequenceClassification,
-      isPrimary: sequenceClassification === "primary_request_flow",
-      source: sequence.source || "document_sequence",
-    };
+    const traversalScoring = scoreTraversalPath(
+        segments.map((segment) => segment.rawEdge).filter(Boolean)
+        );
+
+        return {
+        flowGroupId:
+            sequence.id ||
+            `explicit_sequence_flow_${sequenceIndex + 1}`,
+        flowType: "explicit_document_sequence",
+        title: sequence.title || `Sequence ${sequenceIndex + 1}`,
+        confidence: sequence.confidence || "deterministic",
+        segments,
+        traversalScoring,
+        traversalScore: traversalScoring.totalScore,
+        sequenceClassification,
+        isPrimary: sequenceClassification === "primary_request_flow",
+        source: sequence.source || "document_sequence",
+        };
   });
 }
 
@@ -1020,6 +1127,62 @@ function buildRecapMentalModel(flowChapters) {
   return `Remember the architecture as: ${parts.join(" → ")}.`;
 }
 
+function chooseCanonicalPrimaryFlow(flowGroups = []) {
+  if (!flowGroups.length) return null;
+
+  const ranked = flowGroups
+    .map((group) => {
+      const segments = group.segments || [];
+
+      let score =
+        group.traversalScore ||
+        group.traversalScoring?.totalScore ||
+        segments.reduce(
+            (sum, segment) => sum + (segment.traversalScoring?.score || 0),
+            0
+        );
+
+      const path = segments.map(
+        (s) => `${s.from?.name}->${s.to?.name}`
+      );
+
+      const hasProcessingBeforeState =
+        path.some((p) =>
+          p.toLowerCase().includes("application")
+        ) &&
+        path.some((p) =>
+          p.toLowerCase().includes("database")
+        );
+
+      if (hasProcessingBeforeState) {
+        score += 25;
+      }
+
+      const hasShortcutToState =
+        segments.some((segment) => {
+            const toRole = segment?.to?.structuralRole || segment?.to?.role;
+            const fromRole = segment?.from?.structuralRole || segment?.from?.role;
+
+            return (
+            toRole === STRUCTURAL_ROLES.STATE &&
+            fromRole !== STRUCTURAL_ROLES.PROCESSING
+            );
+        });
+
+        if (hasShortcutToState && hasProcessingBeforeState) {
+        score -= 30;
+        }
+
+      return {
+        group,
+        score,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  return ranked[0]?.group || null;
+}
+
 function flattenFlowSegments(flowGroups) {
   return uniqueBy(
     flowGroups.flatMap((group) => {
@@ -1090,19 +1253,59 @@ function buildArchitectureFlow(architectureUnderstanding = {}, options = {}) {
   );
   const adjacency = buildAdjacency(relationships);
 
-  
   let flowGroups = buildFlowGroupsFromExplicitSequences(
     architectureUnderstanding,
     componentIndex
+  );
+
+  if (!flowGroups.length) {
+    flowGroups = buildPrimaryArchitectureFlow(componentIndex, adjacency);
+  }
+
+  const canonicalPrimaryFlow = chooseCanonicalPrimaryFlow(flowGroups);
+
+  const entryPrefixGroup = flowGroups.find((group) => {
+    const first = group?.segments?.[0];
+
+    return (
+      first?.from?.name === "User Client" &&
+      first?.to?.name === "CDN Edge"
+    );
+  });
+
+  if (
+    canonicalPrimaryFlow &&
+    entryPrefixGroup &&
+    canonicalPrimaryFlow !== entryPrefixGroup
+  ) {
+    const existing = new Set(
+      canonicalPrimaryFlow.segments.map((s) => `${s.from.id}->${s.to.id}`)
     );
 
-    if (!flowGroups.length) {
-    flowGroups = buildPrimaryArchitectureFlow(
-        componentIndex,
-        adjacency
+    const mergedSegments = [
+      ...entryPrefixGroup.segments.filter(
+        (s) => !existing.has(`${s.from.id}->${s.to.id}`)
+      ),
+      ...canonicalPrimaryFlow.segments,
+    ];
+
+    canonicalPrimaryFlow.segments = uniqueBy(
+      mergedSegments,
+      (s) => `${s.from.id}->${s.to.id}`
     );
- }
-  const allSegments = flattenFlowSegments(flowGroups);
+  }
+
+  const allSegments = flattenFlowSegments(
+    canonicalPrimaryFlow
+      ? [
+          {
+            ...canonicalPrimaryFlow,
+            isPrimary: true,
+          },
+        ]
+      : flowGroups
+  );
+
   const flowChapters = groupSegmentsIntoChapters(allSegments);
 
   const overviewChapter = buildOverviewChapter(componentIndex, relationships);
@@ -1121,6 +1324,7 @@ function buildArchitectureFlow(architectureUnderstanding = {}, options = {}) {
       renderingSafety: "page_by_page_safe_v1",
       recapStyle: "simplified_big_picture_mental_model",
       canonicalFlow: "single_primary_walkthrough_v1",
+      entryPrefixMerge: "explicit_sequence_prefix_v1",
     },
     stats: {
       componentCount: componentIndex.components.length,
@@ -1128,15 +1332,51 @@ function buildArchitectureFlow(architectureUnderstanding = {}, options = {}) {
       flowGroupCount: flowGroups.length,
       segmentCount: allSegments.length,
       chapterCount: chapters.length,
-      structuralRoleBreakdown: buildStructuralRoleBreakdown(componentIndex.components),
+      structuralRoleBreakdown: buildStructuralRoleBreakdown(
+        componentIndex.components
+      ),
     },
     flowGroups,
     chapters,
+        selectedPrimaryTraversal: canonicalPrimaryFlow
+    ? {
+        flowGroupId: canonicalPrimaryFlow.flowGroupId,
+        traversalScore: canonicalPrimaryFlow.traversalScore || 0,
+        segmentCount: canonicalPrimaryFlow.segments.length,
+        segments: canonicalPrimaryFlow.segments.map((segment) => ({
+            from: segment.from.name,
+            to: segment.to.name,
+            relationshipType: segment.relationshipType,
+            traversalScore: segment.traversalScoring?.score || 0,
+        })),
+        }
+    : null,
+
+    rankedCandidateTraversals: flowGroups.map((group) => ({
+    flowGroupId: group.flowGroupId,
+    flowType: group.flowType,
+    segmentCount: group.segments.length,
+    traversalScore: group.traversalScore || group.traversalScoring?.totalScore || 0,
+    isPrimary: group.isPrimary === true,
+    })),
+
+    traversalWeightDebug: {
+    selectedFlowGroupId: canonicalPrimaryFlow?.flowGroupId || null,
+    candidateTraversalCount: flowGroups.length,
+    rejectedCandidates: flowGroups
+        .filter((group) => canonicalPrimaryFlow?.flowGroupId !== group.flowGroupId)
+        .map((group) => ({
+        flowGroupId: group.flowGroupId,
+        traversalScore:
+            group.traversalScore || group.traversalScoring?.totalScore || 0,
+        })),
+    },
     warnings: buildWarnings(componentIndex, relationships, flowGroups, chapters),
     debug: options.includeDebug
       ? {
           components: componentIndex.components,
           relationships,
+          canonicalPrimaryFlow,
         }
       : undefined,
   };

@@ -194,6 +194,19 @@ function compactText(value, maxLength = 420) {
 }
 
 
+function sanitizeLlmTeachingText(value) {
+  return normalizeText(value)
+    .replace(/^This transition indicates where\s+/i, "This is where ")
+    .replace(/^This transition indicates\s+/i, "This is where ")
+    .replace(/^This transition clarifies where\s+/i, "This is where ")
+    .replace(/^This transition clarifies\s+/i, "This is where ")
+    .replace(/^This transition marks where\s+/i, "This is where ")
+    .replace(/^This shift indicates where\s+/i, "This is where ")
+    .replace(/,\s*which is crucial for understanding[^.]*\./gi, ".")
+    .replace(/which is crucial for understanding/gi, "which matters for")
+    .replace(/critical for understanding/gi, "important for operating");
+}
+
 function parseJsonObject(value) {
   try {
     if (!value) return null;
@@ -248,11 +261,42 @@ function findGlossaryMatches(segment = {}, glossaryIndex) {
   );
 }
 
+
+function getResponsibilityForEntity(entity = {}, responsibilityMap = {}) {
+  const id = entity.id || entity.entityId || normalizeKey(entity.name);
+  return responsibilityMap[id] || null;
+}
+
+function buildResponsibilityContext(segment = {}, responsibilityInference = {}) {
+  const responsibilityMap = responsibilityInference.responsibilityMap || {};
+
+  const from = getResponsibilityForEntity(segment.from, responsibilityMap);
+  const to = getResponsibilityForEntity(segment.to, responsibilityMap);
+
+  return {
+    from,
+    to,
+    handoffMeaning: buildResponsibilityHandoffMeaning(from, to),
+  };
+}
+
+function buildResponsibilityHandoffMeaning(from, to) {
+  if (!from && !to) {
+    return "The responsibility shift is not yet classified for this handoff.";
+  }
+
+  const fromRole = from?.responsibilityRole || "unknown_component";
+  const toRole = to?.responsibilityRole || "unknown_component";
+
+  return `Responsibility moves from ${fromRole} toward ${toRole}.`;
+}
+
 function buildDeterministicTeachingFields({
   segment,
   evidenceSummary,
   genericConcept,
   glossaryMatches,
+  responsibilityContext,
 }) {
   const concept =
     SAFE_GENERIC_CONCEPTS[genericConcept] || SAFE_GENERIC_CONCEPTS.generic_handoff;
@@ -266,13 +310,16 @@ function buildDeterministicTeachingFields({
     plainEnglish: `${handoff} is a documented handoff in the architecture flow.`,
     safeSemantics: concept.operationalMeaning,
     whyItMatters:
-      "This helps the learner understand where responsibility moves from one documented part of the system to another.",
+        "This helps the learner understand where responsibility moves from one documented part of the system to another.",
     memoryHook: `Remember this as: ${fromName} hands off responsibility to ${toName}.`,
+
+    responsibilityContext,
+
     glossaryMatches,
     usedGlossary: glossaryMatches.length > 0,
     usedEvidenceOnly: true,
     confidenceMode: segment.confidence || "unknown",
-  };
+    };
 }
 
 
@@ -292,12 +339,13 @@ async function enrichTeachingWithLlm({
 
   try {
     const raw = await llmClient({
-      segmentId: segment.id,
-      from: segment.from?.name,
-      to: segment.to?.name,
-      documentSays: deterministicTeaching.documentSays,
-      glossaryMatches: deterministicTeaching.glossaryMatches,
-      fallback: deterministicTeaching,
+    segmentId: segment.id,
+    from: segment.from?.name,
+    to: segment.to?.name,
+    documentSays: deterministicTeaching.documentSays,
+    glossaryMatches: deterministicTeaching.glossaryMatches,
+    responsibilityContext: deterministicTeaching.responsibilityContext,
+    fallback: deterministicTeaching,
     });
 
     const parsed = parseJsonObject(raw);
@@ -308,10 +356,10 @@ async function enrichTeachingWithLlm({
 
     return {
       ...deterministicTeaching,
-      plainEnglish: normalizeText(parsed.plainEnglish),
-      safeSemantics: normalizeText(parsed.safeSemantics),
-      whyItMatters: normalizeText(parsed.whyItMatters),
-      memoryHook: normalizeText(parsed.memoryHook),
+      plainEnglish: sanitizeLlmTeachingText(parsed.plainEnglish),
+      safeSemantics: sanitizeLlmTeachingText(parsed.safeSemantics),
+      whyItMatters: sanitizeLlmTeachingText(parsed.whyItMatters),
+      memoryHook: sanitizeLlmTeachingText(parsed.memoryHook),
       llmUsed: true,
       llmValid: true,
       fallbackUsed: false,
@@ -516,7 +564,14 @@ function buildSegmentTeachingNarrationHint({
   };
 }
 
-async function enrichSegment(segment = {}, index, evidenceIndex, glossaryIndex, llmClient) {
+async function enrichSegment(
+  segment = {},
+  index,
+  evidenceIndex,
+  glossaryIndex,
+  llmClient,
+  responsibilityInference
+) {
   const confidence = segment.confidence || "unknown";
   const confidenceLanguage = getConfidenceLanguage(confidence);
   const genericConcept = inferGenericConcept(segment);
@@ -524,12 +579,18 @@ async function enrichSegment(segment = {}, index, evidenceIndex, glossaryIndex, 
   const evidenceSummary = resolveEvidenceSummary(segment, evidenceIndex);
   const glossaryMatches = findGlossaryMatches(segment, glossaryIndex);
 
+  const responsibilityContext = buildResponsibilityContext(
+    segment,
+    responsibilityInference
+    );
+
     const deterministicTeaching = buildDeterministicTeachingFields({
         segment,
         evidenceSummary,
         genericConcept,
         glossaryMatches,
-    });
+        responsibilityContext,
+        });
 
     const teaching = await enrichTeachingWithLlm({
         deterministicTeaching,
@@ -572,6 +633,8 @@ async function enrichSegment(segment = {}, index, evidenceIndex, glossaryIndex, 
       operationalMeaning: concept.operationalMeaning,
       allowedHint: concept.allowedHint,
     },
+
+    responsibilityContext: teaching.responsibilityContext,
 
     evidenceSummary,
 
@@ -728,12 +791,26 @@ function buildRecapMentalModelFromSegments(segments = []) {
   return `Remember the architecture as: ${concepts.join(" → ")}.`;
 }
 
-async function enrichFlowChapter(chapter = {}, chapterIndex, evidenceIndex, glossaryIndex, llmClient) {
+async function enrichFlowChapter(
+  chapter = {},
+  chapterIndex,
+  evidenceIndex,
+  glossaryIndex,
+  llmClient,
+  responsibilityInference
+) {
   const enrichedSegments = [];
 
   for (const [index, segment] of asArray(chapter.segments).entries()) {
     enrichedSegments.push(
-      await enrichSegment(segment, index, evidenceIndex, glossaryIndex, llmClient)
+      await enrichSegment(
+        segment,
+        index,
+        evidenceIndex,
+        glossaryIndex,
+        llmClient,
+        responsibilityInference
+        )
     );
   }
 
@@ -840,7 +917,14 @@ function buildChapterSafetyFlags(chapter, enrichedSegments) {
   return flags;
 }
 
-async function enrichChapter(chapter = {}, index, evidenceIndex, glossaryIndex, llmClient) {
+async function enrichChapter(
+  chapter = {},
+  index,
+  evidenceIndex,
+  glossaryIndex,
+  llmClient,
+  responsibilityInference
+) {
   if (chapter.type === "architecture_overview") {
     return enrichOverviewChapter(chapter);
   }
@@ -849,7 +933,14 @@ async function enrichChapter(chapter = {}, index, evidenceIndex, glossaryIndex, 
     return enrichRecapChapter(chapter);
   }
 
-  return enrichFlowChapter(chapter, index, evidenceIndex, glossaryIndex, llmClient);
+  return enrichFlowChapter(
+    chapter,
+    index,
+    evidenceIndex,
+    glossaryIndex,
+    llmClient,
+    responsibilityInference
+    );
 }
 
 function attachOverviewAndRecapContext(enrichedChapters = []) {
@@ -1006,7 +1097,10 @@ async function buildArchitectureTeaching(
   options = {}
 ) {
   const evidenceIndex = buildEvidenceIndex(architectureUnderstanding);
-  const glossaryIndex = buildGlossaryIndex(architectureUnderstanding);
+    const glossaryIndex = buildGlossaryIndex(architectureUnderstanding);
+
+    const responsibilityInference =
+    options.responsibilityInference || {};
 
     const preliminaryChapters = [];
 
@@ -1017,8 +1111,9 @@ async function buildArchitectureTeaching(
             index,
             evidenceIndex,
             glossaryIndex,
-            options.llmClient
-        )
+            options.llmClient,
+            responsibilityInference
+            )
         );
     }
 

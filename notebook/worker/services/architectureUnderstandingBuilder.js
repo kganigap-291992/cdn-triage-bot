@@ -1,3 +1,25 @@
+const {
+  typeArchitectureRelationships,
+} = require("./architectureEdgeTyping");
+
+const {
+  typeBoundaryEvidenceList,
+} = require("./architectureBoundaryTyping");
+
+const {
+  classifyArchitectureRelationshipFlows,
+} = require("./architectureFlowClassification");
+
+
+const {
+  buildArchitectureGraphPartitions,
+} = require("./architectureGraphPartitioner");
+
+const {
+  buildArchitectureRegionCollapse,
+} = require("./architectureRegionCollapse");
+
+
 const RELATIONSHIP_CONFIDENCE = {
   explicit_definition: "high",
   explicit_flow: "high",
@@ -732,7 +754,11 @@ function groupEvidenceBySection(evidence = []) {
   return bySection;
 }
 
-function extractOrderedSequenceRelationships(documentUnderstanding = {}, components = []) {
+function extractOrderedSequenceRelationships(
+    documentUnderstanding = {},
+    components = [],
+    knownRelationships = []
+    ) {
   const relationships = [];
   const explicitSequences = extractExplicitSequences(documentUnderstanding, components);
 
@@ -759,22 +785,118 @@ function extractOrderedSequenceRelationships(documentUnderstanding = {}, compone
 
       if (!source || !target) continue;
 
-      relationships.push(
+      const intermediateComponents = recoverIntermediateFlowComponents(
+        source,
+        target,
+        components,
+        [...relationships, ...knownRelationships]
+        );
+
+        if (intermediateComponents.length > 0) {
+        for (const middle of intermediateComponents) {
+            relationships.push(
+            makeRelationship({
+                source,
+                target: middle,
+                type: "explicit_flow",
+                reason: "ordered_sequence",
+                evidenceIds: [current.evidenceId].filter(Boolean),
+                evidenceText: current.text,
+                inferred: true,
+                direction: "recovered_intermediate_processing_tier",
+            })
+            );
+
+            relationships.push(
+            makeRelationship({
+                source: middle,
+                target,
+                type: "explicit_flow",
+                reason: "ordered_sequence",
+                evidenceIds: [next.evidenceId].filter(Boolean),
+                evidenceText: next.text,
+                inferred: true,
+                direction: "recovered_intermediate_processing_tier",
+            })
+            );
+        }
+
+        continue;
+        }
+
+        relationships.push(
         makeRelationship({
-          source,
-          target,
-          type: "explicit_flow",
-          reason: "ordered_sequence",
-          evidenceIds: [current.evidenceId, next.evidenceId].filter(Boolean),
-          evidenceText: `${current.text} ${next.text}`.slice(0, 700),
-          inferred: false,
-          direction: "explicit_document_sequence_order",
+            source,
+            target,
+            type: "explicit_flow",
+            reason: "ordered_sequence",
+            evidenceIds: [current.evidenceId, next.evidenceId].filter(Boolean),
+            evidenceText: `${current.text} ${next.text}`.slice(0, 700),
+            inferred: false,
+            direction: "explicit_document_sequence_order",
         })
-      );
+        );
     }
   }
 
   return relationships;
+}
+
+function recoverIntermediateFlowComponents(
+  source,
+  target,
+  components = [],
+  relationships = []
+) {
+  if (!source || !target) return [];
+
+
+  const candidates = components.filter((component) => {
+    if (!component?.id) return false;
+
+    if (
+      component.id === source.id ||
+      component.id === target.id
+    ) {
+      return false;
+    }
+
+    const role = lower(component.role);
+    const name = lower(component.name);
+
+    const isProcessingLike =
+      role === "system_component" ||
+      role === "process_step";
+
+    if (!isProcessingLike) return false;
+
+    const looksLikeMiddleTier =
+      /\b(app|application|service|processor|worker|execution|cluster|engine|runtime)\b/i.test(
+        name
+      );
+
+    if (!looksLikeMiddleTier) return false;
+
+    return true;
+  });
+
+  const bridgingCandidates = candidates.filter((candidate) => {
+    const inbound = relationships.some(
+      (rel) =>
+        rel.targetId === candidate.id &&
+        rel.sourceId === source.id
+    );
+
+    const outbound = relationships.some(
+      (rel) =>
+        rel.sourceId === candidate.id &&
+        rel.targetId === target.id
+    );
+
+    return inbound || outbound;
+  });
+
+  return bridgingCandidates;
 }
 
 function extractSameSectionRelationships(documentUnderstanding = {}, components = []) {
@@ -936,6 +1058,19 @@ function extractContinuityRepairRelationships(relationships = [], components = [
 
     const prev = inEdges[0];
     const next = outEdges[0];
+
+    const hasExplicitInbound = prev.type === "explicit_flow" && !prev.inferred;
+    const hasExplicitOutbound = next.type === "explicit_flow" && !next.inferred;
+
+    const meaningfulBridgeSignals =
+      /\b(app|application|service|processor|worker|execution|cluster|engine|runtime)\b/i.test(
+        lower(component.name)
+      );
+
+    const shouldPreserveBridgeNode =
+      hasExplicitInbound && hasExplicitOutbound && meaningfulBridgeSignals;
+
+    if (shouldPreserveBridgeNode) continue;
 
     if (prev.sourceId === next.targetId) continue;
     if (existingDirected.has(`${prev.sourceId}->${next.targetId}`)) continue;
@@ -1100,36 +1235,72 @@ function collectSpatialRelationshipCandidates(spatialUnderstanding) {
   });
 }
 
-function buildArchitectureUnderstanding(documentUnderstanding = {}, spatialUnderstanding = {}) {
+function buildArchitectureUnderstanding(
+  documentUnderstanding = {},
+  spatialUnderstanding = {},
+  options = {}
+) {
   const baseComponents = extractComponents(documentUnderstanding);
   const explicitSequences = extractExplicitSequences(documentUnderstanding, baseComponents);
   const promotedComponents = extractSequencePromotedComponents(
     explicitSequences,
     baseComponents
   );
-  const components = uniqueBy(
+  const rawComponents = uniqueBy(
     [...baseComponents, ...promotedComponents],
     (component) => component.id
-  );
+    );
+
+    const components = attachBoundariesToComponents(
+    rawComponents,
+    options.architectureEvidence || {},
+    documentUnderstanding
+    );
 
   const spatialRelationshipCandidates =
     collectSpatialRelationshipCandidates(spatialUnderstanding);
 
-  const initialRelationships = dedupeRelationships([
+  const knownFlowContext = [
     ...extractExplicitRelationships(documentUnderstanding, components),
     ...extractDirectionalFlowRelationships(documentUnderstanding, components),
     ...extractSameSentenceFlowRelationships(documentUnderstanding, components),
-    ...extractOrderedSequenceRelationships(documentUnderstanding, components),
     ...extractSameSectionRelationships(documentUnderstanding, components),
-    ...extractCrossPageRelationships(documentUnderstanding, components),
-  ]);
+    ];
 
-  const relationships = dedupeRelationships([
+    const initialRelationships = dedupeRelationships([
+    ...knownFlowContext,
+    ...extractOrderedSequenceRelationships(
+        documentUnderstanding,
+        components,
+        knownFlowContext
+    ),
+    ...extractCrossPageRelationships(documentUnderstanding, components),
+    ]);
+
+  const rawRelationships = dedupeRelationships([
     ...initialRelationships,
     ...extractContinuityRepairRelationships(initialRelationships, components),
-  ]);
+    ]);
 
-  const flows = relationships.filter((relationship) => relationship.type === "explicit_flow");
+    const typedRelationships = typeArchitectureRelationships(
+    rawRelationships,
+    options.architectureEvidence || {}
+    );
+
+    const relationships = classifyArchitectureRelationshipFlows(
+    typedRelationships
+    );
+
+    const flows = relationships.filter((relationship) => relationship.type === "explicit_flow");
+
+    
+    const graphPartitions = buildArchitectureGraphPartitions(relationships);
+
+    const architectureRegionCollapse =
+    buildArchitectureRegionCollapse({
+        components,
+        relationships,
+    });
 
   return {
     version: "architecture-understanding-v4-sequence-entity-promotion",
@@ -1138,12 +1309,14 @@ function buildArchitectureUnderstanding(documentUnderstanding = {}, spatialUnder
     explicitSequences,
 
     deterministicGraph: {
-      components,
-      relationships,
-      flows,
+    components,
+    relationships,
+    flows,
+    partitions: graphPartitions,
     },
 
     spatialRelationshipCandidates,
+    architectureRegionCollapse,
 
     semanticEnrichment: {
       hypotheses: [],
@@ -1151,9 +1324,14 @@ function buildArchitectureUnderstanding(documentUnderstanding = {}, spatialUnder
     },
 
     traversalInputs: {
-      explicitSequences,
-      trafficFlow: flows,
-      graphTopology: relationships.map((relationship) => ({
+        explicitSequences,
+        trafficFlow: flows,
+        primaryTrafficFlow: graphPartitions.primary,
+        supportingTrafficFlow: graphPartitions.supporting,
+        backgroundTrafficFlow: graphPartitions.background,
+        unknownTrafficFlow: graphPartitions.unknown,
+
+        graphTopology: relationships.map((relationship) => ({
         sourceId: relationship.sourceId,
         targetId: relationship.targetId,
         sourceRole: relationship.sourceRole,
@@ -1187,7 +1365,28 @@ function buildArchitectureUnderstanding(documentUnderstanding = {}, spatialUnder
       ),
       relationshipCount: relationships.length,
       flowCount: flows.length,
-      spatialRelationshipCandidateCount: spatialRelationshipCandidates.length,
+      primaryFlowRelationshipCount: graphPartitions.stats.primaryCount,
+        supportingFlowRelationshipCount: graphPartitions.stats.supportingCount,
+        backgroundFlowRelationshipCount: graphPartitions.stats.backgroundCount,
+        unknownFlowRelationshipCount: graphPartitions.stats.unknownCount,
+        primaryTraversalInputCount: graphPartitions.primary.length,
+        supportingTraversalInputCount: graphPartitions.supporting.length,
+        backgroundTraversalInputCount: graphPartitions.background.length,
+        spatialRelationshipCandidateCount: spatialRelationshipCandidates.length,
+
+        collapsedRegionGroupCount:
+        architectureRegionCollapse.stats.collapsedGroupCount,
+
+        collapsedComponentCount:
+        architectureRegionCollapse.stats.collapsedComponentCount,
+
+        componentBoundaryAttachmentCount: components.reduce(
+        (sum, component) => sum + (component.boundaries?.length || 0),
+        0
+        ),
+        componentWithBoundaryCount: components.filter(
+        (component) => component.boundaries?.length
+        ).length,
       inferredRelationshipCount: relationships.filter((item) => item.inferred).length,
       explicitRelationshipCount: relationships.filter((item) => !item.inferred).length,
       roleBreakdown: components.reduce((acc, item) => {
@@ -1204,6 +1403,92 @@ function buildArchitectureUnderstanding(documentUnderstanding = {}, spatialUnder
       }, {}),
     },
   };
+}
+
+
+function boundaryMentionsComponent(boundary = {}, component = {}) {
+  const boundaryText = lower(boundary.rawText || boundary.label || boundary.text || "");
+  const componentName = lower(component.name || "");
+
+  if (!boundaryText || !componentName) return false;
+
+  return boundaryText.includes(componentName);
+}
+
+function componentEvidenceMentionsBoundary(component = {}, boundary = {}, evidence = []) {
+  const boundaryText = lower(boundary.rawText || "");
+  const componentName = lower(component.name || "");
+
+  if (!boundaryText || !componentName) return false;
+
+  const componentEvidence = getEvidenceForComponent(component, evidence);
+
+  for (const item of componentEvidence) {
+    const text = lower(getEvidenceText(item));
+
+    if (!text) continue;
+
+    const mentionsComponent = text.includes(componentName);
+    const mentionsBoundary = text.includes(boundaryText);
+
+    if (mentionsComponent && mentionsBoundary) {
+      return true;
+    }
+
+    const localWindowPattern = new RegExp(
+      `${componentName}.{0,120}${boundaryText}|${boundaryText}.{0,120}${componentName}`,
+      'i'
+    );
+
+    if (localWindowPattern.test(text)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function attachBoundariesToComponents(
+  components = [],
+  architectureEvidence = {},
+  documentUnderstanding = {}
+) {
+  const evidence = documentUnderstanding.evidence || [];
+  const boundaries = typeBoundaryEvidenceList(
+    architectureEvidence.boundaryEvidence || []
+  );
+
+  if (!boundaries.length) {
+    return components.map((component) => ({
+      ...component,
+      boundaries: [],
+    }));
+  }
+
+  return components.map((component) => {
+    const matchedBoundaries = boundaries
+      .filter((boundary) => {
+        return (
+          boundaryMentionsComponent(boundary, component) ||
+          componentEvidenceMentionsBoundary(component, boundary, evidence)
+        );
+      })
+      .map((boundary) => ({
+        rawText: boundary.rawText,
+        boundaryType: boundary.boundaryType,
+        confidence: boundary.confidence,
+        source: boundary.source,
+        evidenceIds: boundary.evidenceIds || [],
+      }));
+
+    return {
+      ...component,
+      boundaries: uniqueBy(
+        matchedBoundaries,
+        (item) => `${item.boundaryType}:${lower(item.rawText)}`
+      ),
+    };
+  });
 }
 
 module.exports = {

@@ -380,12 +380,12 @@ function getSegmentConceptLabel(segments, fallback) {
   );
 }
 
-
 function buildArchitectureTeachingTextFromSegments(segments = []) {
   const usefulSegments = asArray(segments).filter(
     (segment) =>
       segment?.plainEnglish ||
       segment?.whyItMatters ||
+      segment?.safeSemantics ||
       segment?.memoryHook
   );
 
@@ -393,47 +393,81 @@ function buildArchitectureTeachingTextFromSegments(segments = []) {
 
   return usefulSegments
     .slice(0, 2)
-    .map((segment) =>
-      [
-        sentence(segment.plainEnglish),
-        sentence(segment.whyItMatters),
-        segment.memoryHook ? `A useful way to remember it: ${stripTrailingPeriod(segment.memoryHook)}.` : "",
-      ]
-        .filter(Boolean)
-        .join(" ")
-    )
+    .map((segment, index) => {
+      const prefix = buildFlowTransitionPrefix(index);
+
+      const plainEnglish = sentence(
+        prefix
+          ? `${prefix}${lowerFirst(segment.plainEnglish)}`
+          : segment.plainEnglish
+      );
+
+      const flowContext = plainEnglish;
+        const componentPurpose = sentence(segment.safeSemantics);
+        const operationalImpact = sentence(segment.whyItMatters);
+        const mentalModel = sentence(segment.memoryHook);
+
+        const narrationParts = [
+        flowContext,
+        componentPurpose,
+        ];
+
+        if (operationalImpact) {
+        narrationParts.push(operationalImpact);
+        } else if (mentalModel) {
+        narrationParts.push(mentalModel);
+        }
+
+        return narrationParts.filter(Boolean).join(" ");
+    })
     .join(" ");
 }
-
 
 function buildNaturalResponsibilityText(conceptLabel, fromName, toName) {
   const key = cleanText(conceptLabel, 140).toLowerCase();
 
   if (key.includes("ingress") || key.includes("boundary")) {
-    return "This is the point where traffic leaves the public edge and enters a more controlled boundary inside the platform.";
+    return "This is where requests first move from the public-facing edge into more controlled platform systems.";
   }
 
   if (key.includes("routing") || key.includes("control")) {
-    return "At this stage, the architecture starts deciding where the request or work should go next.";
+    return "At this stage, the platform starts deciding how requests should move through downstream services.";
   }
 
   if (key.includes("fanout") || key.includes("distribution")) {
-    return "At this point, the flow can branch, with work handed off toward more than one downstream path.";
+    return "Here the flow can branch, allowing requests or work to move toward multiple downstream paths.";
   }
 
-  if (key.includes("state") || key.includes("persistence") || key.includes("terminal")) {
-    return "Eventually the flow reaches a backend destination, where stateful or terminal systems start taking over.";
+  if (
+    key.includes("state") ||
+    key.includes("persistence") ||
+    key.includes("terminal")
+  ) {
+    return "This part of the flow reaches systems responsible for longer-lived state or backend processing.";
   }
 
   if (key.includes("processing") || key.includes("transform")) {
-    return "This is where the system continues the work inside the processing path.";
+    return "This layer continues the main execution or processing work inside the platform.";
   }
 
   if (fromName && toName) {
-    return "The important detail is the responsibility shift between the upstream side and the downstream side.";
-  }
+    return `${toName} is the next layer helping handle the request as it moves deeper into the platform.`;
+    }
 
   return "";
+}
+
+function buildFlowTransitionPrefix(index) {
+  if (index === 0) return "";
+
+  const transitions = [
+    "Next, ",
+    "Here, ",
+    "Further downstream, ",
+    "By this point, ",
+  ];
+
+  return transitions[(index - 1) % transitions.length];
 }
 
 function getFirstArchitectureHandoff(metadata = {}, lessonGraph = {}) {
@@ -468,23 +502,21 @@ function buildArchitectureAwareText(unit, lessonGraph = {}) {
     const toName = cleanText(firstHandoff?.to?.name, 120);
 
     return [
-        "At a high level, this diagram shows how traffic moves through the system.",
-
+        "This walkthrough follows the request journey one layer at a time.",
         fromName && toName
-        ? `The request begins from ${fromName} and first enters through ${toName} before moving deeper into the architecture.`
-        : "",
-
-        "From there, we follow the main handoffs and watch where responsibility shifts from one part of the architecture to the next.",
-    ]
+            ? `The request first reaches ${toName} before moving deeper into the platform.`
+            : "",
+        "Let’s build a simple mental model of what each layer is doing as the request moves deeper into the platform.",
+        ]
         .filter(Boolean)
         .join(" ");
-}
+        }
 
   if (role === "architecture_recap") {
     return [
-        "Putting it together, the architecture moves from the entry boundary, through routing and control, and finally toward stateful backend systems.",
-        "What matters most is how responsibility shifts across the system as the flow moves downstream.",
-    ]
+        "At a high level, the request moves through layers that each handle a different job.",
+        "The important mental model is: receive traffic, direct it, process it, and eventually handle longer-lived state or results.",
+        ]
         .filter(Boolean)
         .join(" ");
     }
@@ -588,7 +620,7 @@ function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntellige
 
   return {
     sectionNumber,
-    speaker: "Senior Engineer",
+    speaker: "Mentor",
     type: `lesson_${unit.type || "teaching_unit"}`,
     page,
     text: buildTeachingUnitText(unit, documentIntelligence, lessonGraph),
@@ -717,15 +749,15 @@ function buildDialogue({
   return {
     generatedAt: new Date().toISOString(),
     style: lessonGraph.compactCheatSheet
-      ? "compact_instructor_led_operational_reference"
-      : architectureLesson
-        ? "architecture_senior_engineer_flow_walkthrough"
+        ? "compact_instructor_led_operational_reference"
+        : architectureLesson
+        ? "architecture_mentor_component_purpose_walkthrough"
         : "instructor_led_lesson_graph_walkthrough",
     version: DIALOGUE_VERSION,
     speakers:
-      documentIntelligence.primaryType === "cheat_sheet" || architectureLesson
-        ? ["Senior Engineer"]
-        : ["Senior Engineer", "New Joiner"],
+        documentIntelligence.primaryType === "cheat_sheet" || architectureLesson
+        ? ["Mentor"]
+        : ["Mentor", "New Joiner"],
     documentIntelligence,
     lessonGraph,
     pacing: {
@@ -784,7 +816,7 @@ function buildDialogue({
       avoidRepeatedMentorPhrases: true,
       documentStructureGuidesTeachingUnits: true,
       spokenFocusSyncFeedsRenderPlan: true,
-      architectureDialogueIsHandoffFirst: architectureLesson,
+      architectureDialogueExplainsComponentPurpose: architectureLesson,
       noInventedArchitectureBehavior: architectureLesson,
       naturalOperationalStorytelling: architectureLesson,
     },
