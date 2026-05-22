@@ -34,6 +34,7 @@ const {
 
 const {
   applyTraversalModePreferences,
+  buildTraversalPreferenceDebug,
 } = require("./architectureTraversalPreferenceBuilder");
 
 const ARCHITECTURE_REGION_TYPES = {
@@ -1714,6 +1715,12 @@ function buildLessonGraph({
             traversalModeMetadata.selectedTraversalMode
         )
         : coreUnits;
+
+    const traversalPreferenceDebug =
+        usingArchitectureReasoning
+            ? buildTraversalPreferenceDebug(traversalBiasedCoreUnits)
+            : null;
+
   const architectureDrivenLesson =
     usingArchitectureTeaching || usingArchitectureReasoning;
 
@@ -1783,6 +1790,12 @@ function buildLessonGraph({
     confidencePolicy: traversalModeMetadata.confidencePolicy,
     continuityStrategy: traversalModeMetadata.continuityStrategy,
     fallbackPolicy: traversalModeMetadata.fallbackPolicy,
+
+    traversalPreferenceApplied: Boolean(traversalPreferenceDebug),
+    traversalPreferenceVersion: traversalPreferenceDebug?.version || null,
+    traversalPreferenceExecution:
+    "bounded_sort_bias_with_continuity_guard",
+    traversalPreferenceDebug,
 
     rule: usingArchitectureTeaching
         ? "Lesson graph consumes architectureTeaching for semantic chapters; architectureTeaching owns meaning."
