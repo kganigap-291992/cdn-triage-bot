@@ -28,6 +28,10 @@ const {
   buildRegionTraversalDebug,
 } = require("./architectureRegionTraversal");
 
+const {
+  buildTraversalModeMetadata,
+} = require("./architectureTraversalModes");
+
 const ARCHITECTURE_REGION_TYPES = {
   TRAFFIC_ENTRY_AND_ROUTING: "traffic_entry_and_routing",
   VALIDATION_OR_CONTROL: "validation_or_control",
@@ -1738,6 +1742,9 @@ function buildLessonGraph({
     teachingFocusSequence,
   });
 
+  const traversalModeMetadata =
+  buildTraversalModeMetadata("request_lifecycle");
+
   const architectureTraversal = {
     version: usingArchitectureTeaching
         ? "architecture-traversal-v2-teaching-driven"
@@ -1746,13 +1753,35 @@ function buildLessonGraph({
         : "architecture-traversal-v1",
     enabled: documentIntelligence?.primaryType === "architecture_doc",
     ownership: "lessonGraphBuilder",
+
+    traversalModesVersion: "architecture-traversal-modes-v1",
+    traversalModesEnabled: true,
+    traversalModeExecution: "metadata_only",
+
+    availableTraversalModes: traversalModeMetadata.availableTraversalModes,
+    defaultTraversalMode: traversalModeMetadata.defaultTraversalMode,
+    selectedTraversalMode: traversalModeMetadata.selectedTraversalMode,
+    selectedTraversalModeLabel: traversalModeMetadata.selectedTraversalModeLabel,
+    traversalModeGoal: traversalModeMetadata.traversalModeGoal,
+    traversalDirection: traversalModeMetadata.traversalDirection,
+    preferredRegions: traversalModeMetadata.preferredRegions,
+    secondaryRegions: traversalModeMetadata.secondaryRegions,
+    optionalRegions: traversalModeMetadata.optionalRegions,
+    avoidRegions: traversalModeMetadata.avoidRegions,
+    cameraBias: traversalModeMetadata.cameraBias,
+    confidencePolicy: traversalModeMetadata.confidencePolicy,
+    continuityStrategy: traversalModeMetadata.continuityStrategy,
+    fallbackPolicy: traversalModeMetadata.fallbackPolicy,
+
     rule: usingArchitectureTeaching
         ? "Lesson graph consumes architectureTeaching for semantic chapters; architectureTeaching owns meaning."
         : usingArchitectureReasoning
-        ? "Lesson graph consumes architectureReasoning and applies stable responsibility-region traversal."
-        : "Lesson graph decides traversal; spatial and architecture layers provide evidence only.",
+        ? "Lesson graph consumes architectureReasoning and applies stable responsibility-region traversal. Traversal mode metadata is declarative only in 22N.1."
+        : "Lesson graph decides traversal; spatial and architecture layers provide evidence only. Traversal mode metadata is declarative only in 22N.1.",
+
     priorityHierarchy: [
         "pedagogical_priority",
+        "selected_traversal_mode_metadata",
         "stable_responsibility_region_order",
         "architecture_reasoning",
         "architecture_teaching",
@@ -1762,6 +1791,7 @@ function buildLessonGraph({
         "spatial_adjacency",
         "reading_order",
     ],
+
     confidenceContract: {
         deterministic: "can_drive_traversal",
         high: "can_drive_traversal",
