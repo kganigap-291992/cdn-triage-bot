@@ -32,6 +32,10 @@ const {
   buildTraversalModeMetadata,
 } = require("./architectureTraversalModes");
 
+const {
+  applyTraversalModePreferences,
+} = require("./architectureTraversalPreferenceBuilder");
+
 const ARCHITECTURE_REGION_TYPES = {
   TRAFFIC_ENTRY_AND_ROUTING: "traffic_entry_and_routing",
   VALIDATION_OR_CONTROL: "validation_or_control",
@@ -1698,8 +1702,18 @@ function buildLessonGraph({
     architectureUnderstanding,
     architectureTeaching,
     architectureReasoning,
-  });
+    });
 
+    const traversalModeMetadata =
+    buildTraversalModeMetadata("request_lifecycle");
+
+    const traversalBiasedCoreUnits =
+    usingArchitectureReasoning
+        ? applyTraversalModePreferences(
+            coreUnits,
+            traversalModeMetadata.selectedTraversalMode
+        )
+        : coreUnits;
   const architectureDrivenLesson =
     usingArchitectureTeaching || usingArchitectureReasoning;
 
@@ -1710,7 +1724,7 @@ function buildLessonGraph({
 
   const orderedUnits = [
     ...(includeIntro ? [buildIntroUnit({ documentIntelligence, pageCount })] : []),
-    ...coreUnits,
+    ...traversalBiasedCoreUnits,
     ...(includeRecap ? [buildRecapUnit({ documentIntelligence, pageCount })] : []),
   ];
 
@@ -1741,9 +1755,6 @@ function buildLessonGraph({
   const choreographyIntent = buildChoreographyIntent({
     teachingFocusSequence,
   });
-
-  const traversalModeMetadata =
-  buildTraversalModeMetadata("request_lifecycle");
 
   const architectureTraversal = {
     version: usingArchitectureTeaching
