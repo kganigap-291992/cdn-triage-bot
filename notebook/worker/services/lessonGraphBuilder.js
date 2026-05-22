@@ -21,6 +21,12 @@
 const { buildPedagogyProfile } = require("./pedagogyProfileBuilder");
 const { buildSourceGrounding } = require("./sourceGroundingBuilder");
 const { buildDocumentStructure } = require("./documentStructureBuilder");
+const {
+  REGION_ORDER,
+  mapReasoningSummaryToRegion,
+  sortUnitsByRegionStability,
+  buildRegionTraversalDebug,
+} = require("./architectureRegionTraversal");
 
 const ARCHITECTURE_REGION_TYPES = {
   TRAFFIC_ENTRY_AND_ROUTING: "traffic_entry_and_routing",
@@ -213,6 +219,27 @@ function hasUsableArchitectureTeaching({ documentIntelligence, architectureTeach
     Array.isArray(architectureTeaching?.enrichedChapters) &&
     architectureTeaching.enrichedChapters.length > 0
   );
+}
+
+function hasUsableArchitectureReasoning(architectureReasoning = {}) {
+  return (
+    asArray(architectureReasoning.reasonedFlowSummaries).length > 0 ||
+    asArray(architectureReasoning.primaryLayers).length > 0 ||
+    asArray(architectureReasoning.directionalInteractions).length > 0
+  );
+}
+
+function getReasoningModeTitle(mode) {
+  const titles = {
+    ingress_path: "Traffic Entry",
+    validation_path: "Validation and Access",
+    control_path: "Routing and Control",
+    persistence_path: "State and Persistence",
+    async_path: "Async or Event Flow",
+    orchestration_path: "Orchestration",
+  };
+
+  return titles[mode] || "Architecture Responsibility";
 }
 
 function getEffectiveRuntimeBudgetMinutes(documentIntelligence, pageCount) {
@@ -1213,6 +1240,82 @@ function buildArchitectureTeachingUnitFromChapter({
   };
 }
 
+
+function buildTeachingUnitsFromArchitectureReasoning({
+  architectureReasoning = {},
+  documentIntelligence = {},
+  diagramAnalysis = {},
+}) {
+  const pageCount = getPageCount(diagramAnalysis);
+  const sourcePages = getFallbackSourcePages({ documentIntelligence, pageCount });
+  const summaries = asArray(architectureReasoning.reasonedFlowSummaries);
+
+  const units = summaries.map((summary, index) => {
+    const title = getReasoningModeTitle(summary.mode);
+    const regionMetadata = mapReasoningSummaryToRegion(summary, index);
+
+    return {
+      id: `architecture_reasoning_${slugify(summary.mode || title)}_${index + 1}`,
+      type: "architecture_reasoning_chapter",
+      title,
+      importance: Number((0.94 - index * 0.04).toFixed(2)),
+      teachingMode: "architecture_responsibility_walkthrough",
+      runtimeWeight: 0.72,
+      concepts: uniq([
+        title,
+        summary.mode,
+        summary.reasonedMeaning,
+        summary.documentSays,
+      ]),
+      visibleElements: asArray(summary.steps).slice(0, 6),
+      narrationGoals: [
+        "teach the architecture responsibility, not just the component names",
+        "explain the operational meaning of this responsibility",
+        "use evidence and confidence from architectureReasoning",
+        "avoid inventing behavior beyond the document evidence",
+      ],
+      avoidNarration: getArchitectureAvoidNarration(documentIntelligence),
+      preferredVisuals: ["full_diagram", "diagram_region_focus", "document_focus"],
+      presentationStyle: "architecture_semantic_chapter",
+      sceneIntent: "teach_architecture_responsibility_from_reasoning",
+      sourcePages,
+      focusHint: buildArchitectureFocusHint({
+        title,
+        sourcePages,
+        presentationStyle: "architecture_semantic_chapter",
+        cameraIntent: index <= 1 ? "zoom_to_flow_entry" : "follow_flow_to_component",
+        focusRegion: getArchitectureBroadFocusRegion(
+          index,
+          Math.max(1, summaries.length),
+          title
+        ),
+      }),
+      metadata: {
+        role: "architecture_reasoning_chapter",
+        architectureFirst: true,
+        source: "architecture_reasoning",
+        reasoningMode: summary.mode || null,
+
+        regionAffinity: regionMetadata.regionAffinity,
+        responsibilityLayer: regionMetadata.responsibilityLayer,
+        regionLabel: regionMetadata.regionLabel,
+        regionOrder: regionMetadata.regionOrder,
+        regionSource: regionMetadata.regionSource,
+        regionConfidence: regionMetadata.regionConfidence,
+        cameraAffinity: regionMetadata.cameraAffinity,
+
+        confidence: summary.confidence || "medium",
+        documentSays: summary.documentSays || null,
+        reasonedMeaning: summary.reasonedMeaning || null,
+        evidence: asArray(summary.evidence),
+        steps: asArray(summary.steps),
+      },
+    };
+  });
+
+  return sortUnitsByRegionStability(units);
+}
+
 function buildTeachingUnitsFromArchitectureTeaching({
   documentIntelligence,
   diagramAnalysis,
@@ -1271,8 +1374,25 @@ function buildCoreTeachingUnits({
   extractedData,
   architectureUnderstanding,
   architectureTeaching,
+  architectureReasoning,
 }) {
-  if (hasUsableArchitectureTeaching({ documentIntelligence, architectureTeaching })) {
+  if (
+    isArchitectureDocument(documentIntelligence) &&
+    hasUsableArchitectureReasoning(architectureReasoning)
+  ) {
+    return buildTeachingUnitsFromArchitectureReasoning({
+      architectureReasoning,
+      documentIntelligence,
+      diagramAnalysis,
+    });
+  }
+
+  if (
+    hasUsableArchitectureTeaching({
+      documentIntelligence,
+      architectureTeaching,
+    })
+  ) {
     return buildTeachingUnitsFromArchitectureTeaching({
       documentIntelligence,
       diagramAnalysis,
@@ -1527,6 +1647,7 @@ function buildLessonGraph({
   diagramAnalysis = {},
   architectureUnderstanding = {},
   architectureTeaching = {},
+  architectureReasoning = {},
   jobDir = null,
 } = {}) {
   const pageCount = getPageCount(diagramAnalysis);
@@ -1554,6 +1675,10 @@ function buildLessonGraph({
     architectureTeaching,
   });
 
+  const usingArchitectureReasoning =
+    isArchitectureDocument(documentIntelligence) &&
+    hasUsableArchitectureReasoning(architectureReasoning);
+
   const architectureFlowGroups = buildArchitectureFlowGroups(architectureUnderstanding);
 
   const architectureTeachingRegions = buildArchitectureTeachingRegions({
@@ -1568,11 +1693,15 @@ function buildLessonGraph({
     extractedData,
     architectureUnderstanding,
     architectureTeaching,
+    architectureReasoning,
   });
 
-  const includeIntro = !usingArchitectureTeaching;
+  const architectureDrivenLesson =
+    usingArchitectureTeaching || usingArchitectureReasoning;
+
+  const includeIntro = !architectureDrivenLesson;
   const includeRecap =
-    !usingArchitectureTeaching &&
+    !architectureDrivenLesson &&
     (compactCheatSheet ? coreUnits.length >= 4 : effectiveRuntimeBudgetMinutes >= 3);
 
   const orderedUnits = [
@@ -1597,6 +1726,10 @@ function buildLessonGraph({
 
   const teachingUnits = sourceGrounding.teachingUnits;
 
+  const regionTraversalDebug = usingArchitectureReasoning
+  ? buildRegionTraversalDebug(teachingUnits)
+  : null;
+
   const teachingFocusSequence = usingArchitectureTeaching
     ? buildTeachingFocusSequenceFromTeachingUnits({ teachingUnits })
     : buildTeachingFocusSequence({ flowGroups: architectureFlowGroups });
@@ -1607,63 +1740,88 @@ function buildLessonGraph({
 
   const architectureTraversal = {
     version: usingArchitectureTeaching
-      ? "architecture-traversal-v2-teaching-driven"
-      : "architecture-traversal-v1",
+        ? "architecture-traversal-v2-teaching-driven"
+        : usingArchitectureReasoning
+        ? "architecture-traversal-v3-region-stable-reasoning"
+        : "architecture-traversal-v1",
     enabled: documentIntelligence?.primaryType === "architecture_doc",
     ownership: "lessonGraphBuilder",
     rule: usingArchitectureTeaching
-      ? "Lesson graph consumes architectureTeaching for semantic chapters; architectureTeaching owns meaning."
-      : "Lesson graph decides traversal; spatial and architecture layers provide evidence only.",
+        ? "Lesson graph consumes architectureTeaching for semantic chapters; architectureTeaching owns meaning."
+        : usingArchitectureReasoning
+        ? "Lesson graph consumes architectureReasoning and applies stable responsibility-region traversal."
+        : "Lesson graph decides traversal; spatial and architecture layers provide evidence only.",
     priorityHierarchy: [
-      "pedagogical_priority",
-      "architecture_teaching",
-      "deterministic_flow",
-      "high_confidence_spatial_flow",
-      "semantic_importance",
-      "spatial_adjacency",
-      "reading_order",
+        "pedagogical_priority",
+        "stable_responsibility_region_order",
+        "architecture_reasoning",
+        "architecture_teaching",
+        "deterministic_flow",
+        "high_confidence_spatial_flow",
+        "semantic_importance",
+        "spatial_adjacency",
+        "reading_order",
     ],
     confidenceContract: {
-      deterministic: "can_drive_traversal",
-      high: "can_drive_traversal",
-      medium: "limited_supporting_signal",
-      low: "narration_only_never_camera_authority",
+        deterministic: "can_drive_traversal",
+        high: "can_drive_traversal",
+        medium: "limited_supporting_signal",
+        low: "narration_only_never_camera_authority",
     },
+
+    regionTraversalApplied: Boolean(regionTraversalDebug),
+    regionTraversalVersion: regionTraversalDebug?.version || null,
+    regionTraversalStrategy: "stable_responsibility_region_order",
+    regionContinuityEnabled: Boolean(regionTraversalDebug),
+    stableResponsibilityTraversal: Boolean(regionTraversalDebug),
+    regionOrder: REGION_ORDER,
+    regionUnitCount: regionTraversalDebug?.unitCount || 0,
+    regionTraversalDebug,
+
     componentCount: architectureUnderstanding?.deterministicGraph?.components?.length || 0,
     deterministicRelationshipCount: architectureUnderstanding?.deterministicGraph?.relationships?.length || 0,
     explicitFlowCount:
-      architectureUnderstanding?.flows?.length ||
-      architectureUnderstanding?.deterministicGraph?.flows?.length ||
-      0,
+        architectureUnderstanding?.flows?.length ||
+        architectureUnderstanding?.deterministicGraph?.flows?.length ||
+        0,
     spatialCandidateCount: architectureUnderstanding?.spatialRelationshipCandidates?.length || 0,
     flowGroupCount: architectureFlowGroups.length,
     flowGroups: architectureFlowGroups,
     architectureTeachingApplied: usingArchitectureTeaching,
     architectureTeachingVersion: architectureTeaching?.schemaVersion || null,
+    architectureReasoningApplied: usingArchitectureReasoning,
+    architectureReasoningVersion: architectureReasoning?.version || null,
+    reasoningModeCount: asArray(architectureReasoning?.reasoningModes).length,
+    reasonedFlowSummaryCount: asArray(architectureReasoning?.reasonedFlowSummaries).length,
+    directionalInteractionCount: asArray(architectureReasoning?.directionalInteractions).length,
     teachingFocusSequenceCount: teachingFocusSequence.length,
     teachingFocusSequence,
     choreographyIntentCount: choreographyIntent.length,
     choreographyIntent,
     borrowedIdeas: [
-      "langgraph_traversal_state",
-      "motion_canvas_semantic_beats",
-      "tldraw_zoom_to_bounds",
-      "observable_explain_while_showing",
-      "notebooklm_guided_mental_model_recap",
+        "langgraph_traversal_state",
+        "motion_canvas_semantic_beats",
+        "tldraw_zoom_to_bounds",
+        "observable_explain_while_showing",
+        "notebooklm_guided_mental_model_recap",
     ],
-  };
+    };
 
   return {
-    version: usingArchitectureTeaching
-      ? "lesson-graph-v5-architecture-teaching-driven"
-      : "lesson-graph-v4-document-structured",
+    version: usingArchitectureReasoning
+        ? "lesson-graph-v6-architecture-reasoning-driven"
+        : usingArchitectureTeaching
+            ? "lesson-graph-v5-architecture-teaching-driven"
+            : "lesson-graph-v4-document-structured",
     documentType: documentIntelligence?.primaryType || "unknown",
     secondaryTypes: documentIntelligence?.secondaryTypes || [],
     teachingStrategy: compactCheatSheet
-      ? "compact_high_density_operational_focus_walkthrough"
-      : usingArchitectureTeaching
-        ? "architecture_teaching_handoff_first_walkthrough"
-        : documentIntelligence?.teachingStrategy || "technical_walkthrough",
+        ? "compact_high_density_operational_focus_walkthrough"
+        : usingArchitectureReasoning
+            ? "architecture_reasoning_responsibility_walkthrough"
+            : usingArchitectureTeaching
+            ? "architecture_teaching_handoff_first_walkthrough"
+            : documentIntelligence?.teachingStrategy || "technical_walkthrough",
     presentationGrammar: documentIntelligence?.presentationGrammar || {},
     pedagogyProfile,
     documentStructure: {
@@ -1708,10 +1866,11 @@ function buildLessonGraph({
           )
         : 0,
       compactRuntimeCompressionApplied: compactCheatSheet,
-      focusGuidanceApplied: true,
-      documentStructureApplied: true,
-      architectureTeachingApplied: usingArchitectureTeaching,
-      architectureFirstApplied:
+        focusGuidanceApplied: true,
+        documentStructureApplied: true,
+        architectureTeachingApplied: usingArchitectureTeaching,
+        architectureReasoningApplied: usingArchitectureReasoning,
+        architectureFirstApplied:
         usingArchitectureTeaching ||
         (isArchitectureDocument(documentIntelligence) && architectureFlowGroups.length > 0),
     },

@@ -1,6 +1,8 @@
 const fs = require("fs");
 const path = require("path");
-
+const {
+  shouldUseSoftTransition,
+} = require("./architectureRegionTraversal");
 /**
  * Phase 8D.15 — Render / Camera Alignment
  *
@@ -392,14 +394,6 @@ function classifyArchitectureSceneRole(section, index, totalSections) {
     teachingUnitId,
   ].join(" ");
 
-  if (
-    index === 0 ||
-    haystack.includes("overview") ||
-    haystack.includes("at a high level") ||
-    haystack.includes("architecture overview")
-  ) {
-    return "architecture_overview";
-  }
 
   if (
     index === totalSections - 1 ||
@@ -410,6 +404,17 @@ function classifyArchitectureSceneRole(section, index, totalSections) {
   ) {
     return "architecture_recap";
   }
+
+
+  if (
+    index === 0 ||
+    haystack.includes("overview") ||
+    haystack.includes("at a high level") ||
+    haystack.includes("architecture overview")
+  ) {
+    return "architecture_overview";
+  }
+
 
   if (
     haystack.includes("entry") ||
@@ -445,6 +450,47 @@ function findChoreographyForScene({ choreographyIntent = [], sceneIndex }) {
 
 function findTeachingFocusForScene({ teachingFocusSequence = [], sceneIndex }) {
   return teachingFocusSequence[sceneIndex] || null;
+}
+
+function findRegionTraversalUnitForScene({
+  architectureTraversal = {},
+  section,
+  sceneRole,
+}) {
+  const units = architectureTraversal?.regionTraversalDebug?.units;
+
+  if (!Array.isArray(units)) return null;
+
+  const title = String(section?.title || "").toLowerCase();
+  const text = String(section?.text || "").toLowerCase();
+
+  if (
+    sceneRole === "architecture_entry_boundary" ||
+    title.includes("entry") ||
+    text.includes("entry point")
+  ) {
+    return units.find(
+      (unit) => unit.regionAffinity === "traffic_entry"
+    ) || null;
+  }
+
+  if (
+    sceneRole === "architecture_control_routing" ||
+    title.includes("routing") ||
+    text.includes("gateway")
+  ) {
+    return units.find(
+      (unit) => unit.regionAffinity === "routing"
+    ) || null;
+  }
+
+  if (
+    sceneRole === "architecture_recap"
+  ) {
+    return units[units.length - 1] || null;
+  }
+
+  return null;
 }
 
 function findArchitectureRegionForScene({
@@ -694,6 +740,8 @@ function buildCameraPlan({
   choreography,
   architectureRegion,
   timing,
+  regionTraversalUnit = null,
+  useSoftTransition = false,
 }) {
   const confidence = normalizeConfidence(
     focusRegion?.confidence ||
@@ -735,6 +783,17 @@ function buildCameraPlan({
     motionIntent,
     cameraStyle,
     focusPriority,
+
+    softTransition: useSoftTransition,
+    transitionStyle: useSoftTransition
+    ? "broad_context_continuation"
+    : "semantic_progression",
+    transitionPacing: useSoftTransition
+    ? "slower_boundary_transition"
+    : "normal_semantic_flow",
+
+    continuityType: regionTraversalUnit?.continuityType || null,
+    continuityScore: regionTraversalUnit?.continuityScore ?? null,
 
     regionLabel: architectureRegion?.regionLabel || null,
     responsibilityLayer: architectureRegion?.responsibilityLayer || null,
@@ -1260,7 +1319,7 @@ function createRenderPlan(jobDir) {
 
     const dialogue = readJson(dialoguePath);
     const lessonPlan = readJson(lessonPlanPath, {});
-    const lessonGraph = dialogue?.lessonGraph || lessonPlan?.lessonGraph || {};
+    const lessonGraph = lessonPlan?.lessonGraph || dialogue?.lessonGraph || {};
     const architectureTraversal = lessonGraph?.architectureTraversal || {};
     const architectureTeachingRegions =
     dialogue?.lessonGraph?.architectureTeachingRegions ||
@@ -1294,6 +1353,7 @@ function createRenderPlan(jobDir) {
       teachingFocusSequence: architectureTraversal.teachingFocusSequence || [],
       sceneIndex: index,
     });
+
 
     const architectureRegionMetadata = findArchitectureRegionForScene({
     architectureTeachingRegions,
@@ -1338,6 +1398,12 @@ function createRenderPlan(jobDir) {
       ? classifyArchitectureSceneRole(section, index, sections.length)
       : "standard_scene";
 
+    const regionTraversalUnit = findRegionTraversalUnitForScene({
+    architectureTraversal,
+    section,
+    sceneRole,
+    });
+
     const rawFocusRegion =
       visualIntent.focusRegion ||
       section.focusRegion ||
@@ -1349,6 +1415,17 @@ function createRenderPlan(jobDir) {
     const baseTiming = resolveSceneTiming(section, audioItem);
     const timing = applyArchitectureEstablishTiming(baseTiming, sceneRole);
 
+    const useSoftTransition = shouldUseSoftTransition({
+    metadata: {
+        continuityType:
+        section?.metadata?.continuityType ||
+        section?.continuityType ||
+        section?.visualIntent?.continuityType ||
+        regionTraversalUnit?.continuityType ||
+        null,
+    },
+    });
+
     const cameraPlan = architectureScene
     ? buildCameraPlan({
         section,
@@ -1359,6 +1436,8 @@ function createRenderPlan(jobDir) {
         choreography: choreographyMetadata,
         architectureRegion: architectureRegionMetadata,
         timing,
+        regionTraversalUnit,
+        useSoftTransition,
         })
     : null;
 

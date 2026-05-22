@@ -38,6 +38,10 @@ const {
 } = require("../services/architectureFlowBuilder");
 
 const {
+  buildArchitectureReasoning,
+} = require("../services/architectureReasoningBuilder");
+
+const {
   buildResponsibilityInference,
 } = require("../services/responsibilityInferenceBuilder");
 
@@ -53,6 +57,8 @@ const {
   generateLessonPlan,
   saveLessonPlan,
 } = require("../services/lessonPlanner");
+
+
 
 const router = express.Router();
 
@@ -208,11 +214,30 @@ router.post("/:jobId", async (req, res) => {
     );
 
     console.log("[architecture-flow]", {
-      components: architectureFlow.stats.componentCount,
-      relationships: architectureFlow.stats.relationshipCount,
-      flowGroups: architectureFlow.stats.flowGroupCount,
-      segments: architectureFlow.stats.segmentCount,
-      chapters: architectureFlow.stats.chapterCount,
+        components: architectureFlow.stats.componentCount,
+        relationships: architectureFlow.stats.relationshipCount,
+        flowGroups: architectureFlow.stats.flowGroupCount,
+        segments: architectureFlow.stats.segmentCount,
+        chapters: architectureFlow.stats.chapterCount,
+    });
+
+    const architectureReasoning = buildArchitectureReasoning({
+        architectureUnderstanding,
+        architectureFlow,
+        documentUnderstanding,
+        architectureEvidence,
+    });
+
+    const architectureReasoningPath = writeJson(
+    path.join(jobDir, "architecture-reasoning.json"),
+    architectureReasoning
+    );
+
+    console.log("[architecture-reasoning]", {
+    reasoningModes: architectureReasoning.reasoningModes.length,
+    primaryLayers: architectureReasoning.primaryLayers.length,
+    pathSummaries: architectureReasoning.pathSummaries.length,
+    componentRoles: architectureReasoning.componentRoleExplanations.length,
     });
 
     const responsibilityInference = buildResponsibilityInference({
@@ -328,8 +353,13 @@ router.post("/:jobId", async (req, res) => {
         version: architectureFlow.schemaVersion,
         stats: architectureFlow.stats,
         output: architectureFlowPath,
-      },
-      responsibilityInference: {
+        },
+        architectureReasoning: {
+        version: architectureReasoning.version,
+        stats: architectureReasoning.stats,
+        output: architectureReasoningPath,
+        },
+        responsibilityInference: {
         version: responsibilityInference.version,
         stats: responsibilityInference.stats,
         output: responsibilityInferencePath,

@@ -183,6 +183,7 @@ function buildLessonPlan({
   diagramAnalysis = {},
   architectureUnderstanding = {},
   architectureTeaching = {},
+  architectureReasoning = {},
   jobDir = null,
 } = {}) {
   const concepts = getConceptList(conceptsData);
@@ -195,8 +196,9 @@ function buildLessonPlan({
     diagramAnalysis,
     architectureUnderstanding,
     architectureTeaching,
+    architectureReasoning,
     jobDir,
-  });
+    });
 
   return {
     generatedAt: new Date().toISOString(),
@@ -290,6 +292,11 @@ function generateLessonPlan(jobDir) {
     "architecture-teaching.json"
   );
 
+  const architectureReasoningPath = path.join(
+    jobDir,
+    "architecture-reasoning.json"
+  );
+
   const conceptsData = readJsonIfExists(conceptsPath, {});
   const extractedData = readJsonIfExists(extractedPath, {});
   const pageImageCount = countPageImages(jobDir);
@@ -317,6 +324,11 @@ function generateLessonPlan(jobDir) {
     {}
   );
 
+  const architectureReasoning = readJsonIfExists(
+    architectureReasoningPath,
+    {} 
+  );
+
   const diagramAnalysis = {
     ...rawDiagramAnalysis,
     pageCount:
@@ -332,8 +344,9 @@ function generateLessonPlan(jobDir) {
     diagramAnalysis,
     architectureUnderstanding,
     architectureTeaching,
+    architectureReasoning,
     jobDir,
-  });
+    });
 }
 
 function saveLessonPlan(jobDir, lessonPlan) {
