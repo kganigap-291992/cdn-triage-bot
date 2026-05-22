@@ -222,6 +222,33 @@ function buildTraversalModeMetadata(selectedMode = DEFAULT_TRAVERSAL_MODE) {
   };
 }
 
+
+function buildTraversalModeSelectionContract(selectedMode = DEFAULT_TRAVERSAL_MODE) {
+  const modeDefinition = getTraversalMode(selectedMode);
+
+  return {
+    version: "architecture-traversal-mode-selection-contract-v1",
+    selectionEnabled: false,
+    currentSelectionSource: "hardcoded_default",
+    defaultMode: DEFAULT_TRAVERSAL_MODE,
+    selectedMode: modeDefinition.mode,
+    selectedModeLabel: modeDefinition.label,
+    supportedSelectionSources: [
+      "hardcoded_default",
+      "future_user_choice",
+      "future_document_hint",
+      "future_debug_context",
+    ],
+    guardrails: {
+      noHeuristicSelectionYet: true,
+      noLlmModeSelectionYet: true,
+      modeSelectionMustNotInventArchitecture: true,
+      modeSelectionMustNotOverrideEvidence: true,
+      lessonGraphRemainsTeachingAuthority: true,
+    },
+  };
+}
+
 module.exports = {
   TRAVERSAL_MODES,
   DEFAULT_TRAVERSAL_MODE,
@@ -230,4 +257,5 @@ module.exports = {
   getDefaultTraversalMode,
   getAvailableTraversalModes,
   buildTraversalModeMetadata,
+  buildTraversalModeSelectionContract,
 };

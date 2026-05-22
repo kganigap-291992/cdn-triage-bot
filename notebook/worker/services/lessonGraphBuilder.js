@@ -30,6 +30,7 @@ const {
 
 const {
   buildTraversalModeMetadata,
+  buildTraversalModeSelectionContract,
 } = require("./architectureTraversalModes");
 
 const {
@@ -1708,6 +1709,11 @@ function buildLessonGraph({
     const traversalModeMetadata =
     buildTraversalModeMetadata("request_lifecycle");
 
+    const traversalModeSelectionContract =
+    buildTraversalModeSelectionContract(
+        traversalModeMetadata.selectedTraversalMode
+    );
+
     const traversalBiasedCoreUnits =
     usingArchitectureReasoning
         ? applyTraversalModePreferences(
@@ -1790,6 +1796,8 @@ function buildLessonGraph({
     confidencePolicy: traversalModeMetadata.confidencePolicy,
     continuityStrategy: traversalModeMetadata.continuityStrategy,
     fallbackPolicy: traversalModeMetadata.fallbackPolicy,
+
+    traversalModeSelectionContract,
 
     traversalPreferenceApplied: Boolean(traversalPreferenceDebug),
     traversalPreferenceVersion: traversalPreferenceDebug?.version || null,
