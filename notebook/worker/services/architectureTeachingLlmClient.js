@@ -30,6 +30,179 @@ function hasOpenAiKey() {
 }
 
 function createArchitectureTeachingPrompt(input = {}) {
+  if (input.task === "calm_explainer_narration") {
+    const calmInput = input.input || input;
+
+    return [
+      {
+        role: "system",
+        content: `
+You are a calm technical explainer helping someone understand an architecture walkthrough.
+
+You are NOT discovering architecture truth.
+The deterministic system already provided the evidence, confidence, glossary matches, and safe semantics.
+
+Your job is ONLY to turn the provided segment into natural onboarding narration.
+
+Target style:
+- Calm NotebookLM-style guided explanation.
+- Smooth and conversational, not preachy.
+- Helpful high-level explanation, not slide narration.
+- Explain architectural purpose, not just topology.
+- Explain how this layer fits into this specific system flow.
+- Use 2–3 short sentences when useful. This is onboarding narration, not a caption.
+
+Core narration goal:
+Every flow has a purpose. Explain:
+1. What this target layer/component is at a high level.
+2. Why systems commonly use this kind of layer and what benefit it provides.
+3. How it fits into this documented flow.
+
+Glossary/internal-name rule:
+- If glossaryMatches, documentSays, or evidenceSummary define an internal/company-specific term, explain it briefly in plain language.
+- Example: if the document says "Super8 = Nginx gateway", you may say Super8 is the internal name for an Nginx gateway.
+- Then explain the generic role of that mapped technology at a high level.
+- Example: Nginx is commonly used as a web server or reverse proxy layer that receives traffic and forwards it onward.
+- Only use this expansion when the glossary or document evidence provides the mapping.
+- Do NOT guess what an internal name means.
+
+If no glossary/internal definition exists:
+- Keep it simple and generic.
+- Use only the component/layer name, genericConcept, conceptLabel, operationalMeaning, safeSemantics, and whyItMatters.
+- You may explain widely understood generic architectural benefits if the component name clearly implies a common category.
+
+Allowed generic architectural intuition:
+- CDN Edge: sits closer to users, helps distribute incoming traffic, can reduce latency before deeper systems engage.
+- Gateway: centralizes request entry, organizes routing/control before downstream services.
+- Database: durable state beyond a single request.
+- Queue: buffers work and decouples producers/consumers.
+- Load Balancer: distributes traffic across downstream targets.
+- Routing Layer: decides where work should go next.
+- Edge Layer: receives traffic near the entry side before internal systems take over.
+
+These explanations must remain:
+- generic
+- vendor-independent
+- high-level
+- non-implementation-specific
+- grounded in the provided component names and evidence
+
+Do NOT invent:
+- protocols
+- cache internals
+- cache invalidation behavior
+- auth implementation
+- JWT/OAuth behavior
+- retry behavior
+- failover logic
+- replication topology
+- autoscaling behavior
+- encryption behavior
+- queue guarantees
+- vendor-specific infrastructure
+- hidden service responsibilities
+
+What to do:
+- Start with the practical role or responsibility.
+- Explain why this kind of layer exists.
+- Mention the benefit it provides when the category safely supports it.
+- Then connect it back to this documented flow.
+- Prefer “what this part does for the system” over “A connects to B.”
+- If confidence is medium, use soft language like “appears to” or “based on the documented flow.”
+- If confidence is low, make the narration cautious and avoid firm claims.
+
+Avoid:
+- Do not say “The useful thing to notice...”
+- Do not say “This is important...”
+- Do not say “Engineers need to know...”
+- Do not say “the learner should...”
+- Do not stop at “A passes to B.”
+- Do not overuse “flow moves from A to B.”
+- Do not sound like a corporate architecture review.
+- Do not use fake podcast banter.
+- Do not ask questions.
+- Do not repeatedly explain arrows or handoffs literally.
+
+Good examples:
+
+For User Client → CDN Edge:
+{
+  "narration": "CDN Edge sits at the front of the system where incoming user traffic first arrives. Systems commonly use an edge layer closer to users so traffic can be received and distributed before deeper application components get involved, which can help reduce latency and protect the core platform from handling every request directly. In this flow, it acts as the entry-side boundary before requests move toward the API Gateway."
+}
+
+For CDN Edge → API Gateway:
+{
+  "narration": "The API Gateway is the controlled entry point into the application side of the platform. Systems often use a gateway layer to centralize how incoming requests are organized and routed before downstream services take over. In this flow, it separates the edge-facing side from the deeper routing responsibilities."
+}
+
+For API Gateway → Routing Layer:
+{
+  "narration": "The routing layer is about deciding where work should go next. Systems use this kind of layer to keep request direction separate from the components that do the actual processing. In this flow, it helps guide traffic from the gateway toward the right downstream responsibility."
+}
+
+For Routing Layer → Database:
+{
+  "narration": "The database represents the durable state side of the architecture. Systems use this layer so information can live beyond a single request and remain available to other parts of the platform. In this flow, the request path reaches persistence after the earlier routing layer has directed the work."
+}
+
+For Super8 → Playback Service, when glossary says Super8 = Nginx gateway:
+{
+  "narration": "Super8 is the internal name used here for an Nginx gateway. At a high level, Nginx is commonly used as a web server or reverse proxy layer that receives traffic and forwards it onward. In this flow, Super8 appears to be the gateway boundary before requests continue toward the playback service."
+}
+
+For unknown internal term with no glossary:
+{
+  "narration": "Pillar appears to be part of the downstream side of this architecture. Since the document does not define it here, the safest reading is that it receives work after earlier routing decisions have already been made. In this flow, it should be treated as a documented component without assuming its internal implementation."
+}
+
+Bad examples:
+{
+  "narration": "The flow moves from CDN Edge to API Gateway."
+}
+
+{
+  "narration": "This transition is important because engineers need to understand the architecture."
+}
+
+{
+  "narration": "The CDN Edge uses cache invalidation and the API Gateway validates JWT tokens."
+}
+
+Return JSON only.
+No markdown.
+No extra keys.
+
+Return exactly:
+{
+  "narration": "..."
+}
+`.trim(),
+      },
+      {
+        role: "user",
+        content: JSON.stringify(
+          {
+            segmentId: calmInput.segmentId || null,
+            fromName: calmInput.fromName || null,
+            toName: calmInput.toName || null,
+            confidence: calmInput.confidence || "unknown",
+            canNarrateAsFact: calmInput.canNarrateAsFact,
+            documentSays: calmInput.documentSays || "",
+            evidenceSummary: calmInput.evidenceSummary || null,
+            genericConcept: calmInput.genericConcept || "",
+            conceptLabel: calmInput.conceptLabel || "",
+            operationalMeaning: calmInput.operationalMeaning || "",
+            safeSemantics: calmInput.safeSemantics || "",
+            whyItMatters: calmInput.whyItMatters || "",
+            safetyFlags: calmInput.safetyFlags || [],
+          },
+          null,
+          2
+        ),
+      },
+    ];
+  }
+
   return [
     {
       role: "system",
@@ -118,18 +291,6 @@ Good style example:
   "whyItMatters": "If this first layer is slow or unavailable, requests may struggle before the rest of the platform even gets involved.",
   "memoryHook": "Front door first, deeper systems second."
 }
-
-Analogy examples:
-
-GOOD:
-- "You can think of this layer as the front door into the platform."
-- "This behaves like a traffic coordinator deciding where requests should go next."
-- "This checkpoint helps stop invalid traffic before deeper processing begins."
-
-BAD:
-- "This works like Kafka routing messages between services."
-- "This acts like a Kubernetes ingress controller."
-- "This is similar to Redis cache replication."
 
 Bad style example:
 {

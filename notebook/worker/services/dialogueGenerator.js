@@ -380,9 +380,106 @@ function getSegmentConceptLabel(segments, fallback) {
   );
 }
 
+function getCalmNarration(segment) {
+  return cleanText(
+    segment?.calmNarration ||
+      segment?.narration ||
+      segment?.teachingNarration,
+    1200
+  );
+}
+
+function buildCalmNarrationIndex(jobDir) {
+  if (!jobDir) return new Map();
+
+  const narrationPath = path.join(jobDir, "calm-explainer-narration.json");
+  const payload = readJsonIfExists(narrationPath, {});
+  const segments = asArray(payload.segments);
+
+  const index = new Map();
+
+  for (const segment of segments) {
+    if (segment.segmentId && segment.narration) {
+      index.set(segment.segmentId, segment.narration);
+    }
+
+    if (segment.fromName && segment.toName && segment.narration) {
+      index.set(`${segment.fromName}→${segment.toName}`, segment.narration);
+    }
+  }
+
+  return index;
+}
+
+function attachCalmNarrationToSegments(segments = [], calmNarrationIndex = new Map()) {
+  return asArray(segments).map((segment) => {
+    const segmentId = segment.id || segment.sourceSegmentId;
+    const calmNarration = calmNarrationIndex.get(segmentId);
+
+    return {
+      ...segment,
+      calmNarration: calmNarration || segment.calmNarration || null,
+    };
+  });
+}
+
+function buildCalmNarrationTextFromSteps(
+  steps = [],
+  calmNarrationIndex = new Map(),
+  regionAffinity = null
+) {
+  const cleanSteps = asArray(steps)
+    .map((step) => {
+      if (typeof step === "string") return cleanText(step, 260);
+
+      return cleanText(
+        step.name ||
+          step.label ||
+          step.title ||
+          step.component ||
+          step.entity ||
+          step.text,
+        260
+      );
+    })
+    .filter(Boolean);
+
+  if (!cleanSteps.length) return "";
+
+  const regionHints = {
+    traffic_entry: ["User Client→CDN Edge", "CDN Edge→API Gateway"],
+    validation: ["API Gateway→Auth Service"],
+    routing: ["API Gateway→Routing Layer", "Routing Layer→Application Cluster"],
+    persistence: ["Routing Layer→Database", "Application Cluster→Database"],
+  };
+
+  const preferredKeys = regionHints[regionAffinity] || [];
+
+  const narrations = [];
+
+  for (const preferredKey of preferredKeys) {
+    const narration = calmNarrationIndex.get(preferredKey);
+    if (narration) narrations.push(sentence(narration));
+  }
+
+  if (narrations.length) {
+    return narrations.slice(0, 1).join(" ");
+  }
+  
+  const regionFallbacks = {
+    validation:
+      "This part of the architecture is about checking requests before they move deeper into the system. In a typical flow, a validation layer helps create a controlled boundary so downstream components only handle traffic that has passed the required checks.",
+  };
+
+  return regionFallbacks[regionAffinity] || "";
+
+}
+
+
 function buildArchitectureTeachingTextFromSegments(segments = []) {
   const usefulSegments = asArray(segments).filter(
     (segment) =>
+      getCalmNarration(segment) ||
       segment?.plainEnglish ||
       segment?.whyItMatters ||
       segment?.safeSemantics ||
@@ -394,6 +491,12 @@ function buildArchitectureTeachingTextFromSegments(segments = []) {
   return usefulSegments
     .slice(0, 2)
     .map((segment, index) => {
+      const calmNarration = sentence(getCalmNarration(segment));
+
+      if (calmNarration) {
+        return calmNarration;
+      }
+
       const prefix = buildFlowTransitionPrefix(index);
 
       const plainEnglish = sentence(
@@ -403,22 +506,19 @@ function buildArchitectureTeachingTextFromSegments(segments = []) {
       );
 
       const flowContext = plainEnglish;
-        const componentPurpose = sentence(segment.safeSemantics);
-        const operationalImpact = sentence(segment.whyItMatters);
-        const mentalModel = sentence(segment.memoryHook);
+      const componentPurpose = sentence(segment.safeSemantics);
+      const operationalImpact = sentence(segment.whyItMatters);
+      const mentalModel = sentence(segment.memoryHook);
 
-        const narrationParts = [
-        flowContext,
-        componentPurpose,
-        ];
+      const narrationParts = [flowContext, componentPurpose];
 
-        if (operationalImpact) {
+      if (operationalImpact) {
         narrationParts.push(operationalImpact);
-        } else if (mentalModel) {
+      } else if (mentalModel) {
         narrationParts.push(mentalModel);
-        }
+      }
 
-        return narrationParts.filter(Boolean).join(" ");
+      return narrationParts.filter(Boolean).join(" ");
     })
     .join(" ");
 }
@@ -489,10 +589,24 @@ function getFirstArchitectureHandoff(metadata = {}, lessonGraph = {}) {
   return null;
 }
 
-function buildArchitectureAwareText(unit, lessonGraph = {}) {
+function buildArchitectureAwareText(unit, lessonGraph = {}, calmNarrationIndex = new Map()) {
   const metadata = unit?.metadata || {};
   const role = metadata.role;
-  const segments = asArray(metadata.enrichedSegments);
+  const segments = attachCalmNarrationToSegments(
+    metadata.enrichedSegments,
+    calmNarrationIndex
+    );  
+
+  const calmTextFromSteps = buildCalmNarrationTextFromSteps(
+    metadata.steps,
+    calmNarrationIndex,
+    metadata.regionAffinity
+  );
+
+  if (calmTextFromSteps) {
+    return calmTextFromSteps;
+  }  
+
   const recapMentalModel = cleanText(metadata.recapMentalModel, 520);
 
   if (role === "architecture_overview") {
@@ -595,9 +709,10 @@ function buildConceptAwareText(unit, documentIntelligence, lessonGraph) {
     .join(" ");
 }
 
-function buildTeachingUnitText(unit, documentIntelligence, lessonGraph) {
+
+function buildTeachingUnitText(unit, documentIntelligence, lessonGraph, calmNarrationIndex = new Map()) {
   if (isArchitectureLesson(documentIntelligence, lessonGraph)) {
-    return buildArchitectureAwareText(unit, lessonGraph);
+    return buildArchitectureAwareText(unit, lessonGraph, calmNarrationIndex);
   }
 
   const visibleElements = getVisibleElements(unit);
@@ -610,7 +725,7 @@ function buildTeachingUnitText(unit, documentIntelligence, lessonGraph) {
   return buildConceptAwareText(unit, documentIntelligence, lessonGraph);
 }
 
-function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntelligence, lessonGraph) {
+function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntelligence, lessonGraph, calmNarrationIndex = new Map()) {
   const page = firstSourcePage(unit);
   const visibleElements = getVisibleElements(unit);
   const visualMode = getPreferredVisualMode(unit);
@@ -623,7 +738,12 @@ function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntellige
     speaker: "Mentor",
     type: `lesson_${unit.type || "teaching_unit"}`,
     page,
-    text: buildTeachingUnitText(unit, documentIntelligence, lessonGraph),
+    text: buildTeachingUnitText(
+        unit,
+        documentIntelligence,
+        lessonGraph,
+        calmNarrationIndex
+        ),
     caption: buildShortCaption(unit.title || "Teaching unit"),
     targetDurationSec: unit.targetDurationSec,
     teachingUnitId: unit.id,
@@ -730,19 +850,34 @@ function buildDialogue({
     secondaryTypes: lessonGraph?.secondaryTypes || builtDocumentIntelligence.secondaryTypes || [],
   };
 
-  const teachingUnits = Array.isArray(lessonGraph.teachingUnits) ? lessonGraph.teachingUnits : [];
-  const sections = [];
+  const teachingUnits = Array.isArray(lessonGraph.teachingUnits)
+    ? lessonGraph.teachingUnits
+    : [];
+
+    const calmNarrationIndex = buildCalmNarrationIndex(jobDir);
+
+    const sections = [];
 
   for (const [index, unit] of teachingUnits.entries()) {
     sections.push(
-      buildSectionFromTeachingUnit(unit, index, teachingUnits.length, documentIntelligence, lessonGraph)
+        buildSectionFromTeachingUnit(
+        unit,
+        index,
+        teachingUnits.length,
+        documentIntelligence,
+        lessonGraph,
+        calmNarrationIndex
+        )
     );
 
     if (index === 0) {
-      const learnerCheckIn = buildRareLearnerCheckIn(documentIntelligence, lessonGraph);
-      if (learnerCheckIn) sections.push(learnerCheckIn);
+        const learnerCheckIn = buildRareLearnerCheckIn(
+        documentIntelligence,
+        lessonGraph
+        );
+        if (learnerCheckIn) sections.push(learnerCheckIn);
     }
-  }
+    }
 
   const architectureLesson = isArchitectureLesson(documentIntelligence, lessonGraph);
 
@@ -787,6 +922,7 @@ function buildDialogue({
       usesDocumentIntelligence: true,
       usesLessonGraph: true,
       usesArchitectureTeaching: lessonGraph.stats?.architectureTeachingApplied === true,
+      usesCalmExplainerNarration: Boolean(calmNarrationIndex.size),
       usesDocumentStructure:
         Boolean(lessonGraph.documentStructure) ||
         Boolean(lessonGraph.stats?.documentStructureApplied),

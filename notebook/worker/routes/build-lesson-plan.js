@@ -58,7 +58,9 @@ const {
   saveLessonPlan,
 } = require("../services/lessonPlanner");
 
-
+const {
+  buildCalmExplainerNarration,
+} = require("../services/calmExplainerNarrationBuilder");
 
 const router = express.Router();
 
@@ -277,16 +279,34 @@ router.post("/:jobId", async (req, res) => {
     );
 
     const architectureTeachingPath = writeJson(
-      path.join(jobDir, "architecture-teaching.json"),
-      architectureTeaching
+    path.join(jobDir, "architecture-teaching.json"),
+    architectureTeaching
+    );
+
+    const calmExplainerNarration =
+    await buildCalmExplainerNarration({
+        architectureTeaching,
+        llmClient: architectureTeachingLlmClient,
+        outputDir: jobDir,
+    });
+
+    const calmExplainerNarrationPath = writeJson(
+    path.join(jobDir, "calm-explainer-narration.json"),
+    calmExplainerNarration
     );
 
     console.log("[architecture-teaching]", {
-      chapters: architectureTeaching.stats.chapterCount,
-      segments: architectureTeaching.stats.segmentCount,
-      narratableSegments: architectureTeaching.stats.narratableSegmentCount,
-      nonNarratableSegments:
+    chapters: architectureTeaching.stats.chapterCount,
+    segments: architectureTeaching.stats.segmentCount,
+    narratableSegments: architectureTeaching.stats.narratableSegmentCount,
+    nonNarratableSegments:
         architectureTeaching.stats.nonNarratableSegmentCount,
+    });
+
+    console.log("[calm-explainer-narration]", {
+    segments: calmExplainerNarration.segmentCount,
+    fallbackUsed: calmExplainerNarration.stats.fallbackUsedCount,
+    llmValid: calmExplainerNarration.stats.llmValidCount,
     });
 
     const lessonPlan = generateLessonPlan(jobDir);
@@ -368,6 +388,11 @@ router.post("/:jobId", async (req, res) => {
         version: architectureTeaching.schemaVersion,
         stats: architectureTeaching.stats,
         output: architectureTeachingPath,
+      },
+      calmExplainerNarration: {
+        version: calmExplainerNarration.version,
+        stats: calmExplainerNarration.stats,
+        output: calmExplainerNarrationPath,
       },
       sectionCount: lessonPlan.lessonStructure.length,
       conceptCount: lessonPlan.prioritizedConcepts.length,

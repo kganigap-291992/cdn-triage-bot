@@ -225,7 +225,8 @@ function isValidLlmTeaching(value) {
       normalizeText(value.plainEnglish) &&
       normalizeText(value.safeSemantics) &&
       normalizeText(value.whyItMatters) &&
-      normalizeText(value.memoryHook)
+      normalizeText(value.memoryHook) &&
+      normalizeText(value.mentorNarration)
   );
 }
 
@@ -313,6 +314,17 @@ function buildDeterministicTeachingFields({
         "This helps the learner understand where responsibility moves from one documented part of the system to another.",
     memoryHook: `Remember this as: ${fromName} hands off responsibility to ${toName}.`,
 
+    mentorNarration: buildDeterministicMentorNarration({
+    fromName,
+    toName,
+    genericConcept,
+    concept,
+    confidenceLanguage: getConfidenceLanguage(segment.confidence || "unknown"),
+    variationSeed:
+    (segment.__mentorNarrationSeed || 0) +
+    normalizeKey(`${fromName}_${toName}`).length,
+    }),
+
     responsibilityContext,
 
     glossaryMatches,
@@ -360,6 +372,7 @@ async function enrichTeachingWithLlm({
       safeSemantics: sanitizeLlmTeachingText(parsed.safeSemantics),
       whyItMatters: sanitizeLlmTeachingText(parsed.whyItMatters),
       memoryHook: sanitizeLlmTeachingText(parsed.memoryHook),
+      mentorNarration: sanitizeLlmTeachingText(parsed.mentorNarration),
       llmUsed: true,
       llmValid: true,
       fallbackUsed: false,
@@ -372,6 +385,126 @@ async function enrichTeachingWithLlm({
       fallbackUsed: true,
     };
   }
+}
+
+function pickTemplate(templates = [], seed = 0) {
+  if (!templates.length) return "";
+  const index = Math.abs(Number(seed || 0)) % templates.length;
+  return templates[index];
+}
+
+function fillTemplate(template, values = {}) {
+  return normalizeText(template).replace(/\{\{(\w+)\}\}/g, (_, key) => {
+    return normalizeText(values[key]);
+  });
+}
+
+
+function buildResponsibilityFirstNarration({
+  fromName,
+  toName,
+  genericConcept,
+  concept,
+  confidenceLanguage,
+  variationSeed = 0,
+}) {
+  if (!confidenceLanguage.canNarrateAsFact) {
+    const limitedTemplates = [
+      "The evidence is limited here, so this connection is better treated as supporting context rather than a firm architecture claim.",
+      "There is not enough evidence to explain this as a firm behavior, so it should stay in the background as supporting context.",
+    ];
+
+    return pickTemplate(limitedTemplates, variationSeed);
+  }
+
+  const templatesByConcept = {
+    ingress_boundary: [
+      "Traffic is still close to the entry side of the system here, before deeper handling begins.",
+      "This part gives the walkthrough its starting boundary: outside activity is beginning to enter the documented system.",
+      "The first thing to notice is the boundary shift — the system is starting to take responsibility for incoming activity.",
+    ],
+
+    routing_control: [
+      "The main idea here is direction: incoming work is being guided toward the next part of the system.",
+      "This part is less about doing the final work and more about deciding where that work should go next.",
+      "The architecture is starting to organize the request path here, so later stages can handle a more specific responsibility.",
+    ],
+
+    validation_checkpoint: [
+      "Before the request gets deeper into the system, this part acts like a checkpoint.",
+      "This is the point where the system appears to check or gate the request before downstream handling.",
+      "The important shift here is from simply receiving traffic to deciding whether and how it should continue.",
+    ],
+
+    processing_transform: [
+      "By this stage, the walkthrough is moving into the part of the system that actually handles the requested work.",
+      "This is where the architecture starts to feel less like routing and more like execution.",
+      "The responsibility is shifting from directing traffic to processing the work itself.",
+    ],
+
+    persistence_state: [
+      "By this point, the walkthrough is reaching the durable side of the architecture.",
+      "This is where the flow starts connecting to state, storage, or a longer-lived destination.",
+      "The responsibility here is less about moving the request around and more about where durable information is kept.",
+    ],
+
+    fanout_distribution: [
+      "This is where one documented path starts opening into multiple downstream possibilities.",
+      "The architecture starts to branch here, which usually changes how the rest of the walkthrough should be read.",
+      "Instead of a single straight path, this part introduces distribution across documented downstream paths.",
+    ],
+
+    generic_handoff: [
+      "This connection helps show how responsibility passes between two documented parts of the system.",
+      "The useful thing to notice is the responsibility shift, not just the arrow between components.",
+      "This gives the learner another step in the system’s responsibility chain.",
+    ],
+  };
+
+  const templates =
+    templatesByConcept[genericConcept] || templatesByConcept.generic_handoff;
+
+  return fillTemplate(pickTemplate(templates, variationSeed), {
+    fromName,
+    toName,
+    conceptLabel: concept?.label,
+  });
+}
+
+function buildMentorNarrationWithContext({
+  fromName,
+  toName,
+  genericConcept,
+  concept,
+  confidenceLanguage,
+  variationSeed = 0,
+}) {
+  return buildResponsibilityFirstNarration({
+    fromName,
+    toName,
+    genericConcept,
+    concept,
+    confidenceLanguage,
+    variationSeed,
+  });
+}
+
+function buildDeterministicMentorNarration({
+  fromName,
+  toName,
+  genericConcept,
+  concept,
+  confidenceLanguage,
+  variationSeed = 0,
+}) {
+  return buildMentorNarrationWithContext({
+    fromName,
+    toName,
+    genericConcept,
+    concept,
+    confidenceLanguage,
+    variationSeed,
+  });
 }
 
 function buildEvidenceIndex(architectureUnderstanding = {}) {
@@ -584,13 +717,18 @@ async function enrichSegment(
     responsibilityInference
     );
 
+    const segmentWithNarrationSeed = {
+    ...segment,
+    __mentorNarrationSeed: index,
+    };
+
     const deterministicTeaching = buildDeterministicTeachingFields({
-        segment,
+        segment: segmentWithNarrationSeed,
         evidenceSummary,
         genericConcept,
         glossaryMatches,
         responsibilityContext,
-        });
+    });
 
     const teaching = await enrichTeachingWithLlm({
         deterministicTeaching,
@@ -643,6 +781,7 @@ async function enrichSegment(
     safeSemantics: teaching.safeSemantics,
     whyItMatters: teaching.whyItMatters,
     memoryHook: teaching.memoryHook,
+    mentorNarration: teaching.mentorNarration,
     glossaryMatches: teaching.glossaryMatches,
     usedGlossary: teaching.usedGlossary,
     usedEvidenceOnly: teaching.usedEvidenceOnly,
@@ -1037,6 +1176,42 @@ function buildGlobalWarnings(architectureUnderstanding = {}, architectureFlow = 
   return warnings;
 }
 
+
+function buildMentorNarrationStyleContract() {
+  return {
+    version: "mentor-narration-style-contract-v1",
+    targetStyle: "notebooklm_style_seamless_explainer",
+    primaryVoice: "single_guided_narrator",
+
+    secondaryVoicePolicy: {
+      allowed: true,
+      frequency: "rare",
+      purpose: "brief_clarification_only",
+      avoidQuestionSpam: true,
+      maxShareOfScenes: 0.1,
+    },
+
+    shouldSoundLike: [
+      "smooth guided walkthrough",
+      "calm technical explanation",
+      "natural onboarding narration",
+      "lightly technical when useful",
+      "seamless explanation rather than lecture",
+    ],
+
+    shouldAvoid: [
+      "preachy architect tone",
+      "constant operational framing",
+      "fake podcast banter",
+      "too many secondary-user questions",
+      "AI assistant tone",
+      "component dictionary reading",
+      "repeating visible labels verbatim",
+      "saying this is important in every scene",
+    ],
+  };
+}
+
 function buildStats(enrichedChapters = []) {
   const segments = enrichedChapters.flatMap((chapter) => asArray(chapter.enrichedSegments));
 
@@ -1083,7 +1258,8 @@ function writeArchitectureTeachingDebugArtifact(options = {}, enrichedSegments =
         safeSemantics: segment.safeSemantics,
         whyItMatters: segment.whyItMatters,
         memoryHook: segment.memoryHook,
-      },
+        mentorNarration: segment.mentorNarration,
+        },
     })),
   };
 
@@ -1148,12 +1324,20 @@ async function buildArchitectureTeaching(
 
     teachingProgressionState: buildTeachingProgressionState(enrichedChapters),
 
+    mentorNarrationStyle:
+        buildMentorNarrationStyleContract(),
+
     narrationGuidance: {
-      globalRule:
+        globalRule:
         "Narration should explain operational meaning of documented handoffs, not read component labels.",
-      useEvidenceFirst:
+
+        narrationStyle:
+        "NotebookLM-style seamless guided walkthrough, not preachy architecture lecture.",
+
+        useEvidenceFirst:
         "When evidenceSummary.hasDocumentExplanation is true, use that evidence before generic explanation.",
-      avoid:
+
+        avoid:
         SAFETY_POLICY.disallowedUnlessExplicitlyDocumented,
     },
 
@@ -1176,6 +1360,7 @@ async function buildArchitectureTeaching(
 
 module.exports = {
   buildArchitectureTeaching,
+  buildMentorNarrationStyleContract,
   CONFIDENCE_LANGUAGE,
   SAFE_GENERIC_CONCEPTS,
   SAFETY_POLICY,
