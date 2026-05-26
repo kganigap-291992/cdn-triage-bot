@@ -54,6 +54,9 @@ const ARCHITECTURE_REGION_LABELS = {
   [ARCHITECTURE_REGION_TYPES.RECAP_OR_MENTAL_MODEL]: "Architecture Mental Model",
 };
 
+const {
+  buildArchitectureTraversalAudit,
+} = require("./architectureTraversalAuditBuilder");
 
 function getArchitectureRegionLabel(regionType) {
   return ARCHITECTURE_REGION_LABELS[regionType] || "Architecture Region";
@@ -1760,6 +1763,17 @@ function buildLessonGraph({
   const regionTraversalDebug = usingArchitectureReasoning
   ? buildRegionTraversalDebug(teachingUnits)
   : null;
+  
+  const architectureTraversalAudit =
+  isArchitectureDocument(documentIntelligence)
+    ? buildArchitectureTraversalAudit({
+        traversalModeMetadata,
+        traversalModeSelectionContract,
+        traversalPreferenceDebug,
+        regionTraversalDebug,
+      })
+    : null;
+
 
   const teachingFocusSequence = usingArchitectureTeaching
     ? buildTeachingFocusSequenceFromTeachingUnits({ teachingUnits })
@@ -1796,6 +1810,9 @@ function buildLessonGraph({
     confidencePolicy: traversalModeMetadata.confidencePolicy,
     continuityStrategy: traversalModeMetadata.continuityStrategy,
     fallbackPolicy: traversalModeMetadata.fallbackPolicy,
+    traversalAuditVersion: architectureTraversalAudit?.version || null,
+    traversalAuditApplied: Boolean(architectureTraversalAudit),
+    traversalAudit: architectureTraversalAudit,
 
     traversalModeSelectionContract,
 
