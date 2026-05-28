@@ -28,7 +28,7 @@ function looksLikeEntityChain(label = '') {
   if (tokens.length < 3) return false;
 
   const hasVerb =
-    /\b(sends?|forwards?|routes?|validates?|reads?|writes?|authenticates?|delivers?|pushes?|manages?|syncs?|replicates?|publishes?|subscribes?|streams?|requests?|responds?|calls?)\b/i.test(
+    /\b(sends?|forwards?|routes?|validates?|reads?|writes?|authenticates?|authorizes?|delivers?|pushes?|pulls?|manages?|syncs?|replicates?|publishes?|subscribes?|streams?|requests?|responds?|calls?|reports?|emits?|collects?|monitors?|configures?|controls?|redirects?|resolves?)\b/i.test(
       value
     );
 
@@ -68,11 +68,35 @@ function classifyInteractionMode(relationship = {}) {
   if (edgeType === 'content_or_payload_delivery') return 'payload_delivery';
 
   if (
-    /\b(validates? authentication|authenticate|authorization|auth service)\b/i.test(
+    /\b(metrics?|telemetry|monitoring|observability|logs?|health|reports?|emits?|collects?)\b/i.test(
+      label
+    )
+  ) {
+    return 'observability_signal';
+  }
+
+  if (
+    /\b(config|configuration|control plane|policy|rules?|settings?|manages? config|pushes? config|controls?)\b/i.test(
+      label
+    )
+  ) {
+    return 'configuration_flow';
+  }
+
+  if (
+    /\b(auth|authentication|authorization|authorize|validates?|policy check|access check|token|credential)\b/i.test(
       label
     )
   ) {
     return 'auth_validation';
+  }
+
+  if (
+    /\b(cache|cdn|edge cache|payload|content|object|asset|manifest|deliver|delivery)\b/i.test(
+      label
+    )
+  ) {
+    return 'payload_delivery';
   }
 
   if (
@@ -83,7 +107,9 @@ function classifyInteractionMode(relationship = {}) {
     return 'traffic_distribution';
   }
 
-  if (/\b(reads? and writes?|sync|synchroni[sz]e|replicat|mirror)\b/i.test(label)) {
+  if (
+    /\b(reads? and writes?|sync|synchroni[sz]e|replicat|mirror)\b/i.test(label)
+  ) {
     return 'bidirectional_sync';
   }
 
@@ -112,6 +138,7 @@ function classifyFlowPriority(relationship = {}) {
     interactionMode === 'configuration_flow' ||
     interactionMode === 'bidirectional_sync' ||
     interactionMode === 'auth_validation' ||
+    interactionMode === 'async_event' ||
     interactionMode === 'topology_continuity'
   ) {
     return 'supporting';

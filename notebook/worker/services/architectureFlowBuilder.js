@@ -804,6 +804,55 @@ function classifyExplicitSequence(sequence = {}) {
 }
 
 
+function inferInteractionModeFromText(
+  text = "",
+  fallbackMode = "request_response"
+) {
+  const value = normalizeText(text).toLowerCase();
+
+  if (
+    /\b(metrics?|telemetry|observability|logs?|monitoring|health|reports?|emits?|collects?)\b/.test(
+      value
+    )
+  ) {
+    return "observability_signal";
+  }
+
+  if (
+    /\b(config|configuration|control plane|policy|rules?|settings?|pushes? config|manages? config|controls?)\b/.test(
+      value
+    )
+  ) {
+    return "configuration_flow";
+  }
+
+  if (
+    /\b(auth|authentication|authorization|authorize|validates?|verifies?|access check|policy check|token|credential)\b/.test(
+      value
+    )
+  ) {
+    return "auth_validation";
+  }
+
+  if (
+    /\b(cache|cdn|edge cache|payload|content|object|asset|manifest|deliver|delivery)\b/.test(
+      value
+    )
+  ) {
+    return "payload_delivery";
+  }
+
+  if (
+    /\b(async|event|queue|publish|subscribe|stream|message|notification)\b/.test(
+      value
+    )
+  ) {
+    return "async_event";
+  }
+
+  return fallbackMode;
+}
+
 function findIntermediateProcessingBridge(fromComponent, toComponent, componentIndex) {
   if (!fromComponent || !toComponent) return null;
 
@@ -847,7 +896,30 @@ function buildExplicitSequenceSegment({
   sequenceClassification,
   confidence,
   evidenceIds,
+  relationshipHint = null,
+  sequenceText = "",
 }) {
+  const fallbackMode =
+    sequenceClassification === "primary_request_flow"
+      ? "request_response"
+      : "topology_continuity";
+
+  const inferredInteractionMode =
+    relationshipHint?.interactionMode ||
+    inferInteractionModeFromText(sequenceText, fallbackMode);
+
+  const inferredFlowPriority =
+    relationshipHint?.flowPriority ||
+    ([
+      "auth_validation",
+      "configuration_flow",
+      "async_event",
+      "observability_signal",
+      "topology_continuity",
+    ].includes(inferredInteractionMode)
+      ? "supporting"
+      : "primary");
+
   const syntheticEdge = {
     id: `explicit_sequence_edge_${sequenceIndex + 1}_${itemIndex + 1}`,
     sourceId: fromComponent.id,
@@ -856,19 +928,15 @@ function buildExplicitSequenceSegment({
     targetName: toComponent.name,
     type: "explicit_document_sequence",
     edgeLabel: `${fromComponent.name} ${toComponent.name}`,
-    interactionMode:
-      sequenceClassification === "primary_request_flow"
-        ? "request_response"
-        : "topology_continuity",
-    flowPriority:
-      sequenceClassification === "primary_request_flow"
-        ? "primary"
-        : "supporting",
+    interactionMode: inferredInteractionMode,
+    flowPriority: inferredFlowPriority,
     directionality: "directed",
     confidence,
     confidenceScore: confidenceScore(confidence),
     evidenceIds,
     source: "explicit_document_sequence",
+    semanticFlowType: relationshipHint?.semanticFlowType || inferredInteractionMode,
+    operationalIntent: relationshipHint?.operationalIntent || null,
   };
 
   return {
@@ -898,6 +966,12 @@ function buildFlowGroupsFromExplicitSequences(
     [];
 
   if (!explicitSequences.length) return [];
+
+
+  const knownRelationships =
+    architectureUnderstanding?.deterministicGraph?.relationships ||
+    architectureUnderstanding?.relationships ||
+    [];
 
   return explicitSequences
     .filter((sequence) => classifyExplicitSequence(sequence) !== "descriptive_context")
@@ -954,6 +1028,16 @@ function buildFlowGroupsFromExplicitSequences(
           continue;
         }
 
+        const relationshipHint =
+          knownRelationships.find(
+            (rel) =>
+              rel.sourceId === fromComponent.id &&
+              rel.targetId === toComponent.id
+          ) || null;
+
+        const sequenceText =
+          `${current.text || ""} ${next.text || ""}`;  
+
         const confidence = sequence.confidence || "deterministic";
 
         const evidenceIds = [
@@ -976,6 +1060,8 @@ function buildFlowGroupsFromExplicitSequences(
             sequenceClassification,
             confidence,
             evidenceIds: [current.evidenceId].filter(Boolean),
+            relationshipHint,
+            sequenceText,
           });
 
           const secondBridgeSegment = buildExplicitSequenceSegment({
@@ -986,6 +1072,8 @@ function buildFlowGroupsFromExplicitSequences(
             sequenceClassification,
             confidence,
             evidenceIds: [next.evidenceId].filter(Boolean),
+            relationshipHint,
+            sequenceText,
           });
 
           firstBridgeSegment.rawEdge.inferred = true;
@@ -1014,6 +1102,8 @@ function buildFlowGroupsFromExplicitSequences(
           sequenceClassification,
           confidence,
           evidenceIds,
+          relationshipHint,
+          sequenceText,
         });
 
         segments.push(segment);
@@ -1330,10 +1420,6 @@ function chooseCanonicalPrimaryFlow(flowGroups = []) {
         );
 
       score += scoreFlowSemanticPriority(group);
-        segments.reduce(
-          (sum, segment) => sum + (segment.traversalScoring?.score || 0),
-          0
-        );
 
       const hasProcessingToState = segments.some((segment) => {
         const fromName = normalizeKey(segment.from?.name);

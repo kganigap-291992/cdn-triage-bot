@@ -616,8 +616,9 @@ function makeRelationship({
   evidenceText,
   inferred,
   direction = "unknown",
+  semanticFlowMetadata = null,
 }) {
-  return {
+    return {
     id: `arch_rel_${source.id}_${target.id}_${reason}`.replace(/[^a-zA-Z0-9_]/g, "_"),
     sourceId: source.id,
     sourceName: source.name,
@@ -632,6 +633,18 @@ function makeRelationship({
     reason,
     evidenceIds: uniqueBy(evidenceIds || [], (id) => id),
     evidenceText: normalizeText(evidenceText),
+
+    semanticFlowType:
+      semanticFlowMetadata?.semanticFlowType || null,
+
+    operationalIntent:
+      semanticFlowMetadata?.operationalIntent || null,
+
+    interactionMode:
+      semanticFlowMetadata?.interactionMode || undefined,
+
+    flowPriority:
+      semanticFlowMetadata?.flowPriority || undefined,
   };
 }
 
@@ -677,6 +690,9 @@ function extractExplicitRelationships(documentUnderstanding = {}, components = [
 
     const isOnlyCoMention = relationshipType.includes("co_mentions");
 
+    const semanticFlowMetadata =
+      inferSemanticFlowMetadata(evidenceText);
+
     relationships.push(
       makeRelationship({
         source,
@@ -691,6 +707,7 @@ function extractExplicitRelationships(documentUnderstanding = {}, components = [
         evidenceText,
         inferred: !isFlow && isOnlyCoMention,
         direction: isFlow ? "directed_or_implied" : "defined_association",
+        semanticFlowMetadata,
       })
     );
   }
@@ -722,6 +739,62 @@ function inferDirectionalConnectorType(text = "") {
   return "association";
 }
 
+function inferSemanticFlowMetadata(text = "") {
+  const normalized = lower(text);
+
+  if (/\b(metrics?|telemetry|observability|logs?|monitoring|health|reports?|emits?|collects?)\b/.test(normalized)) {
+    return {
+      semanticFlowType: "observability_signal",
+      operationalIntent: "report_or_collect_operational_signals",
+      interactionMode: "observability_signal",
+      flowPriority: "background",
+    };
+  }
+
+  if (/\b(config|configuration|control plane|policy|rules?|settings?|pushes? config|manages? config|controls?)\b/.test(normalized)) {
+    return {
+      semanticFlowType: "configuration_flow",
+      operationalIntent: "apply_or_distribute_control_configuration",
+      interactionMode: "configuration_flow",
+      flowPriority: "supporting",
+    };
+  }
+
+  if (/\b(auth|authentication|authorization|authorize|validates?|verifies?|access check|policy check|token|credential)\b/.test(normalized)) {
+    return {
+      semanticFlowType: "auth_validation",
+      operationalIntent: "validate_identity_access_or_policy",
+      interactionMode: "auth_validation",
+      flowPriority: "supporting",
+    };
+  }
+
+  if (/\b(cache|cdn|edge cache|payload|content|object|asset|manifest|deliver|delivery)\b/.test(normalized)) {
+    return {
+      semanticFlowType: "payload_delivery",
+      operationalIntent: "deliver_content_or_payload",
+      interactionMode: "payload_delivery",
+      flowPriority: "primary",
+    };
+  }
+
+  if (/\b(async|event|queue|publish|subscribe|stream|message|notification)\b/.test(normalized)) {
+    return {
+      semanticFlowType: "async_event",
+      operationalIntent: "publish_or_process_async_event",
+      interactionMode: "async_event",
+      flowPriority: "supporting",
+    };
+  }
+
+  return {
+    semanticFlowType: "request_response",
+    operationalIntent: "move_request_or_handoff_forward",
+    interactionMode: "request_response",
+    flowPriority: "primary",
+  };
+}
+
 function extractDirectionalFlowRelationships(documentUnderstanding = {}, components = []) {
   const evidence = documentUnderstanding.evidence || [];
   const relationships = [];
@@ -737,6 +810,8 @@ function extractDirectionalFlowRelationships(documentUnderstanding = {}, compone
     if (mentioned.length < 2 || mentioned.length > 8) continue;
 
     const connectorType = inferDirectionalConnectorType(text);
+    const semanticFlowMetadata =
+      inferSemanticFlowMetadata(text);
 
     if (connectorType === "request_flow" || hasArrowSyntax(text)) {
       for (let i = 0; i < mentioned.length - 1; i += 1) {
@@ -750,6 +825,7 @@ function extractDirectionalFlowRelationships(documentUnderstanding = {}, compone
             evidenceText: text,
             inferred: false,
             direction: hasArrowSyntax(text) ? "arrow_text_order" : "verb_text_order",
+            semanticFlowMetadata,
           })
         );
       }
@@ -768,6 +844,7 @@ function extractDirectionalFlowRelationships(documentUnderstanding = {}, compone
           evidenceText: text,
           inferred: false,
           direction: "checkpoint_or_middleware",
+          semanticFlowMetadata,
         })
       );
     }
@@ -786,6 +863,8 @@ function extractSameSentenceFlowRelationships(documentUnderstanding = {}, compon
 
     for (const clause of splitIntoClauses(text)) {
       if (!hasFlowLanguage(clause)) continue;
+      const semanticFlowMetadata =
+        inferSemanticFlowMetadata(clause);
 
       const mentioned = findMentionedComponents(clause, components);
       if (mentioned.length < 2 || mentioned.length > 5) continue;
@@ -801,6 +880,7 @@ function extractSameSentenceFlowRelationships(documentUnderstanding = {}, compon
             evidenceText: clause,
             inferred: false,
             direction: "clause_order_with_flow_language",
+            semanticFlowMetadata,
           })
         );
       }
@@ -858,6 +938,10 @@ function extractOrderedSequenceRelationships(
 
       if (!source || !target) continue;
 
+      const semanticFlowMetadata =
+        inferSemanticFlowMetadata(`${current.text} ${next.text}`);
+
+
       const intermediateComponents = recoverIntermediateFlowComponents(
         source,
         target,
@@ -877,6 +961,7 @@ function extractOrderedSequenceRelationships(
                 evidenceText: current.text,
                 inferred: true,
                 direction: "recovered_intermediate_processing_tier",
+                semanticFlowMetadata,
             })
             );
 
@@ -890,6 +975,7 @@ function extractOrderedSequenceRelationships(
                 evidenceText: next.text,
                 inferred: true,
                 direction: "recovered_intermediate_processing_tier",
+                semanticFlowMetadata,
             })
             );
         }
@@ -907,6 +993,7 @@ function extractOrderedSequenceRelationships(
             evidenceText: `${current.text} ${next.text}`.slice(0, 700),
             inferred: false,
             direction: "explicit_document_sequence_order",
+            semanticFlowMetadata,
         })
         );
     }
@@ -1033,6 +1120,9 @@ function extractSameSectionRelationships(documentUnderstanding = {}, components 
           continue;
         }
 
+        const semanticFlowMetadata =
+          inferSemanticFlowMetadata(localText);
+
         relationships.push(
           makeRelationship({
             source,
@@ -1049,6 +1139,7 @@ function extractSameSectionRelationships(documentUnderstanding = {}, components 
               reason === "same_section_flow_context"
                 ? "local_section_order_implied"
                 : "undirected",
+              semanticFlowMetadata,
           })
         );
       }
@@ -1148,6 +1239,11 @@ function extractContinuityRepairRelationships(relationships = [], components = [
     if (prev.sourceId === next.targetId) continue;
     if (existingDirected.has(`${prev.sourceId}->${next.targetId}`)) continue;
 
+    const semanticFlowMetadata =
+      inferSemanticFlowMetadata(
+        `${prev.evidenceText || ""} ${next.evidenceText || ""}`
+      );
+
     repaired.push(
       makeRelationship({
         source: {
@@ -1166,6 +1262,7 @@ function extractContinuityRepairRelationships(relationships = [], components = [
         evidenceText: `${prev.evidenceText || ""} ${next.evidenceText || ""}`.trim(),
         inferred: true,
         direction: "repaired_from_adjacent_flow_edges",
+        semanticFlowMetadata,
       })
     );
   }

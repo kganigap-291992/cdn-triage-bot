@@ -371,19 +371,27 @@ function buildFlowLanes(hops = []) {
     const lane = byLane.get(hop.flowLaneId);
     lane.hopIds.push(hop.hopId);
 
-    if (hop.selectedForPrimaryWalkthrough) {
-      lane.selectedForPrimaryWalkthrough = true;
-    }
+    if (
+        hop.selectedForPrimaryWalkthrough &&
+        hop.flowLaneType === 'primary_request_flow'
+        ) {
+        lane.selectedForPrimaryWalkthrough = true;
+        }
   }
 
   return Array.from(byLane.values()).map((lane) => {
     const laneHops = hops.filter((hop) => lane.hopIds.includes(hop.hopId));
 
     return {
-      ...lane,
-      confidence: summarizeConfidence(laneHops),
-      hopCount: lane.hopIds.length,
-    };
+        ...lane,
+
+        selectedForPrimaryWalkthrough:
+            lane.flowLaneType === 'primary_request_flow' &&
+            lane.selectedForPrimaryWalkthrough === true,
+
+        confidence: summarizeConfidence(laneHops),
+        hopCount: lane.hopIds.length,
+        };
   });
 }
 
@@ -424,6 +432,43 @@ function buildNodeMemberships(hops = []) {
       (item) => `${item.hopId}:${item.endpoint}`
     ),
   }));
+}
+
+function buildSharedNodeSummary(nodeMemberships = []) {
+  return nodeMemberships
+    .map((node) => {
+      const memberships = asArray(node.flowLaneMemberships);
+      const laneTypes = Array.from(
+        new Set(memberships.map((item) => item.flowLaneType).filter(Boolean))
+      );
+
+      const primaryWalkthroughHopIds = memberships
+        .filter((item) => item.flowLaneType === 'primary_request_flow')
+        .map((item) => item.hopId);
+
+      const supportingHopIds = memberships
+        .filter((item) => item.flowLaneType !== 'primary_request_flow')
+        .map((item) => item.hopId);
+
+      return {
+        nodeId: node.nodeId,
+        nodeName: node.nodeName,
+        globalRole: node.globalRole || null,
+        sharedAcrossLaneCount: laneTypes.length,
+        participatingLaneTypes: laneTypes,
+        primaryWalkthroughHopIds,
+        supportingHopIds,
+        contextualRoles: Array.from(
+          new Set(memberships.map((item) => item.contextualRole).filter(Boolean))
+        ),
+        membershipCount: memberships.length,
+      };
+    })
+    .filter(
+      (node) =>
+        node.membershipCount > 1 ||
+        node.participatingLaneTypes.length > 1
+    );
 }
 
 function buildCanonicalTraversalRail({
@@ -467,6 +512,7 @@ function buildCanonicalTraversalRail({
     null;
 
   const nodeMemberships = buildNodeMemberships(hops);
+  const sharedNodeSummary = buildSharedNodeSummary(nodeMemberships);
 
   const warnings = [];
 
@@ -509,14 +555,13 @@ function buildCanonicalTraversalRail({
     hops,
     flowLanes,
     nodeMemberships,
+    sharedNodeSummary,
 
     stats: {
       hopCount: hops.length,
       selectedHopCount: hops.filter((hop) => hop.selectedForPrimaryWalkthrough).length,
       flowLaneCount: flowLanes.length,
-      sharedNodeCount: nodeMemberships.filter(
-        (node) => node.flowLaneMemberships.length > 1
-      ).length,
+      sharedNodeCount: sharedNodeSummary.length,
       evidenceBackedHopCount: hops.filter((hop) => hop.evidenceIds.length > 0).length,
     },
 
