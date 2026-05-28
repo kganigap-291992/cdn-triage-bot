@@ -1,8 +1,14 @@
 const fs = require("fs");
 const path = require("path");
+
+
 const {
   shouldUseSoftTransition,
 } = require("./architectureRegionTraversal");
+
+const {
+  buildCameraNarrationAlignment,
+} = require("./cameraNarrationAlignmentBuilder");
 /**
  * Phase 8D.15 — Render / Camera Alignment
  *
@@ -1315,7 +1321,12 @@ function createRenderPlan(jobDir) {
   const audioManifestPath = path.join(jobDir, "audio-manifest.json");
   const diagramAnalysisPath = path.join(jobDir, "diagram-analysis.json");
   const renderPlanPath = path.join(jobDir, "renderPlan.json");
-    const lessonPlanPath = path.join(jobDir, "lesson-plan.json");
+  const lessonPlanPath = path.join(jobDir, "lesson-plan.json");
+  const narrationContinuityPath = path.join(jobDir, "narration-continuity.json");
+  const cameraNarrationAlignmentPath = path.join(
+    jobDir,
+    "camera-narration-alignment.json"
+  );
 
     const dialogue = readJson(dialoguePath);
     const lessonPlan = readJson(lessonPlanPath, {});
@@ -1340,10 +1351,24 @@ function createRenderPlan(jobDir) {
 
   validateManifestAgainstDialogue(sections, audioManifest);
 
+  const narrationContinuity = readJson(narrationContinuityPath, {});
+
+  const cameraNarrationAlignment = buildCameraNarrationAlignment({
+    lessonGraph,
+    sections,
+    architectureTraversal,
+    narrationContinuity,
+  });
+
+  writeJson(cameraNarrationAlignmentPath, cameraNarrationAlignment);
+
   const availablePageCount = getAvailablePageCount(jobDir);
   let timelineCursorMs = 0;
 
-  const scenes = sections.map((section, index) => {
+    const scenes = sections.map((section, index) => {
+    const alignmentScene =
+      cameraNarrationAlignment?.scenes?.[index] || null;
+
     const choreographyMetadata = findChoreographyForScene({
       choreographyIntent: architectureTraversal.choreographyIntent || [],
       sceneIndex: index,
@@ -1395,7 +1420,8 @@ function createRenderPlan(jobDir) {
 
     const architectureScene = isArchitectureScene(section, architectureTraversal);
     const sceneRole = architectureScene
-      ? classifyArchitectureSceneRole(section, index, sections.length)
+      ? alignmentScene?.role ||
+        classifyArchitectureSceneRole(section, index, sections.length)
       : "standard_scene";
 
     const regionTraversalUnit = findRegionTraversalUnitForScene({
@@ -1405,6 +1431,7 @@ function createRenderPlan(jobDir) {
     });
 
     const rawFocusRegion =
+      alignmentScene?.focusRegion ||
       visualIntent.focusRegion ||
       section.focusRegion ||
       section.metadata?.focusRegion ||
@@ -1415,16 +1442,19 @@ function createRenderPlan(jobDir) {
     const baseTiming = resolveSceneTiming(section, audioItem);
     const timing = applyArchitectureEstablishTiming(baseTiming, sceneRole);
 
-    const useSoftTransition = shouldUseSoftTransition({
-    metadata: {
-        continuityType:
-        section?.metadata?.continuityType ||
-        section?.continuityType ||
-        section?.visualIntent?.continuityType ||
-        regionTraversalUnit?.continuityType ||
-        null,
-    },
-    });
+    const useSoftTransition =
+      alignmentScene?.softTransition ??
+      shouldUseSoftTransition({
+        metadata: {
+          continuityType:
+            alignmentScene?.continuityType ||
+            section?.metadata?.continuityType ||
+            section?.continuityType ||
+            section?.visualIntent?.continuityType ||
+            regionTraversalUnit?.continuityType ||
+            null,
+        },
+      });
 
     const cameraPlan = architectureScene
     ? buildCameraPlan({
@@ -1500,6 +1530,7 @@ function createRenderPlan(jobDir) {
       },
 
       cameraPlan,
+      cameraNarrationAlignment: alignmentScene,
 
       spokenFocus: resolvePrimarySpokenFocusTarget(section),
       spokenFocusTargets: resolveSpokenFocusTargets(section),
@@ -1532,7 +1563,7 @@ function createRenderPlan(jobDir) {
 
       transition: {
         type: cameraPlan?.enabled
-          ? "semantic_camera_soft_fade"
+          ? "semantic_camera_continuity"
           : sceneBehavior.focusGuided
             ? "focus_guided_soft_fade"
             : "soft_fade",
@@ -1606,6 +1637,12 @@ function createRenderPlan(jobDir) {
 
       architectureSceneCount,
       cameraPlanSceneCount,
+
+      hasCameraNarrationAlignment: Boolean(cameraNarrationAlignment?.enabled),
+      cameraNarrationAlignmentVersion:
+        cameraNarrationAlignment?.version || null,
+      cameraNarrationAlignmentWarningCount:
+        cameraNarrationAlignment?.stats?.warningCount ?? null,
 
       cameraAlignmentRules: {
         overview: "broad establishing shot",

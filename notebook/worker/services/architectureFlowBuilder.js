@@ -804,6 +804,90 @@ function classifyExplicitSequence(sequence = {}) {
 }
 
 
+function findIntermediateProcessingBridge(fromComponent, toComponent, componentIndex) {
+  if (!fromComponent || !toComponent) return null;
+
+  const toName = normalizeKey(toComponent.name);
+  const isStateDestination =
+    /database|state|store|storage|record|repository|persistent/.test(toName);
+
+  if (!isStateDestination) return null;
+
+  const candidates = componentIndex.components.filter((component) => {
+    if (!component?.id) return false;
+    if (component.id === fromComponent.id || component.id === toComponent.id) {
+      return false;
+    }
+
+    const name = normalizeKey(component.name);
+    const role = component.structuralRole || component.role;
+
+    const looksProcessingLike =
+      /application|app|service|processor|worker|cluster|runtime|execution/.test(name);
+
+    const roleLooksProcessing =
+      role === STRUCTURAL_ROLES.PROCESSING ||
+      role === STRUCTURAL_ROLES.CONTROL ||
+      role === "process_step" ||
+      role === "system_component";
+
+    return looksProcessingLike && roleLooksProcessing;
+  });
+
+  if (!candidates.length) return null;
+
+  return candidates[0];
+}
+
+function buildExplicitSequenceSegment({
+  sequenceIndex,
+  itemIndex,
+  fromComponent,
+  toComponent,
+  sequenceClassification,
+  confidence,
+  evidenceIds,
+}) {
+  const syntheticEdge = {
+    id: `explicit_sequence_edge_${sequenceIndex + 1}_${itemIndex + 1}`,
+    sourceId: fromComponent.id,
+    targetId: toComponent.id,
+    sourceName: fromComponent.name,
+    targetName: toComponent.name,
+    type: "explicit_document_sequence",
+    edgeLabel: `${fromComponent.name} ${toComponent.name}`,
+    interactionMode:
+      sequenceClassification === "primary_request_flow"
+        ? "request_response"
+        : "topology_continuity",
+    flowPriority:
+      sequenceClassification === "primary_request_flow"
+        ? "primary"
+        : "supporting",
+    directionality: "directed",
+    confidence,
+    confidenceScore: confidenceScore(confidence),
+    evidenceIds,
+    source: "explicit_document_sequence",
+  };
+
+  return {
+    id: `explicit_sequence_segment_${sequenceIndex + 1}_${itemIndex + 1}_${normalizeKey(
+      fromComponent.name
+    )}_to_${normalizeKey(toComponent.name)}`,
+    from: serializeComponentForFlow(fromComponent),
+    to: serializeComponentForFlow(toComponent),
+    relationshipType: "explicit_document_sequence",
+    confidence,
+    evidenceIds: syntheticEdge.evidenceIds,
+    structuralHandoff: inferStructuralHandoff(fromComponent, toComponent),
+    teachingPurpose: inferTeachingPurpose(fromComponent, toComponent),
+    source: "explicit_document_sequence",
+    rawEdge: syntheticEdge,
+    traversalScoring: scoreRelationship(syntheticEdge),
+  };
+}
+
 function buildFlowGroupsFromExplicitSequences(
   architectureUnderstanding = {},
   componentIndex
@@ -818,107 +902,131 @@ function buildFlowGroupsFromExplicitSequences(
   return explicitSequences
     .filter((sequence) => classifyExplicitSequence(sequence) !== "descriptive_context")
     .map((sequence, sequenceIndex) => {
-        const sequenceClassification = classifyExplicitSequence(sequence);
+      const sequenceClassification = classifyExplicitSequence(sequence);
 
-    const items = sequence.items || [];
-    const segments = [];
+      const items = sequence.items || [];
+      const segments = [];
 
-    for (let i = 0; i < items.length - 1; i += 1) {
-      const current = items[i];
-      const next = items[i + 1];
+      for (let i = 0; i < items.length - 1; i += 1) {
+        const current = items[i];
+        const next = items[i + 1];
 
-      const currentEntities = current.entities || [];
-      const nextEntities = next.entities || [];
+        const currentEntities = current.entities || [];
+        const nextEntities = next.entities || [];
 
-      const currentEntity =
-        currentEntities[0];
+        const currentEntity = currentEntities[0];
 
-      let nextEntity =
-        nextEntities.find(
+        let nextEntity =
+          nextEntities.find(
             (candidate) => candidate.id !== currentEntity?.id
-        ) || nextEntities[0];
+          ) || nextEntities[0];
 
-      if (
-        currentEntity &&
-        nextEntity &&
-        currentEntity.id === nextEntity.id
+        if (
+          currentEntity &&
+          nextEntity &&
+          currentEntity.id === nextEntity.id
         ) {
-        nextEntity =
+          nextEntity =
             nextEntities.find(
-            (candidate) => candidate.id !== currentEntity.id
+              (candidate) => candidate.id !== currentEntity.id
             ) || nextEntity;
         }
 
-      if (!currentEntity || !nextEntity) continue;
+        if (!currentEntity || !nextEntity) continue;
 
-      const fromComponent =
-        componentIndex.byId.get(currentEntity.id) || {
-          id: currentEntity.id,
-          name: currentEntity.name,
-          structuralRole: currentEntity.role,
-          role: currentEntity.role,
-        };
+        const fromComponent =
+          componentIndex.byId.get(currentEntity.id) || {
+            id: currentEntity.id,
+            name: currentEntity.name,
+            structuralRole: currentEntity.role,
+            role: currentEntity.role,
+          };
 
-      const toComponent =
-        componentIndex.byId.get(nextEntity.id) || {
+        const toComponent =
+          componentIndex.byId.get(nextEntity.id) || {
             id: nextEntity.id,
             name: nextEntity.name,
             structuralRole: nextEntity.role,
             role: nextEntity.role,
-        };
+          };
 
         if (fromComponent.id === toComponent.id) {
-        continue;
+          continue;
         }
 
-        const syntheticEdge = {
-            id: `explicit_sequence_edge_${sequenceIndex + 1}_${i + 1}`,
-            sourceId: fromComponent.id,
-            targetId: toComponent.id,
-            sourceName: fromComponent.name,
-            targetName: toComponent.name,
-            type: "explicit_document_sequence",
-            edgeLabel: `${fromComponent.name} ${toComponent.name}`,
-            interactionMode:
-                sequenceClassification === "primary_request_flow"
-                ? "request_response"
-                : "topology_continuity",
-            flowPriority:
-                sequenceClassification === "primary_request_flow"
-                ? "primary"
-                : "supporting",
-            directionality: "directed",
-            confidence: sequence.confidence || "deterministic",
-            confidenceScore: confidenceScore(sequence.confidence || "deterministic"),
-            evidenceIds: [current.evidenceId, next.evidenceId].filter(Boolean),
-            source: "explicit_document_sequence",
-            };
+        const confidence = sequence.confidence || "deterministic";
 
-            const segment = {
-            id: `explicit_sequence_segment_${sequenceIndex + 1}_${i + 1}`,
-            from: serializeComponentForFlow(fromComponent),
-            to: serializeComponentForFlow(toComponent),
-            relationshipType: "explicit_document_sequence",
-            confidence: sequence.confidence || "deterministic",
-            evidenceIds: syntheticEdge.evidenceIds,
-            structuralHandoff: inferStructuralHandoff(fromComponent, toComponent),
-            teachingPurpose: inferTeachingPurpose(fromComponent, toComponent),
-            source: "explicit_document_sequence",
-            rawEdge: syntheticEdge,
-            traversalScoring: scoreRelationship(syntheticEdge),
-            };
+        const evidenceIds = [
+          current.evidenceId,
+          next.evidenceId,
+        ].filter(Boolean);
 
-            segments.push(segment);
-    }
-
-    const traversalScoring = scoreTraversalPath(
-        segments.map((segment) => segment.rawEdge).filter(Boolean)
+        const bridge = findIntermediateProcessingBridge(
+          fromComponent,
+          toComponent,
+          componentIndex
         );
 
-        return {
+        if (bridge) {
+          const firstBridgeSegment = buildExplicitSequenceSegment({
+            sequenceIndex,
+            itemIndex: i,
+            fromComponent,
+            toComponent: bridge,
+            sequenceClassification,
+            confidence,
+            evidenceIds: [current.evidenceId].filter(Boolean),
+          });
+
+          const secondBridgeSegment = buildExplicitSequenceSegment({
+            sequenceIndex,
+            itemIndex: i + 0.5,
+            fromComponent: bridge,
+            toComponent,
+            sequenceClassification,
+            confidence,
+            evidenceIds: [next.evidenceId].filter(Boolean),
+          });
+
+          firstBridgeSegment.rawEdge.inferred = true;
+          firstBridgeSegment.rawEdge.reason =
+            "recovered_intermediate_processing_tier";
+          firstBridgeSegment.rawEdge.direction =
+            "recovered_intermediate_processing_tier";
+
+          secondBridgeSegment.rawEdge.inferred = true;
+          secondBridgeSegment.rawEdge.reason =
+            "recovered_intermediate_processing_tier";
+          secondBridgeSegment.rawEdge.direction =
+            "recovered_intermediate_processing_tier";
+
+          segments.push(firstBridgeSegment);
+          segments.push(secondBridgeSegment);
+
+          continue;
+        }
+
+        const segment = buildExplicitSequenceSegment({
+          sequenceIndex,
+          itemIndex: i,
+          fromComponent,
+          toComponent,
+          sequenceClassification,
+          confidence,
+          evidenceIds,
+        });
+
+        segments.push(segment);
+      }
+
+      const traversalScoring = scoreTraversalPath(
+        segments.map((segment) => segment.rawEdge).filter(Boolean)
+      );
+
+      return {
         flowGroupId:
-            sequence.id ||
-            `explicit_sequence_flow_${sequenceIndex + 1}`,
+          sequence.id ||
+          `explicit_sequence_flow_${sequenceIndex + 1}`,
         flowType: "explicit_document_sequence",
         title: sequence.title || `Sequence ${sequenceIndex + 1}`,
         confidence: sequence.confidence || "deterministic",
@@ -928,13 +1036,25 @@ function buildFlowGroupsFromExplicitSequences(
         sequenceClassification,
         isPrimary: sequenceClassification === "primary_request_flow",
         source: sequence.source || "document_sequence",
-        };
-  });
+      };
+    });
 }
 
 function classifySegmentChapter(segment) {
   const fromRole = segment?.from?.structuralRole || segment?.from?.role;
   const toRole = segment?.to?.structuralRole || segment?.to?.role;
+
+  const fromName = normalizeKey(segment?.from?.name);
+  const toName = normalizeKey(segment?.to?.name);
+
+  const isStateName =
+    /database|state|store|storage|record|repository|persistent/.test(toName);
+
+  const isProcessingName =
+    /application|app|service|processor|worker|cluster|runtime|execution/.test(toName);
+
+  const isRoutingName =
+    /api|gateway|routing|router|control|decision|direct/.test(toName);
 
   if (
     fromRole === STRUCTURAL_ROLES.SOURCE ||
@@ -943,7 +1063,16 @@ function classifySegmentChapter(segment) {
     return CHAPTER_TYPES.ENTRY_BOUNDARY;
   }
 
+  if (isStateName || toRole === STRUCTURAL_ROLES.STATE) {
+    return CHAPTER_TYPES.STATE_TERMINAL;
+  }
+
+  if (isProcessingName || toRole === STRUCTURAL_ROLES.PROCESSING) {
+    return CHAPTER_TYPES.PROCESSING;
+  }
+
   if (
+    isRoutingName ||
     toRole === STRUCTURAL_ROLES.CONTROL ||
     toRole === STRUCTURAL_ROLES.FANOUT ||
     fromRole === STRUCTURAL_ROLES.CONTROL ||
@@ -952,11 +1081,8 @@ function classifySegmentChapter(segment) {
     return CHAPTER_TYPES.CONTROL_ROUTING;
   }
 
-  if (
-    toRole === STRUCTURAL_ROLES.STATE ||
-    toRole === STRUCTURAL_ROLES.TERMINAL
-  ) {
-    return CHAPTER_TYPES.STATE_TERMINAL;
+  if (toRole === STRUCTURAL_ROLES.TERMINAL) {
+    return CHAPTER_TYPES.PROCESSING;
   }
 
   return CHAPTER_TYPES.PROCESSING;
@@ -1127,8 +1253,69 @@ function buildRecapMentalModel(flowChapters) {
   return `Remember the architecture as: ${parts.join(" → ")}.`;
 }
 
+
+function scoreFlowSemanticPriority(group = {}) {
+  const segments = asArray(group.segments);
+
+  let score = 0;
+
+  for (const segment of segments) {
+    const mode =
+      segment?.rawEdge?.interactionMode ||
+      segment?.traversalScoring?.interactionMode ||
+      "unknown";
+
+    switch (mode) {
+      case "request_response":
+        score += 120;
+        break;
+
+      case "payload_delivery":
+        score += 100;
+        break;
+
+      case "traffic_distribution":
+        score += 80;
+        break;
+
+      case "auth_validation":
+        score += 45;
+        break;
+
+      case "configuration_flow":
+        score += 10;
+        break;
+
+      case "observability_signal":
+        score += 5;
+        break;
+
+      case "topology_continuity":
+        score -= 50;
+        break;
+
+      default:
+        score += 0;
+    }
+  }
+
+  return score;
+}
+
 function chooseCanonicalPrimaryFlow(flowGroups = []) {
   if (!flowGroups.length) return null;
+
+  const allSegments = flowGroups.flatMap((group) => asArray(group.segments));
+
+  const hasKnownProcessingBridgeToState = allSegments.some((segment) => {
+    const fromName = normalizeKey(segment.from?.name);
+    const toName = normalizeKey(segment.to?.name);
+
+    return (
+      /application|app|service|processor|worker|cluster|runtime/.test(fromName) &&
+      /database|state|store|storage|record/.test(toName)
+    );
+  });
 
   const ranked = flowGroups
     .map((group) => {
@@ -1138,40 +1325,44 @@ function chooseCanonicalPrimaryFlow(flowGroups = []) {
         group.traversalScore ||
         group.traversalScoring?.totalScore ||
         segments.reduce(
-            (sum, segment) => sum + (segment.traversalScoring?.score || 0),
-            0
+          (sum, segment) => sum + (segment.traversalScoring?.score || 0),
+          0
         );
 
-      const path = segments.map(
-        (s) => `${s.from?.name}->${s.to?.name}`
-      );
-
-      const hasProcessingBeforeState =
-        path.some((p) =>
-          p.toLowerCase().includes("application")
-        ) &&
-        path.some((p) =>
-          p.toLowerCase().includes("database")
+      score += scoreFlowSemanticPriority(group);
+        segments.reduce(
+          (sum, segment) => sum + (segment.traversalScoring?.score || 0),
+          0
         );
 
-      if (hasProcessingBeforeState) {
-        score += 25;
+      const hasProcessingToState = segments.some((segment) => {
+        const fromName = normalizeKey(segment.from?.name);
+        const toName = normalizeKey(segment.to?.name);
+
+        return (
+          /application|app|service|processor|worker|cluster|runtime/.test(fromName) &&
+          /database|state|store|storage|record/.test(toName)
+        );
+      });
+
+      if (hasProcessingToState) {
+        score += 40;
       }
 
-      const hasShortcutToState =
-        segments.some((segment) => {
-            const toRole = segment?.to?.structuralRole || segment?.to?.role;
-            const fromRole = segment?.from?.structuralRole || segment?.from?.role;
+      const skipsProcessingBridgeToState = segments.some((segment) => {
+        const fromName = normalizeKey(segment.from?.name);
+        const toName = normalizeKey(segment.to?.name);
 
-            return (
-            toRole === STRUCTURAL_ROLES.STATE &&
-            fromRole !== STRUCTURAL_ROLES.PROCESSING
-            );
-        });
+        return (
+          hasKnownProcessingBridgeToState &&
+          /database|state|store|storage|record/.test(toName) &&
+          !/application|app|service|processor|worker|cluster|runtime/.test(fromName)
+        );
+      });
 
-        if (hasShortcutToState && hasProcessingBeforeState) {
-        score -= 30;
-        }
+      if (skipsProcessingBridgeToState) {
+        score -= 40;
+      }
 
       return {
         group,
@@ -1184,15 +1375,36 @@ function chooseCanonicalPrimaryFlow(flowGroups = []) {
 }
 
 function flattenFlowSegments(flowGroups) {
-  return uniqueBy(
-    flowGroups.flatMap((group) => {
-        if (group.isPrimary) {
-        return group.segments || [];
-        }
+  const primaryGroups = flowGroups.filter((group) => group.isPrimary);
 
-        return (group.segments || []).slice(0, 1);
-    }),
-    (segment) => `${segment.from.id}->${segment.to.id}:${segment.relationshipType}`
+  const supportingGroups = flowGroups.filter(
+    (group) => !group.isPrimary
+  );
+
+  const primarySegments = primaryGroups.flatMap(
+    (group) => group.segments || []
+  );
+
+  const existing = new Set(
+    primarySegments.map(
+      (segment) =>
+        `${segment.from.id}->${segment.to.id}:${segment.relationshipType}`
+    )
+  );
+
+  const supportingSegments = supportingGroups.flatMap((group) =>
+    (group.segments || []).filter((segment) => {
+      const key =
+        `${segment.from.id}->${segment.to.id}:${segment.relationshipType}`;
+
+      return !existing.has(key);
+    })
+  );
+
+  return uniqueBy(
+    [...primarySegments, ...supportingSegments],
+    (segment) =>
+      `${segment.from.id}->${segment.to.id}:${segment.relationshipType}`
   );
 }
 
@@ -1264,37 +1476,6 @@ function buildArchitectureFlow(architectureUnderstanding = {}, options = {}) {
 
   const canonicalPrimaryFlow = chooseCanonicalPrimaryFlow(flowGroups);
 
-  const entryPrefixGroup = flowGroups.find((group) => {
-    const first = group?.segments?.[0];
-
-    return (
-      first?.from?.name === "User Client" &&
-      first?.to?.name === "CDN Edge"
-    );
-  });
-
-  if (
-    canonicalPrimaryFlow &&
-    entryPrefixGroup &&
-    canonicalPrimaryFlow !== entryPrefixGroup
-  ) {
-    const existing = new Set(
-      canonicalPrimaryFlow.segments.map((s) => `${s.from.id}->${s.to.id}`)
-    );
-
-    const mergedSegments = [
-      ...entryPrefixGroup.segments.filter(
-        (s) => !existing.has(`${s.from.id}->${s.to.id}`)
-      ),
-      ...canonicalPrimaryFlow.segments,
-    ];
-
-    canonicalPrimaryFlow.segments = uniqueBy(
-      mergedSegments,
-      (s) => `${s.from.id}->${s.to.id}`
-    );
-  }
-
   const allSegments = flattenFlowSegments(
     canonicalPrimaryFlow
       ? [
@@ -1324,7 +1505,7 @@ function buildArchitectureFlow(architectureUnderstanding = {}, options = {}) {
       renderingSafety: "page_by_page_safe_v1",
       recapStyle: "simplified_big_picture_mental_model",
       canonicalFlow: "single_primary_walkthrough_v1",
-      entryPrefixMerge: "explicit_sequence_prefix_v1",
+      entryPrefixMerge: "disabled_after_canonical_traversal_fix",
     },
     stats: {
       componentCount: componentIndex.components.length,

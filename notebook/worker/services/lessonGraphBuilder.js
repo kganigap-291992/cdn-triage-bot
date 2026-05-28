@@ -1181,12 +1181,48 @@ function buildArchitectureNarrationGoals(chapter) {
   ];
 }
 
+
+function buildCanonicalRailSummary(canonicalTraversalRail = {}) {
+  const selectedHops = asArray(canonicalTraversalRail?.hops)
+    .filter((hop) => hop?.selectedForPrimaryWalkthrough === true)
+    .sort((a, b) => Number(a.canonicalOrder || 0) - Number(b.canonicalOrder || 0));
+
+  if (!selectedHops.length) return null;
+
+  return {
+    source: "canonical_traversal_rail",
+    selectedFlowLaneId: canonicalTraversalRail.selectedFlowLaneId || null,
+    selectedFlowLaneType: selectedHops[0]?.flowLaneType || null,
+    hopCount: selectedHops.length,
+    firstHop: selectedHops[0],
+    lastHop: selectedHops[selectedHops.length - 1],
+    pathText: selectedHops
+      .map((hop, index) => {
+        const from = hop?.from?.name || "Upstream";
+        const to = hop?.to?.name || "Downstream";
+        return index === 0 ? `${from} → ${to}` : `→ ${to}`;
+      })
+      .join(" "),
+    hops: selectedHops.map((hop) => ({
+      hopId: hop.hopId,
+      canonicalOrder: hop.canonicalOrder,
+      from: hop.from,
+      to: hop.to,
+      flowLaneId: hop.flowLaneId,
+      flowLaneType: hop.flowLaneType,
+      inferred: hop?.safety?.inferred === true,
+      evidenceTypes: asArray(hop.evidenceTypes),
+    })),
+  };
+}
+
 function buildArchitectureTeachingUnitFromChapter({
   chapter,
   chapterIndex,
   totalChapters,
   sourcePages,
   documentIntelligence,
+  canonicalRailSummary = null,
 }) {
   const title = getArchitectureChapterTitle(chapter);
   const presentationStyle = getArchitectureChapterPresentationStyle(chapter);
@@ -1242,6 +1278,12 @@ function buildArchitectureTeachingUnitFromChapter({
       recapMentalModel: chapter?.recapMentalModel || null,
       enrichedSegments: asArray(chapter?.enrichedSegments),
       safetyFlags: asArray(chapter?.safetyFlags),
+
+      canonicalRailSummary:
+        isOverview || isRecap
+          ? canonicalRailSummary
+          : null,
+
       borrowedIdeas: [
         "langgraph_traversal_state",
         "motion_canvas_semantic_beats",
@@ -1329,11 +1371,132 @@ function buildTeachingUnitsFromArchitectureReasoning({
   return sortUnitsByRegionStability(units);
 }
 
+function getArchitectureSegmentOrder(segment = {}) {
+  const id = segment.sourceSegmentId || segment.id || "";
+  const match = id.match(/explicit_sequence_segment_(\d+)_(\d+)/);
+
+  if (!match) return Number.MAX_SAFE_INTEGER;
+
+  return Number(match[1]) * 1000 + Number(match[2]);
+}
+
+function buildArchitectureSegmentChapter(segment = {}, index = 0) {
+  const from = segment.from?.name || "Upstream";
+  const to = segment.to?.name || "Downstream";
+  const concept = segment.genericConcept || "generic_handoff";
+
+  return {
+    id: `architecture_segment_chapter_${index + 1}_${slugify(from)}_to_${slugify(to)}`,
+    type: "architecture_semantic_chapter",
+    title: `${from} → ${to}`,
+    confidence: segment.confidence || "medium",
+    enrichedSegments: [segment],
+    teachingContext: {
+      operationalMeaning:
+        segment.teachingContext?.operationalMeaning ||
+        segment.safeSemantics ||
+        segment.mentorNarration ||
+        "Teach this documented architecture handoff.",
+      transitionNarrationHint:
+        segment.transitionNarrationHint ||
+        `Walk from ${from} toward ${to}, explaining what responsibility changes.`,
+    },
+    teachingProgression: {
+      introducedConcepts: [
+        {
+          concept,
+          label: segment.teachingContext?.conceptLabel || concept,
+        },
+      ],
+      establishedEntities: [segment.from, segment.to].filter(Boolean),
+    },
+    safetyFlags: asArray(segment.safetyFlags),
+  };
+}
+
+
+function normalizeHandoffKey(fromName, toName) {
+  return `${slugify(fromName)}__to__${slugify(toName)}`;
+}
+
+function buildOrderedSegmentsFromCanonicalRail({
+  canonicalSelectedHops = [],
+  enrichedSegments = [],
+}) {
+  const segmentsByHandoff = new Map();
+
+  for (const segment of enrichedSegments) {
+    const fromName = segment?.from?.name;
+    const toName = segment?.to?.name;
+    if (!fromName || !toName) continue;
+
+    segmentsByHandoff.set(
+      normalizeHandoffKey(fromName, toName),
+      segment
+    );
+  }
+
+  return canonicalSelectedHops.map((hop, index) => {
+    const fromName = hop?.from?.name;
+    const toName = hop?.to?.name;
+    const key = normalizeHandoffKey(fromName, toName);
+    const matchedSegment = segmentsByHandoff.get(key);
+
+    if (matchedSegment) {
+      return {
+        ...matchedSegment,
+        canonicalTraversal: {
+          source: "canonical_traversal_rail",
+          hopId: hop.hopId,
+          flowLaneId: hop.flowLaneId,
+          flowLaneType: hop.flowLaneType,
+          canonicalOrder: hop.canonicalOrder,
+          selectedForPrimaryWalkthrough: true,
+          inferred: hop?.safety?.inferred === true,
+          evidenceTypes: asArray(hop.evidenceTypes),
+        },
+      };
+    }
+
+    return {
+      id: hop.hopId || `canonical_hop_${index + 1}`,
+      sourceSegmentId: hop.sourceSegmentId || null,
+      from: hop.from,
+      to: hop.to,
+      confidence: hop.confidence || "medium",
+      genericConcept: "generic_handoff",
+      canNarrateAsFact: hop?.safety?.narratableAsFact !== false,
+      safetyFlags: hop?.safety?.inferred
+        ? ["canonical_hop_inferred_from_document_flow"]
+        : [],
+      teachingContext: {
+        operationalMeaning:
+          "Teach this documented architecture handoff from the canonical traversal rail.",
+        transitionNarrationHint:
+          fromName && toName
+            ? `Walk from ${fromName} toward ${toName}, explaining what responsibility changes.`
+            : "Walk through the next documented architecture handoff.",
+      },
+      canonicalTraversal: {
+        source: "canonical_traversal_rail",
+        hopId: hop.hopId,
+        flowLaneId: hop.flowLaneId,
+        flowLaneType: hop.flowLaneType,
+        canonicalOrder: hop.canonicalOrder,
+        selectedForPrimaryWalkthrough: true,
+        inferred: hop?.safety?.inferred === true,
+        evidenceTypes: asArray(hop.evidenceTypes),
+      },
+    };
+  });
+}
+
 function buildTeachingUnitsFromArchitectureTeaching({
   documentIntelligence,
   diagramAnalysis,
   architectureUnderstanding,
   architectureTeaching,
+  canonicalTraversalRail = {},
 }) {
   const sourcePages = getArchitectureSourcePages({
     diagramAnalysis,
@@ -1342,14 +1505,45 @@ function buildTeachingUnitsFromArchitectureTeaching({
   });
 
   const chapters = asArray(architectureTeaching?.enrichedChapters);
-  const usableChapters = chapters.filter((chapter) => {
-    if (!chapter) return false;
-    if (chapter.type === "architecture_recap") return true;
-    if (chapter.type === "architecture_overview") return true;
 
-    const segments = asArray(chapter.enrichedSegments);
-    return segments.some((segment) => segment.canNarrateAsFact !== false);
-  });
+  const overviewChapter = chapters.find(
+    (chapter) => chapter?.type === "architecture_overview"
+  );
+
+  const recapChapter = chapters.find(
+    (chapter) => chapter?.type === "architecture_recap"
+  );
+
+  const canonicalSelectedHops = asArray(canonicalTraversalRail?.hops)
+    .filter((hop) => hop?.selectedForPrimaryWalkthrough === true)
+    .sort((a, b) => Number(a.canonicalOrder || 0) - Number(b.canonicalOrder || 0));
+
+  const canonicalTraversalEnabled = canonicalSelectedHops.length > 0;
+
+  const enrichedSegments = asArray(architectureTeaching?.enrichedSegments)
+    .filter((segment) => segment?.canNarrateAsFact !== false);
+
+  const orderedSegments = canonicalTraversalEnabled
+    ? buildOrderedSegmentsFromCanonicalRail({
+        canonicalSelectedHops,
+        enrichedSegments,
+      })
+    : enrichedSegments.sort(
+        (a, b) => getArchitectureSegmentOrder(a) - getArchitectureSegmentOrder(b)
+      );
+
+  const traversalChapters = orderedSegments.map((segment, index) =>
+    buildArchitectureSegmentChapter(segment, index)
+  );
+
+  const usableChapters = [
+    overviewChapter,
+    ...traversalChapters,
+    recapChapter,
+  ].filter(Boolean);
+
+  const canonicalRailSummary =
+    buildCanonicalRailSummary(canonicalTraversalRail);
 
   return usableChapters.map((chapter, index) =>
     buildArchitectureTeachingUnitFromChapter({
@@ -1358,6 +1552,7 @@ function buildTeachingUnitsFromArchitectureTeaching({
       totalChapters: usableChapters.length,
       sourcePages,
       documentIntelligence,
+      canonicalRailSummary,
     })
   );
 }
@@ -1388,18 +1583,8 @@ function buildCoreTeachingUnits({
   architectureUnderstanding,
   architectureTeaching,
   architectureReasoning,
+  canonicalTraversalRail,
 }) {
-  if (
-    isArchitectureDocument(documentIntelligence) &&
-    hasUsableArchitectureReasoning(architectureReasoning)
-  ) {
-    return buildTeachingUnitsFromArchitectureReasoning({
-      architectureReasoning,
-      documentIntelligence,
-      diagramAnalysis,
-    });
-  }
-
   if (
     hasUsableArchitectureTeaching({
       documentIntelligence,
@@ -1411,6 +1596,18 @@ function buildCoreTeachingUnits({
       diagramAnalysis,
       architectureUnderstanding,
       architectureTeaching,
+      canonicalTraversalRail,
+    });
+  }
+
+  if (
+    isArchitectureDocument(documentIntelligence) &&
+    hasUsableArchitectureReasoning(architectureReasoning)
+  ) {
+    return buildTeachingUnitsFromArchitectureReasoning({
+      architectureReasoning,
+      documentIntelligence,
+      diagramAnalysis,
     });
   }
 
@@ -1661,6 +1858,7 @@ function buildLessonGraph({
   architectureUnderstanding = {},
   architectureTeaching = {},
   architectureReasoning = {},
+  canonicalTraversalRail = {},
   jobDir = null,
 } = {}) {
   const pageCount = getPageCount(diagramAnalysis);
@@ -1707,7 +1905,8 @@ function buildLessonGraph({
     architectureUnderstanding,
     architectureTeaching,
     architectureReasoning,
-    });
+    canonicalTraversalRail,
+  });
 
     const traversalModeMetadata =
     buildTraversalModeMetadata("request_lifecycle");
@@ -1718,7 +1917,7 @@ function buildLessonGraph({
     );
 
     const traversalBiasedCoreUnits =
-    usingArchitectureReasoning
+      usingArchitectureReasoning && !usingArchitectureTeaching
         ? applyTraversalModePreferences(
             coreUnits,
             traversalModeMetadata.selectedTraversalMode
@@ -1726,9 +1925,9 @@ function buildLessonGraph({
         : coreUnits;
 
     const traversalPreferenceDebug =
-        usingArchitectureReasoning
-            ? buildTraversalPreferenceDebug(traversalBiasedCoreUnits)
-            : null;
+      usingArchitectureReasoning && !usingArchitectureTeaching
+        ? buildTraversalPreferenceDebug(traversalBiasedCoreUnits)
+        : null;
 
   const architectureDrivenLesson =
     usingArchitectureTeaching || usingArchitectureReasoning;
@@ -1760,9 +1959,10 @@ function buildLessonGraph({
 
   const teachingUnits = sourceGrounding.teachingUnits;
 
-  const regionTraversalDebug = usingArchitectureReasoning
-  ? buildRegionTraversalDebug(teachingUnits)
-  : null;
+  const regionTraversalDebug =
+    usingArchitectureReasoning && !usingArchitectureTeaching
+      ? buildRegionTraversalDebug(teachingUnits)
+      : null;
   
   const architectureTraversalAudit =
   isArchitectureDocument(documentIntelligence)
@@ -1887,19 +2087,19 @@ function buildLessonGraph({
     };
 
   return {
-    version: usingArchitectureReasoning
+    version: usingArchitectureTeaching
+      ? "lesson-graph-v5-architecture-teaching-driven"
+      : usingArchitectureReasoning
         ? "lesson-graph-v6-architecture-reasoning-driven"
-        : usingArchitectureTeaching
-            ? "lesson-graph-v5-architecture-teaching-driven"
-            : "lesson-graph-v4-document-structured",
+        : "lesson-graph-v4-document-structured",
     documentType: documentIntelligence?.primaryType || "unknown",
     secondaryTypes: documentIntelligence?.secondaryTypes || [],
     teachingStrategy: compactCheatSheet
         ? "compact_high_density_operational_focus_walkthrough"
-        : usingArchitectureReasoning
+        : usingArchitectureTeaching
+          ? "architecture_teaching_handoff_first_walkthrough"
+          : usingArchitectureReasoning
             ? "architecture_reasoning_responsibility_walkthrough"
-            : usingArchitectureTeaching
-            ? "architecture_teaching_handoff_first_walkthrough"
             : documentIntelligence?.teachingStrategy || "technical_walkthrough",
     presentationGrammar: documentIntelligence?.presentationGrammar || {},
     pedagogyProfile,

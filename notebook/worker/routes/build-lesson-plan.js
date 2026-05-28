@@ -38,6 +38,10 @@ const {
 } = require("../services/architectureFlowBuilder");
 
 const {
+  buildCanonicalTraversalRail,
+} = require("../services/architectureCanonicalTraversalRailBuilder");
+
+const {
   buildArchitectureReasoning,
 } = require("../services/architectureReasoningBuilder");
 
@@ -61,6 +65,10 @@ const {
 const {
   buildCalmExplainerNarration,
 } = require("../services/calmExplainerNarrationBuilder");
+
+const {
+  buildNarrationContinuity,
+} = require("../services/narrationContinuityBuilder");
 
 const router = express.Router();
 
@@ -96,9 +104,7 @@ router.post("/:jobId", async (req, res) => {
 
     const extracted = readJson(path.join(jobDir, "extracted.json"), {});
 
-    const documentUnderstanding = buildDocumentUnderstanding({
-      jobDir,
-    });
+    const documentUnderstanding = buildDocumentUnderstanding({ jobDir });
 
     console.log("[document-understanding]", {
       entities: documentUnderstanding.stats.entityCount,
@@ -112,9 +118,7 @@ router.post("/:jobId", async (req, res) => {
       {}
     );
 
-    const spatialUnderstanding = buildSpatialUnderstanding({
-      jobDir,
-    });
+    const spatialUnderstanding = buildSpatialUnderstanding({ jobDir });
 
     const spatialUnderstandingPath = saveSpatialUnderstanding(
       jobDir,
@@ -176,8 +180,8 @@ router.post("/:jobId", async (req, res) => {
     const architectureBoundaries = buildBoundarySummary(architectureEvidence);
 
     const architectureBoundariesPath = writeJson(
-    path.join(jobDir, "architecture-boundaries.json"),
-    architectureBoundaries
+      path.join(jobDir, "architecture-boundaries.json"),
+      architectureBoundaries
     );
 
     console.log("[architecture-boundaries]", architectureBoundaries.stats);
@@ -215,31 +219,52 @@ router.post("/:jobId", async (req, res) => {
       architectureFlow
     );
 
+
+    const canonicalTraversalRail = buildCanonicalTraversalRail({
+      architectureUnderstanding,
+      architectureFlow,
+      architectureEvidence,
+      architectureTermResolutions,
+    });
+
+    const canonicalTraversalRailPath = writeJson(
+      path.join(jobDir, "canonical-traversal-rail.json"),
+      canonicalTraversalRail
+    );
+
+    console.log("[canonical-traversal-rail]", {
+      hops: canonicalTraversalRail.stats?.hopCount,
+      selectedHops: canonicalTraversalRail.stats?.selectedHopCount,
+      flowLanes: canonicalTraversalRail.stats?.flowLaneCount,
+      sharedNodes: canonicalTraversalRail.stats?.sharedNodeCount,
+      selectedFlowLaneId: canonicalTraversalRail.selectedFlowLaneId,
+    });
+
     console.log("[architecture-flow]", {
-        components: architectureFlow.stats.componentCount,
-        relationships: architectureFlow.stats.relationshipCount,
-        flowGroups: architectureFlow.stats.flowGroupCount,
-        segments: architectureFlow.stats.segmentCount,
-        chapters: architectureFlow.stats.chapterCount,
+      components: architectureFlow.stats.componentCount,
+      relationships: architectureFlow.stats.relationshipCount,
+      flowGroups: architectureFlow.stats.flowGroupCount,
+      segments: architectureFlow.stats.segmentCount,
+      chapters: architectureFlow.stats.chapterCount,
     });
 
     const architectureReasoning = buildArchitectureReasoning({
-        architectureUnderstanding,
-        architectureFlow,
-        documentUnderstanding,
-        architectureEvidence,
+      architectureUnderstanding,
+      architectureFlow,
+      documentUnderstanding,
+      architectureEvidence,
     });
 
     const architectureReasoningPath = writeJson(
-    path.join(jobDir, "architecture-reasoning.json"),
-    architectureReasoning
+      path.join(jobDir, "architecture-reasoning.json"),
+      architectureReasoning
     );
 
     console.log("[architecture-reasoning]", {
-    reasoningModes: architectureReasoning.reasoningModes.length,
-    primaryLayers: architectureReasoning.primaryLayers.length,
-    pathSummaries: architectureReasoning.pathSummaries.length,
-    componentRoles: architectureReasoning.componentRoleExplanations.length,
+      reasoningModes: architectureReasoning.reasoningModes.length,
+      primaryLayers: architectureReasoning.primaryLayers.length,
+      pathSummaries: architectureReasoning.pathSummaries.length,
+      componentRoles: architectureReasoning.componentRoleExplanations.length,
     });
 
     const responsibilityInference = buildResponsibilityInference({
@@ -279,39 +304,56 @@ router.post("/:jobId", async (req, res) => {
     );
 
     const architectureTeachingPath = writeJson(
-    path.join(jobDir, "architecture-teaching.json"),
-    architectureTeaching
+      path.join(jobDir, "architecture-teaching.json"),
+      architectureTeaching
     );
 
-    const calmExplainerNarration =
-    await buildCalmExplainerNarration({
-        architectureTeaching,
-        llmClient: architectureTeachingLlmClient,
-        outputDir: jobDir,
+    const calmExplainerNarration = await buildCalmExplainerNarration({
+      architectureTeaching,
+      llmClient: architectureTeachingLlmClient,
+      outputDir: jobDir,
     });
 
     const calmExplainerNarrationPath = writeJson(
-    path.join(jobDir, "calm-explainer-narration.json"),
-    calmExplainerNarration
+      path.join(jobDir, "calm-explainer-narration.json"),
+      calmExplainerNarration
     );
 
     console.log("[architecture-teaching]", {
-    chapters: architectureTeaching.stats.chapterCount,
-    segments: architectureTeaching.stats.segmentCount,
-    narratableSegments: architectureTeaching.stats.narratableSegmentCount,
-    nonNarratableSegments:
+      chapters: architectureTeaching.stats.chapterCount,
+      segments: architectureTeaching.stats.segmentCount,
+      narratableSegments: architectureTeaching.stats.narratableSegmentCount,
+      nonNarratableSegments:
         architectureTeaching.stats.nonNarratableSegmentCount,
     });
 
     console.log("[calm-explainer-narration]", {
-    segments: calmExplainerNarration.segmentCount,
-    fallbackUsed: calmExplainerNarration.stats.fallbackUsedCount,
-    llmValid: calmExplainerNarration.stats.llmValidCount,
+      segments: calmExplainerNarration.segmentCount,
+      fallbackUsed: calmExplainerNarration.stats.fallbackUsedCount,
+      llmValid: calmExplainerNarration.stats.llmValidCount,
     });
 
     const lessonPlan = generateLessonPlan(jobDir);
 
     const outputPath = saveLessonPlan(jobDir, lessonPlan);
+
+    const narrationContinuity = buildNarrationContinuity({
+      lessonGraph: lessonPlan?.lessonGraph,
+      architectureReasoning,
+      calmExplainerNarration,
+    });
+
+    const narrationContinuityPath = writeJson(
+      path.join(jobDir, "narration-continuity.json"),
+      narrationContinuity
+    );
+
+    console.log("[narration-continuity]", {
+      scenes: narrationContinuity.sceneCount,
+      regions: narrationContinuity.stats.regionCount,
+      concepts: narrationContinuity.stats.conceptCount,
+      handoffs: narrationContinuity.stats.handoffCount,
+    });
 
     const architectureTeachingRegions = Array.isArray(
       lessonPlan?.lessonGraph?.architectureTeachingRegions
@@ -358,12 +400,12 @@ router.post("/:jobId", async (req, res) => {
         version: architectureTermResolutions.version,
         stats: architectureTermResolutions.stats,
         output: architectureTermResolutionsPath,
-        },
-        architectureBoundaries: {
+      },
+      architectureBoundaries: {
         version: architectureBoundaries.version,
         stats: architectureBoundaries.stats,
         output: architectureBoundariesPath,
-    },
+      },
       architectureUnderstanding: {
         version: architectureUnderstanding.version,
         stats: architectureUnderstanding.stats,
@@ -373,13 +415,20 @@ router.post("/:jobId", async (req, res) => {
         version: architectureFlow.schemaVersion,
         stats: architectureFlow.stats,
         output: architectureFlowPath,
-        },
-        architectureReasoning: {
+      },
+
+      canonicalTraversalRail: {
+        version: canonicalTraversalRail.version,
+        stats: canonicalTraversalRail.stats,
+        output: canonicalTraversalRailPath,
+      },
+      
+      architectureReasoning: {
         version: architectureReasoning.version,
         stats: architectureReasoning.stats,
         output: architectureReasoningPath,
-        },
-        responsibilityInference: {
+      },
+      responsibilityInference: {
         version: responsibilityInference.version,
         stats: responsibilityInference.stats,
         output: responsibilityInferencePath,
@@ -393,6 +442,11 @@ router.post("/:jobId", async (req, res) => {
         version: calmExplainerNarration.version,
         stats: calmExplainerNarration.stats,
         output: calmExplainerNarrationPath,
+      },
+      narrationContinuity: {
+        version: narrationContinuity.version,
+        stats: narrationContinuity.stats,
+        output: narrationContinuityPath,
       },
       sectionCount: lessonPlan.lessonStructure.length,
       conceptCount: lessonPlan.prioritizedConcepts.length,

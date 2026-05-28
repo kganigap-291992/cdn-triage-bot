@@ -411,6 +411,17 @@ function buildCalmNarrationIndex(jobDir) {
   return index;
 }
 
+function buildNarrationContinuityIndex(jobDir) {
+  if (!jobDir) return {};
+
+  const continuityPath = path.join(
+    jobDir,
+    "narration-continuity.json"
+  );
+
+  return readJsonIfExists(continuityPath, {});
+}
+
 function attachCalmNarrationToSegments(segments = [], calmNarrationIndex = new Map()) {
   return asArray(segments).map((segment) => {
     const segmentId = segment.id || segment.sourceSegmentId;
@@ -589,7 +600,91 @@ function getFirstArchitectureHandoff(metadata = {}, lessonGraph = {}) {
   return null;
 }
 
-function buildArchitectureAwareText(unit, lessonGraph = {}, calmNarrationIndex = new Map()) {
+function buildContinuityBridgeText(continuityScene = {}) {
+  const title = cleanText(continuityScene.title, 120);
+  const region = cleanText(continuityScene.region, 120);
+
+  if (region === "validation") {
+    return "After traffic enters the system, the next concern is whether it should be allowed to continue deeper into the platform.";
+  }
+
+  if (region === "routing") {
+    return "Once traffic crosses the entry and access boundary, the platform needs to decide where it should go next.";
+  }
+
+  if (region === "persistence") {
+    return "After routing and processing decisions, the walkthrough reaches the systems responsible for durable state and storage.";
+  }
+
+  const handoff = continuityScene.transitionHint?.handoff;
+
+  if (handoff?.from && handoff?.to) {
+    return `From there, the flow moves from ${handoff.from} toward ${handoff.to}.`;
+  }
+
+  if (title) {
+    return `From there, the walkthrough moves into ${title}.`;
+  }
+
+  return "";
+}
+
+function buildCanonicalRailNarrationText(
+  canonicalRailSummary = {},
+  options = {}
+) {
+  const hops = asArray(canonicalRailSummary?.hops);
+
+  if (!hops.length) return "";
+
+  const pathNarration = hops
+    .map((hop, index) => {
+      const from = cleanText(hop?.from?.name, 120);
+      const to = cleanText(hop?.to?.name, 120);
+
+      if (!from || !to) return null;
+
+      if (index === 0) {
+        return `${from} → ${to}`;
+      }
+
+      return `→ ${to}`;
+    })
+    .filter(Boolean)
+    .join(" ");
+
+  if (!pathNarration) return "";
+
+  if (options.mode === "overview") {
+    return [
+      "This walkthrough follows the primary request journey across the architecture.",
+      `The canonical request flow moves through: ${pathNarration}.`,
+      "As we move through the walkthrough, focus on how responsibility shifts between layers rather than memorizing individual components.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  if (options.mode === "recap") {
+    return [
+      `At a high level, the architecture flow follows: ${pathNarration}.`,
+      "Each layer owns a different operational responsibility as the request moves deeper into the platform.",
+      "The key mental model is understanding how traffic is received, validated, routed, processed, and eventually connected to longer-lived state or backend systems.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  return "";
+}
+
+
+function buildArchitectureAwareText(
+  unit,
+  lessonGraph = {},
+  calmNarrationIndex = new Map(),
+  narrationContinuity = {}
+) {
   const metadata = unit?.metadata || {};
   const role = metadata.role;
   const segments = attachCalmNarrationToSegments(
@@ -597,6 +692,21 @@ function buildArchitectureAwareText(unit, lessonGraph = {}, calmNarrationIndex =
     calmNarrationIndex
     );  
 
+
+  const continuityScenes = asArray(narrationContinuity.scenes);
+
+  const continuityScene = continuityScenes.find(
+    (scene) =>
+      scene.title === unit.title ||
+      scene.region === metadata.regionAffinity
+  );
+
+  const transitionHint =
+    continuityScene?.transitionHint?.text || "";
+
+  const openingStyle =
+    continuityScene?.openingStyle || "orientation";
+    
   const calmTextFromSteps = buildCalmNarrationTextFromSteps(
     metadata.steps,
     calmNarrationIndex,
@@ -604,39 +714,79 @@ function buildArchitectureAwareText(unit, lessonGraph = {}, calmNarrationIndex =
   );
 
   if (calmTextFromSteps) {
-    return calmTextFromSteps;
-  }  
-
-  const recapMentalModel = cleanText(metadata.recapMentalModel, 520);
-
-  if (role === "architecture_overview") {
-    const firstHandoff = getFirstArchitectureHandoff(metadata, lessonGraph);
-
-    const fromName = cleanText(firstHandoff?.from?.name, 120);
-    const toName = cleanText(firstHandoff?.to?.name, 120);
-
-    return [
-        "This walkthrough follows the request journey one layer at a time.",
-        fromName && toName
-            ? `The request first reaches ${toName} before moving deeper into the platform.`
-            : "",
-        "Let’s build a simple mental model of what each layer is doing as the request moves deeper into the platform.",
-        ]
-        .filter(Boolean)
-        .join(" ");
-        }
-
-  if (role === "architecture_recap") {
-    return [
-        "At a high level, the request moves through layers that each handle a different job.",
-        "The important mental model is: receive traffic, direct it, process it, and eventually handle longer-lived state or results.",
-        ]
+    if (
+      openingStyle === "handoff_continuation" ||
+      openingStyle === "continuation" ||
+      openingStyle === "region_transition"
+    ) {
+      return [
+        buildContinuityBridgeText(continuityScene),
+        calmTextFromSteps,
+      ]
         .filter(Boolean)
         .join(" ");
     }
 
+    return calmTextFromSteps;
+  }
+
+  const recapMentalModel = cleanText(metadata.recapMentalModel, 520);
+
+  if (role === "architecture_overview") {
+    const canonicalNarration =
+      buildCanonicalRailNarrationText(
+        metadata.canonicalRailSummary,
+        { mode: "overview" }
+      );
+
+    if (canonicalNarration) {
+      return canonicalNarration;
+    }
+
+    return [
+      "This walkthrough follows the request journey one layer at a time.",
+      "Let’s build a simple mental model of what each layer is doing as the request moves deeper into the platform.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  if (role === "architecture_recap") {
+    const canonicalNarration =
+      buildCanonicalRailNarrationText(
+        metadata.canonicalRailSummary,
+        { mode: "recap" }
+      );
+
+    if (canonicalNarration) {
+      return canonicalNarration;
+    }
+
+    return [
+      "At a high level, the request moves through layers that each handle a different job.",
+      "The important mental model is: receive traffic, direct it, process it, and eventually handle longer-lived state or results.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
     const teachingText = buildArchitectureTeachingTextFromSegments(segments);
-        if (teachingText) return teachingText;
+        if (teachingText) {
+          if (
+            openingStyle === "handoff_continuation" ||
+            openingStyle === "continuation" ||
+            openingStyle === "region_transition"
+          ) {
+            return [
+              buildContinuityBridgeText(continuityScene),
+              teachingText,
+            ]
+              .filter(Boolean)
+              .join(" ");
+          }
+
+          return teachingText;
+        }
 
         const { fromName, toName } = getSegmentNames(segments);
         const conceptLabel = getSegmentConceptLabel(segments, unit.title);
@@ -710,9 +860,20 @@ function buildConceptAwareText(unit, documentIntelligence, lessonGraph) {
 }
 
 
-function buildTeachingUnitText(unit, documentIntelligence, lessonGraph, calmNarrationIndex = new Map()) {
+function buildTeachingUnitText(
+  unit,
+  documentIntelligence,
+  lessonGraph,
+  calmNarrationIndex = new Map(),
+  narrationContinuity = {}
+) {
   if (isArchitectureLesson(documentIntelligence, lessonGraph)) {
-    return buildArchitectureAwareText(unit, lessonGraph, calmNarrationIndex);
+    return buildArchitectureAwareText(
+      unit,
+      lessonGraph,
+      calmNarrationIndex,
+      narrationContinuity
+    );
   }
 
   const visibleElements = getVisibleElements(unit);
@@ -725,7 +886,15 @@ function buildTeachingUnitText(unit, documentIntelligence, lessonGraph, calmNarr
   return buildConceptAwareText(unit, documentIntelligence, lessonGraph);
 }
 
-function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntelligence, lessonGraph, calmNarrationIndex = new Map()) {
+function buildSectionFromTeachingUnit(
+  unit,
+  index,
+  totalUnits,
+  documentIntelligence,
+  lessonGraph,
+  calmNarrationIndex = new Map(),
+  narrationContinuity = {}
+) {
   const page = firstSourcePage(unit);
   const visibleElements = getVisibleElements(unit);
   const visualMode = getPreferredVisualMode(unit);
@@ -739,11 +908,12 @@ function buildSectionFromTeachingUnit(unit, index, totalUnits, documentIntellige
     type: `lesson_${unit.type || "teaching_unit"}`,
     page,
     text: buildTeachingUnitText(
-        unit,
-        documentIntelligence,
-        lessonGraph,
-        calmNarrationIndex
-        ),
+      unit,
+      documentIntelligence,
+      lessonGraph,
+      calmNarrationIndex,
+      narrationContinuity
+    ),
     caption: buildShortCaption(unit.title || "Teaching unit"),
     targetDurationSec: unit.targetDurationSec,
     teachingUnitId: unit.id,
@@ -855,18 +1025,21 @@ function buildDialogue({
     : [];
 
     const calmNarrationIndex = buildCalmNarrationIndex(jobDir);
+    const narrationContinuity =
+      buildNarrationContinuityIndex(jobDir);
 
     const sections = [];
 
   for (const [index, unit] of teachingUnits.entries()) {
     sections.push(
         buildSectionFromTeachingUnit(
-        unit,
-        index,
-        teachingUnits.length,
-        documentIntelligence,
-        lessonGraph,
-        calmNarrationIndex
+          unit,
+          index,
+          teachingUnits.length,
+          documentIntelligence,
+          lessonGraph,
+          calmNarrationIndex,
+          narrationContinuity
         )
     );
 

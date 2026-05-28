@@ -488,6 +488,21 @@ function extractSequencePromotedComponents(explicitSequences = [], existingCompo
   return promoted;
 }
 
+function recoverLeadingSequenceEntity(text, components = []) {
+  const normalized = normalizeText(text);
+
+  for (const component of components) {
+    const name = normalizeText(component.name);
+    if (!name) continue;
+
+    if (normalized.startsWith(name) || normalized.startsWith(`${name} `)) {
+      return { component };
+    }
+  }
+
+  return null;
+}
+
 function extractExplicitSequences(documentUnderstanding = {}, components = []) {
   const evidence = documentUnderstanding.evidence || [];
   const bySection = groupEvidenceBySection(evidence);
@@ -502,6 +517,19 @@ function extractExplicitSequences(documentUnderstanding = {}, components = []) {
             const rawText = getEvidenceText(item);
             const text = cleanSequenceText(rawText);
             let mentioned = findMentionedComponents(text, components);
+
+            const recoveredLeading =
+              recoverLeadingSequenceEntity(text, components);
+
+            if (recoveredLeading) {
+              const alreadyPresent = mentioned.some(
+                (entry) => entry.component.id === recoveredLeading.component.id
+              );
+
+              if (!alreadyPresent) {
+                mentioned = [recoveredLeading, ...mentioned];
+              }
+            }
 
             const externalActor = extractExternalActorFromSequenceText(text);
 
@@ -670,6 +698,30 @@ function extractExplicitRelationships(documentUnderstanding = {}, components = [
   return relationships;
 }
 
+function inferDirectionalConnectorType(text = "") {
+  const normalized = lower(text);
+
+  if (
+    /\b(validates?|authenticates?|checks?|verifies?|filters?)\b/.test(normalized)
+  ) {
+    return "checkpoint";
+  }
+
+  if (
+    /\b(through|via)\b/.test(normalized)
+  ) {
+    return "middleware";
+  }
+
+  if (
+    /\b(sends?|routes?|forwards?|passes?|delivers?|pushes?|calls?)\b/.test(normalized)
+  ) {
+    return "request_flow";
+  }
+
+  return "association";
+}
+
 function extractDirectionalFlowRelationships(documentUnderstanding = {}, components = []) {
   const evidence = documentUnderstanding.evidence || [];
   const relationships = [];
@@ -684,17 +736,38 @@ function extractDirectionalFlowRelationships(documentUnderstanding = {}, compone
     const mentioned = findMentionedComponents(text, components);
     if (mentioned.length < 2 || mentioned.length > 8) continue;
 
-    for (let i = 0; i < mentioned.length - 1; i += 1) {
+    const connectorType = inferDirectionalConnectorType(text);
+
+    if (connectorType === "request_flow" || hasArrowSyntax(text)) {
+      for (let i = 0; i < mentioned.length - 1; i += 1) {
+        relationships.push(
+          makeRelationship({
+            source: mentioned[i].component,
+            target: mentioned[i + 1].component,
+            type: "explicit_flow",
+            reason: hasArrowSyntax(text) ? "explicit_flow" : "directional_flow_text",
+            evidenceIds: [item.id].filter(Boolean),
+            evidenceText: text,
+            inferred: false,
+            direction: hasArrowSyntax(text) ? "arrow_text_order" : "verb_text_order",
+          })
+        );
+      }
+
+      continue;
+    }
+
+    if (connectorType === "checkpoint" || connectorType === "middleware") {
       relationships.push(
         makeRelationship({
-          source: mentioned[i].component,
-          target: mentioned[i + 1].component,
+          source: mentioned[0].component,
+          target: mentioned[1].component,
           type: "explicit_flow",
-          reason: hasArrowSyntax(text) ? "explicit_flow" : "directional_flow_text",
+          reason: "directional_flow_text",
           evidenceIds: [item.id].filter(Boolean),
           evidenceText: text,
           inferred: false,
-          direction: hasArrowSyntax(text) ? "arrow_text_order" : "verb_text_order",
+          direction: "checkpoint_or_middleware",
         })
       );
     }

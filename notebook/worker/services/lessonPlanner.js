@@ -184,20 +184,22 @@ function buildLessonPlan({
   architectureUnderstanding = {},
   architectureTeaching = {},
   architectureReasoning = {},
+  canonicalTraversalRail = {},
   jobDir = null,
 } = {}) {
   const concepts = getConceptList(conceptsData);
   const topConcepts = concepts.slice(0, 5);
 
-  const lessonGraph = buildLessonGraph({
-    documentIntelligence,
-    conceptsData,
-    extractedData,
-    diagramAnalysis,
-    architectureUnderstanding,
-    architectureTeaching,
-    architectureReasoning,
-    jobDir,
+    const lessonGraph = buildLessonGraph({
+      documentIntelligence,
+      conceptsData,
+      extractedData,
+      diagramAnalysis,
+      architectureUnderstanding,
+      architectureTeaching,
+      architectureReasoning,
+      canonicalTraversalRail,
+      jobDir,
     });
 
   return {
@@ -297,6 +299,11 @@ function generateLessonPlan(jobDir) {
     "architecture-reasoning.json"
   );
 
+  const canonicalTraversalRailPath = path.join(
+    jobDir,
+    "canonical-traversal-rail.json"
+  );
+
   const conceptsData = readJsonIfExists(conceptsPath, {});
   const extractedData = readJsonIfExists(extractedPath, {});
   const pageImageCount = countPageImages(jobDir);
@@ -329,6 +336,11 @@ function generateLessonPlan(jobDir) {
     {} 
   );
 
+  const canonicalTraversalRail = readJsonIfExists(
+    canonicalTraversalRailPath,
+    {}
+  );
+
   const diagramAnalysis = {
     ...rawDiagramAnalysis,
     pageCount:
@@ -345,8 +357,9 @@ function generateLessonPlan(jobDir) {
     architectureUnderstanding,
     architectureTeaching,
     architectureReasoning,
+    canonicalTraversalRail,
     jobDir,
-    });
+  });
 }
 
 function saveLessonPlan(jobDir, lessonPlan) {
