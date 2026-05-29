@@ -78,6 +78,33 @@ function getContinuityScenes(narrationContinuity = {}) {
   return asArray(narrationContinuity.scenes);
 }
 
+
+function getTeachingUnitId(value = {}) {
+  return (
+    value.teachingUnitId ||
+    value.id ||
+    value.metadata?.teachingUnitId ||
+    null
+  );
+}
+
+function getHopId(value = {}) {
+  return (
+    value.hopId ||
+    value.metadata?.hopId ||
+    null
+  );
+}
+
+function getCanonicalOrder(value = {}) {
+  return (
+    value.canonicalOrder ||
+    value.metadata?.canonicalOrder ||
+    null
+  );
+}
+
+
 function getTraversalUnits(architectureTraversal = {}) {
   return asArray(
     architectureTraversal.regionTraversalDebug?.units ||
@@ -249,26 +276,129 @@ function shouldUseSoftTransition({ continuityType }) {
 }
 
 function findContinuityScene({ continuityScenes, unit, section, index }) {
-  return (
-    continuityScenes[index] ||
-    continuityScenes.find((scene) => scene.title === unit?.title) ||
-    continuityScenes.find((scene) => scene.title === section?.caption) ||
-    null
+  const teachingUnitId =
+    getTeachingUnitId(section) ||
+    getTeachingUnitId(unit);
+
+  const hopId =
+    getHopId(section) ||
+    getHopId(unit);
+
+  const canonicalOrder =
+    getCanonicalOrder(section) ||
+    getCanonicalOrder(unit);
+
+  const byTeachingUnitId = continuityScenes.find(
+    (scene) =>
+      teachingUnitId &&
+      scene.teachingUnitId === teachingUnitId
   );
+
+  if (byTeachingUnitId) {
+    return {
+      scene: byTeachingUnitId,
+      matchStrategy: "teachingUnitId",
+    };
+  }
+
+  const byHopId = continuityScenes.find(
+    (scene) =>
+      hopId &&
+      scene.hopId === hopId
+  );
+
+  if (byHopId) {
+    return {
+      scene: byHopId,
+      matchStrategy: "hopId",
+    };
+  }
+
+  const byCanonicalOrder = continuityScenes.find(
+    (scene) =>
+      canonicalOrder &&
+      scene.canonicalOrder === canonicalOrder
+  );
+
+  if (byCanonicalOrder) {
+    return {
+      scene: byCanonicalOrder,
+      matchStrategy: "canonicalOrder",
+    };
+  }
+
+  const byUnitTitle = continuityScenes.find(
+    (scene) => scene.title === unit?.title
+  );
+
+  if (byUnitTitle) {
+    return {
+      scene: byUnitTitle,
+      matchStrategy: "unitTitle",
+    };
+  }
+
+  const bySectionCaption = continuityScenes.find(
+    (scene) => scene.title === section?.caption
+  );
+
+  if (bySectionCaption) {
+    return {
+      scene: bySectionCaption,
+      matchStrategy: "sectionCaption",
+    };
+  }
+
+  const byIndex = continuityScenes[index] || null;
+
+  return {
+    scene: byIndex,
+    matchStrategy: byIndex ? "indexFallback" : "missing",
+  };
 }
 
 function findTraversalUnit({ traversalUnits, unit, continuityScene, index }) {
   const unitTitle = safeLower(unit?.title);
+    const teachingUnitId =
+    getTeachingUnitId(unit);
+
+    const hopId =
+    getHopId(unit);
+
+    const canonicalOrder =
+    getCanonicalOrder(unit);
+
   const continuityRegion = safeLower(continuityScene?.region);
   const unitRegion = safeLower(unit?.metadata?.regionAffinity);
 
-  return (
-    traversalUnits[index] ||
+    return (
+    traversalUnits.find(
+        (item) =>
+        teachingUnitId &&
+        getTeachingUnitId(item) === teachingUnitId
+    ) ||
+    traversalUnits.find(
+        (item) =>
+        hopId &&
+        getHopId(item) === hopId
+    ) ||
+    traversalUnits.find(
+        (item) =>
+        canonicalOrder &&
+        getCanonicalOrder(item) === canonicalOrder
+    ) ||
     traversalUnits.find((item) => safeLower(item.title) === unitTitle) ||
-    traversalUnits.find((item) => safeLower(item.regionAffinity) === continuityRegion) ||
-    traversalUnits.find((item) => safeLower(item.regionAffinity) === unitRegion) ||
+    traversalUnits.find(
+        (item) =>
+        safeLower(item.regionAffinity) === continuityRegion
+    ) ||
+    traversalUnits.find(
+        (item) =>
+        safeLower(item.regionAffinity) === unitRegion
+    ) ||
+    traversalUnits[index] ||
     null
-  );
+    );
 }
 
 function buildAlignmentWarnings({
@@ -278,6 +408,7 @@ function buildAlignmentWarnings({
   cameraScope,
   continuityScene,
   traversalUnit,
+  continuityMatchStrategy,
 }) {
   const warnings = [];
 
@@ -304,7 +435,15 @@ function buildAlignmentWarnings({
     warnings.push("low_confidence_region_should_not_drive_precise_camera");
   }
 
-  return warnings;
+  if (
+    continuityMatchStrategy === "unitTitle" ||
+    continuityMatchStrategy === "sectionCaption" ||
+    continuityMatchStrategy === "indexFallback"
+    ) {
+    warnings.push(`continuity_used_weak_match_${continuityMatchStrategy}`);
+    }
+
+    return warnings;
 }
 
 function buildCameraNarrationAlignment({
@@ -328,12 +467,14 @@ function buildCameraNarrationAlignment({
   for (let index = 0; index < sceneCount; index += 1) {
     const unit = teachingUnits[index] || {};
     const section = sections[index] || {};
-    const continuityScene = findContinuityScene({
-      continuityScenes,
-      unit,
-      section,
-      index,
+    const continuityMatch = findContinuityScene({
+    continuityScenes,
+    unit,
+    section,
+    index,
     });
+
+    const continuityScene = continuityMatch.scene;
 
     const traversalUnit = findTraversalUnit({
       traversalUnits,
@@ -423,14 +564,20 @@ function buildCameraNarrationAlignment({
         cameraScope,
         continuityScene,
         traversalUnit,
-      }),
+        continuityMatchStrategy: continuityMatch.matchStrategy,
+        }),
 
-      sources: {
+      matchStrategy: {
+        narrationContinuity:
+            continuityMatch.matchStrategy,
+        },
+
+        sources: {
         teachingUnit: Boolean(unit.id),
         narrationContinuity: Boolean(continuityScene),
         regionTraversal: Boolean(traversalUnit),
         focusHint: Boolean(unit.focusHint || section.visualIntent?.focusHint),
-      },
+        },
     });
   }
 
@@ -450,7 +597,19 @@ function buildCameraNarrationAlignment({
     sceneCount: scenes.length,
     scenes,
     stats: {
-      warningCount: scenes.reduce(
+    weakContinuityMatchCount: scenes.filter((scene) =>
+        ["unitTitle", "sectionCaption", "indexFallback"].includes(
+        scene.matchStrategy?.narrationContinuity
+        )
+    ).length,
+
+    strongContinuityMatchCount: scenes.filter((scene) =>
+        ["teachingUnitId", "hopId", "canonicalOrder"].includes(
+        scene.matchStrategy?.narrationContinuity
+        )
+    ).length,
+
+    warningCount: scenes.reduce(
         (sum, scene) => sum + scene.alignmentWarnings.length,
         0
       ),
