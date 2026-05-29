@@ -325,6 +325,21 @@ function getCanonicalRail(unit = {}) {
   );
 }
 
+function getTeachingUnitId(unit = {}) {
+  return unit.id || unit.metadata?.teachingUnitId || null;
+}
+
+function getHopMetadata(unit = {}) {
+  return {
+    hopId: unit.metadata?.hopId || null,
+    flowLaneId: unit.metadata?.flowLaneId || null,
+    flowLaneType: unit.metadata?.flowLaneType || null,
+    canonicalOrder: unit.metadata?.canonicalOrder || null,
+    selectedForPrimaryWalkthrough:
+      unit.metadata?.selectedForPrimaryWalkthrough === true,
+  };
+}
+
 function getCanonicalHop(unit = {}) {
   const segment = unit.metadata?.enrichedSegments?.[0];
   const canonicalTraversal = segment?.canonicalTraversal;
@@ -467,6 +482,9 @@ function buildNarrationContinuity({
     const canonicalRail = getCanonicalRail(unit);
     const canonicalHop = getCanonicalHop(unit);
 
+    const teachingUnitId = getTeachingUnitId(unit);
+    const hopMetadata = getHopMetadata(unit);
+
     const primaryEntity =
       components[0] ||
       readName(unit.metadata?.primaryEntity) ||
@@ -490,10 +508,20 @@ function buildNarrationContinuity({
     });
 
     const sceneContinuity = {
-      sceneIndex: index,
-      title,
-      region,
-      primaryEntity,
+        sceneIndex: index,
+
+        teachingUnitId,
+
+        hopId: hopMetadata.hopId,
+        flowLaneId: hopMetadata.flowLaneId,
+        flowLaneType: hopMetadata.flowLaneType,
+        canonicalOrder: hopMetadata.canonicalOrder,
+        selectedForPrimaryWalkthrough:
+            hopMetadata.selectedForPrimaryWalkthrough,
+
+        title,
+        region,
+        primaryEntity,
       concepts,
       components,
       handoffs,

@@ -1183,26 +1183,41 @@ function buildArchitectureNarrationGoals(chapter) {
 
 
 function buildCanonicalRailSummary(canonicalTraversalRail = {}) {
+  const selectedWalkthrough =
+    canonicalTraversalRail?.selectedWalkthrough || null;
+
   const selectedHops = asArray(canonicalTraversalRail?.hops)
     .filter((hop) => hop?.selectedForPrimaryWalkthrough === true)
     .sort((a, b) => Number(a.canonicalOrder || 0) - Number(b.canonicalOrder || 0));
 
-  if (!selectedHops.length) return null;
+  if (!selectedWalkthrough && !selectedHops.length) {
+    return null;
+  }
 
   return {
     source: "canonical_traversal_rail",
-    selectedFlowLaneId: canonicalTraversalRail.selectedFlowLaneId || null,
-    selectedFlowLaneType: selectedHops[0]?.flowLaneType || null,
+
+    selectedWalkthrough,
+
+    selectedFlowLaneId:
+      selectedWalkthrough?.primaryFlowLaneId ||
+      canonicalTraversalRail.selectedFlowLaneId ||
+      null,
+
+    selectedFlowLaneType:
+      selectedHops[0]?.flowLaneType || null,
     hopCount: selectedHops.length,
     firstHop: selectedHops[0],
     lastHop: selectedHops[selectedHops.length - 1],
-    pathText: selectedHops
-      .map((hop, index) => {
-        const from = hop?.from?.name || "Upstream";
-        const to = hop?.to?.name || "Downstream";
-        return index === 0 ? `${from} → ${to}` : `→ ${to}`;
-      })
-      .join(" "),
+    pathText:
+      selectedWalkthrough?.pathText ||
+      selectedHops
+        .map((hop, index) => {
+          const from = hop?.from?.name || "Upstream";
+          const to = hop?.to?.name || "Downstream";
+          return index === 0 ? `${from} → ${to}` : `→ ${to}`;
+        })
+        .join(" "),
     hops: selectedHops.map((hop) => ({
       hopId: hop.hopId,
       canonicalOrder: hop.canonicalOrder,
@@ -1231,6 +1246,11 @@ function buildArchitectureTeachingUnitFromChapter({
   const isOverview = chapter?.type === "architecture_overview";
   const isRecap = chapter?.type === "architecture_recap";
   const teachingRegion = buildArchitectureTeachingRegion(chapter, chapterIndex);
+
+  const canonicalTraversal =
+    chapter?.canonicalTraversal ||
+    chapter?.enrichedSegments?.[0]?.canonicalTraversal ||
+    null;
 
   return {
     id: `architecture_teaching_${slugify(chapter?.id || title || chapterIndex)}`,
@@ -1264,6 +1284,14 @@ function buildArchitectureTeachingUnitFromChapter({
       role: isOverview ? "architecture_overview" : isRecap ? "architecture_recap" : "architecture_semantic_chapter",
       architectureFirst: true,
       source: "architecture_teaching",
+
+      hopId: canonicalTraversal?.hopId || null,
+      flowLaneId: canonicalTraversal?.flowLaneId || null,
+      flowLaneType: canonicalTraversal?.flowLaneType || null,
+      canonicalOrder: canonicalTraversal?.canonicalOrder || null,
+      selectedForPrimaryWalkthrough:
+        canonicalTraversal?.selectedForPrimaryWalkthrough === true,
+
       architectureTeachingChapterId: chapter?.id || null,
       sourceChapterId: chapter?.sourceChapterId || null,
       chapterType: chapter?.type || null,
@@ -1391,6 +1419,7 @@ function buildArchitectureSegmentChapter(segment = {}, index = 0) {
     title: `${from} → ${to}`,
     confidence: segment.confidence || "medium",
     enrichedSegments: [segment],
+    canonicalTraversal: segment.canonicalTraversal || null,
     teachingContext: {
       operationalMeaning:
         segment.teachingContext?.operationalMeaning ||

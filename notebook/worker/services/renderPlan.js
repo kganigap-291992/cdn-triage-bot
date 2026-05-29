@@ -1501,6 +1501,22 @@ function createRenderPlan(jobDir) {
 
       teachingUnitId: section.teachingUnitId || null,
       teachingMode: section.teachingMode || null,
+
+      hopId: section.metadata?.hopId || null,
+      flowLaneId: section.metadata?.flowLaneId || null,
+      flowLaneType: section.metadata?.flowLaneType || null,
+      canonicalOrder: section.metadata?.canonicalOrder || null,
+
+      metadata: {
+        ...(section.metadata || {}),
+        teachingUnitId: section.teachingUnitId || null,
+        hopId: section.metadata?.hopId || null,
+        flowLaneId: section.metadata?.flowLaneId || null,
+        flowLaneType: section.metadata?.flowLaneType || null,
+        canonicalOrder: section.metadata?.canonicalOrder || null,
+        selectedForPrimaryWalkthrough:
+          section.metadata?.selectedForPrimaryWalkthrough === true,
+      },
       narrationGoals: section.narrationGoals || [],
       avoidNarration: section.avoidNarration || [],
 

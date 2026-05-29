@@ -434,6 +434,53 @@ function buildNodeMemberships(hops = []) {
   }));
 }
 
+function buildPathText(hops = []) {
+  if (!hops.length) return "";
+
+  return hops
+    .map((hop, index) => {
+      const from = hop?.from?.name || "Upstream";
+      const to = hop?.to?.name || "Downstream";
+      return index === 0 ? `${from} → ${to}` : `→ ${to}`;
+    })
+    .join(" ");
+}
+
+function buildSelectedWalkthrough(hops = [], selectedLane = null) {
+  const selectedHops = hops
+    .filter((hop) => hop.selectedForPrimaryWalkthrough === true)
+    .sort((a, b) => Number(a.canonicalOrder || 0) - Number(b.canonicalOrder || 0));
+
+  if (!selectedHops.length) return null;
+
+  const laneTypes = Array.from(
+    new Set(selectedHops.map((hop) => hop.flowLaneType).filter(Boolean))
+  );
+
+  return {
+    version: "selected-walkthrough-v1",
+    type:
+      laneTypes.length > 1
+        ? "cross_lane_primary_walkthrough"
+        : "single_lane_primary_walkthrough",
+    primaryFlowLaneId:
+      selectedLane?.flowLaneId ||
+      selectedHops.find((hop) => hop.flowLaneType === "primary_request_flow")?.flowLaneId ||
+      selectedHops[0]?.flowLaneId ||
+      null,
+    includesSupportingLaneHops: selectedHops.some(
+      (hop) => hop.flowLaneType !== "primary_request_flow"
+    ),
+    selectedHopIds: selectedHops.map((hop) => hop.hopId),
+    hopCount: selectedHops.length,
+    firstHopId: selectedHops[0]?.hopId || null,
+    lastHopId: selectedHops[selectedHops.length - 1]?.hopId || null,
+    pathText: buildPathText(selectedHops),
+    laneTypes,
+  };
+}
+
+
 function buildSharedNodeSummary(nodeMemberships = []) {
   return nodeMemberships
     .map((node) => {
@@ -511,8 +558,10 @@ function buildCanonicalTraversalRail({
     flowLanes[0] ||
     null;
 
-  const nodeMemberships = buildNodeMemberships(hops);
-  const sharedNodeSummary = buildSharedNodeSummary(nodeMemberships);
+    const selectedWalkthrough = buildSelectedWalkthrough(hops, selectedLane);
+
+    const nodeMemberships = buildNodeMemberships(hops);
+    const sharedNodeSummary = buildSharedNodeSummary(nodeMemberships);
 
   const warnings = [];
 
@@ -539,6 +588,7 @@ function buildCanonicalTraversalRail({
 
     identityType: 'handoff_edge',
     selectedFlowLaneId: selectedLane?.flowLaneId || null,
+    selectedWalkthrough,
 
     strategy: {
       traversalIdentity: 'edge_or_handoff_based_not_node_based',
