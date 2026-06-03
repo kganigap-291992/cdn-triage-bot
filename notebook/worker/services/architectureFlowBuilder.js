@@ -57,6 +57,14 @@ const {
   scoreRegionAffinity,
 } = require("./architectureTraversalWeights");
 
+const {
+  buildArchitectureFlowLanes,
+} = require("./architectureFlowLaneBuilder");
+
+const {
+  buildSharedInfrastructureFromFlowLanes,
+} = require("./architectureSharedInfrastructureBuilder");
+
 function normalizeText(value) {
   return String(value || "").trim();
 }
@@ -249,8 +257,8 @@ function buildRelationshipList(architectureUnderstanding = {}, componentIndex) {
         targetName: targetComponent.name,
         type: getRelationshipType(rel),
         edgeLabel: rel?.edgeLabel || rel?.label || rel?.relationshipLabel || "",
-        interactionMode: rel?.interactionMode || "unknown",
-        flowPriority: rel?.flowPriority || "unknown",
+        interactionMode: rel?.interactionMode || rel?.mappedInteractionMode || "unknown",
+        flowPriority: rel?.flowPriority || rel?.mappedFlowPriority || "unknown",
         directionality: rel?.directionality || "directed",
         reason: rel?.reason || "",
         inferred: rel?.inferred === true,
@@ -267,11 +275,23 @@ function buildRelationshipList(architectureUnderstanding = {}, componentIndex) {
           rel?.reason,
           rel?.raw
         ),
+
+        mappedInteractionMode: rel?.mappedInteractionMode || null,
+        mappedFlowPriority: rel?.mappedFlowPriority || null,
+        mappedEvidenceSource: rel?.mappedEvidenceSource || null,
+        mappedConfidence: rel?.mappedConfidence || null,
+        mappedReason: rel?.mappedReason || null,
+
+        evidenceInteraction: rel?.evidenceInteraction || null,
+        stepArrowFusion: rel?.stepArrowFusion || null,
+        contextualRoles: rel?.contextualRoles || null,
+
         source:
           rel?.source ||
           rel?.sourceType ||
           rel?.evidenceSource ||
           "architecture_understanding",
+
         raw: rel,
       };
     })
@@ -649,16 +669,46 @@ function rankOutgoingEdges(edges, previousEdge = null) {
 
 function buildSegment(index, fromComponent, toComponent, edge) {
   return {
-    id: `segment_${index + 1}_${normalizeKey(fromComponent.name)}_to_${normalizeKey(
-      toComponent.name
-    )}`,
+    id: `segment_${index + 1}_${normalizeKey(
+      fromComponent.name
+    )}_to_${normalizeKey(toComponent.name)}`,
+
     from: serializeComponentForFlow(fromComponent),
     to: serializeComponentForFlow(toComponent),
+
     relationshipType: edge.type,
+
+    interactionMode:
+      edge.interactionMode ||
+      edge.mappedInteractionMode ||
+      "unknown",
+
+    flowPriority:
+      edge.flowPriority ||
+      edge.mappedFlowPriority ||
+      "unknown",
+
+    directionality:
+      edge.directionality ||
+      "directed",
+
     confidence: edge.confidence,
     evidenceIds: edge.evidenceIds,
-    structuralHandoff: inferStructuralHandoff(fromComponent, toComponent, edge),
-    teachingPurpose: inferTeachingPurpose(fromComponent, toComponent, edge),
+
+    structuralHandoff: inferStructuralHandoff(
+      fromComponent,
+      toComponent,
+      edge
+    ),
+
+    teachingPurpose: inferTeachingPurpose(
+      fromComponent,
+      toComponent,
+      edge
+    ),
+
+    rawEdge: edge,
+    traversalScoring: scoreRelationship(edge),
   };
 }
 
@@ -811,41 +861,44 @@ function inferInteractionModeFromText(
   const value = normalizeText(text).toLowerCase();
 
   if (
-    /\b(metrics?|telemetry|observability|logs?|monitoring|health|reports?|emits?|collects?)\b/.test(
-      value
-    )
+    /\b(metrics?|telemetry|observability|logs?|monitoring|health|reports?|emits?|collects?)\b/.test(value)
   ) {
     return "observability_signal";
   }
 
   if (
-    /\b(config|configuration|control plane|policy|rules?|settings?|pushes? config|manages? config|controls?)\b/.test(
-      value
-    )
+    /\b(config|configuration|control plane|policy|rules?|settings?|pushes? config|manages? config|controls?)\b/.test(value)
   ) {
     return "configuration_flow";
   }
 
   if (
-    /\b(auth|authentication|authorization|authorize|validates?|verifies?|access check|policy check|token|credential)\b/.test(
-      value
-    )
+    /\b(auth|authentication|authorization|authorize|validates?|verifies?|access check|policy check|token|credential)\b/.test(value)
   ) {
     return "auth_validation";
   }
 
   if (
-    /\b(cache|cdn|edge cache|payload|content|object|asset|manifest|deliver|delivery)\b/.test(
-      value
-    )
+    /\b(cache|cdn|edge cache|payload|content|object|asset|manifest|deliver|delivery)\b/.test(value)
   ) {
     return "payload_delivery";
   }
 
+  // Persistence / state should beat routing when text includes both.
   if (
-    /\b(async|event|queue|publish|subscribe|stream|message|notification)\b/.test(
-      value
-    )
+    /\b(reads?|writes?|read and write|persistent|persistence|database|system of record|state|storage|stored|records?)\b/.test(value)
+  ) {
+    return "bidirectional_sync";
+  }
+
+  if (
+    /\b(distributes?|routes?|routing|load[-\s]?balances?|service distribution|internal service distribution|directs? traffic)\b/.test(value)
+  ) {
+    return "traffic_distribution";
+  }
+
+  if (
+    /\b(async|event|queue|publish|subscribe|stream|message|notification)\b/.test(value)
   ) {
     return "async_event";
   }
@@ -904,9 +957,24 @@ function buildExplicitSequenceSegment({
       ? "request_response"
       : "topology_continuity";
 
-  const inferredInteractionMode =
+  let inferredInteractionMode =
     relationshipHint?.interactionMode ||
     inferInteractionModeFromText(sequenceText, fallbackMode);
+
+  const targetKey = normalizeKey(toComponent.name);
+
+  if (
+    /application|app|service|processor|worker|cluster|runtime|execution/.test(targetKey) &&
+    inferredInteractionMode === "bidirectional_sync"
+  ) {
+    inferredInteractionMode = "traffic_distribution";
+  }
+
+  if (
+    /database|state|store|storage|record|repository|persistent/.test(targetKey)
+  ) {
+    inferredInteractionMode = "bidirectional_sync";
+  }
 
   const inferredFlowPriority =
     relationshipHint?.flowPriority ||
@@ -946,8 +1014,19 @@ function buildExplicitSequenceSegment({
     from: serializeComponentForFlow(fromComponent),
     to: serializeComponentForFlow(toComponent),
     relationshipType: "explicit_document_sequence",
+
+    interactionMode:
+      syntheticEdge.interactionMode || "unknown",
+
+    flowPriority:
+      syntheticEdge.flowPriority || "unknown",
+
+    directionality:
+      syntheticEdge.directionality || "directed",
+
     confidence,
     evidenceIds: syntheticEdge.evidenceIds,
+
     structuralHandoff: inferStructuralHandoff(fromComponent, toComponent),
     teachingPurpose: inferTeachingPurpose(fromComponent, toComponent),
     source: "explicit_document_sequence",
@@ -1549,7 +1628,15 @@ function buildArchitectureFlow(architectureUnderstanding = {}, options = {}) {
     architectureUnderstanding,
     componentIndex
   );
+
   const adjacency = buildAdjacency(relationships);
+
+  const flowLanes = buildArchitectureFlowLanes({
+    relationships,
+  });
+
+  const sharedInfrastructure =
+    buildSharedInfrastructureFromFlowLanes(flowLanes);
 
   let flowGroups = buildFlowGroupsFromExplicitSequences(
     architectureUnderstanding,
@@ -1596,7 +1683,14 @@ function buildArchitectureFlow(architectureUnderstanding = {}, options = {}) {
     stats: {
       componentCount: componentIndex.components.length,
       relationshipCount: relationships.length,
+
       flowGroupCount: flowGroups.length,
+      flowLaneCount: flowLanes.stats.laneCount,
+      sharedFlowNodeCount: flowLanes.stats.sharedNodeCount,
+
+      sharedInfrastructureCount:
+        sharedInfrastructure.stats.sharedNodeCount,
+
       segmentCount: allSegments.length,
       chapterCount: chapters.length,
       structuralRoleBreakdown: buildStructuralRoleBreakdown(
@@ -1604,6 +1698,8 @@ function buildArchitectureFlow(architectureUnderstanding = {}, options = {}) {
       ),
     },
     flowGroups,
+    flowLanes,
+    sharedInfrastructure,
     chapters,
         selectedPrimaryTraversal: canonicalPrimaryFlow
     ? {

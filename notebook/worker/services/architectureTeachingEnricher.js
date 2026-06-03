@@ -565,7 +565,53 @@ function resolveEvidenceSummary(segment = {}, evidenceIndex) {
   };
 }
 
+function getSegmentInteractionMode(segment = {}) {
+  return normalizeKey(
+    segment.interactionMode ||
+      segment.flowClassification?.interactionMode ||
+      segment.classification?.interactionMode ||
+      segment.relationship?.interactionMode ||
+      segment.canonicalTraversal?.interactionMode ||
+      ""
+  );
+}
+
+function deriveTeachingConceptFromInteractionMode(segment = {}) {
+  const mode = getSegmentInteractionMode(segment);
+
+  const byMode = {
+    request_response: "ingress_boundary",
+    payload_delivery: "ingress_boundary",
+    traffic_distribution: "routing_control",
+    auth_validation: "validation_checkpoint",
+    configuration_flow: "routing_control",
+    management_relationship: "routing_control",
+    observability_signal: "generic_handoff",
+    health_signal: "generic_handoff",
+    async_event: "fanout_distribution",
+    fan_out: "fanout_distribution",
+    fan_in: "fanout_distribution",
+    broadcast: "fanout_distribution",
+    bidirectional_sync: "persistence_state",
+    metadata_lookup: "routing_control",
+    dependency: "generic_handoff",
+    workflow_transition: "generic_handoff",
+    failure_or_fallback: "generic_handoff",
+    cross_region_transition: "fanout_distribution",
+    parallel_primary_flow: "fanout_distribution",
+  };
+
+  return byMode[mode] || null;
+}
+
 function inferGenericConcept(segment = {}) {
+  const interactionConcept =
+    deriveTeachingConceptFromInteractionMode(segment);
+
+  if (interactionConcept) {
+    return interactionConcept;
+  }
+
   const toName = normalizeKey(segment.to?.name);
 
   // PERSISTENCE / STATE
@@ -715,6 +761,26 @@ async function enrichSegment(
     },
 
     genericConcept,
+    teachingConceptSource:
+      deriveTeachingConceptFromInteractionMode(segment)
+        ? "interaction_mode"
+        : "target_name_fallback",
+
+    interactionMode:
+      segment.interactionMode ||
+      segment.flowClassification?.interactionMode ||
+      null,
+
+    flowPriority:
+      segment.flowPriority ||
+      segment.flowClassification?.flowPriority ||
+      null,
+
+    directionality:
+      segment.directionality ||
+      segment.flowClassification?.directionality ||
+      null,
+
     teachingContext: {
       conceptLabel: concept.label,
       operationalMeaning: concept.operationalMeaning,
@@ -1197,6 +1263,13 @@ function writeArchitectureTeachingDebugArtifact(options = {}, enrichedSegments =
       segmentId: segment.sourceSegmentId || segment.id,
       from: segment.from?.name || null,
       to: segment.to?.name || null,
+
+      interactionMode: segment.interactionMode || null,
+      flowPriority: segment.flowPriority || null,
+      directionality: segment.directionality || null,
+      genericConcept: segment.genericConcept || null,
+      teachingConceptSource: segment.teachingConceptSource || null,
+
       documentSays: segment.documentSays,
       glossaryMatches: segment.glossaryMatches || [],
       llmUsed: segment.llmUsed,

@@ -1,10 +1,13 @@
 'use strict';
 
 /**
- * BUG-22H — Flow Classification
+ * BUG-22U.1A — Flow Classification
  *
- * Classifies typed architecture relationships into semantic interaction modes,
+ * Interprets typed architecture relationships into semantic interaction modes,
  * flow priorities, and directionality.
+ *
+ * EdgeTyping owns detection/tagging.
+ * FlowClassification owns interpretation/scoring.
  *
  * No traversal changes here.
  */
@@ -15,6 +18,28 @@ function normalize(value) {
 
 function lower(value) {
   return normalize(value).toLowerCase();
+}
+
+function getRelationshipSearchText(relationship = {}) {
+  return lower(
+    [
+      relationship.edgeLabel,
+      relationship.label,
+      relationship.evidenceText,
+      relationship.rawText,
+      relationship.text,
+      relationship.evidence,
+      relationship.reason,
+      relationship.type,
+      relationship.direction,
+      relationship.sourceName,
+      relationship.targetName,
+      relationship.from,
+      relationship.to,
+    ]
+      .filter(Boolean)
+      .join(' ')
+  );
 }
 
 function looksLikeEntityChain(label = '') {
@@ -28,7 +53,7 @@ function looksLikeEntityChain(label = '') {
   if (tokens.length < 3) return false;
 
   const hasVerb =
-    /\b(sends?|forwards?|routes?|validates?|reads?|writes?|authenticates?|authorizes?|delivers?|pushes?|pulls?|manages?|syncs?|replicates?|publishes?|subscribes?|streams?|requests?|responds?|calls?|reports?|emits?|collects?|monitors?|configures?|controls?|redirects?|resolves?)\b/i.test(
+    /\b(sends?|forwards?|routes?|validates?|reads?|writes?|authenticates?|authorizes?|delivers?|pushes?|pulls?|manages?|syncs?|replicates?|publishes?|subscribes?|streams?|requests?|responds?|calls?|reports?|emits?|collects?|monitors?|configures?|controls?|redirects?|resolves?|fails?|fallbacks?|mirrors?|branches?|joins?|broadcasts?)\b/i.test(
       value
     );
 
@@ -39,7 +64,7 @@ function looksLikeEntityChain(label = '') {
   ).length;
 
   const knownArchitectureNounCount = tokens.filter((token) =>
-    /^(client|cdn|edge|api|gateway|auth|service|routing|layer|application|cluster|database|cache|origin|proxy|router|worker|node|region|zone)$/i.test(
+    /^(client|cdn|edge|api|gateway|auth|service|routing|layer|application|cluster|database|cache|origin|proxy|router|worker|node|region|zone|queue|topic|bus|stream|monitor|metrics|controller|control|plane)$/i.test(
       token
     )
   ).length;
@@ -53,79 +78,210 @@ function looksLikeEntityChain(label = '') {
 function classifyInteractionMode(relationship = {}) {
   const edgeType = relationship.edgeType || 'unknown';
   const label = lower(relationship.edgeLabel || '');
+  const searchText = getRelationshipSearchText(relationship);
+  const lineStyle = relationship.lineStyle || relationship.edgeStyle || '';
+
+  if (relationship.mappedInteractionMode) {
+    return relationship.mappedInteractionMode;
+  }
 
   // Entity chains are topology continuity, not semantic actions.
   if (looksLikeEntityChain(relationship.edgeLabel || '')) {
     return 'topology_continuity';
   }
 
+  // Strong edge typing wins first.
   if (edgeType === 'observability_signal') return 'observability_signal';
   if (edgeType === 'health_signal') return 'health_signal';
+
+  if (edgeType === 'control_flow') {
+    if (
+      /\b(auth|authentication|authorization|authorize|validates?|policy check|access check|token|credential)\b/i.test(
+        searchText
+      )
+    ) {
+      return 'auth_validation';
+    }
+
+    return 'configuration_flow';
+  }
+
   if (edgeType === 'configuration_flow') return 'configuration_flow';
   if (edgeType === 'async_event') return 'async_event';
   if (edgeType === 'replication_or_sync') return 'bidirectional_sync';
   if (edgeType === 'metadata_request') return 'metadata_lookup';
   if (edgeType === 'content_or_payload_delivery') return 'payload_delivery';
+  if (edgeType === 'failure_or_fallback') return 'failure_or_fallback';
+  if (edgeType === 'dependency') return 'dependency';
+  if (edgeType === 'management_relationship') return 'management_relationship';
+  if (edgeType === 'workflow_transition') return 'workflow_transition';
 
+  // OpenTelemetry-style signals: request, response, dependency, async, telemetry.
   if (
-    /\b(metrics?|telemetry|monitoring|observability|logs?|health|reports?|emits?|collects?)\b/i.test(
-      label
+    /\b(metrics?|telemetry|monitoring|observability|logs?|traces?|spans?|health|reports?|emits?|collects?)\b/i.test(
+      searchText
     )
   ) {
     return 'observability_signal';
   }
 
   if (
-    /\b(config|configuration|control plane|policy|rules?|settings?|manages? config|pushes? config|controls?)\b/i.test(
-      label
+    /\b(health\s*check|heartbeat|liveness|readiness|probe|status\s*check)\b/i.test(
+      searchText
     )
   ) {
-    return 'configuration_flow';
+    return 'health_signal';
   }
 
   if (
     /\b(auth|authentication|authorization|authorize|validates?|policy check|access check|token|credential)\b/i.test(
-      label
+      searchText
     )
   ) {
     return 'auth_validation';
   }
 
   if (
+    /\b(config|configuration|control plane|policy|rules?|settings?|manages? config|pushes? config|controls?|admin|management|orchestrates?|governs?)\b/i.test(
+      searchText
+    )
+  ) {
+    if (/\b(management|admin|governs?|orchestrates?)\b/i.test(searchText)) {
+      return 'management_relationship';
+    }
+
+    return 'configuration_flow';
+  }
+
+  if (
+    /\b(failover|fallback|fail\s*over|backup|standby|secondary|disaster recovery|dr|redirects? on failure|fallbacks?)\b/i.test(
+      searchText
+    )
+  ) {
+    return 'failure_or_fallback';
+  }
+
+  // BPMN-style flow patterns: gateway, branch, join, broadcast, workflow.
+  if (
+    /\b(fan[-\s]?out|fans?\s+out|branches?|splits?|parallel branch|scatter|distributes? to multiple|one[-\s]?to[-\s]?many)\b/i.test(
+      searchText
+    )
+  ) {
+    return 'fan_out';
+  }
+
+  if (
+    /\b(fan[-\s]?in|joins?|merges?|aggregates?|many[-\s]?to[-\s]?one|gathers?)\b/i.test(
+      searchText
+    )
+  ) {
+    return 'fan_in';
+  }
+
+  if (
+    /\b(broadcasts?|publishes? to all|multicast|notify all|notifies all)\b/i.test(
+      searchText
+    )
+  ) {
+    return 'broadcast';
+  }
+
+  if (
+    /\b(workflow|transition|state change|step transition|handoff|approval|event flow|message flow)\b/i.test(
+      searchText
+    )
+  ) {
+    return 'workflow_transition';
+  }
+
+  if (
+    /\b(region|cross[-\s]?region|multi[-\s]?region|active[-\s]?active|active[-\s]?passive|datacenter|data center|dc|availability zone|az)\b/i.test(
+      searchText
+    )
+  ) {
+    return 'cross_region_transition';
+  }
+
+  if (
+    /\b(parallel primary|primary rail|primary path|mirrored path|duplicated architecture|same path in another region)\b/i.test(
+      searchText
+    )
+  ) {
+    return 'parallel_primary_flow';
+  }
+
+  if (
+    /\b(request|response|sends?|forwards?|routes?|delivers?|calls?|invokes?)\b/i.test(
+      searchText
+    )
+  ) {
+    return 'request_response';
+  }
+
+  if (
     /\b(cache|cdn|edge cache|payload|content|object|asset|manifest|deliver|delivery)\b/i.test(
-      label
+      searchText
     )
   ) {
     return 'payload_delivery';
   }
 
   if (
-    /\b(manages? internal service distribution|distributes? traffic|routes? requests?)\b/i.test(
-      label
+    /\b(manages? internal service distribution|distributes? traffic|routes? requests?|load balances?|load[-\s]?balanc(?:e|es|ing))\b/i.test(
+      searchText
     )
   ) {
     return 'traffic_distribution';
   }
 
   if (
-    /\b(reads? and writes?|sync|synchroni[sz]e|replicat|mirror)\b/i.test(label)
+    /\b(reads? and writes?|sync|synchroni[sz]e|replicat|mirror|two[-\s]?way|bidirectional|bi[-\s]?directional)\b/i.test(
+      searchText
+    )
   ) {
     return 'bidirectional_sync';
   }
 
   if (
-    /\b(request|response|sends?|forwards?|routes?|delivers?|calls?)\b/i.test(
-      label
+    /\b(async|asynchronous|event|queue|topic|stream|publish|subscribe|pubsub|pub\/sub|message bus)\b/i.test(
+      searchText
     )
   ) {
-    return 'request_response';
+    return 'async_event';
   }
 
-  return 'unknown';
+  if (
+    /\b(metadata|lookup|resolve|resolution|catalog|registry)\b/i.test(
+      searchText
+    )
+  ) {
+    return 'metadata_lookup';
+  }
+
+  // Mermaid-style line semantics. Style modifies meaning; it does not create
+  // primary traversal by itself.
+  if (lineStyle === 'dotted_line') {
+    return 'dependency';
+  }
+
+  if (lineStyle === 'dashed_line') {
+    return 'dependency';
+  }
+
+  if (lineStyle === 'double_line') {
+    return 'bidirectional_sync';
+  }
+
+  return 'unknown_interaction';
 }
 
 function classifyFlowPriority(relationship = {}) {
-  const interactionMode = classifyInteractionMode(relationship);
+  if (relationship.mappedFlowPriority) {
+    return relationship.mappedFlowPriority;
+  }
+
+  const interactionMode =
+    relationship.interactionMode || classifyInteractionMode(relationship);
 
   if (
     interactionMode === 'observability_signal' ||
@@ -139,7 +295,17 @@ function classifyFlowPriority(relationship = {}) {
     interactionMode === 'bidirectional_sync' ||
     interactionMode === 'auth_validation' ||
     interactionMode === 'async_event' ||
-    interactionMode === 'topology_continuity'
+    interactionMode === 'topology_continuity' ||
+    interactionMode === 'failure_or_fallback' ||
+    interactionMode === 'dependency' ||
+    interactionMode === 'management_relationship' ||
+    interactionMode === 'workflow_transition' ||
+    interactionMode === 'fan_out' ||
+    interactionMode === 'fan_in' ||
+    interactionMode === 'broadcast' ||
+    interactionMode === 'cross_region_transition' ||
+    interactionMode === 'parallel_primary_flow' ||
+    interactionMode === 'unknown_interaction'
   ) {
     return 'supporting';
   }
@@ -153,11 +319,12 @@ function classifyFlowPriority(relationship = {}) {
     return 'primary';
   }
 
-  return 'unknown';
+  return 'supporting';
 }
 
 function inferDirectionality(relationship = {}) {
   const label = lower(relationship.edgeLabel || '');
+  const searchText = getRelationshipSearchText(relationship);
   const mode = relationship.interactionMode || '';
   const edgeType = relationship.edgeType || '';
 
@@ -168,9 +335,28 @@ function inferDirectionality(relationship = {}) {
   if (
     mode === 'bidirectional_sync' ||
     edgeType === 'replication_or_sync' ||
-    /\b(reads? and writes?|sync|synchroni[sz]e|replicat|mirror)\b/i.test(label)
+    /\b(reads? and writes?|sync|synchroni[sz]e|replicat|mirror|two[-\s]?way|bidirectional|bi[-\s]?directional)\b/i.test(
+      searchText
+    )
   ) {
     return 'bidirectional';
+  }
+
+  if (
+    mode === 'fan_out' ||
+    mode === 'broadcast' ||
+    /\b(fan[-\s]?out|broadcasts?|one[-\s]?to[-\s]?many)\b/i.test(searchText)
+  ) {
+    return 'one_to_many';
+  }
+
+  if (
+    mode === 'fan_in' ||
+    /\b(fan[-\s]?in|many[-\s]?to[-\s]?one|joins?|merges?|aggregates?)\b/i.test(
+      searchText
+    )
+  ) {
+    return 'many_to_one';
   }
 
   if (/\b(request|response)\b/i.test(label) || mode === 'request_response') {
@@ -180,7 +366,8 @@ function inferDirectionality(relationship = {}) {
   if (
     mode === 'observability_signal' ||
     mode === 'health_signal' ||
-    mode === 'configuration_flow'
+    mode === 'configuration_flow' ||
+    mode === 'management_relationship'
   ) {
     return 'one_way_signal';
   }
@@ -205,12 +392,18 @@ function classifyArchitectureRelationshipFlow(relationship = {}) {
     flowPriority,
     directionality,
     flowClassification: {
-      version: 'architecture-flow-classification-v1',
+      version: 'architecture-flow-classification-v2-enterprise-arrow-taxonomy',
       source: 'architectureFlowClassification',
+      lineStyle: relationship.lineStyle || relationship.edgeStyle || '',
+      mappedInteractionMode: relationship.mappedInteractionMode || null,
+      mappedFlowPriority: relationship.mappedFlowPriority || null,
+      mappedEvidenceSource: relationship.mappedEvidenceSource || null,
+      mappedConfidence: relationship.mappedConfidence || null,
+      mappedReason: relationship.mappedReason || null,
       notes: [
-        interactionMode === 'unknown'
-          ? 'no_interaction_mode_found'
-          : 'classified_from_edge_type_and_label',
+        interactionMode === 'unknown_interaction'
+          ? 'no_interaction_mode_found_defaulted_to_unknown_interaction'
+          : 'classified_from_edge_type_label_and_line_style',
       ],
     },
   };
@@ -229,4 +422,5 @@ module.exports = {
   classifyArchitectureRelationshipFlow,
   classifyArchitectureRelationshipFlows,
   looksLikeEntityChain,
+  getRelationshipSearchText,
 };

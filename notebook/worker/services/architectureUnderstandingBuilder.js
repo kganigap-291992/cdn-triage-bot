@@ -10,6 +10,9 @@ const {
   classifyArchitectureRelationshipFlows,
 } = require("./architectureFlowClassification");
 
+const {
+  mapArchitectureRelationshipsEvidence,
+} = require("./architectureEvidenceInteractionMapper");
 
 const {
   buildArchitectureGraphPartitions,
@@ -18,6 +21,18 @@ const {
 const {
   buildArchitectureRegionCollapse,
 } = require("./architectureRegionCollapse");
+
+const {
+  attachContextualRolesToRelationships,
+} = require("./architectureContextualRoleBuilder");
+
+const {
+  fuseStepArrowEvidence,
+} = require("./architectureStepArrowFusion");
+
+const {
+  inferUnknownEnterpriseComponents,
+} = require("./architectureUnknownComponentInference");
 
 
 const RELATIONSHIP_CONFIDENCE = {
@@ -1453,15 +1468,38 @@ function buildArchitectureUnderstanding(
     ]);
 
     const typedRelationships = typeArchitectureRelationships(
-    rawRelationships,
-    options.architectureEvidence || {}
+      rawRelationships,
+      options.architectureEvidence || {}
     );
 
-    const relationships = classifyArchitectureRelationshipFlows(
-    typedRelationships
+    const evidenceMappedRelationships =
+      mapArchitectureRelationshipsEvidence(
+        typedRelationships,
+        options.architectureEvidence || {}
+      );
+
+    const classifiedRelationships = classifyArchitectureRelationshipFlows(
+      evidenceMappedRelationships
     );
 
-    const flows = relationships.filter((relationship) => relationship.type === "explicit_flow");
+    const stepArrowFusion = fuseStepArrowEvidence({
+      relationships: classifiedRelationships,
+      explicitSequences,
+    });
+
+    const relationships = attachContextualRolesToRelationships(
+      stepArrowFusion.relationships || classifiedRelationships
+    );
+
+    const unknownComponentInference =
+      inferUnknownEnterpriseComponents({
+        components,
+        relationships,
+      });
+
+    const flows = relationships.filter(
+      (relationship) => relationship.type === "explicit_flow"
+    );
 
     
     const graphPartitions = buildArchitectureGraphPartitions(relationships);
@@ -1487,6 +1525,13 @@ function buildArchitectureUnderstanding(
 
     spatialRelationshipCandidates,
     architectureRegionCollapse,
+
+    stepArrowFusion: {
+      version: stepArrowFusion.version,
+      stats: stepArrowFusion.stats,
+    },
+
+    unknownComponentInference,
 
     semanticEnrichment: {
       hypotheses: [],
@@ -1535,7 +1580,23 @@ function buildArchitectureUnderstanding(
       ),
       relationshipCount: relationships.length,
       flowCount: flows.length,
-      primaryFlowRelationshipCount: graphPartitions.stats.primaryCount,
+
+      stepArrowFusedRelationshipCount:
+        stepArrowFusion.stats.fusedRelationshipCount,
+
+      stepArrowFusionStepCount:
+          stepArrowFusion.stats.stepCount,
+
+        contextualRoleRelationshipCount:
+          relationships.filter((item) => item.contextualRoles).length,
+
+        unknownComponentCount:
+          unknownComponentInference.stats.unknownComponentCount,
+
+        inferredUnknownComponentCount:
+          unknownComponentInference.stats.inferredUnknownComponentCount,
+
+        primaryFlowRelationshipCount: graphPartitions.stats.primaryCount,
         supportingFlowRelationshipCount: graphPartitions.stats.supportingCount,
         backgroundFlowRelationshipCount: graphPartitions.stats.backgroundCount,
         unknownFlowRelationshipCount: graphPartitions.stats.unknownCount,

@@ -389,6 +389,44 @@ function getCalmNarration(segment) {
   );
 }
 
+function buildRailNarrationIndex(jobDir) {
+  if (!jobDir) return new Map();
+
+  const railNarrationPath = path.join(
+    jobDir,
+    "architecture-rail-narration.json"
+  );
+
+  const payload = readJsonIfExists(railNarrationPath, {});
+  const rails = asArray(payload.rails);
+
+  const index = new Map();
+
+  for (const rail of rails) {
+    if (!rail.narration) continue;
+
+    if (rail.title) {
+      index.set(`title:${rail.title}`, rail.narration);
+    }
+
+    if (rail.flowLaneType) {
+      index.set(
+        `lane:${rail.flowLaneType}`,
+        rail.narration
+      );
+    }
+
+    if (rail.railId) {
+      index.set(
+        `id:${rail.railId}`,
+        rail.narration
+      );
+    }
+  }
+
+  return index;
+}
+
 function buildCalmNarrationIndex(jobDir) {
   if (!jobDir) return new Map();
 
@@ -488,19 +526,29 @@ function buildCalmNarrationTextFromSteps(
 
 
 function buildArchitectureTeachingTextFromSegments(segments = []) {
-  const usefulSegments = asArray(segments).filter(
-    (segment) =>
+  const usefulSegments = asArray(segments).filter((segment) => {
+    const fromName = cleanText(segment?.from?.name, 120);
+    const toName = cleanText(segment?.to?.name, 120);
+
+    return (
       getCalmNarration(segment) ||
       segment?.plainEnglish ||
       segment?.whyItMatters ||
       segment?.safeSemantics ||
-      segment?.memoryHook
-  );
+      segment?.memoryHook ||
+      (fromName && toName)
+    );
+  });
 
   if (!usefulSegments.length) return "";
 
+  const maxSegments =
+    usefulSegments.length <= 3
+      ? usefulSegments.length
+      : Math.min(usefulSegments.length, 5);
+
   return usefulSegments
-    .slice(0, 2)
+    .slice(0, maxSegments)
     .map((segment, index) => {
       const calmNarration = sentence(getCalmNarration(segment));
 
@@ -510,13 +558,24 @@ function buildArchitectureTeachingTextFromSegments(segments = []) {
 
       const prefix = buildFlowTransitionPrefix(index);
 
-      const plainEnglish = sentence(
-        prefix
-          ? `${prefix}${lowerFirst(segment.plainEnglish)}`
-          : segment.plainEnglish
-      );
+      const fromName = cleanText(segment?.from?.name, 120);
+      const toName = cleanText(segment?.to?.name, 120);
 
-      const flowContext = plainEnglish;
+      const fallbackHandoff =
+        fromName && toName
+          ? sentence(
+              `${prefix}${fromName} hands off to ${toName}, marking the next responsibility shift in the documented flow`
+            )
+          : "";
+
+      const flowContext = segment.plainEnglish
+        ? sentence(
+            prefix
+              ? `${prefix}${segment.plainEnglish}`
+              : segment.plainEnglish
+          )
+        : fallbackHandoff;
+
       const componentPurpose = sentence(segment.safeSemantics);
       const operationalImpact = sentence(segment.whyItMatters);
       const mentalModel = sentence(segment.memoryHook);
@@ -529,7 +588,9 @@ function buildArchitectureTeachingTextFromSegments(segments = []) {
         narrationParts.push(mentalModel);
       }
 
-      return narrationParts.filter(Boolean).join(" ");
+      const narration = narrationParts.filter(Boolean).join(" ");
+
+      return narration || fallbackHandoff;
     })
     .join(" ");
 }
@@ -679,10 +740,119 @@ function buildCanonicalRailNarrationText(
 }
 
 
+function getRailPurposeText(flowLaneType, primaryRailType) {
+  const primaryPrefix =
+    primaryRailType === "canonical_primary"
+      ? "This is the main walkthrough rail."
+      : primaryRailType === "parallel_primary"
+        ? "This is a parallel primary rail."
+        : "This is a supporting architecture rail.";
+
+  const purposeByLane = {
+    primary_request_flow:
+      "It shows how the main request path moves through the architecture as responsibility shifts from one layer to the next.",
+
+    cache_or_payload_delivery_flow:
+      "It shows the delivery side of the architecture — where content, payloads, or edge-facing traffic are handled before deeper platform work continues.",
+
+    auth_validation_flow:
+      "It shows the checkpoint side of the architecture — where the flow is checked, validated, or gated before downstream handling.",
+
+    bidirectional_sync_flow:
+      "It shows the state side of the architecture — where information may be read, written, synchronized, or connected to durable backend systems.",
+
+    config_control_flow:
+      "It shows the control side of the architecture — where policy, configuration, or coordination influences how the system behaves.",
+
+    observability_flow:
+      "It shows the visibility side of the architecture — where signals, health, or telemetry help operators understand what is happening.",
+  };
+
+  return [
+    primaryPrefix,
+    purposeByLane[flowLaneType] ||
+      "It groups related architecture handoffs into one coherent flow so the learner can understand the responsibility pattern instead of memorizing isolated arrows.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function formatRailPathFromHops(hops = []) {
+  const pathParts = asArray(hops)
+    .map((hop, index) => {
+      const from = cleanText(hop?.from?.name, 100);
+      const to = cleanText(hop?.to?.name, 100);
+
+      if (!from || !to) return null;
+
+      return index === 0 ? `${from} → ${to}` : `→ ${to}`;
+    })
+    .filter(Boolean);
+
+  return pathParts.join(" ");
+}
+
+function getRailResponsibilityText(flowLaneType, segments = []) {
+  const concepts = asArray(segments)
+    .map((segment) => cleanText(segment?.teachingContext?.conceptLabel, 100))
+    .filter(Boolean);
+
+  const uniqueConcepts = Array.from(new Set(concepts)).slice(0, 3);
+
+  if (uniqueConcepts.length > 0) {
+    return `Inside this rail, the main responsibility pattern is ${uniqueConcepts.join(" → ")}.`;
+  }
+
+  const fallbackByLane = {
+    primary_request_flow:
+      "Inside this rail, focus on how request ownership moves from entry toward deeper handling.",
+
+    cache_or_payload_delivery_flow:
+      "Inside this rail, focus on how delivery responsibility stays close to the edge before handing off deeper.",
+
+    auth_validation_flow:
+      "Inside this rail, focus on where the system appears to check or gate the flow.",
+
+    bidirectional_sync_flow:
+      "Inside this rail, focus on where the architecture connects to state or longer-lived information.",
+
+    config_control_flow:
+      "Inside this rail, focus on how control or configuration influences the path.",
+
+    observability_flow:
+      "Inside this rail, focus on how the architecture exposes signals for visibility.",
+  };
+
+  return fallbackByLane[flowLaneType] || "";
+}
+
+function buildRailAwareArchitectureText(unit) {
+  const metadata = unit?.metadata || {};
+  const flowLaneType = metadata.flowLaneType;
+  const primaryRailType = metadata.primaryRailType;
+  const hops = asArray(metadata.hops);
+  const segments = asArray(metadata.enrichedSegments);
+
+  const pathText = formatRailPathFromHops(hops);
+  const handoffNarration =
+    buildArchitectureTeachingTextFromSegments(segments);
+
+  return [
+    getRailPurposeText(flowLaneType, primaryRailType),
+    pathText ? `The path in this rail is: ${pathText}.` : "",
+    handoffNarration,
+    getRailResponsibilityText(flowLaneType, segments),
+    "Think of this as one lane of the architecture journey: the individual hops matter, but the bigger lesson is how responsibility moves across the lane.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 function buildArchitectureAwareText(
   unit,
   lessonGraph = {},
   calmNarrationIndex = new Map(),
+  railNarrationIndex = new Map(),
   narrationContinuity = {}
 ) {
   const metadata = unit?.metadata || {};
@@ -752,23 +922,42 @@ function buildArchitectureAwareText(
   }
 
   if (role === "architecture_recap") {
-    const canonicalNarration =
-      buildCanonicalRailNarrationText(
-        metadata.canonicalRailSummary,
-        { mode: "recap" }
-      );
+      const canonicalNarration =
+        buildCanonicalRailNarrationText(
+          metadata.canonicalRailSummary,
+          { mode: "recap" }
+        );
 
-    if (canonicalNarration) {
-      return canonicalNarration;
+      if (canonicalNarration) {
+        return canonicalNarration;
+      }
+
+      return [
+        "At a high level, the request moves through layers that each handle a different job.",
+        "The important mental model is: receive traffic, direct it, process it, and eventually handle longer-lived state or results.",
+      ]
+        .filter(Boolean)
+        .join(" ");
     }
 
-    return [
-      "At a high level, the request moves through layers that each handle a different job.",
-      "The important mental model is: receive traffic, direct it, process it, and eventually handle longer-lived state or results.",
-    ]
-      .filter(Boolean)
-      .join(" ");
-  }
+    if (role === "architecture_rail_group") {
+      const metadata = unit?.metadata || {};
+
+      const llmRailNarration =
+        railNarrationIndex.get(
+          `title:${unit.title}`
+        ) ||
+        railNarrationIndex.get(
+          `lane:${metadata.flowLaneType}`
+        );
+
+      if (llmRailNarration) {
+        return llmRailNarration;
+      }
+
+      return buildRailAwareArchitectureText(unit);
+    }
+
 
     const teachingText = buildArchitectureTeachingTextFromSegments(segments);
         if (teachingText) {
@@ -865,6 +1054,7 @@ function buildTeachingUnitText(
   documentIntelligence,
   lessonGraph,
   calmNarrationIndex = new Map(),
+  railNarrationIndex = new Map(),
   narrationContinuity = {}
 ) {
   if (isArchitectureLesson(documentIntelligence, lessonGraph)) {
@@ -872,6 +1062,7 @@ function buildTeachingUnitText(
       unit,
       lessonGraph,
       calmNarrationIndex,
+      railNarrationIndex,
       narrationContinuity
     );
   }
@@ -893,8 +1084,9 @@ function buildSectionFromTeachingUnit(
   documentIntelligence,
   lessonGraph,
   calmNarrationIndex = new Map(),
+  railNarrationIndex = new Map(),
   narrationContinuity = {}
-) {
+){
   const page = firstSourcePage(unit);
   const visibleElements = getVisibleElements(unit);
   const visualMode = getPreferredVisualMode(unit);
@@ -912,6 +1104,7 @@ function buildSectionFromTeachingUnit(
       documentIntelligence,
       lessonGraph,
       calmNarrationIndex,
+      railNarrationIndex,
       narrationContinuity
     ),
     caption: buildShortCaption(unit.title || "Teaching unit"),
@@ -1025,6 +1218,10 @@ function buildDialogue({
     : [];
 
     const calmNarrationIndex = buildCalmNarrationIndex(jobDir);
+
+    const railNarrationIndex =
+      buildRailNarrationIndex(jobDir);
+
     const narrationContinuity =
       buildNarrationContinuityIndex(jobDir);
 
@@ -1039,6 +1236,7 @@ function buildDialogue({
           documentIntelligence,
           lessonGraph,
           calmNarrationIndex,
+          railNarrationIndex,
           narrationContinuity
         )
     );

@@ -1,18 +1,35 @@
 'use strict';
 
 /**
- * BUG-22D.1 — Architecture Edge Typing
+ * BUG-22U.1A — Architecture Edge Typing
  *
- * Adds generic, domain-independent edge semantics.
- * No traversal changes yet.
+ * Owns generic, domain-independent edge signal detection.
+ *
+ * This file detects/tags:
+ * - edgeType
+ * - edgeLabel
+ * - lineStyle
+ * - lineStyleConfidence
+ * - lineStyleEvidence
+ *
+ * It does NOT interpret traversal meaning.
+ * It does NOT select walkthrough paths.
+ * It does NOT touch lesson graph, dialogue, or camera.
  */
 
 const {
   CONFIDENCE,
-  EDGE_STYLES,
   inferEdgeTypeFromText,
   normalizeText,
 } = require('./architectureEvidenceTaxonomy');
+
+const LINE_STYLES = Object.freeze({
+  SOLID: 'solid_line',
+  DOTTED: 'dotted_line',
+  DASHED: 'dashed_line',
+  DOUBLE: 'double_line',
+  UNKNOWN: 'unknown_line_style',
+});
 
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -23,7 +40,9 @@ function escapeRegExp(value) {
 }
 
 function extractLocalizedEdgePhrase(rel = {}) {
-  const evidenceText = cleanText(rel.evidenceText || rel.rawText || rel.text || rel.evidence || '');
+  const evidenceText = cleanText(
+    rel.evidenceText || rel.rawText || rel.text || rel.evidence || ''
+  );
   const sourceName = cleanText(rel.sourceName || rel.from || '');
   const targetName = cleanText(rel.targetName || rel.to || '');
 
@@ -116,9 +135,7 @@ function extractSemanticActionWindow(text = '') {
 
 function collectRelationshipText(rel = {}) {
   const localizedPhrase = extractLocalizedEdgePhrase(rel);
-
-  const semanticActionWindow =
-  extractSemanticActionWindow(localizedPhrase);
+  const semanticActionWindow = extractSemanticActionWindow(localizedPhrase);
 
   return [
     semanticActionWindow,
@@ -141,29 +158,72 @@ function collectRelationshipText(rel = {}) {
     .join(' ');
 }
 
-function inferEdgeStyleFromText(text) {
+function inferLineStyleFromText(text) {
   const value = normalizeText(text);
+  const lineStyleEvidence = [];
 
-  if (!value) return EDGE_STYLES.UNKNOWN;
-
-  if (/\bdashed\b/.test(value)) return EDGE_STYLES.DASHED;
-  if (/\bdotted\b/.test(value)) return EDGE_STYLES.DOTTED;
-  if (/\bsolid\b/.test(value)) return EDGE_STYLES.SOLID;
-  if (/\bdouble\b/.test(value)) return EDGE_STYLES.DOUBLE_LINE;
-  if (/\bthick\b/.test(value)) return EDGE_STYLES.THICK_LINE;
-  if (/\bthin\b/.test(value)) return EDGE_STYLES.THIN_LINE;
-  if (/\bbi-?directional\b|\btwo way\b|\btwo-way\b/.test(value)) {
-    return EDGE_STYLES.BIDIRECTIONAL;
+  if (!value) {
+    return {
+      lineStyle: LINE_STYLES.UNKNOWN,
+      lineStyleConfidence: CONFIDENCE.LOW,
+      lineStyleEvidence,
+    };
   }
 
-  return EDGE_STYLES.UNKNOWN;
+  if (/\bdotted\b|\bdot[-\s]?line\b|\bdot[-\s]?dash\b/.test(value)) {
+    lineStyleEvidence.push('relationship_text_contains_dotted');
+    return {
+      lineStyle: LINE_STYLES.DOTTED,
+      lineStyleConfidence: CONFIDENCE.MEDIUM,
+      lineStyleEvidence,
+    };
+  }
+
+  if (/\bdashed\b|\bdash[-\s]?line\b/.test(value)) {
+    lineStyleEvidence.push('relationship_text_contains_dashed');
+    return {
+      lineStyle: LINE_STYLES.DASHED,
+      lineStyleConfidence: CONFIDENCE.MEDIUM,
+      lineStyleEvidence,
+    };
+  }
+
+  if (/\bdouble\b|\bdouble[-\s]?line\b|\btwo[-\s]?line\b/.test(value)) {
+    lineStyleEvidence.push('relationship_text_contains_double_line');
+    return {
+      lineStyle: LINE_STYLES.DOUBLE,
+      lineStyleConfidence: CONFIDENCE.MEDIUM,
+      lineStyleEvidence,
+    };
+  }
+
+  if (/\bsolid\b|\bsolid[-\s]?line\b/.test(value)) {
+    lineStyleEvidence.push('relationship_text_contains_solid');
+    return {
+      lineStyle: LINE_STYLES.SOLID,
+      lineStyleConfidence: CONFIDENCE.MEDIUM,
+      lineStyleEvidence,
+    };
+  }
+
+  return {
+    lineStyle: LINE_STYLES.UNKNOWN,
+    lineStyleConfidence: CONFIDENCE.LOW,
+    lineStyleEvidence,
+  };
+}
+
+/**
+ * Backward-compatible wrapper.
+ * Older downstream code may still read edgeStyle.
+ */
+function inferEdgeStyleFromText(text) {
+  return inferLineStyleFromText(text).lineStyle;
 }
 
 function inferEdgeLabel(rel = {}) {
   return cleanText(
-    extractSemanticActionWindow(
-      extractLocalizedEdgePhrase(rel)
-    ) ||
+    extractSemanticActionWindow(extractLocalizedEdgePhrase(rel)) ||
       rel.label ||
       rel.edgeLabel ||
       rel.evidenceText ||
@@ -180,10 +240,15 @@ function typeArchitectureRelationship(rel = {}, architectureEvidence = {}) {
   const edgeType = inferEdgeTypeFromText(
     [edgeLabel, relationshipText].filter(Boolean).join(' ')
   );
-  const edgeStyle = inferEdgeStyleFromText(relationshipText);
+
+  const {
+    lineStyle,
+    lineStyleConfidence,
+    lineStyleEvidence,
+  } = inferLineStyleFromText(relationshipText);
 
   const confidence =
-    edgeType !== 'unknown' || edgeStyle !== 'unknown'
+    edgeType !== 'unknown' || lineStyle !== LINE_STYLES.UNKNOWN
       ? CONFIDENCE.MEDIUM
       : rel.confidence || CONFIDENCE.LOW;
 
@@ -191,15 +256,26 @@ function typeArchitectureRelationship(rel = {}, architectureEvidence = {}) {
     ...rel,
     edgeType,
     edgeLabel,
-    edgeStyle,
+
+    // New 22U.1A line-style contract.
+    lineStyle,
+    lineStyleConfidence,
+    lineStyleEvidence,
+
+    // Backward compatibility for older consumers.
+    edgeStyle: lineStyle,
+
     edgeTyping: {
-      version: 'architecture-edge-typing-v1',
+      version: 'architecture-edge-typing-v2-enterprise-arrow-taxonomy',
       source: 'architectureEdgeTyping',
       confidence,
       relationshipText,
+      lineStyle,
+      lineStyleConfidence,
+      lineStyleEvidence,
       notes:
-        edgeType === 'unknown'
-          ? ['no_specific_edge_semantics_found']
+        edgeType === 'unknown' && lineStyle === LINE_STYLES.UNKNOWN
+          ? ['no_specific_edge_or_line_semantics_found']
           : ['typed_from_relationship_text'],
     },
   };
@@ -214,8 +290,10 @@ function typeArchitectureRelationships(relationships = [], architectureEvidence 
 }
 
 module.exports = {
+  LINE_STYLES,
   typeArchitectureRelationship,
   typeArchitectureRelationships,
+  inferLineStyleFromText,
   inferEdgeStyleFromText,
   collectRelationshipText,
   extractLocalizedEdgePhrase,

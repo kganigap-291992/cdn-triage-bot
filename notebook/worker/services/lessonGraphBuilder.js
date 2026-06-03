@@ -190,6 +190,21 @@ function uniq(values) {
   return Array.from(new Set(values.map((value) => safeString(value)).filter(Boolean)));
 }
 
+function uniqueBy(items = [], keyFn = (item) => item) {
+  const seen = new Set();
+
+  return items.filter((item) => {
+    const key = keyFn(item);
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
 function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -1231,6 +1246,141 @@ function buildCanonicalRailSummary(canonicalTraversalRail = {}) {
   };
 }
 
+function getSelectedPrimaryRailHops(canonicalTraversalRail = {}) {
+  const primaryRails = asArray(
+    canonicalTraversalRail.selectedPrimaryWalkthroughs
+  );
+
+  if (!primaryRails.length) {
+    return asArray(canonicalTraversalRail?.hops)
+      .filter((hop) => hop?.selectedForPrimaryWalkthrough === true);
+  }
+
+  const primaryHopIds = new Set(
+    primaryRails.flatMap((rail) => asArray(rail.selectedHopIds))
+  );
+
+  return uniqueBy(
+    asArray(canonicalTraversalRail?.hops)
+      .filter((hop) => primaryHopIds.has(hop.hopId))
+      .sort((a, b) => Number(a.canonicalOrder || 0) - Number(b.canonicalOrder || 0)),
+    (hop) =>
+      `${hop?.from?.id || hop?.from?.name}->${hop?.to?.id || hop?.to?.name}:${hop?.flowLaneType}`
+  );
+}
+
+
+function getRailTitle(flowLaneType) {
+  const titles = {
+    canonical_request_journey: "Canonical Request Journey",
+    primary_request_flow: "Primary Request Flow",
+    cache_or_payload_delivery_flow: "Cache Delivery Flow",
+    bidirectional_sync_flow: "State Sync Flow",
+    auth_validation_flow: "Validation Flow",
+    config_control_flow: "Configuration / Control Flow",
+    observability_flow: "Observability Flow",
+    supporting_flow: "Supporting Flow",
+  };
+
+  return titles[flowLaneType] || "Architecture Flow";
+}
+
+function getSelectedPrimaryRailGroups(canonicalTraversalRail = {}) {
+  const rails = asArray(canonicalTraversalRail.selectedPrimaryWalkthroughs);
+  const hops = asArray(canonicalTraversalRail.hops);
+
+  if (!rails.length) return [];
+
+  const hopsById = new Map(hops.map((hop) => [hop.hopId, hop]));
+
+  return rails
+    .map((rail) => {
+      const railHops = asArray(rail.selectedHopIds)
+        .map((hopId) => hopsById.get(hopId))
+        .filter(Boolean)
+        .sort((a, b) => Number(a.canonicalOrder || 0) - Number(b.canonicalOrder || 0));
+
+      return {
+        ...rail,
+        title: getRailTitle(rail.flowLaneType),
+        hops: railHops,
+      };
+    })
+    .filter((rail) => rail.hops.length > 0);
+}
+
+function buildCanonicalSelectedRailGroup(canonicalTraversalRail = {}) {
+  const selectedWalkthrough =
+    canonicalTraversalRail?.selectedWalkthrough || null;
+
+  if (!selectedWalkthrough) return null;
+
+  const selectedHopIds = new Set(
+    asArray(selectedWalkthrough.selectedHopIds)
+  );
+
+  const hops = asArray(canonicalTraversalRail.hops)
+    .filter((hop) => selectedHopIds.has(hop.hopId))
+    .sort((a, b) =>
+      Number(a.canonicalOrder || 0) -
+      Number(b.canonicalOrder || 0)
+    );
+
+  if (!hops.length) return null;
+
+  return {
+    version: "lesson-graph-canonical-rail-group-v1",
+    flowLaneId:
+      selectedWalkthrough.primaryFlowLaneId ||
+      canonicalTraversalRail.selectedFlowLaneId ||
+      "canonical_request_journey",
+    flowLaneType: "canonical_request_journey",
+    primaryRailType: "canonical_primary",
+    promotionReason: "selected_canonical_request_journey",
+    title: getRailTitle("canonical_request_journey"),
+    selectedHopIds: hops.map((hop) => hop.hopId),
+    hopCount: hops.length,
+    pathText: selectedWalkthrough.pathText,
+    laneTypes: asArray(selectedWalkthrough.laneTypes),
+    confidence: "medium",
+    hops,
+  };
+}
+
+
+function buildRailGroupsForTeaching(canonicalTraversalRail = {}) {
+  const canonicalRailGroup =
+    buildCanonicalSelectedRailGroup(canonicalTraversalRail);
+
+  const selectedRailGroups =
+    getSelectedPrimaryRailGroups(canonicalTraversalRail);
+
+  const canonicalHopIds = new Set(
+    asArray(canonicalRailGroup?.selectedHopIds)
+  );
+
+  const parallelRailGroups = selectedRailGroups.filter((rail) => {
+    if (rail.primaryRailType === "canonical_primary") {
+      return false;
+    }
+
+    const railHopIds = asArray(rail.selectedHopIds);
+
+    if (!railHopIds.length) return true;
+
+    const isExactDuplicateOfCanonical =
+      canonicalHopIds.size === railHopIds.length &&
+      railHopIds.every((hopId) => canonicalHopIds.has(hopId));
+
+    return !isExactDuplicateOfCanonical;
+  });
+
+  return [
+    ...(canonicalRailGroup ? [canonicalRailGroup] : []),
+    ...parallelRailGroups,
+  ];
+}
+
 function buildArchitectureTeachingUnitFromChapter({
   chapter,
   chapterIndex,
@@ -1245,6 +1395,7 @@ function buildArchitectureTeachingUnitFromChapter({
   const motionIntent = getArchitectureMotionIntent(chapter, chapterIndex);
   const isOverview = chapter?.type === "architecture_overview";
   const isRecap = chapter?.type === "architecture_recap";
+  const isRailGroup = chapter?.type === "architecture_rail_group";
   const teachingRegion = buildArchitectureTeachingRegion(chapter, chapterIndex);
 
   const canonicalTraversal =
@@ -1258,7 +1409,7 @@ function buildArchitectureTeachingUnitFromChapter({
     title,
     importance: isOverview ? 0.99 : isRecap ? 0.88 : Number((0.96 - chapterIndex * 0.04).toFixed(2)),
     teachingMode: isRecap ? "architecture_flow_mental_model_recap" : "architecture_handoff_walkthrough",
-    runtimeWeight: isOverview ? 0.9 : isRecap ? 0.55 : 0.78,
+    runtimeWeight: isOverview ? 0.9 : isRecap ? 0.55 : isRailGroup ? 0.9 : 0.78,
     concepts: uniq([
       title,
       chapter?.teachingContext?.operationalMeaning,
@@ -1281,25 +1432,59 @@ function buildArchitectureTeachingUnitFromChapter({
         : getArchitectureBroadFocusRegion(chapterIndex, totalChapters, title),
     }),
     metadata: {
-      role: isOverview ? "architecture_overview" : isRecap ? "architecture_recap" : "architecture_semantic_chapter",
+      role: isOverview
+        ? "architecture_overview"
+        : isRecap
+          ? "architecture_recap"
+          : isRailGroup
+            ? "architecture_rail_group"
+            : "architecture_semantic_chapter",
+
       architectureFirst: true,
       source: "architecture_teaching",
 
       hopId: canonicalTraversal?.hopId || null,
-      flowLaneId: canonicalTraversal?.flowLaneId || null,
-      flowLaneType: canonicalTraversal?.flowLaneType || null,
+
+      railGroup: chapter?.metadata?.railGroup === true,
+
+      flowLaneId:
+        chapter?.metadata?.flowLaneId ||
+        canonicalTraversal?.flowLaneId ||
+        null,
+
+      flowLaneType:
+        chapter?.metadata?.flowLaneType ||
+        canonicalTraversal?.flowLaneType ||
+        null,
+
+      primaryRailType:
+        chapter?.metadata?.primaryRailType ||
+        null,
+
+      promotionReason:
+        chapter?.metadata?.promotionReason ||
+        null,
+
+      hops: asArray(chapter?.metadata?.hops),
+
+      hopCount:
+        Number(chapter?.metadata?.hopCount || 0),
+
       canonicalOrder: canonicalTraversal?.canonicalOrder || null,
+
       selectedForPrimaryWalkthrough:
         canonicalTraversal?.selectedForPrimaryWalkthrough === true,
 
       architectureTeachingChapterId: chapter?.id || null,
       sourceChapterId: chapter?.sourceChapterId || null,
       chapterType: chapter?.type || null,
-        teachingRegion,
-        responsibilityLayer: teachingRegion.responsibilityLayer,
-        regionLabel: teachingRegion.regionLabel,
-        cameraStrategy: teachingRegion.cameraStrategy,
-        confidence: chapter?.confidence || "unknown",
+
+      teachingRegion,
+      responsibilityLayer: teachingRegion.responsibilityLayer,
+      regionLabel: teachingRegion.regionLabel,
+      cameraStrategy: teachingRegion.cameraStrategy,
+      confidence: chapter?.confidence || "unknown",
+
       confidenceLanguage: chapter?.confidenceLanguage || null,
       operationalMeaning: chapter?.teachingContext?.operationalMeaning || null,
       transitionNarrationHint: chapter?.teachingContext?.transitionNarrationHint || chapter?.teachingContext?.suggestedNarrationHint || null,
@@ -1444,6 +1629,86 @@ function buildArchitectureSegmentChapter(segment = {}, index = 0) {
 }
 
 
+function buildArchitectureRailChapter({
+  rail,
+  orderedSegments = [],
+  index = 0,
+}) {
+  const segmentByHopId = new Map(
+    orderedSegments
+      .filter((segment) => segment?.canonicalTraversal?.hopId)
+      .map((segment) => [segment.canonicalTraversal.hopId, segment])
+  );
+
+  const enrichedSegments = asArray(rail.hops).map((hop) => {
+    const matched = segmentByHopId.get(hop.hopId);
+
+    if (matched) return matched;
+
+    return {
+      id: hop.hopId,
+      from: hop.from,
+      to: hop.to,
+      confidence: hop.confidence || "medium",
+      genericConcept: "generic_handoff",
+      canNarrateAsFact: hop?.safety?.narratableAsFact !== false,
+      teachingContext: {
+        operationalMeaning:
+          "Teach this documented architecture handoff as part of the rail.",
+        transitionNarrationHint:
+          `${hop.from?.name || "Upstream"} hands off toward ${hop.to?.name || "downstream"}.`,
+      },
+      canonicalTraversal: {
+        source: "canonical_traversal_rail",
+        hopId: hop.hopId,
+        flowLaneId: hop.flowLaneId,
+        flowLaneType: hop.flowLaneType,
+        canonicalOrder: hop.canonicalOrder,
+        selectedForPrimaryWalkthrough: true,
+        evidenceTypes: asArray(hop.evidenceTypes),
+      },
+    };
+  });
+
+  return {
+    id: `architecture_rail_group_${index + 1}_${slugify(rail.flowLaneType)}`,
+    type: "architecture_rail_group",
+    title: rail.title || getRailTitle(rail.flowLaneType),
+    confidence: rail.confidence || "medium",
+    enrichedSegments,
+    teachingContext: {
+      operationalMeaning:
+        `This rail groups related handoffs in the ${rail.flowLaneType} lane.`,
+      transitionNarrationHint:
+        `Teach the ${rail.title || getRailTitle(rail.flowLaneType)} as one coherent architecture flow.`,
+    },
+    teachingProgression: {
+      introducedConcepts: uniqueBy(
+        enrichedSegments.map((segment) => ({
+          concept: segment.genericConcept || rail.flowLaneType,
+          label: segment.teachingContext?.conceptLabel || rail.title || getRailTitle(rail.flowLaneType),
+        })),
+        (item) => item.concept
+      ),
+      establishedEntities: uniqueBy(
+        enrichedSegments.flatMap((segment) => [segment.from, segment.to].filter(Boolean)),
+        (entity) => entity.id || entity.name
+      ),
+    },
+    metadata: {
+      railGroup: true,
+      flowLaneId: rail.flowLaneId,
+      flowLaneType: rail.flowLaneType,
+      primaryRailType: rail.primaryRailType,
+      promotionReason: rail.promotionReason,
+      railScore: rail.railScore,
+      hopCount: enrichedSegments.length,
+      hops: rail.hops,
+    },
+    safetyFlags: [],
+  };
+}
+
 function normalizeHandoffKey(fromName, toName) {
   return `${slugify(fromName)}__to__${slugify(toName)}`;
 }
@@ -1543,9 +1808,8 @@ function buildTeachingUnitsFromArchitectureTeaching({
     (chapter) => chapter?.type === "architecture_recap"
   );
 
-  const canonicalSelectedHops = asArray(canonicalTraversalRail?.hops)
-    .filter((hop) => hop?.selectedForPrimaryWalkthrough === true)
-    .sort((a, b) => Number(a.canonicalOrder || 0) - Number(b.canonicalOrder || 0));
+  const canonicalSelectedHops =
+      getSelectedPrimaryRailHops(canonicalTraversalRail);
 
   const canonicalTraversalEnabled = canonicalSelectedHops.length > 0;
 
@@ -1561,9 +1825,20 @@ function buildTeachingUnitsFromArchitectureTeaching({
         (a, b) => getArchitectureSegmentOrder(a) - getArchitectureSegmentOrder(b)
       );
 
-  const traversalChapters = orderedSegments.map((segment, index) =>
-    buildArchitectureSegmentChapter(segment, index)
-  );
+  const railGroups =
+    buildRailGroupsForTeaching(canonicalTraversalRail);
+
+  const traversalChapters = railGroups.length
+    ? railGroups.map((rail, index) =>
+        buildArchitectureRailChapter({
+          rail,
+          orderedSegments,
+          index,
+        })
+      )
+    : orderedSegments.map((segment, index) =>
+        buildArchitectureSegmentChapter(segment, index)
+      );
 
   const usableChapters = [
     overviewChapter,
@@ -1686,6 +1961,11 @@ function allocateRuntime({ units, documentIntelligence, pageCount }) {
     if (role === "architecture_semantic_chapter") {
       minSceneSec = 14;
       maxSceneSec = 28;
+    }
+
+    if (role === "architecture_rail_group") {
+      minSceneSec = 16;
+      maxSceneSec = 34;
     }
 
     if (role === "architecture_recap") {

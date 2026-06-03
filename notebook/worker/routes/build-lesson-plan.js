@@ -42,6 +42,14 @@ const {
 } = require("../services/architectureCanonicalTraversalRailBuilder");
 
 const {
+  buildComponentUnderstanding,
+} = require("../services/componentUnderstandingBuilder");
+
+const {
+  buildArchitectureIndustryKnowledge,
+} = require("../services/architectureIndustryKnowledgeResolver");
+
+const {
   buildArchitectureReasoning,
 } = require("../services/architectureReasoningBuilder");
 
@@ -67,6 +75,10 @@ const {
 } = require("../services/calmExplainerNarrationBuilder");
 
 const {
+  buildArchitectureRailNarration,
+} = require("../services/architectureRailNarrationBuilder");
+
+const {
   buildNarrationContinuity,
 } = require("../services/narrationContinuityBuilder");
 
@@ -84,6 +96,23 @@ function readJson(filePath, fallback = {}) {
   } catch {
     return fallback;
   }
+}
+
+function getRailNarrationTitle(rail = {}) {
+  const labels = {
+    primary_request_flow: "Primary Request Flow",
+    cache_or_payload_delivery_flow: "Cache Delivery Flow",
+    auth_validation_flow: "Auth / Validation Flow",
+    bidirectional_sync_flow: "State / Synchronization Flow",
+    observability_signal_flow: "Observability Flow",
+    configuration_flow: "Configuration Flow",
+  };
+
+  return (
+    rail.title ||
+    labels[rail.flowLaneType] ||
+    "Architecture Rail"
+  );
 }
 
 router.post("/:jobId", async (req, res) => {
@@ -248,6 +277,42 @@ router.post("/:jobId", async (req, res) => {
       chapters: architectureFlow.stats.chapterCount,
     });
 
+    const architectureTeachingLlmClient = createArchitectureTeachingLlmClient();
+
+    const componentUnderstanding = buildComponentUnderstanding({
+      architectureUnderstanding,
+      canonicalTraversalRail,
+      glossaryTerms: architectureEvidence.glossaryTerms || [],
+      evidenceRecords: architectureEvidence.evidenceRecords || [],
+      outputDir: jobDir,
+    });
+
+    const componentUnderstandingPath = path.join(
+      jobDir,
+      "component-understanding.json"
+    );
+
+    console.log("[component-understanding]", componentUnderstanding.stats);
+
+    const architectureIndustryKnowledge =
+      await buildArchitectureIndustryKnowledge({
+        componentUnderstanding,
+        llmClient: architectureTeachingLlmClient,
+        outputDir: jobDir,
+      });
+
+    const architectureIndustryKnowledgePath = path.join(
+      jobDir,
+      "architecture-industry-knowledge.json"
+    );
+
+    console.log("[architecture-industry-knowledge]", {
+      allowed: architectureIndustryKnowledge.stats.allowedCount,
+      blocked: architectureIndustryKnowledge.stats.blockedCount,
+      llmValid: architectureIndustryKnowledge.stats.llmValidCount,
+      fallback: architectureIndustryKnowledge.stats.fallbackUsedCount,
+    });
+
     const architectureReasoning = buildArchitectureReasoning({
       architectureUnderstanding,
       architectureFlow,
@@ -288,7 +353,6 @@ router.post("/:jobId", async (req, res) => {
       unknown: responsibilityInference.stats.unknownResponsibilityCount,
     });
 
-    const architectureTeachingLlmClient = createArchitectureTeachingLlmClient();
 
     const architectureTeaching = await buildArchitectureTeaching(
       architectureUnderstanding,
@@ -314,6 +378,62 @@ router.post("/:jobId", async (req, res) => {
       outputDir: jobDir,
     });
 
+    const railNarrationInputs = [
+      canonicalTraversalRail.selectedWalkthrough
+        ? {
+            ...canonicalTraversalRail.selectedWalkthrough,
+            id: "selected_canonical_walkthrough",
+            title: "Canonical Request Journey",
+            flowLaneId:
+              canonicalTraversalRail.selectedWalkthrough.primaryFlowLaneId ||
+              canonicalTraversalRail.selectedFlowLaneId ||
+              "canonical_request_journey",
+            flowLaneType: "canonical_request_journey",
+            primaryRailType: "canonical_primary",
+            promotionReason: "selected_canonical_request_journey",
+            hops: (canonicalTraversalRail.hops || []).filter((hop) =>
+              (canonicalTraversalRail.selectedWalkthrough.selectedHopIds || []).includes(
+                hop.hopId
+              )
+            ),
+          }
+        : null,
+
+      ...(canonicalTraversalRail.selectedPrimaryWalkthroughs || []).map(
+        (rail) => ({
+          ...rail,
+          title: getRailNarrationTitle(rail),
+        })
+      ),
+    ].filter(Boolean);
+
+    const seenRailKeys = new Set();
+
+    const dedupedRailNarrationInputs = railNarrationInputs.filter((rail) => {
+      const key = [
+        rail.flowLaneType,
+        (rail.selectedHopIds || rail.hops?.map((hop) => hop.hopId) || []).join("|"),
+      ].join(":");
+
+      if (seenRailKeys.has(key)) return false;
+      seenRailKeys.add(key);
+      return true;
+    });
+
+    const architectureRailNarration =
+      await buildArchitectureRailNarration({
+        rails: dedupedRailNarrationInputs,
+        llmClient: architectureTeachingLlmClient,
+        outputDir: jobDir,
+        componentUnderstanding,
+        architectureIndustryKnowledge,
+      });
+
+    const architectureRailNarrationPath = path.join(
+      jobDir,
+      "architecture-rail-narration.json"
+    );
+
     const calmExplainerNarrationPath = writeJson(
       path.join(jobDir, "calm-explainer-narration.json"),
       calmExplainerNarration
@@ -327,10 +447,12 @@ router.post("/:jobId", async (req, res) => {
         architectureTeaching.stats.nonNarratableSegmentCount,
     });
 
-    console.log("[calm-explainer-narration]", {
-      segments: calmExplainerNarration.segmentCount,
-      fallbackUsed: calmExplainerNarration.stats.fallbackUsedCount,
-      llmValid: calmExplainerNarration.stats.llmValidCount,
+    console.log("[architecture-rail-narration]", {
+      rails: architectureRailNarration.railCount,
+      fallbackUsed:
+        architectureRailNarration.stats.fallbackUsedCount,
+      llmValid:
+        architectureRailNarration.stats.llmValidCount,
     });
 
     const lessonPlan = generateLessonPlan(jobDir);
@@ -422,7 +544,19 @@ router.post("/:jobId", async (req, res) => {
         stats: canonicalTraversalRail.stats,
         output: canonicalTraversalRailPath,
       },
-      
+
+      componentUnderstanding: {
+        version: componentUnderstanding.version,
+        stats: componentUnderstanding.stats,
+        output: componentUnderstandingPath,
+      },
+
+      architectureIndustryKnowledge: {
+        version: architectureIndustryKnowledge.version,
+        stats: architectureIndustryKnowledge.stats,
+        output: architectureIndustryKnowledgePath,
+      },
+
       architectureReasoning: {
         version: architectureReasoning.version,
         stats: architectureReasoning.stats,
@@ -443,6 +577,13 @@ router.post("/:jobId", async (req, res) => {
         stats: calmExplainerNarration.stats,
         output: calmExplainerNarrationPath,
       },
+
+      architectureRailNarration: {
+        version: architectureRailNarration.version,
+        stats: architectureRailNarration.stats,
+        output: architectureRailNarrationPath,
+      },
+
       narrationContinuity: {
         version: narrationContinuity.version,
         stats: narrationContinuity.stats,

@@ -481,6 +481,193 @@ function buildSelectedWalkthrough(hops = [], selectedLane = null) {
 }
 
 
+function scoreFlowLaneForWalkthrough(lane = {}) {
+  let score = 0;
+
+  switch (lane.flowLaneType) {
+    case 'primary_request_flow':
+      score += 100;
+      break;
+    case 'cache_or_payload_delivery_flow':
+      score += 85;
+      break;
+    case 'bidirectional_sync_flow':
+      score += 60;
+      break;
+    case 'auth_validation_flow':
+      score += 55;
+      break;
+    case 'config_control_flow':
+      score += 35;
+      break;
+    case 'observability_flow':
+      score += 20;
+      break;
+    case 'topology_continuity_flow':
+      score -= 50;
+      break;
+    default:
+      score += 0;
+  }
+
+  score += Math.min(Number(lane.hopCount || 0), 5) * 4;
+
+  if (lane.confidence === 'deterministic') score += 12;
+  if (lane.confidence === 'high') score += 8;
+  if (lane.confidence === 'medium') score += 4;
+  if (lane.confidence === 'low') score -= 8;
+
+  return score;
+}
+
+function dedupeRailHops(hops = []) {
+  return uniqueBy(
+    hops,
+    (hop) =>
+      `${hop?.from?.id || hop?.from?.name}->${hop?.to?.id || hop?.to?.name}:${hop?.flowLaneType}`
+  );
+}
+
+function buildSelectedWalkthroughForLane(hops = [], lane = null) {
+  if (!lane) return null;
+
+  const laneHops = dedupeRailHops(
+    hops
+        .filter((hop) => hop.flowLaneId === lane.flowLaneId)
+        .sort((a, b) => Number(a.canonicalOrder || 0) - Number(b.canonicalOrder || 0))
+    );
+
+  if (!laneHops.length) return null;
+
+  return {
+    version: 'selected-walkthrough-v2-multi-rail',
+    type:
+        lane.flowLaneType === 'primary_request_flow'
+        ? 'primary_walkthrough_rail'
+        : 'supporting_walkthrough_rail',
+
+    flowLaneId: lane.flowLaneId,
+    flowLaneType: lane.flowLaneType,
+
+    // BUG-22U.8A backward compatibility
+    primaryFlowLaneId: lane.flowLaneId,
+    laneTypes: [lane.flowLaneType],
+
+    selectedForPrimaryWalkthrough:
+        lane.selectedForPrimaryWalkthrough === true,
+
+    railScore: scoreFlowLaneForWalkthrough(lane),
+
+    selectedHopIds: laneHops.map((hop) => hop.hopId),
+    hopCount: laneHops.length,
+    firstHopId: laneHops[0]?.hopId || null,
+    lastHopId: laneHops[laneHops.length - 1]?.hopId || null,
+    pathText: buildPathText(laneHops),
+
+    confidence: lane.confidence || 'unknown',
+  };
+}
+
+function buildSelectedWalkthroughs(hops = [], flowLanes = []) {
+  return flowLanes
+    .filter((lane) => {
+      if (!lane?.flowLaneId) return false;
+      if (lane.flowLaneType === 'topology_continuity_flow') return false;
+      if (Number(lane.hopCount || 0) <= 0) return false;
+      return true;
+    })
+    .map((lane) => buildSelectedWalkthroughForLane(hops, lane))
+    .filter(Boolean)
+    .sort((a, b) => b.railScore - a.railScore);
+}
+
+function isRailEligibleForParallelPrimary(rail = {}) {
+  if (!rail?.flowLaneType) return false;
+
+  const blockedLaneTypes = new Set([
+    'topology_continuity_flow',
+    'unknown_supporting_flow',
+    'background_flow',
+  ]);
+
+  if (blockedLaneTypes.has(rail.flowLaneType)) {
+    return false;
+  }
+
+  if (rail.selectedForPrimaryWalkthrough === true) {
+    return true;
+  }
+
+  const confidence = confidenceRank(rail.confidence);
+  const hopCount = Number(rail.hopCount || 0);
+  const railScore = Number(rail.railScore || 0);
+
+  const hasStrongEvidence =
+    confidence >= confidenceRank('high') && hopCount >= 2;
+
+  const hasEnoughEvidence =
+    confidence >= confidenceRank('medium') && hopCount >= 2 && railScore >= 75;
+
+  return hasStrongEvidence || hasEnoughEvidence;
+}
+
+function classifyPrimaryRailType(rail = {}, selectedWalkthrough = null) {
+    const canonicalHopIds = new Set(
+    asArray(selectedWalkthrough?.selectedHopIds)
+    );
+
+    const railHopIds = new Set(
+    asArray(rail?.selectedHopIds)
+    );
+
+    const railFullyContainedInCanonical =
+    railHopIds.size > 0 &&
+    [...railHopIds].every((hopId) =>
+        canonicalHopIds.has(hopId)
+    );
+
+    if (
+    rail.flowLaneType === 'primary_request_flow' &&
+    railFullyContainedInCanonical
+    ) {
+    return {
+        primaryRailType: 'canonical_primary',
+        promotionReason: 'selected_canonical_request_journey',
+    };
+    }
+
+  if (isRailEligibleForParallelPrimary(rail)) {
+    return {
+      primaryRailType: 'parallel_primary',
+      promotionReason: 'evidence_backed_parallel_architecture_rail',
+    };
+  }
+
+  return {
+    primaryRailType: 'supporting',
+    promotionReason: 'below_parallel_primary_threshold',
+  };
+}
+
+function buildSelectedPrimaryWalkthroughs(
+  selectedWalkthroughs = [],
+  selectedWalkthrough = null
+) {
+  return asArray(selectedWalkthroughs)
+    .map((rail) => {
+      const classification = classifyPrimaryRailType(
+        rail,
+        selectedWalkthrough
+      );
+
+      return {
+        ...rail,
+        ...classification,
+      };
+    })
+    .filter((rail) => rail.primaryRailType !== 'supporting');
+}
+
 function buildSharedNodeSummary(nodeMemberships = []) {
   return nodeMemberships
     .map((node) => {
@@ -558,9 +745,32 @@ function buildCanonicalTraversalRail({
     flowLanes[0] ||
     null;
 
-    const selectedWalkthrough = buildSelectedWalkthrough(hops, selectedLane);
+    const selectedWalkthroughs =
+        buildSelectedWalkthroughs(hops, flowLanes);
 
-    const nodeMemberships = buildNodeMemberships(hops);
+        /**
+         * BUG-22U.10
+         *
+         * Canonical walkthrough must represent the
+         * entire selected request journey, not a
+         * single flow lane.
+         */
+        const selectedWalkthrough =
+        buildSelectedWalkthrough(hops, selectedLane) ||
+        selectedWalkthroughs.find(
+            (rail) => rail.flowLaneType === 'primary_request_flow'
+        ) ||
+        selectedWalkthroughs[0] ||
+        null;
+
+        const selectedPrimaryWalkthroughs =
+        buildSelectedPrimaryWalkthroughs(
+            selectedWalkthroughs,
+            selectedWalkthrough
+        );
+
+        const nodeMemberships =
+        buildNodeMemberships(hops);
     const sharedNodeSummary = buildSharedNodeSummary(nodeMemberships);
 
   const warnings = [];
@@ -587,8 +797,10 @@ function buildCanonicalTraversalRail({
     source: 'architectureCanonicalTraversalRailBuilder',
 
     identityType: 'handoff_edge',
-    selectedFlowLaneId: selectedLane?.flowLaneId || null,
+    selectedFlowLaneId: selectedWalkthrough?.flowLaneId || selectedLane?.flowLaneId || null,
     selectedWalkthrough,
+    selectedWalkthroughs,
+    selectedPrimaryWalkthroughs,
 
     strategy: {
       traversalIdentity: 'edge_or_handoff_based_not_node_based',
@@ -608,13 +820,30 @@ function buildCanonicalTraversalRail({
     sharedNodeSummary,
 
     stats: {
-      hopCount: hops.length,
-      selectedHopCount: hops.filter((hop) => hop.selectedForPrimaryWalkthrough).length,
-      flowLaneCount: flowLanes.length,
-      sharedNodeCount: sharedNodeSummary.length,
-      evidenceBackedHopCount: hops.filter((hop) => hop.evidenceIds.length > 0).length,
-    },
+        hopCount: hops.length,
 
+        selectedHopCount: hops.filter(
+            (hop) => hop.selectedForPrimaryWalkthrough
+        ).length,
+
+        flowLaneCount: flowLanes.length,
+
+        selectedWalkthroughRailCount:
+            selectedWalkthroughs.length,
+
+        selectedPrimaryWalkthroughCount:
+            selectedPrimaryWalkthroughs.length,
+
+        parallelPrimaryWalkthroughCount:
+            selectedPrimaryWalkthroughs.filter(
+            (rail) => rail.primaryRailType === 'parallel_primary'
+            ).length,
+
+        sharedNodeCount: sharedNodeSummary.length,
+
+        evidenceBackedHopCount:
+            hops.filter((hop) => hop.evidenceIds.length > 0).length,
+        },
     warnings,
   };
 }

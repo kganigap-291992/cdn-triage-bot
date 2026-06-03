@@ -312,6 +312,74 @@ function buildRelationshipCounts(relationships = []) {
   return counts;
 }
 
+
+function buildSegmentResponsibilityExplanation(contextualRoles = {}) {
+  const fromRole =
+    contextualRoles.fromRoleInHandoff ||
+    contextualRoles.sourceRole ||
+    "unknown_contextual_role";
+
+  const toRole =
+    contextualRoles.toRoleInHandoff ||
+    contextualRoles.targetRole ||
+    "unknown_contextual_role";
+
+  return `Responsibility moves from ${fromRole} toward ${toRole}.`;
+}
+
+function buildSegmentResponsibilities(relationships = []) {
+  return relationships
+    .filter((relationship) => relationship?.contextualRoles)
+    .map((relationship) => {
+      const contextualRoles = relationship.contextualRoles;
+
+      return {
+        relationshipId: relationship.id || null,
+
+        from: {
+          id: relationship.sourceId || null,
+          name: relationship.sourceName || null,
+        },
+
+        to: {
+          id: relationship.targetId || null,
+          name: relationship.targetName || null,
+        },
+
+        handoffRole: contextualRoles.handoffRole || null,
+
+        fromRoleInHandoff:
+          contextualRoles.fromRoleInHandoff ||
+          contextualRoles.sourceRole ||
+          null,
+
+        toRoleInHandoff:
+          contextualRoles.toRoleInHandoff ||
+          contextualRoles.targetRole ||
+          null,
+
+        confidence: contextualRoles.confidence || "unknown",
+
+        interactionMode:
+          contextualRoles.interactionMode ||
+          relationship.interactionMode ||
+          relationship.mappedInteractionMode ||
+          null,
+
+        flowPriority:
+          contextualRoles.flowPriority ||
+          relationship.flowPriority ||
+          null,
+
+        safeExplanation:
+          buildSegmentResponsibilityExplanation(contextualRoles),
+
+        roleEvidence:
+          contextualRoles.roleEvidence || [],
+      };
+    });
+}
+
 function buildResponsibilityInference({
   architectureUnderstanding = {},
   architectureFlow = {},
@@ -341,6 +409,9 @@ function buildResponsibilityInference({
 
   const componentResponsibilities = [];
   const responsibilityMap = {};
+
+  const segmentResponsibilities =
+    buildSegmentResponsibilities(relationships);
 
   for (const entity of entities) {
     const entityId =
@@ -418,7 +489,7 @@ function buildResponsibilityInference({
 
     componentResponsibilities,
 
-    segmentResponsibilities: [],
+    segmentResponsibilities,
 
     responsibilityMap,
 
@@ -428,6 +499,9 @@ function buildResponsibilityInference({
 
       relationshipCount:
         relationships.length,
+
+      segmentResponsibilityCount:
+        segmentResponsibilities.length,
     },
   };
 }
