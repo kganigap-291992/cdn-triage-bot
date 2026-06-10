@@ -1,4 +1,4 @@
-# Cachey
+# Cachey 🤖: Deterministic CDN Incident Triage
 
 Deterministic CDN incident triage, backed by ClickHouse evidence.
 
