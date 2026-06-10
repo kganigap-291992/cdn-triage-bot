@@ -1,267 +1,248 @@
-# Cachey 🤖 – Deterministic CDN Incident Triage System
+# Cachey
 
-**Author:** Krishna Reddy GV  
-**Production URL:** https://cdn-triage-bot.vercel.app  
+Deterministic CDN incident triage, backed by ClickHouse evidence.
 
----
+**Production:** https://cdn-triage-bot.vercel.app
+**Author:** Krishna Reddy GV
 
-# 🚀 What is Cachey
+Cachey turns CDN telemetry into reproducible incident assessments. It is built around a simple rule: operational answers should come from inspectable data, not guesses.
 
-Cachey is a deterministic, warehouse-backed CDN triage system that produces
-reproducible, evidence-backed answers to operational questions.
+```text
+User intent -> SQL -> ClickHouse metrics -> EvidenceBundle -> deterministic agents -> incident assessment
+```
 
-It replaces ad-hoc, human-driven incident analysis with:
+Cachey is not a dashboard skin and not an LLM wrapper. The core triage path is deterministic. Optional AI is used only to narrate or explain evidence that the system has already produced.
 
-- Deterministic SQL-backed metrics  
-- Structured evidence (EvidenceBundle)  
-- Inspectable queries  
-- Reproducible triage workflows  
+## Why This Exists
 
-> Cachey is not a dashboard and not an LLM wrapper.  
-> It is an evidence-driven reasoning system.
+CDN incidents are often investigated manually:
 
----
+- engineers jump between dashboards, logs, and tribal knowledge
+- explanations vary from person to person
+- leadership gets summaries without the evidence trail
+- follow-up questions restart the investigation instead of continuing it
 
-# 🎯 Problem
+Cachey makes the first pass of incident triage structured, repeatable, and inspectable.
 
-In real CDN operations:
+## What Cachey Does
 
-- Engineers manually investigate incidents  
-- Explanations vary by person  
-- No reproducibility  
-- No shared reasoning model  
-- Leadership lacks clear visibility  
+- Parses operational intent from chat or UI filters
+- Builds parameterized ClickHouse SQL for the selected scope and time window
+- Queries canonical CDN telemetry through a private proxy
+- Normalizes metrics into an EvidenceBundle
+- Runs deterministic agents for scope, traffic, latency, errors, and cache
+- Produces an IncidentAssessment with severity, primary signal, blast radius, findings, graphs, and next actions
+- Supports drill-downs for worst region, POP, UA family, content type, host, status code, time trend, and comparison
+- Keeps SQL, evidence, metrics, and diagnostics inspectable
+- Uses optional narration only after evidence exists
 
-Cachey systematizes this into a **deterministic, inspectable pipeline**.
+## Core Concepts
 
----
+### EvidenceBundle
 
-# 🧠 Core Idea
+The EvidenceBundle is the source of truth for reasoning. It contains:
 
-Cachey enforces a strict flow:
+- normalized investigation scope
+- time window metadata
+- current and previous metrics
+- derived deltas
+- region, POP, UA, content, host, and status breakdowns
+- time-series points
+- SQL and diagnostics
 
-User → Intent → SQL → EvidenceBundle → Reasoning → Output
+Every agent consumes this bundle. No agent invents metrics.
 
-No step is allowed to invent data.
+### Deterministic Agents
 
----
+Cachey runs five focused agents:
 
-# 🔍 Trust & Evidence Model
+| Agent | Responsibility |
+|---|---|
+| Scope | Confirms partner, service, region, POP, content type, and UA scope |
+| Traffic | Detects missing traffic, drops, low-volume windows, and traffic shifts |
+| Latency | Evaluates p95/p99 latency and latency deltas |
+| Errors | Evaluates 5xx volume, error rate, and error deltas |
+| Cache | Evaluates cache hit rate and cache degradation |
 
-## 1. SQL as Source of Truth
-All metrics come from deterministic SQL queries against ClickHouse.
+The agents return structured findings, severity, summaries, graph hints, and recommended next steps.
 
-## 2. EvidenceBundle (Structured Facts)
-Includes:
-- Scope (partner, service, region)
-- Metrics (requests, latency, errors, cache)
-- Region / POP breakdowns
-- Worst offenders
-- SQL queries used
+### IncidentAssessment
 
-## 3. Deterministic Reasoning
-- Summaries
-- Swarm agents
-- Drill-downs
+Agent output is combined into a single assessment:
 
-All operate ONLY on the EvidenceBundle.
+- overall state: ok, warn, or critical
+- primary signal: traffic, latency, errors, cache, or mixed
+- key findings
+- blast radius across regions and POPs
+- evidence used
+- recommended next actions
 
----
-
-# ⚙️ Execution Flow
-
-1. Parse intent (chat or filters)
-2. Build SQL (sqlBuilder.ts)
-3. Query ClickHouse via proxy
-4. Construct EvidenceBundle
-5. Run deterministic reasoning (agents / summary)
-6. Return:
-   - Summary
-   - Metrics JSON
-   - Graphs
-   - SQL
-   - Evidence
-
----
-
-# 🤖 Swarm Mode (Deterministic Agents)
-
-Agents:
-- Traffic
-- Latency
-- Errors
-- Cache
-- Scope
-
-Each agent:
-- Consumes EvidenceBundle
-- Produces structured findings
-- Cannot hallucinate
-
----
-
-# 🔎 Drill-down System
-
-Supports:
-- worst_region
-- worst_pop
-- (future) time_trend
-
-Drills:
-- reuse EvidenceBundle OR
-- run new deterministic SQL
-
----
-
-# 🧱 System Topology
-
-## Frontend (Vercel)
-- Next.js UI
-- /api/triage
-
-## Backend (VPS - Docker)
-- Caddy (TLS)
-- cachey-proxy
-- ClickHouse (private)
-
-Flow:
-
-UI → Vercel API → Caddy → Proxy → ClickHouse → Proxy → UI
-
----
-
-# 🔐 Security & Deployment
-
-- ClickHouse bound to localhost (127.x)
-- No public DB access
-- Proxy is only access layer
-- Firewall rules enforced
-- Fail2ban enabled
-- TLS via Caddy
-- Dockerized services on VPS
-
----
-
-# 📦 Technology Stack
-
-## Frontend
-- Next.js
-- React
-- TypeScript
-
-## Backend
-- Node.js
-- Vercel Serverless
-- cachey-proxy
-
-## Data
-- ClickHouse (MergeTree)
-- Synthetic telemetry generator
-
-## Infra
-- VPS (Docker)
-- Caddy
-- Vercel
-
----
-
-# 🔗 Shared Telemetry Generator
-
-Separate reusable system:
-
-- Defines canonical telemetry schema
-- Generates realistic CDN traffic patterns
-- Used by Cachey (analytics)
-- Used by future ML models
-
-Prevents drift between analytics and ML.
-
----
-
-# 🧭 Design Principles
-
-- Deterministic first, AI second  
-- SQL is truth  
-- Evidence before explanation  
-- Reproducibility over intuition  
-- Secure-by-default architecture  
-
----
-
-# Example: Investigating a Production Issue
-
-User:
-"How was live traffic for partner_01 last night?"
-
-Cachey:
-1. Parses intent → partner_01, live, time window
-2. Runs deterministic SQL
-3. Detects:
-   - Elevated latency in us-east
-   - Increased 5xx errors
-4. Surfaces:
-   - worst region
-   - breakdown
-   - SQL queries
-5. Enables drill-down → worst POP
-
-Result:
-Evidence-backed triage in seconds
-
----
-
-# 🚀 Roadmap
-
-## Near-term
-- SQL inspector
-- Better evidence panels
-- Drill expansions
-
-## Mid-term
-- Materialized views
-- Time-series anomaly detection
-
-## Long-term
-- ML integration (shared generator)
-- Feature store
-- Model-assisted triage
-
----
-
-# 🧱 Architecture Evolution (Historical)
-
-## V1 – Slack + n8n
-- One-shot triage
-- No UI
-
-## V2 – UI + API
-- Deterministic pipeline
-- Local state
-
-## V3 – Conversational Layer
-- Intent parsing
-- Chat interface
-
-## V4 – ClickHouse + Proxy (Current)
+## Architecture
 
 ```mermaid
 flowchart TD
-  subgraph VERCEL["Frontend (Vercel)"]
-    UI["Home UI"]
-    API["/api/triage"]
-  end
-
-  subgraph VPS["VPS"]
-    CADDY["Caddy"]
-    PROXY["cachey-proxy"]
-    CH["ClickHouse"]
-  end
-
-  UI --> API
-  API --> CADDY
-  CADDY --> PROXY
-  PROXY --> CH
-  CH --> PROXY
-  PROXY --> API
-  API --> UI
+  User["User"] --> UI["Next.js UI"]
+  UI --> Router["Chat + filter intent"]
+  Router --> API["/api/triage"]
+  API --> SQL["SQL builder"]
+  SQL --> Proxy["cachey-proxy"]
+  Proxy --> CH["ClickHouse"]
+  CH --> Proxy
+  Proxy --> Normalize["Metric normalization"]
+  Normalize --> Evidence["EvidenceBundle"]
+  Evidence --> Agents["Deterministic agents"]
+  Agents --> Assessment["IncidentAssessment"]
+  Assessment --> Cards["Triage / Drill / Compare / Explain cards"]
+  Evidence --> Narration["Optional evidence-only narration"]
+  Narration --> Cards
 ```
+
+## Deployment Topology
+
+```mermaid
+flowchart LR
+  Browser["Browser"] --> Vercel["Vercel / Next.js"]
+  Vercel --> API["Vercel API routes"]
+  API --> Caddy["Caddy TLS"]
+  Caddy --> Proxy["cachey-proxy"]
+  Proxy --> ClickHouse["ClickHouse private bind"]
+```
+
+ClickHouse is not exposed publicly. The proxy is the only access layer, protected by environment-level configuration and token support.
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| UI | Next.js, React, TypeScript, Tailwind |
+| API | Next.js route handlers, Node.js runtime |
+| Data | ClickHouse MergeTree tables |
+| Querying | Parameterized SQL builder |
+| Reasoning | Deterministic TypeScript agents |
+| Optional narration | OpenAI Responses API |
+| Deployment | Vercel, VPS, Docker, Caddy |
+
+## Repository Map
+
+```text
+ui/
+  app/
+    api/triage/       Core triage API
+    api/chat/         Deterministic chat/router support
+    api/narrate/      Optional evidence-only narration
+    page.tsx          Main Cachey UI
+  components/
+    cards/            Triage, drill, compare, explain cards
+    chat/             Chat input and conversation thread
+    graphs/           Time-series and status visualizations
+    mission/          Active investigation context
+  lib/
+    clickhouse/       SQL builder and ClickHouse triage runner
+    triage/           EvidenceBundle, agents, severity, drills
+    chat/             Parsing, guardrails, exploration helpers
+    schema/           Canonical partners, services, regions, POPs
+
+docs/
+  Architecture, deterministic logic, telemetry, infra, and ClickHouse runbooks
+
+scripts/
+  Synthetic telemetry generation
+
+n8n/
+  Historical prototype workflow
+```
+
+Note: `notebook/worker` is an adjacent experimental worker for PDF-to-training-video generation. It is intentionally not part of the CDN triage architecture and is planned to move into its own repository.
+
+## Local Development
+
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+Then open:
+
+```text
+http://localhost:3000
+```
+
+Useful scripts:
+
+```bash
+npm run dev
+npm run build
+npm run lint
+```
+
+## Environment
+
+The triage app can run against a proxy-backed ClickHouse deployment.
+
+Common environment variables:
+
+```text
+CACHEY_PROXY_URL=
+CACHEY_PROXY_TOKEN=
+OPENAI_API_KEY=
+OPENAI_NARRATION_MODEL=
+```
+
+If `OPENAI_API_KEY` is not configured, narration falls back to deterministic summaries. The core triage pipeline still works when data access is configured.
+
+## Example Investigation
+
+User asks:
+
+```text
+How was live traffic for partner_01 last night?
+```
+
+Cachey:
+
+1. Normalizes the scope: `partner_01`, `live`, selected time window
+2. Builds SQL for ClickHouse
+3. Retrieves traffic, latency, errors, cache, and breakdown metrics
+4. Constructs an EvidenceBundle
+5. Runs deterministic agents
+6. Returns an assessment with findings, graphs, SQL, evidence, and next actions
+
+Follow-up:
+
+```text
+Show me the worst POP.
+```
+
+Cachey reuses the investigation scope, resolves the drill request, and returns ranked evidence plus supporting time-series context.
+
+## Design Principles
+
+- SQL is the source of truth
+- Evidence comes before explanation
+- Deterministic reasoning drives the incident assessment
+- AI can narrate evidence, but cannot create facts
+- Every answer should be inspectable
+- Triage should continue through follow-ups instead of restarting from scratch
+
+## Project Evolution
+
+| Version | Direction |
+|---|---|
+| V1 | Slack + n8n prototype for one-shot triage |
+| V2 | UI and API with deterministic local state |
+| V3 | Conversational triage interface |
+| V4 | ClickHouse-backed, proxy-secured, evidence-first triage engine |
+
+## Roadmap
+
+- SQL inspector and stronger evidence panels
+- More drill-down surfaces and comparison views
+- Materialized views for faster historical windows
+- Time-series anomaly detection
+- Shared telemetry generator for analytics and future ML workflows
+- Model-assisted triage that remains evidence-bound
+
+## The Point
+
+Cachey is built for the first five minutes of an incident: quickly identify what changed, where it changed, why the system thinks so, and what to inspect next.
