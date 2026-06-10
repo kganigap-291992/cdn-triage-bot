@@ -2,8 +2,9 @@
 
 Deterministic CDN incident triage, backed by ClickHouse evidence.
 
-**Production:** https://cdn-triage-bot.vercel.app
 **Author:** Krishna Reddy GV
+
+**Production URL:** https://cdn-triage-bot.vercel.app
 
 Cachey turns CDN telemetry into reproducible incident assessments. It is built around a simple rule: operational answers should come from inspectable data, not guesses.
 
