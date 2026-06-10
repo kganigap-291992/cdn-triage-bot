@@ -2,9 +2,8 @@
 
 Deterministic CDN incident triage, backed by ClickHouse evidence.
 
-**Author:** Krishna Reddy GV
-
-**Production URL:** https://cdn-triage-bot.vercel.app
+- **Author:** Krishna Reddy GV
+- **Production URL:** https://cdn-triage-bot.vercel.app
 
 Cachey turns CDN telemetry into reproducible incident assessments. It is built around a simple rule: operational answers should come from inspectable data, not guesses.
 
@@ -12,7 +11,7 @@ Cachey turns CDN telemetry into reproducible incident assessments. It is built a
 User intent -> SQL -> ClickHouse metrics -> EvidenceBundle -> deterministic agents -> incident assessment
 ```
 
-Cachey is not a dashboard skin and not an LLM wrapper. The core triage path is deterministic. Optional AI is used only to narrate or explain evidence that the system has already produced.
+Cachey is not a dashboard and not an LLM wrapper. The core triage path is deterministic. Optional AI is used only to narrate or explain evidence that the system has already produced.
 
 ## Why This Exists
 
