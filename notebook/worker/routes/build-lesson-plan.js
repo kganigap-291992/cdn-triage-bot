@@ -42,12 +42,44 @@ const {
 } = require("../services/architectureCanonicalTraversalRailBuilder");
 
 const {
+  buildArtifactUnderstanding,
+} = require("../services/artifactUnderstandingBuilder");
+
+const {
   buildComponentUnderstanding,
 } = require("../services/componentUnderstandingBuilder");
 
 const {
+  buildResponsibilityUnderstanding,
+} = require("../services/responsibilityUnderstandingBuilder");
+
+const {
+  buildSharedNodeUnderstanding,
+} = require("../services/sharedNodeUnderstandingBuilder");
+
+const {
+  buildMultiRailUnderstanding,
+} = require("../services/multiRailUnderstandingBuilder");
+
+const {
+  buildBidirectionalRailUnderstanding,
+} = require("../services/bidirectionalRailUnderstandingBuilder");
+
+const {
+  buildEvidenceTeachingSupport,
+} = require("../services/evidenceTeachingSupportBuilder");
+
+const {
   buildArchitectureIndustryKnowledge,
 } = require("../services/architectureIndustryKnowledgeResolver");
+
+const {
+  buildIndustryTeachingSupport,
+} = require("../services/industryTeachingSupportBuilder");
+
+const {
+  buildWhyHereTeaching,
+} = require("../services/whyHereTeachingBuilder");
 
 const {
   buildArchitectureReasoning,
@@ -73,6 +105,10 @@ const {
 const {
   buildCalmExplainerNarration,
 } = require("../services/calmExplainerNarrationBuilder");
+
+const {
+  buildComponentMeaningResolution,
+} = require("../services/componentMeaningResolver");
 
 const {
   buildArchitectureRailNarration,
@@ -269,6 +305,20 @@ router.post("/:jobId", async (req, res) => {
       selectedFlowLaneId: canonicalTraversalRail.selectedFlowLaneId,
     });
 
+    const artifactUnderstanding = buildArtifactUnderstanding({
+      architectureEvidence,
+      documentUnderstanding,
+      canonicalTraversalRail,
+      outputDir: jobDir,
+    });
+
+    const artifactUnderstandingPath = path.join(
+      jobDir,
+      "artifact-understanding.json"
+    );
+
+    console.log("[artifact-understanding]", artifactUnderstanding.stats);
+
     console.log("[architecture-flow]", {
       components: architectureFlow.stats.componentCount,
       relationships: architectureFlow.stats.relationshipCount,
@@ -294,6 +344,97 @@ router.post("/:jobId", async (req, res) => {
 
     console.log("[component-understanding]", componentUnderstanding.stats);
 
+    const responsibilityUnderstanding = buildResponsibilityUnderstanding({
+      architectureUnderstanding,
+      canonicalTraversalRail,
+      componentUnderstanding,
+      architectureEvidence,
+      outputDir: jobDir,
+    });
+
+    const responsibilityUnderstandingPath = path.join(
+      jobDir,
+      "responsibility-understanding.json"
+    );
+
+    console.log("[responsibility-understanding]", responsibilityUnderstanding.stats);
+
+    const sharedNodeUnderstanding = buildSharedNodeUnderstanding({
+      canonicalTraversalRail,
+      responsibilityUnderstanding,
+      outputDir: jobDir,
+    });
+
+    const sharedNodeUnderstandingPath = path.join(
+      jobDir,
+      "shared-node-understanding.json"
+    );
+
+    console.log("[shared-node-understanding]", sharedNodeUnderstanding.stats);
+
+    const multiRailUnderstanding =
+      buildMultiRailUnderstanding({
+        canonicalTraversalRail,
+        outputDir: jobDir,
+      });
+
+    const multiRailUnderstandingPath = path.join(
+      jobDir,
+      "multi-rail-understanding.json"
+    );
+
+    console.log(
+      "[multi-rail-understanding]",
+      multiRailUnderstanding.stats
+    );
+
+    const bidirectionalRailUnderstanding =
+      buildBidirectionalRailUnderstanding({
+        canonicalTraversalRail,
+        outputDir: jobDir,
+      });
+
+    const bidirectionalRailUnderstandingPath =
+      path.join(
+        jobDir,
+        "bidirectional-rail-understanding.json"
+      );
+
+    console.log(
+      "[bidirectional-rail-understanding]",
+      bidirectionalRailUnderstanding.stats
+    );
+
+    const componentMeaningResolution = buildComponentMeaningResolution({
+      componentUnderstanding,
+      architectureEvidence,
+      outputDir: jobDir,
+    });
+
+    const componentMeaningResolutionPath = path.join(
+      jobDir,
+      "component-meaning-resolution.json"
+    );
+
+    console.log("[component-meaning-resolution]", componentMeaningResolution.stats);
+
+    const evidenceTeachingSupport = buildEvidenceTeachingSupport({
+      architectureEvidence,
+      architectureTermResolutions,
+      componentUnderstanding,
+      componentMeaningResolution,
+      canonicalTraversalRail,
+      documentUnderstanding,
+      outputDir: jobDir,
+    });
+
+    const evidenceTeachingSupportPath = path.join(
+      jobDir,
+      "evidence-teaching-support.json"
+    );
+
+    console.log("[evidence-teaching-support]", evidenceTeachingSupport.stats);
+
     const architectureIndustryKnowledge =
       await buildArchitectureIndustryKnowledge({
         componentUnderstanding,
@@ -312,6 +453,39 @@ router.post("/:jobId", async (req, res) => {
       llmValid: architectureIndustryKnowledge.stats.llmValidCount,
       fallback: architectureIndustryKnowledge.stats.fallbackUsedCount,
     });
+
+    const industryTeachingSupport = buildIndustryTeachingSupport({
+      evidenceTeachingSupport,
+      architectureIndustryKnowledge,
+      outputDir: jobDir,
+    });
+
+    const industryTeachingSupportPath = path.join(
+      jobDir,
+      "industry-teaching-support.json"
+    );
+
+    console.log(
+      "[industry-teaching-support]",
+      industryTeachingSupport.stats
+    );
+
+    const whyHereTeaching = await buildWhyHereTeaching({
+      componentUnderstanding,
+      componentMeaningResolution,
+      evidenceTeachingSupport,
+      architectureIndustryKnowledge,
+      canonicalTraversalRail,
+      llmClient: architectureTeachingLlmClient,
+      outputDir: jobDir,
+    });
+
+    const whyHereTeachingPath = path.join(
+      jobDir,
+      "why-here-teaching.json"
+    );
+
+    console.log("[why-here-teaching]", whyHereTeaching.stats);
 
     const architectureReasoning = buildArchitectureReasoning({
       architectureUnderstanding,
@@ -403,8 +577,11 @@ router.post("/:jobId", async (req, res) => {
         (rail) => ({
           ...rail,
           title: getRailNarrationTitle(rail),
+          hops: (canonicalTraversalRail.hops || []).filter((hop) =>
+            (rail.selectedHopIds || []).includes(hop.hopId)
+          ),
         })
-      ),
+),
     ].filter(Boolean);
 
     const seenRailKeys = new Set();
@@ -421,13 +598,21 @@ router.post("/:jobId", async (req, res) => {
     });
 
     const architectureRailNarration =
-      await buildArchitectureRailNarration({
-        rails: dedupedRailNarrationInputs,
-        llmClient: architectureTeachingLlmClient,
-        outputDir: jobDir,
-        componentUnderstanding,
-        architectureIndustryKnowledge,
-      });
+    await buildArchitectureRailNarration({
+      rails: dedupedRailNarrationInputs,
+      llmClient: architectureTeachingLlmClient,
+      outputDir: jobDir,
+      componentUnderstanding,
+      responsibilityUnderstanding,
+      sharedNodeUnderstanding,
+      multiRailUnderstanding,
+      bidirectionalRailUnderstanding,
+      architectureIndustryKnowledge,
+      evidenceTeachingSupport,
+      industryTeachingSupport,
+      whyHereTeaching,
+      artifactUnderstanding,
+    });
 
     const architectureRailNarrationPath = path.join(
       jobDir,
@@ -545,16 +730,75 @@ router.post("/:jobId", async (req, res) => {
         output: canonicalTraversalRailPath,
       },
 
+      artifactUnderstanding: {
+        version: artifactUnderstanding.version,
+        stats: artifactUnderstanding.stats,
+        output: artifactUnderstandingPath,
+      },
+
       componentUnderstanding: {
         version: componentUnderstanding.version,
         stats: componentUnderstanding.stats,
         output: componentUnderstandingPath,
       },
 
+      responsibilityUnderstanding: {
+        version: responsibilityUnderstanding.version,
+        stats: responsibilityUnderstanding.stats,
+        output: responsibilityUnderstandingPath,
+      },
+
+      sharedNodeUnderstanding: {
+        version: sharedNodeUnderstanding.version,
+        stats: sharedNodeUnderstanding.stats,
+        output: sharedNodeUnderstandingPath,
+      },
+
+      multiRailUnderstanding: {
+        version: multiRailUnderstanding.version,
+        stats: multiRailUnderstanding.stats,
+        output: multiRailUnderstandingPath,
+      },
+
+      bidirectionalRailUnderstanding: {
+        version:
+          bidirectionalRailUnderstanding.version,
+
+        stats:
+          bidirectionalRailUnderstanding.stats,
+
+        output:
+          bidirectionalRailUnderstandingPath,
+      },
+
+      componentMeaningResolution: {
+        version: componentMeaningResolution.version,
+        stats: componentMeaningResolution.stats,
+        output: componentMeaningResolutionPath,
+      },
+
+      evidenceTeachingSupport: {
+        version: evidenceTeachingSupport.version,
+        stats: evidenceTeachingSupport.stats,
+        output: evidenceTeachingSupportPath,
+      },
+
       architectureIndustryKnowledge: {
         version: architectureIndustryKnowledge.version,
         stats: architectureIndustryKnowledge.stats,
         output: architectureIndustryKnowledgePath,
+      },
+
+      industryTeachingSupport: {
+        version: industryTeachingSupport.version,
+        stats: industryTeachingSupport.stats,
+        output: industryTeachingSupportPath,
+      },
+
+      whyHereTeaching: {
+        version: whyHereTeaching.version,
+        stats: whyHereTeaching.stats,
+        output: whyHereTeachingPath,
       },
 
       architectureReasoning: {

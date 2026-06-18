@@ -42,6 +42,85 @@ function compactText(value, maxLength = 1400) {
   return `${text.slice(0, maxLength - 1).trim()}…`;
 }
 
+function compactList(items = [], limit = 8) {
+  return Array.from(
+    new Set(asArray(items).map(safeString).filter(Boolean))
+  ).slice(0, limit);
+}
+
+function buildEvidenceClaimSentence(claims = []) {
+  const allowed = asArray(claims);
+
+    const claim = [
+    "request_flow",
+    "routing",
+    "validation",
+    "cache_delivery",
+    "state",
+    "processing",
+    ].find((item) => allowed.includes(item));
+
+  const text = {
+    request_flow:
+      "The document supports reading this hop as part of the primary request flow.",
+
+    routing:
+      "The document supports reading this hop as a routing or distribution step.",
+
+    validation:
+      "The document supports reading this hop as a validation or policy step.",
+
+    cache_delivery:
+      "The document supports reading this hop as a cache or payload delivery step.",
+
+    state:
+      "The document supports reading this hop as a state or persistence step.",
+
+    processing:
+      "The document supports reading this hop as a processing-stage step.",
+  };
+
+  return claim ? text[claim] : null;
+}
+
+function sanitizeForRailNarration(value) {
+  return safeString(value)
+    .replace(/\brequest originator\b/gi, "upstream side")
+    .replace(/\brouting receiver\b/gi, "downstream side")
+    .replace(/\bstate receiver\b/gi, "downstream side")
+    .replace(/\bcontrol source\b/gi, "upstream side")
+    .replace(/\bprocessing receiver\b/gi, "downstream side")
+    .replace(/\bvalidation receiver\b/gi, "downstream side")
+    .replace(/\bhelps? decide where traffic should go next\b/gi, "appears before the next documented stage")
+    .replace(/\bdecide where traffic should go next\b/gi, "appear before the next documented stage")
+    .replace(/\btraffic is directed appropriately\b/gi, "the documented flow continues in order")
+    .replace(/\bdirected appropriately\b/gi, "shown in the documented order")
+    .replace(/\bprevents? traffic from being sent blindly\b/gi, "keeps the explanation tied to the documented order")
+    .replace(/\bdo the core work\b/gi, "appear after earlier stages")
+    .replace(/\bcore work\b/gi, "later-stage position")
+    .replace(/\bapplication or service processing\b/gi, "the next documented stage")
+    .replace(/\bapplication\/service processing\b/gi, "the next documented stage")
+    .replace(/\bdurable state, records, or stored results\b/gi, "a later documented stage")
+    .replace(/\bimportant state\b/gi, "later documented context")
+    .replace(/\bpreserve important state\b/gi, "preserve the documented journey context")
+    .replace(/\bfacilitates?\b/gi, "supports")
+    .replace(/\bentry responsibility\b/gi, "earlier documented stage")
+    .replace(/\bunknown responsibility\b/gi, "next documented stage")
+    .replace(/\bcontrol responsibility\b/gi, "middle documented stage")
+    .replace(/\bprocessing responsibility\b/gi, "later documented stage")
+    .replace(/\bstate responsibility\b/gi, "later documented stage")
+    .replace(/\bstate management\b/gi, "later documented stage")
+    .replace(/\brouting or control decisions?\b/gi, "the next documented stage")
+    .replace(/\bcontrol decisions?\b/gi, "the next documented stage")
+    .replace(/\bhandle the next steps?\b/gi, "continue the documented journey")
+    .replace(/\bfurther processing\b/gi, "the next documented stage")
+    .replace(/\binitiates? the process\b/gi, "appears at the start of the documented journey")
+    .replace(/\bmoves? the request\b/gi, "continues the documented flow")
+    .replace(/\bpasses? the request\b/gi, "continues the documented flow")
+    .replace(/\btraffic\b/gi, "the documented flow")
+    .replace(/\brequests?\b/gi, "the documented flow");
+}
+
 function formatRailPath(hops = []) {
   return asArray(hops)
     .map((hop, index) => {
@@ -65,6 +144,7 @@ function normalizeKey(value) {
 function buildComponentContextLookup({
   componentUnderstanding = {},
   architectureIndustryKnowledge = {},
+  whyHereTeaching = {},
 } = {}) {
   const lookup = new Map();
 
@@ -78,6 +158,8 @@ function buildComponentContextLookup({
   }
 
   const industryIndex = new Map();
+  const whyHereIndex =
+  buildWhyHereLookup(whyHereTeaching);
 
   for (const context of asArray(
     architectureIndustryKnowledge.contexts
@@ -90,11 +172,182 @@ function buildComponentContextLookup({
 
   for (const [key, component] of componentIndex.entries()) {
     lookup.set(key, {
-      component,
+    component,
 
-      industryKnowledge:
+    industryKnowledge:
         industryIndex.get(key) || null,
+
+    whyHere:
+        whyHereIndex.get(key) || null,
     });
+  }
+
+  return lookup;
+}
+
+function buildWhyHereLookup(whyHereTeaching = {}) {
+  const lookup = new Map();
+
+  for (const item of asArray(whyHereTeaching.components)) {
+    if (item.componentName) {
+      lookup.set(normalizeKey(item.componentName), item);
+    }
+
+    if (item.componentId) {
+      lookup.set(normalizeKey(item.componentId), item);
+    }
+  }
+
+  return lookup;
+}
+
+function buildHandoffTeachingLookup(
+  evidenceTeachingSupport = {}
+) {
+  const lookup = new Map();
+
+  for (const handoff of asArray(
+    evidenceTeachingSupport.handoffs
+  )) {
+    lookup.set(handoff.hopId, handoff);
+  }
+
+  return lookup;
+}
+
+
+function buildResponsibilityLookup(
+  responsibilityUnderstanding = {}
+) {
+  const lookup = new Map();
+
+  for (const hop of asArray(
+    responsibilityUnderstanding.hops
+  )) {
+    lookup.set(hop.hopId, hop);
+  }
+
+  return lookup;
+}
+
+function buildSharedNodeLookup(
+  sharedNodeUnderstanding = {}
+) {
+  const lookup = new Map();
+
+  for (const node of asArray(
+    sharedNodeUnderstanding.nodes
+  )) {
+    if (node.nodeName) {
+      lookup.set(
+        normalizeKey(node.nodeName),
+        node
+      );
+    }
+
+    if (node.nodeId) {
+      lookup.set(
+        normalizeKey(node.nodeId),
+        node
+      );
+    }
+  }
+
+  return lookup;
+}
+
+function buildMultiRailLookup(
+  multiRailUnderstanding = {}
+) {
+  const lookup = new Map();
+
+  for (const rail of asArray(
+    multiRailUnderstanding.rails
+  )) {
+    if (rail.flowLaneId) {
+      lookup.set(rail.flowLaneId, rail);
+    }
+  }
+
+  return lookup;
+}
+
+function buildBidirectionalLookup(
+  bidirectionalRailUnderstanding = {}
+) {
+  const lookup = new Map();
+
+  for (const hop of asArray(
+    bidirectionalRailUnderstanding.hopDirections
+  )) {
+    if (hop.hopId) {
+      lookup.set(hop.hopId, hop);
+    }
+  }
+
+  return lookup;
+}
+
+function buildMultiRailInstruction(
+  multiRailContext = {}
+) {
+  const relationship =
+    safeString(
+      multiRailContext.railRelationship
+    );
+
+  if (relationship === "primary") {
+    return "This rail is the canonical/main walkthrough.";
+    }
+
+    if (relationship === "parallel") {
+    return "This rail is taught alongside the canonical journey.";
+    }
+
+    if (relationship === "supports") {
+    return "This rail supports the canonical journey and is not the primary walkthrough.";
+    }
+
+  return null;
+}
+
+function buildDirectionInstruction(
+  compactNarrationContext = []
+) {
+  const bidirectionalHop =
+    asArray(compactNarrationContext).find(
+      (hop) =>
+        hop.directionContext
+          ?.directionTeachingContext
+          ?.teachingBoundary ===
+        "observed_forward_reverse_possible"
+    );
+
+  if (!bidirectionalHop) return null;
+
+  return [
+    bidirectionalHop.directionContext
+      .directionTeachingContext
+      .forwardTeachingSentence,
+
+    bidirectionalHop.directionContext
+      .directionTeachingContext
+      .reverseTeachingSentence,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+
+function buildArtifactHandoffLookup(
+  artifactUnderstanding = {}
+) {
+  const lookup = new Map();
+
+  for (const handoff of asArray(
+    artifactUnderstanding.handoffArtifacts
+  )) {
+    lookup.set(handoff.hopId, handoff);
   }
 
   return lookup;
@@ -123,6 +376,9 @@ function buildComponentTeachingContext(
   const component = componentContext?.component || null;
   const industryKnowledge =
     componentContext?.industryKnowledge || null;
+
+  const whyHere =
+    componentContext?.whyHere || null;
 
   if (!component) {
     return {
@@ -171,6 +427,16 @@ function buildComponentTeachingContext(
 
     primaryRailContext:
       component.primaryRailContext || null,
+    
+    whyHere:
+        whyHere?.whyHere || [],
+
+    nextStageBenefit:
+        whyHere?.nextStageBenefit || [],
+
+    allowedEvidenceClaims:
+        asArray(whyHere?.supportedClaims),
+
 
     safety: {
       canInferInternalBehavior:
@@ -226,22 +492,18 @@ function compactComponentNarrationContext(component = {}) {
     knowledgeType:
       component.knowledgeType || "unknown",
 
-    industryConcept:
-      component.industryConcept || null,
-
-    journeyRole:
-      component.journeyRole || "unknown",
-
-    journeyPosition:
-      component.journeyPosition || null,
-
-    industryExplanation:
-      component.safeToExplainIndustry
-        ? compactText(component.industryExplanation, 450)
-        : null,
-
     documentDefinition:
       component.documentDefinition || null,
+
+    whyHere:
+      asArray(component.whyHere)
+        .slice(0, 1)
+        .map(sanitizeForRailNarration),
+
+    nextStageBenefit:
+      asArray(component.nextStageBenefit)
+        .slice(0, 1)
+        .map(sanitizeForRailNarration),
 
     safeToExplainIndustry:
       component.safeToExplainIndustry === true,
@@ -254,14 +516,233 @@ function compactComponentNarrationContext(component = {}) {
 function buildCompactNarrationContext(hopTeachingContext = []) {
   return asArray(hopTeachingContext).map((hop) => ({
     hopId: hop.hopId,
+
     from: compactComponentNarrationContext(hop.from),
+
     to: compactComponentNarrationContext(hop.to),
+
+    responsibilityTransition:
+        hop.responsibility
+            ? {
+                fromRole:
+                    hop.responsibility.from?.responsibility?.role || null,
+
+                toRole:
+                    hop.responsibility.to?.responsibility?.role || null,
+
+                handoffType:
+                    hop.responsibility
+                        ?.handoffResponsibility
+                        ?.handoffType || null,
+
+                roleTransitionText:
+                    `${
+                        hop.responsibility.from?.responsibility?.role || "unknown"
+                    } → ${
+                        hop.responsibility.to?.responsibility?.role || "unknown"
+                    }`,
+
+                teachingSentence:
+                `Responsibility transfers from ${
+                    hop.responsibility.from?.responsibility?.role || "one role"
+                } to ${
+                    hop.responsibility.to?.responsibility?.role || "the next role"
+                } as a ${
+                    hop.responsibility.handoffResponsibility?.handoffType || "handoff"
+                }.`,
+            }
+            : null,
+
+    sharedNodeHints: {
+    from:
+        hop.sharedNodeContext?.from
+        ? {
+            classification:
+                hop.sharedNodeContext.from.classification,
+            teachingHint:
+                hop.sharedNodeContext.from.teachingHint,
+            participatingLaneTypes:
+                hop.sharedNodeContext.from.participatingLaneTypes,
+            perHopRoles:
+                hop.sharedNodeContext.from.perHopRoles,
+            railRoleClassification:
+                hop.sharedNodeContext.from.railRoleClassification,
+            hasRailSpecificRoleDifference:
+                hop.sharedNodeContext.from.hasRailSpecificRoleDifference,
+            railRoleProfiles:
+                hop.sharedNodeContext.from.railRoleProfiles,
+            }
+        : null,
+
+    to:
+        hop.sharedNodeContext?.to
+        ? {
+            classification:
+                hop.sharedNodeContext.to.classification,
+            teachingHint:
+                hop.sharedNodeContext.to.teachingHint,
+            participatingLaneTypes:
+                hop.sharedNodeContext.to.participatingLaneTypes,
+            perHopRoles:
+                hop.sharedNodeContext.to.perHopRoles,
+            railRoleClassification:
+                hop.sharedNodeContext.to.railRoleClassification,
+            hasRailSpecificRoleDifference:
+                hop.sharedNodeContext.to.hasRailSpecificRoleDifference,
+            railRoleProfiles:
+                hop.sharedNodeContext.to.railRoleProfiles,
+            }
+        : null,
+    },
+
+directionContext:
+  hop.directionContext
+    ? {
+        observedDirection:
+          hop.directionContext.observedDirection,
+
+        directionType:
+          hop.directionContext.directionType,
+
+        forwardTeachingFrame:
+          hop.directionContext.forwardTeachingFrame,
+
+        reverseTeachingFrame:
+          hop.directionContext.reverseTeachingFrame,
+
+        directionTeachingContext:
+          hop.directionContext.directionTeachingContext,
+      }
+    : null,
+
+allowedEvidenceClaims:
+  compactList(
+    asArray(hop.handoffTeaching?.supportedClaims),
+    8
+  ),
+
+    artifactTeachingHints:
+      asArray(hop.artifactTeaching?.artifacts)
+        .slice(0, 2)
+        .map((artifact) => ({
+          artifactName: artifact.artifactName,
+          artifactType: artifact.artifactClass,
+          meaning: artifact.meaning || null,
+          teachingSentence:
+            `The document identifies ${artifact.artifactName} as a ${artifact.artifactClass} artifact associated with this handoff.`,
+        })),
+
+    railTeachingHints: {
+      placement:
+        hop.responsibility
+            ? compactText(
+                `Responsibility transfers from ${
+                hop.responsibility.from?.responsibility?.role || "one role"
+                } to ${
+                hop.responsibility.to?.responsibility?.role || "the next role"
+                }.`,
+              220
+            )
+          : compactText(
+              `${hop.from?.componentName || "This stage"} connects to ${
+                hop.to?.componentName || "the next stage"
+              } in the documented journey.`,
+              220
+            ),
+
+      progression:
+        `${hop.from?.componentName || "This stage"} → ${hop.to?.componentName || "next stage"}`,
+
+      handoffMeaning:
+        hop.responsibility
+          ? compactText(
+              `${
+                hop.responsibility.handoffResponsibility?.handoffType || "handoff"
+              }: ${
+                hop.responsibility.from?.responsibility?.role || "upstream"
+              } → ${
+                hop.responsibility.to?.responsibility?.role || "downstream"
+              }`,
+              220
+            )
+          : compactText(
+              `${hop.from?.componentName || "This stage"} connects to ${
+                hop.to?.componentName || "the next stage"
+              } in the documented journey.`,
+              220
+            ),
+
+      allowedTeachingClaims:
+        compactList(
+          asArray(hop.handoffTeaching?.supportedClaims),
+          8
+        ),
+
+      evidenceClaimSentence:
+        buildEvidenceClaimSentence(
+          hop.handoffTeaching?.supportedClaims
+        ),
+    },
   }));
 }
 
+function buildSharedNodeNarrationHints(
+  compactNarrationContext = []
+) {
+  return asArray(compactNarrationContext)
+    .flatMap((hop) => [
+      {
+        side: "from",
+        componentName: hop.from?.componentName,
+        hint: hop.sharedNodeHints?.from,
+      },
+      {
+        side: "to",
+        componentName: hop.to?.componentName,
+        hint: hop.sharedNodeHints?.to,
+      },
+    ])
+    .filter(
+      (item) =>
+        item.componentName &&
+        item.hint &&
+        item.hint.classification !== "single_role_shared"
+    )
+    .filter(
+      (item, index, list) =>
+        list.findIndex(
+          (other) =>
+            other.componentName === item.componentName
+        ) === index
+    )
+    .slice(0, 4)
+    .map((item) => ({
+    componentName: item.componentName,
+    classification: item.hint.classification,
+
+    railRoleClassification:
+        item.hint.railRoleClassification || null,
+
+    hasRailSpecificRoleDifference:
+        item.hint.hasRailSpecificRoleDifference === true,
+
+    teachingHint: item.hint.teachingHint,
+
+    participatingLaneTypes:
+        item.hint.participatingLaneTypes || [],
+
+    perHopRoles:
+        item.hint.perHopRoles || [],
+
+    railRoleProfiles:
+        item.hint.railRoleProfiles || [],
+    }));
+}
 
 function buildRailNarrationInput(rail = {}, index = 0) {
-  const hops = asArray(rail.hops);
+  const hops = asArray(rail.hops).length
+    ? asArray(rail.hops)
+    : asArray(rail.selectedHops);
 
   return {
     railId:
@@ -328,10 +809,21 @@ function buildRailNarrationInput(rail = {}, index = 0) {
   };
 }
 
-function buildRailNarrationFallback(rail = {}) {
+function buildRailNarrationFallback({
+  rail = {},
+  compactNarrationContext = [],
+} = {}) {
   const title = safeString(rail.title) || "Architecture rail";
   const flowLaneType = safeString(rail.flowLaneType);
   const primaryRailType = safeString(rail.primaryRailType);
+  const multiRailContext = rail.multiRailContext || {};
+
+    const railRelationship =
+    safeString(multiRailContext.railRelationship);
+
+    const railRelationshipTeachingHint =
+    safeString(multiRailContext.railRelationshipTeachingHint);
+
   const hops = asArray(rail.hops);
   const pathText = safeString(rail.pathText) || formatRailPath(hops);
 
@@ -344,16 +836,140 @@ function buildRailNarrationFallback(rail = {}) {
     ? `It is classified as ${flowLaneType.replace(/_/g, " ")}.`
     : "";
 
-  return compactText(
-    [
-      intro,
-      pathText ? `The path is ${pathText}.` : "",
-      laneContext,
-      "Read it as one coherent responsibility story, not as isolated arrows.",
-    ]
-      .filter(Boolean)
-      .join(" ")
+  const multiRailStory =
+  railRelationshipTeachingHint ||
+  (
+    railRelationship === "parallel"
+      ? "This rail should be taught alongside the canonical journey."
+      : railRelationship === "supports"
+        ? "This rail provides supporting context for the canonical journey."
+        : ""
   );
+
+  const roles = Array.from(
+    new Set(
+      asArray(compactNarrationContext)
+        .flatMap((hop) => [
+          hop?.from?.journeyRole,
+          hop?.to?.journeyRole,
+        ])
+        .filter((role) => role && role !== "unknown")
+    )
+  );
+
+  const publicComponents = asArray(compactNarrationContext)
+    .flatMap((hop) => [hop?.from, hop?.to])
+    .filter(
+      (component) =>
+        component?.safeToExplainIndustry === true &&
+        component?.componentName &&
+        component?.journeyRole &&
+        component.journeyRole !== "unknown"
+        )
+    .filter(
+      (component, index, list) =>
+        list.findIndex(
+          (item) => item.componentName === component.componentName
+        ) === index
+    )
+    .slice(0, 2);
+
+  const internalComponents = asArray(compactNarrationContext)
+    .flatMap((hop) => [hop?.from, hop?.to])
+    .filter(
+      (component) =>
+        component?.knowledgeType === "internal_unresolved" &&
+        component?.componentName &&
+        component?.journeyRole &&
+        component.journeyRole !== "unknown"
+    )
+    .filter(
+      (component, index, list) =>
+        list.findIndex(
+          (item) => item.componentName === component.componentName
+        ) === index
+    )
+    .slice(0, 2);
+
+  const roleStory = roles.length
+    ? `Read this as a journey through ${roles.join(", ")} responsibilities.`
+    : "Read this as one coherent responsibility story, not as isolated arrows.";
+
+  const publicStory = publicComponents.length
+    ? `${publicComponents
+        .map(
+          (component) =>
+            `${component.componentName} can be explained using general industry context in the ${component.journeyRole} part of the journey`
+        )
+        .join("; ")}.`
+    : "";
+
+  const internalStory = internalComponents.length
+        ? `${internalComponents
+            .map(
+            (component) =>
+                `${component.componentName} appears in the ${component.journeyRole} part of the journey, but the document does not define its internal behavior`
+            )
+            .join("; ")}.`
+        : "";
+
+    const whyHereItems = asArray(compactNarrationContext)
+    .flatMap((hop) => [hop?.from, hop?.to])
+    .filter(Boolean)
+    .filter(
+        (component, index, list) =>
+        component.componentName &&
+        list.findIndex(
+            (item) =>
+            item.componentName === component.componentName
+        ) === index
+    )
+    .flatMap((component) =>
+        asArray(component.whyHere)
+        .slice(0, 1)
+        .map(
+            (why) =>
+            `${component.componentName}: ${why}`
+        )
+    )
+    .slice(0, 3);
+
+    const whyHereStory =
+    whyHereItems.length
+        ? `Why these pieces appear here: ${whyHereItems.join(" ")}`
+        : "";
+
+    const responsibilityStory = asArray(compactNarrationContext)
+    .map((hop) => {
+        const transition = hop.responsibilityTransition;
+
+        if (!transition?.fromRole || !transition?.toRole) {
+        return null;
+        }
+
+        return `${transition.fromRole} → ${transition.toRole}`;
+    })
+    .filter(Boolean)
+    .slice(0, 6)
+    .join(", ");
+
+    return compactText(
+        [
+            intro,
+            pathText ? `The path is ${pathText}.` : "",
+            laneContext,
+            multiRailStory,
+            roleStory,
+
+            responsibilityStory
+                ? `Responsibility progression: ${responsibilityStory}.`
+                : "",
+
+            whyHereStory,
+        ]
+                    .filter(Boolean)
+            .join(" ")
+        );
 }
 
 function buildRailStyleContract() {
@@ -362,14 +978,45 @@ function buildRailStyleContract() {
     targetStyle: "senior_engineer_architecture_walkthrough",
     voice: "single_primary_mentor",
     narrationRules: [
-      "explain the rail as one coherent architecture journey",
-      "preserve the exact hop order",
-      "do not add, remove, or reorder hops",
-      "explain responsibility transitions, not isolated arrows",
-      "do not invent protocols, auth behavior, cache behavior, retries, failover, replication, autoscaling, encryption, or vendor-specific details",
-      "use cautious language when confidence is limited",
-      "avoid repeated phrases like documented handoff, responsibility shift, or flow moves",
-      "sound natural and calm, not corporate or preachy",
+    "explain the rail as one coherent architecture journey",
+    "preserve the exact hop order",
+    "do not add, remove, or reorder hops",
+    "use responsibilityTransition.teachingSentence as the preferred wording when present",
+    "use responsibilityTransition.teachingSentence verbatim when available",
+    "use input.hopResponsibilitySentences as the ordered backbone of the narration",
+    "write exactly one responsibility sentence per supplied hop",
+    "do not create additional responsibility transitions",
+    "use input.multiRailContext when available",
+    "use input.multiRailInstruction verbatim when present",
+    "if railRelationship is primary, describe it as the main walkthrough",
+    "if railRelationship is parallel, describe it as a rail taught alongside the canonical journey",
+    "if railRelationship is supports, describe it as supporting context rather than the primary journey",
+    "do not describe supporting rails as the canonical walkthrough",
+    "do not repeat a hop unless it appears multiple times in input.hops",
+    "each responsibility sentence must correspond to one supplied hopId",
+    "use sharedNodeNarrationHints only as cautionary context",
+    "for shared nodes, describe the role in this handoff instead of assuming one global behavior",
+    "mention each shared node at most once in the rail narration",
+    "do not expand shared-node hints into extra hops or extra transitions",
+    "describe handoffs as role transitions such as entry to processing, processing to delivery, or delivery to entry",
+    "when describing a responsibility transition, the words before and after 'from' and 'to' refer to roles, not component names",
+    "do not write phrases such as 'from CDN to unknown' or 'from API to control'",
+    "component movement and role transition must be described separately",
+    "use responsibilityTransition.roleTransitionText when explaining responsibility progression",
+    "avoid saying only appears before or appears after when responsibilityTransition is available",
+    "never say a component appears before itself",
+    "if sharedNodeNarrationHints has railRoleClassification multi_rail_same_role, it is safe to say the component appears across rails with the same detected role",
+    "if sharedNodeNarrationHints has railRoleClassification multi_rail_different_role, explain that the component role depends on the current rail or handoff",
+    "never use railRoleProfiles to create extra hops or extra role transitions",
+    "current hop responsibilityTransition remains the source of truth for narration",
+    "explain responsibility transitions, not isolated arrows",
+    "do not invent protocols, auth behavior, cache behavior, retries, failover, replication, autoscaling, encryption, or vendor-specific details",
+    "use cautious language when confidence is limited",
+    "avoid repeated phrases like documented handoff, responsibility shift, or flow moves",
+    "sound natural and calm, not corporate or preachy",
+    "responsibility belongs to roles, never component names",
+    "do not write phrases like 'CDN transfers responsibility' or 'API transfers responsibility'",
+    "components participate in handoffs, roles receive responsibility",
     ],
     borrowedIdeas: [
       "NotebookLM chapter-level explanation",
@@ -429,8 +1076,19 @@ async function generateRailNarrationWithLlm({
       throw new Error("Invalid rail narration JSON");
     }
 
+    const prefix = [
+    input.multiRailInstruction,
+    input.directionInstruction,
+    ]
+    .filter(Boolean)
+    .join(" ");
+
     return {
-      narration: compactText(parsed.narration, 1800),
+    
+    narration: compactText(
+        `${prefix} ${parsed.narration}`,
+        1800
+        ),
       llmUsed: true,
       llmValid: true,
       fallbackUsed: false,
@@ -450,34 +1108,160 @@ async function buildArchitectureRailNarration({
   llmClient = null,
   outputDir = null,
   componentUnderstanding = {},
+  responsibilityUnderstanding = {},
+  sharedNodeUnderstanding = {},
+  multiRailUnderstanding = {},
+  bidirectionalRailUnderstanding = {},
   architectureIndustryKnowledge = {},
+  evidenceTeachingSupport = {},
+  whyHereTeaching = {},
+  artifactUnderstanding = {},
 } = {}) {
   const railNarrations = [];
 
     const componentContextLookup =
-  buildComponentContextLookup({
-    componentUnderstanding,
-    architectureIndustryKnowledge,
-  });
+    buildComponentContextLookup({
+        componentUnderstanding,
+        architectureIndustryKnowledge,
+        whyHereTeaching,
+    });
 
-  for (const [index, rail] of asArray(rails).entries()) {
-    const input = buildRailNarrationInput(
-        rail,
-        index
+    const multiRailLookup =
+    buildMultiRailLookup(
+        multiRailUnderstanding
+    );
+
+    const bidirectionalLookup =
+        buildBidirectionalLookup(
+            bidirectionalRailUnderstanding
         );
 
-        input.hopTeachingContext = input.hops.map((hop) =>
-        buildHopTeachingContext(
+    for (const [index, rail] of asArray(rails).entries()) {
+    const input = buildRailNarrationInput(
+    rail,
+    index
+    );
+
+    const railUnderstanding =
+    multiRailLookup.get(
+        rail.flowLaneId
+    ) || null;
+
+    input.multiRailContext =
+    railUnderstanding
+        ? {
+            railCategory:
+            railUnderstanding.railCategory,
+
+            railRelationship:
+            railUnderstanding.railRelationship,
+
+            relatedTo:
+            railUnderstanding.relatedTo,
+
+            railRelationshipTeachingHint:
+            railUnderstanding.railRelationshipTeachingHint,
+
+            primaryRailType:
+            railUnderstanding.primaryRailType,
+        }
+        : null;
+
+    input.multiRailInstruction =
+        buildMultiRailInstruction(
+            input.multiRailContext
+        );
+
+        const handoffTeachingLookup =
+        buildHandoffTeachingLookup(
+            evidenceTeachingSupport
+        );
+
+        const artifactHandoffLookup =
+        buildArtifactHandoffLookup(
+            artifactUnderstanding
+        );
+
+        const responsibilityLookup =
+        buildResponsibilityLookup(
+            responsibilityUnderstanding
+        );
+
+        const sharedNodeLookup =
+        buildSharedNodeLookup(
+            sharedNodeUnderstanding
+        );
+
+        input.hopTeachingContext = input.hops.map((hop) => {
+        const baseContext = buildHopTeachingContext(
             hop,
             componentContextLookup
-        )
         );
 
+        return {
+            ...baseContext,
+
+            sharedNodeContext: {
+            from:
+                sharedNodeLookup.get(
+                normalizeKey(hop.from)
+                ) || null,
+
+            to:
+                sharedNodeLookup.get(
+                normalizeKey(hop.to)
+                ) || null,
+            },
+
+            responsibility:
+            responsibilityLookup.get(hop.hopId) || null,
+
+            handoffTeaching:
+            handoffTeachingLookup.get(hop.hopId) || null,
+
+            artifactTeaching:
+            artifactHandoffLookup.get(hop.hopId) || null,
+
+            directionContext:
+            bidirectionalLookup.get(
+                hop.hopId
+            ) || null,
+        };
+        });
+
         input.compactNarrationContext =
-        buildCompactNarrationContext(
-            input.hopTeachingContext
-        );
-    const fallbackNarration = buildRailNarrationFallback(rail);
+            buildCompactNarrationContext(
+                input.hopTeachingContext
+            );
+
+            input.directionInstruction =
+            buildDirectionInstruction(
+                input.compactNarrationContext
+            );
+
+            input.sharedNodeNarrationHints =
+            buildSharedNodeNarrationHints(
+                input.compactNarrationContext
+            );
+
+            input.hopResponsibilitySentences =
+            input.compactNarrationContext
+                .map(
+                (hop) =>
+                    hop.responsibilityTransition
+                    ?.teachingSentence
+                )
+                .filter(Boolean);
+
+            const fallbackNarration = buildRailNarrationFallback({
+            rail: {
+                ...rail,
+                multiRailContext:
+                input.multiRailContext,
+            },
+            compactNarrationContext:
+                input.compactNarrationContext,
+            });
 
     const result = await generateRailNarrationWithLlm({
     input,
@@ -507,8 +1291,18 @@ async function buildArchitectureRailNarration({
       flowLaneType: input.flowLaneType,
       flowLaneLabel: input.flowLaneLabel,
       primaryRailType: input.primaryRailType,
-      promotionReason: input.promotionReason,
-      pathText: input.pathText,
+        promotionReason: input.promotionReason,
+
+        multiRailContext:
+        input.multiRailContext,
+
+        multiRailInstruction:
+        input.multiRailInstruction,
+
+        directionInstruction:
+        input.directionInstruction,
+
+        pathText: input.pathText,
       hopCount: input.hopCount,
       hopIds: input.hops.map((hop) => hop.hopId),
 
@@ -517,6 +1311,12 @@ async function buildArchitectureRailNarration({
 
             compactNarrationContext:
             input.compactNarrationContext,
+
+            sharedNodeNarrationHints:
+            input.sharedNodeNarrationHints || [],
+
+            hopResponsibilitySentences:
+            input.hopResponsibilitySentences || [],
 
             narration: result.narration,
 

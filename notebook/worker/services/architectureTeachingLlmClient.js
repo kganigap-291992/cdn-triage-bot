@@ -30,7 +30,7 @@ function hasOpenAiKey() {
 }
 
 function createArchitectureTeachingPrompt(input = {}) {
-    if (input.task === "rail_narration") {
+  if (input.task === "rail_narration") {
     const railInput = input.input || input;
 
     return [
@@ -48,12 +48,23 @@ The deterministic system already provided:
 - rail title
 - exact hop order
 - path text
-- confidence hints
-- evidence hints
 - component names
-- compactNarrationContext for safe component teaching
+- compactNarrationContext
+- allowedNarrationScope
+- disallowedInferences
 
-Your job is ONLY to turn that evidence into calm onboarding narration.
+compactNarrationContext is the source of truth for teaching.
+
+For each hop, compactNarrationContext may include:
+- from.componentName
+- to.componentName
+- documentDefinition
+- whyHere
+- nextStageBenefit
+
+Do not rely on journeyRole, industryConcept, industryExplanation, problemSolved, or whyHereMentorExplanation for rail narration.
+
+Your job is ONLY to turn the supplied handoff and placement fields into calm onboarding narration.
 
 Voice:
 - calm guided explainer
@@ -63,29 +74,73 @@ Voice:
 - like a guided audio overview, not a slide caption
 
 Core teaching goal:
-Explain the rail as one coherent journey, but do not merely read the path.
-For important components, explain:
-1. what the component generally is
-2. why architectures commonly use that kind of component
-3. what problem that kind of component commonly helps solve
-4. why it appears at this stage of this journey
-5. what responsibility transition is happening here
+Explain the rail as one coherent journey.
 
-The most important question is:
-"Why is this component being introduced here instead of later or earlier in the path?"
+Teach:
+- where each stage appears in the documented journey
+- the order in which stages appear
+- how the documented journey progresses from one stage to the next
 
-This is the magic spot:
-- not a glossary dump
-- not arrow-by-arrow narration
-- not hidden implementation guessing
-- explain what it is, why it exists, and why it is here
+Do not describe:
+- what changes internally at a handoff
+- what a stage gains
+- what a component does
 
-Borrowed mental models:
-- NotebookLM: teach significance, not just facts
-- AWS architecture guides: explain why a layer exists
-- OpenTelemetry: treat the rail as a request journey with responsibility transitions
-- RAGFlow: use evidence first and keep uncertainty explicit
-- Khan Academy: explain purpose before mechanism
+Exception:
+You may describe a behavior category only when it appears in railTeachingHints.allowedTeachingClaims or allowedEvidenceClaims.
+
+Allowed behavior categories:
+- routing
+- validation
+- processing
+- state
+- cache_delivery
+- request_flow
+
+Even when allowed, keep wording cautious:
+- "the document supports reading this as..."
+- "this hop is evidence-backed as..."
+- "the documented evidence points to..."
+
+For each hop:
+
+- Inspect allowedEvidenceClaims and railTeachingHints.allowedTeachingClaims.
+- If one or more claims exist, use at most one claim category for that hop.
+- Prefer the most specific claim available.
+- Describe the claim category, not component behavior.
+
+Claim wording examples:
+
+routing:
+- "the document supports reading this hop as a routing or distribution step"
+
+validation:
+- "the document supports reading this hop as a validation or policy step"
+
+processing:
+- "the document supports reading this hop as a processing-stage step"
+
+state:
+- "the document supports reading this hop as a state or persistence step"
+
+cache_delivery:
+- "the document supports reading this hop as a cache or payload delivery step"
+
+request_flow:
+- "the document supports reading this hop as part of the primary request flow"
+
+Do not convert claim categories into implementation details.
+
+Bad:
+- "Routing Layer routes traffic"
+- "API validates requests"
+- "Application Cluster processes requests"
+- "Database stores records"
+
+Good:
+- "The documented evidence supports reading this hop as a routing step."
+- "The documented evidence supports reading this hop as a validation step."
+- "This hop is evidence-backed as part of the primary request flow."
 
 Hard rules:
 - Preserve the exact hop order.
@@ -93,158 +148,201 @@ Hard rules:
 - Do not remove hops.
 - Do not reorder hops.
 - Do not rename components.
-- Do not invent protocols.
-- Do not invent authentication methods.
-- Do not invent cache internals.
-- Do not invent storage internals.
-- Do not invent routing internals.
-- Do not invent processing internals.
-- Do not invent synchronization internals.
-- Do not invent retries, failover, replication, autoscaling, encryption, vendors, infrastructure, or hidden service responsibilities.
-- Do not describe company-specific implementation details unless they are explicitly provided in the input.
-- Do not turn every hop into a mechanical "A hands off to B" sentence.
-- Do not say "documented handoff".
-- Do not repeatedly say "responsibility shift".
-- Do not repeatedly say "flow moves".
-- Do not say "engineers need to know".
-- Do not say "the learner should".
-- Do not sound like a corporate architecture review.
-- Do not use fake podcast banter.
-- Do not ask questions.
-- Do not use markdown.
+- Use compactNarrationContext as the source of truth.
 
-Evidence-first rule:
-You MAY describe:
-- traversal order
-- architectural position in the flow
-- responsibility ownership transitions
-- confidence-backed evidence supplied in the input
-- the mental model of the journey
-- document definitions supplied in the input
-- public industry concepts when safeToExplainIndustry is true
-- why a component commonly exists in architectures
-- why a component appears at a particular stage of the journey
+    Use:
+  - placement
+  - sequence
+  - railTeachingHints
+  - allowedEvidenceClaims
+  - allowedTeachingClaims
 
-You MAY NOT describe:
-- company-specific implementation details
-- hidden operational behavior
-- undocumented protocols
-- undocumented authentication behavior
-- undocumented cache internals
-- undocumented routing internals
-- undocumented processing behavior
-- undocumented synchronization behavior
-- undocumented storage internals
+    Do not embellish beyond supplied evidence.
+- Use whyHere only to explain placement.
+- Use nextStageBenefit only to explain what the following stage receives.
+- Do not turn whyHere into component behavior.
+- Do not turn nextStageBenefit into hidden implementation behavior.
+- Prefer phrases already present in compactNarrationContext.
+- Do not upgrade cautious support into implementation claims.
+- Do not create new component responsibilities.
+- Do not describe what a component does.
+- If a component is internal, unresolved, or document-only, explain only its position in the journey.
+- If evidence is thin, say "the document places..." or "the flow shows..." rather than assigning behavior.
+- Do not invent protocols, auth methods, cache internals, storage internals, routing internals, processing internals, retries, failover, replication, autoscaling, encryption, vendors, payload formats, origin behavior, database behavior, or hidden service responsibilities.
 
-UNLESS that behavior is explicitly present in the input.
+Never write sentences where a component is the actor of a behavior.
 
-Component teaching rules:
-- If safeToExplainIndustry is true and industryExplanation is present, you may use that general explanation.
-- Use industryExplanation as general context only.
-- Convert industryExplanation into a short onboarding insight.
-- Do not copy the whole industryExplanation verbatim.
-- Tie the insight to journeyRole and journeyPosition.
-- Explain why the component appears here in the path.
-- Prefer phrases like "commonly", "often", "typically", and "in many architectures" for industry context.
-- Never claim "this component does X" unless the input gives documentDefinition or explicit evidence.
-
-Journey role guidance:
-
-entry:
-- explain why architectures often begin here
-- explain how this layer helps receive or prepare traffic
-
-control:
-- explain that the architecture is moving into decision-making or coordination territory
-- do not invent specific control logic
-
-processing:
-- explain that responsibility is moving toward execution or work being performed
-- do not invent business logic
-
-state:
-- explain that the journey is approaching persistent system state
-- do not invent storage internals
-
-unknown:
-- stay close to the documented path and evidence
-
-Internal component rules:
-- If knowledgeType is internal_unresolved, do not explain private implementation.
-- You may explain its journeyRole if supplied.
-- You may explain its position in the rail.
-- Use cautious wording like "its position suggests", "in this journey", or "the diagram places it".
-- Do not infer product meaning from the name.
-- Do not infer functionality from component names alone.
-
-Examples:
-- Routing Layer does NOT automatically imply load balancing.
-- Application Cluster does NOT automatically imply business logic.
-- Processing Layer does NOT automatically imply execution details.
-- Internal names such as ONYX, RIO, PILLAR, DELTA, MAT, or similar identifiers must not be expanded unless document evidence or glossary definitions are provided.
-
-If the input only contains names and traversal order:
-- explain only names and traversal order.
-
-If the input contains compactNarrationContext:
-- use it to explain what public components generally are
-- use it to explain why those components commonly exist
-- use it to explain why they appear at this stage
-- use it to keep unresolved internal components bounded
-
-Narration goal:
-Explain the rail as one coherent story:
-1. where the journey begins
-2. why the early components exist at the front of the path
-3. how responsibility changes as the journey progresses
-4. where control, processing, or state appears when provided
-5. what mental model the viewer should keep
-6. why the rail matters within the documented architecture
-
-Style target:
-- 4–7 sentences
-- one paragraph
-- smooth transitions
-- explain the journey, not every arrow
-- plain language over architecture jargon
-- cautious wording when confidence is limited
-- do not over-explain every component equally
-- prioritize components with safe industry context or clear journeyRole
+Bad:
+- "X acts as..."
+- "X serves as..."
+- "X handles..."
+- "X prevents..."
+- "X facilitates..."
+- "X makes decisions..."
+- "X performs..."
+- "X processes..."
+- "X stores..."
+- "X routes..."
+- "X directs..."
+- "X validates..."
+- "X caches..."
+- "X fetches..."
+- "X ensures..."
 
 Good:
-{
-  "narration": "This journey starts at the CDN, which commonly sits near users as an entry layer before traffic reaches deeper platform services. That helps explain why the architecture does not send every request directly into the application side first: the front of the path gives traffic a controlled place to arrive before responsibility moves inward. From there the rail reaches the API and then the Routing Layer, where the diagram places the flow in a control-oriented part of the journey before it reaches the Application Cluster. The final hop reaches the Database, which commonly represents durable state in many architectures, so its position near the end shows where the request path eventually touches persisted information. Read this rail as a request journey moving from entry, toward control, into processing, and finally toward state."
-}
+- "The document places X here..."
+- "The flow moves from X to Y..."
+- "The handoff changes from X to Y..."
+- "The next stage receives..."
+- "This stage appears before..."
+- "The journey reaches X after..."
+
+Avoid phrases likely to imply implementation details:
+- responsible for directing traffic
+- responsible for directing requests
+- responsible for directing incoming requests
+- directing traffic
+- directing requests
+- making decisions
+- requests are directed
+- directed appropriately
+- main processing component
+- handle further processing
+- handling the request
+- core work of handling the request
+- core processing occurs
+- core processing tasks
+- core application logic
+- processes the request
+- cached content
+- deliver content efficiently
+- fetching data from origin
+- durable storage point
+- stores data
+- preserving records
+- prevents unchecked requests
+- facilitates communication
+- initial point of contact
+- external entry point
+- content delivery component
+- state receiver
+- routing receiver
+- control source
+- processing receiver
+
+- initiates the process
+- process initiates
+- moves the request
+- moves work
+- request onward
+- external user interface
+- internal API layer
+- routing component
+- application processing stage
+- data storage component
+- durable state
+- durable state can be read or written
+- application layer
+- routing layer to the application layer
+- initiates the process
+- hands off
+- passes the request
+- request through the architecture
+- responsibility shift
+- industry-known component
+- recognized as industry-known
+
+Do not describe component categories such as:
+- API layer
+- application layer
+- routing component
+- processing stage
+- storage component
+- data storage component
+
+unless those exact words appear in documentDefinition.
+
+Do not describe what happens inside a component.
+
+Describe:
+- placement
+- sequence
+- progression through the documented journey
+- evidence-backed claim categories when allowedEvidenceClaims are present
+
+Never say the word "claim" or "claims" in narration.
+
+If multiple allowedEvidenceClaims exist:
+choose exactly one.
+
+Preference order:
+
+1. request_flow
+2. routing
+3. validation
+4. cache_delivery
+5. state
+6. processing
+
+If railTeachingHints.evidenceClaimSentence is present:
+
+- Use that sentence exactly or nearly exactly.
+- Prefer it over inventing your own wording.
+- Do not paraphrase it into component behavior.
+- Do not convert it into implementation details.
+
+Artifact teaching:
+
+Each hop may include artifactTeachingHints.
+
+If artifactTeachingHints is present and non-empty:
+
+- Use at most one artifact teachingSentence for that hop.
+- Use the sentence exactly or nearly exactly.
+- Keep artifact explanations document-grounded.
+- Treat artifacts as labels associated with the handoff, not as actors.
+
+Do not infer:
+- manifest generation behavior
+- packaging internals
+- cache internals
+- storage behavior
+- encryption behavior
+- protocol mechanics
+- schema details
+- field definitions
+- transport implementation details
 
 Good:
-{
-  "narration": "The journey begins at the CDN. In many architectures, a CDN is introduced near the front of the path because it provides an entry layer between users and deeper platform services. That placement helps explain why the request does not immediately reach application-facing systems. The rail then progresses toward API and Routing Layer, moving the journey from entry-oriented responsibilities toward the control portion of the architecture before eventually reaching processing and state-oriented layers."
-}
+- "The document identifies MPD as a manifest artifact associated with this handoff."
 
 Good:
-{
-  "narration": "The rail begins with User Client and CDN, so the first thing to notice is the entry shape of the architecture. A CDN is commonly used near the front of a system to receive traffic close to users and reduce the need for every request to immediately reach deeper services. The path then continues toward API and Routing Layer, where the diagram places the journey in a control-oriented stage before it reaches Application Cluster. Because Application Cluster is unresolved by the document, it should be read only as the processing-stage component shown in the journey, not as a claim about its internal implementation. The rail ends at Database, which commonly acts as a state layer in many architectures."
-}
+- "The document identifies HTTPS as a protocol associated with this handoff."
 
 Bad:
-{
-  "narration": "User Client hands off to CDN. CDN hands off to API. API hands off to Routing Layer."
-}
+- "Packager generates MPD manifests."
+- "HTTPS encrypts the connection."
+- "MPD tells the player which segments to fetch."
+- "The manifest controls adaptive bitrate selection."
+
+Good:
+- "The document supports reading this hop as a routing or distribution step."
+- "The document supports reading this hop as a validation or policy step."
+- "The document supports reading this hop as part of the primary request flow."
+- "The document identifies MPD as a manifest artifact associated with this handoff."
 
 Bad:
-{
-  "narration": "The CDN performs cache invalidation and the API validates JWT tokens."
-}
+- "Routing Layer routes traffic."
+- "API validates requests."
+- "Application Cluster processes requests."
 
-Bad:
-{
-  "narration": "The Routing Layer uses load balancing algorithms and the Application Cluster runs business logic."
-}
+A valid narration can be written entirely as:
 
-Bad:
-{
-  "narration": "The Database replicates data across regions and handles failover."
-}
+"The journey reaches X."
+"The next documented stage is Y."
+"The flow then continues to Z."
+
+Do not invent additional meaning beyond the supplied evidence.
 
 Return JSON only.
 No markdown.
@@ -264,16 +362,95 @@ Return exactly:
             title: railInput.title || null,
             flowLaneId: railInput.flowLaneId || null,
             flowLaneType: railInput.flowLaneType || null,
+            flowLaneLabel: railInput.flowLaneLabel || null,
             primaryRailType: railInput.primaryRailType || null,
             promotionReason: railInput.promotionReason || null,
             pathText: railInput.pathText || "",
             hopCount: railInput.hopCount || 0,
             hops: railInput.hops || [],
-            compactNarrationContext:
-              railInput.compactNarrationContext || [],
+            compactNarrationContext: railInput.compactNarrationContext || [],
+            allowedNarrationScope: railInput.allowedNarrationScope || [],
+            disallowedInferences: railInput.disallowedInferences || [],
             style: input.style || null,
             requiredJsonShape: input.requiredJsonShape || {
               narration: "string",
+            },
+          },
+          null,
+          2
+        ),
+      },
+    ];
+  }
+
+  if (input.task === "why_here_teaching") {
+    const whyInput = input.input || input;
+
+    return [
+      {
+        role: "system",
+        content: `
+You are a calm technical mentor explaining why an architecture component appears at a specific stage of a documented journey.
+
+You are NOT discovering architecture truth.
+You are NOT deciding what the component does.
+You are NOT allowed to invent hidden behavior.
+
+The deterministic system already provided:
+- componentName
+- documentTruth
+- meaning
+- journeyRole
+- journeyPosition
+- upstreamComponents
+- downstreamComponents
+- whyHere
+- problemSolved
+- nextStageBenefit
+- confidence
+- forbiddenClaims
+
+Your job is ONLY to rewrite those facts into clear onboarding teaching.
+
+Hard rules:
+- Preserve exact component names.
+- Use only the provided facts.
+- Do not add protocols, vendors, auth methods, JWT/OAuth, cache internals, storage internals, retries, failover, replication, encryption, queues, autoscaling, schema, indexing, or hidden implementation behavior.
+- Do not claim private/company-specific behavior from the component name alone.
+- If the component is internal or unresolved, explain only its position and journey role.
+- If confidence is limited, use cautious wording.
+- Do not use markdown.
+- Return JSON only.
+- No extra keys.
+
+Return exactly:
+{
+  "plainEnglishWhyHere": "...",
+  "mentorExplanation": "...",
+  "memoryHook": "..."
+}
+`.trim(),
+      },
+      {
+        role: "user",
+        content: JSON.stringify(
+          {
+            componentName: whyInput.componentName || null,
+            documentTruth: whyInput.documentTruth || [],
+            meaning: whyInput.meaning || "",
+            journeyRole: whyInput.journeyRole || "unknown",
+            journeyPosition: whyInput.journeyPosition || null,
+            upstreamComponents: whyInput.upstreamComponents || [],
+            downstreamComponents: whyInput.downstreamComponents || [],
+            whyHere: whyInput.whyHere || [],
+            problemSolved: whyInput.problemSolved || [],
+            nextStageBenefit: whyInput.nextStageBenefit || [],
+            confidence: whyInput.confidence || "unknown",
+            forbiddenClaims: whyInput.forbiddenClaims || [],
+            requiredJsonShape: input.requiredJsonShape || {
+              plainEnglishWhyHere: "string",
+              mentorExplanation: "string",
+              memoryHook: "string",
             },
           },
           null,
@@ -342,7 +519,6 @@ Return exactly:
   ];
 }
 
-
 function extractTextFromResponse(response) {
   return response?.choices?.[0]?.message?.content || "";
 }
@@ -361,7 +537,7 @@ function createArchitectureTeachingLlmClient(options = {}) {
   return async function architectureTeachingLlmClient(input = {}) {
     const response = await client.chat.completions.create({
       model,
-      temperature: 0.2,
+      temperature: 0.1,
       response_format: {
         type: "json_object",
       },

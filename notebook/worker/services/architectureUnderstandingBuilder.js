@@ -54,8 +54,6 @@ const GRAPH_ELIGIBLE_ROLES = new Set([
   "interface",
   "data_store",
   "process_step",
-  "data_object",
-  "protocol_or_standard",
 ]);
 
 const FLOW_VERBS = [
@@ -117,6 +115,33 @@ function normalizeKey(value) {
   return lower(value)
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
+}
+
+const ARTIFACT_NODE_BLOCKLIST = new Set([
+  "mp2",
+  "mpd",
+  "dash",
+  "https",
+  "http",
+  "hls",
+  "m3u8",
+  "h264",
+  "h.264",
+  "mp4",
+  "cmaf",
+  "tcp",
+  "udp",
+  "nfs",
+  "s3",
+  "json",
+  "xml",
+  "yaml",
+  "jwt",
+]);
+
+function isArtifactOnlyLabel(value) {
+  const compact = lower(value).replace(/[^a-z0-9.]/g, "");
+  return ARTIFACT_NODE_BLOCKLIST.has(compact);
 }
 
 function uniqueBy(items, keyFn) {
@@ -293,26 +318,34 @@ function extractComponents(documentUnderstanding = {}) {
   const evidence = documentUnderstanding.evidence || [];
 
   const fromEntities = entities
-    .map((entity) => ({
-      id: entity.id,
-      name: normalizeText(entity.name || entity.label || entity.text),
-      source: "entity",
-      type: entity.type || "component",
-      evidenceIds: entity.evidenceIds || [entity.evidenceId].filter(Boolean),
-      confidence: entity.confidence || "medium",
-    }))
-    .filter((component) => looksLikeArchitectureCandidate(component.name));
+  .map((entity) => ({
+    id: entity.id,
+    name: normalizeText(entity.name || entity.label || entity.text),
+    source: "entity",
+    type: entity.type || "component",
+    evidenceIds: entity.evidenceIds || [entity.evidenceId].filter(Boolean),
+    confidence: entity.confidence || "medium",
+  }))
+  .filter(
+    (component) =>
+      looksLikeArchitectureCandidate(component.name) &&
+      !isArtifactOnlyLabel(component.name)
+  );
 
-  const fromEvidence = evidence
-    .map((item) => ({
-      id: null,
-      name: getEvidenceText(item),
-      source: "evidence",
-      type: item.type || "component",
-      evidenceIds: [item.id].filter(Boolean),
-      confidence: item.confidence || "medium",
-    }))
-    .filter((component) => looksLikeArchitectureCandidate(component.name));
+const fromEvidence = evidence
+  .map((item) => ({
+    id: null,
+    name: getEvidenceText(item),
+    source: "evidence",
+    type: item.type || "component",
+    evidenceIds: [item.id].filter(Boolean),
+    confidence: item.confidence || "medium",
+  }))
+  .filter(
+    (component) =>
+      looksLikeArchitectureCandidate(component.name) &&
+      !isArtifactOnlyLabel(component.name)
+  );
 
   return uniqueBy([...fromEntities, ...fromEvidence], (component) => lower(component.name))
     .map((component, index) => {
