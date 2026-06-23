@@ -113,7 +113,14 @@ function sanitizeForRailNarration(value) {
     .replace(/\brouting or control decisions?\b/gi, "the next documented stage")
     .replace(/\bcontrol decisions?\b/gi, "the next documented stage")
     .replace(/\bhandle the next steps?\b/gi, "continue the documented journey")
-    .replace(/\bfurther processing\b/gi, "the next documented stage")
+    .replace(
+    /\bfacilitating further processing\b/gi,
+    "before the next documented stage continues"
+    )
+    .replace(
+    /\bfurther processing\b/gi,
+    "the next documented stage"
+    )
     .replace(/\binitiates? the process\b/gi, "appears at the start of the documented journey")
     .replace(/\bmoves? the request\b/gi, "continues the documented flow")
     .replace(/\bpasses? the request\b/gi, "continues the documented flow")
@@ -288,6 +295,55 @@ function buildBidirectionalLookup(
   return lookup;
 }
 
+function buildJourneyLookup(journeyUnderstanding = {}) {
+  const journeyByType = new Map();
+
+  for (const journey of asArray(journeyUnderstanding.journeys)) {
+    if (journey.journeyType) {
+      journeyByType.set(journey.journeyType, journey);
+    }
+  }
+
+  const lookup = new Map();
+
+  for (const rail of asArray(journeyUnderstanding.rails)) {
+    const primaryJourney =
+      journeyByType.get(rail.primaryJourneyType) || null;
+
+    const enrichedRail = {
+      ...rail,
+
+      primaryJourney:
+        primaryJourney
+          ? {
+              journeyId: primaryJourney.journeyId,
+              journeyType: primaryJourney.journeyType,
+              sourceRailIds: primaryJourney.sourceRailIds || [],
+              secondarySourceRailIds:
+                primaryJourney.secondarySourceRailIds || [],
+              allRelatedRailIds:
+                primaryJourney.allRelatedRailIds || [],
+              hopIds: primaryJourney.hopIds || [],
+              secondaryHopIds:
+                primaryJourney.secondaryHopIds || [],
+              allRelatedHopIds:
+                primaryJourney.allRelatedHopIds || [],
+            }
+          : null,
+    };
+
+    if (rail.railId) {
+      lookup.set(rail.railId, enrichedRail);
+    }
+
+    if (rail.flowLaneId) {
+      lookup.set(rail.flowLaneId, enrichedRail);
+    }
+  }
+
+  return lookup;
+}
+
 function buildMultiRailInstruction(
   multiRailContext = {}
 ) {
@@ -307,6 +363,65 @@ function buildMultiRailInstruction(
     if (relationship === "supports") {
     return "This rail supports the canonical journey and is not the primary walkthrough.";
     }
+
+  return null;
+}
+
+function buildJourneyInstruction(
+  journeyContext = {}
+) {
+  const primaryJourneyType =
+    safeString(journeyContext.primaryJourneyType);
+
+  const secondaryJourneyTypes =
+    asArray(journeyContext.secondaryJourneyTypes);
+
+  const supportsRequestJourney =
+    journeyContext.enterpriseMembership
+      ?.supportsRequestJourney === true ||
+    secondaryJourneyTypes.includes("request_journey");
+
+  if (primaryJourneyType === "request_journey") {
+    return "This rail is part of the request journey.";
+  }
+
+  if (primaryJourneyType === "content_delivery_journey") {
+    return supportsRequestJourney
+      ? "This rail is a content delivery journey that also supports the broader request journey."
+      : "This rail is a content delivery journey.";
+  }
+
+  if (primaryJourneyType === "validation_journey") {
+    return "This rail is a validation journey that supports the broader request journey.";
+  }
+
+  if (primaryJourneyType === "control_journey") {
+    return "This rail is a control journey that supports the broader request journey.";
+  }
+
+  if (primaryJourneyType === "state_journey") {
+    return "This rail is a state journey that supports the broader request journey.";
+  }
+
+  if (primaryJourneyType === "observability_journey") {
+    return "This rail is an observability journey that provides supporting operational context.";
+  }
+
+  if (primaryJourneyType === "retrieval_journey") {
+    return "This rail is a retrieval journey.";
+  }
+
+  if (primaryJourneyType === "configuration_journey") {
+    return "This rail is a configuration journey.";
+  }
+
+  if (primaryJourneyType === "replication_or_sync_journey") {
+    return "This rail is a replication or synchronization journey using only documented direction context.";
+  }
+
+  if (primaryJourneyType === "unknown_journey") {
+    return "A supporting journey was detected, but deterministic evidence is not strong enough to classify its purpose. Keep the teaching minimal.";
+  }
 
   return null;
 }
@@ -818,6 +933,10 @@ function buildRailNarrationFallback({
   const primaryRailType = safeString(rail.primaryRailType);
   const multiRailContext = rail.multiRailContext || {};
 
+  const journeyContext = rail.journeyContext || {};
+  const journeyInstruction =
+    safeString(rail.journeyInstruction);
+
     const railRelationship =
     safeString(multiRailContext.railRelationship);
 
@@ -959,6 +1078,7 @@ function buildRailNarrationFallback({
             pathText ? `The path is ${pathText}.` : "",
             laneContext,
             multiRailStory,
+            journeyInstruction,
             roleStory,
 
             responsibilityStory
@@ -988,6 +1108,16 @@ function buildRailStyleContract() {
     "do not create additional responsibility transitions",
     "use input.multiRailContext when available",
     "use input.multiRailInstruction verbatim when present",
+    "use input.journeyInstruction verbatim when present",
+    "use input.journeyContext to identify the rail's journey type",
+    "describe request_journey as the request journey",
+    "describe content_delivery_journey as a content delivery journey",
+    "describe validation_journey as a validation journey, not as content delivery",
+    "describe control_journey as a control journey, not as content delivery",
+    "describe state_journey as a state journey, not as the primary request journey",
+    "if secondaryJourneyTypes includes request_journey, explain that the rail supports the broader request journey",
+    "do not describe every rail as the request journey",
+    "do not use allRelatedHopIds to create extra hops or extra transitions",
     "if railRelationship is primary, describe it as the main walkthrough",
     "if railRelationship is parallel, describe it as a rail taught alongside the canonical journey",
     "if railRelationship is supports, describe it as supporting context rather than the primary journey",
@@ -1078,6 +1208,7 @@ async function generateRailNarrationWithLlm({
 
     const prefix = [
     input.multiRailInstruction,
+    input.journeyInstruction,
     input.directionInstruction,
     ]
     .filter(Boolean)
@@ -1111,8 +1242,9 @@ async function buildArchitectureRailNarration({
   responsibilityUnderstanding = {},
   sharedNodeUnderstanding = {},
   multiRailUnderstanding = {},
-  bidirectionalRailUnderstanding = {},
-  architectureIndustryKnowledge = {},
+    bidirectionalRailUnderstanding = {},
+    journeyUnderstanding = {},
+    architectureIndustryKnowledge = {},
   evidenceTeachingSupport = {},
   whyHereTeaching = {},
   artifactUnderstanding = {},
@@ -1134,6 +1266,10 @@ async function buildArchitectureRailNarration({
     const bidirectionalLookup =
         buildBidirectionalLookup(
             bidirectionalRailUnderstanding
+        );
+    const journeyLookup =
+        buildJourneyLookup(
+            journeyUnderstanding
         );
 
     for (const [index, rail] of asArray(rails).entries()) {
@@ -1170,6 +1306,64 @@ async function buildArchitectureRailNarration({
     input.multiRailInstruction =
         buildMultiRailInstruction(
             input.multiRailContext
+        );
+
+    const journeyRail =
+        journeyLookup.get(rail.flowLaneId) ||
+        journeyLookup.get(rail.id) ||
+        null;
+
+    input.journeyContext =
+        journeyRail
+            ? {
+                primaryJourneyType:
+                    journeyRail.primaryJourneyType,
+
+                secondaryJourneyTypes:
+                    journeyRail.secondaryJourneyTypes || [],
+
+                teachingPurpose:
+                    journeyRail.teachingPurpose || null,
+
+                classificationSource:
+                    journeyRail.classificationSource,
+
+                traversalChanged:
+                    journeyRail.traversalChanged === true,
+
+                enterpriseMembership: {
+                    supportsRequestJourney:
+                        (journeyRail.secondaryJourneyTypes || []).includes(
+                            "request_journey"
+                        ),
+
+                    hasSecondaryJourneys:
+                        (journeyRail.secondaryJourneyTypes || []).length > 0,
+
+                    sourceRailIds:
+                        journeyRail.primaryJourney?.sourceRailIds || [],
+
+                    secondarySourceRailIds:
+                        journeyRail.primaryJourney?.secondarySourceRailIds || [],
+
+                    allRelatedRailIds:
+                        journeyRail.primaryJourney?.allRelatedRailIds || [],
+
+                    primaryHopIds:
+                        journeyRail.primaryJourney?.hopIds || [],
+
+                    secondaryHopIds:
+                        journeyRail.primaryJourney?.secondaryHopIds || [],
+
+                    allRelatedHopIds:
+                        journeyRail.primaryJourney?.allRelatedHopIds || [],
+                },
+            }
+            : null;
+
+    input.journeyInstruction =
+        buildJourneyInstruction(
+            input.journeyContext
         );
 
         const handoffTeachingLookup =
@@ -1234,10 +1428,18 @@ async function buildArchitectureRailNarration({
                 input.hopTeachingContext
             );
 
+            const journeyType =
+            input.journeyContext?.primaryJourneyType;
+
             input.directionInstruction =
-            buildDirectionInstruction(
-                input.compactNarrationContext
-            );
+            (
+                journeyType === "state_journey" ||
+                journeyType === "replication_or_sync_journey"
+            )
+                ? buildDirectionInstruction(
+                    input.compactNarrationContext
+                )
+                : null;
 
             input.sharedNodeNarrationHints =
             buildSharedNodeNarrationHints(
@@ -1258,6 +1460,12 @@ async function buildArchitectureRailNarration({
                 ...rail,
                 multiRailContext:
                 input.multiRailContext,
+
+                journeyContext:
+                input.journeyContext,
+
+                journeyInstruction:
+                input.journeyInstruction,
             },
             compactNarrationContext:
                 input.compactNarrationContext,
@@ -1269,7 +1477,7 @@ async function buildArchitectureRailNarration({
     fallbackNarration,
     });
 
-    const validation =
+    let validation =
     validateRailNarration({
         narration: result.narration,
         railInput: input,
@@ -1281,7 +1489,15 @@ async function buildArchitectureRailNarration({
         result.narration = fallbackNarration;
         result.llmValid = false;
         result.fallbackUsed = true;
-        }
+
+        validation =
+        validateRailNarration({
+            narration: fallbackNarration,
+            railInput: input,
+            compactNarrationContext:
+            input.compactNarrationContext,
+        });
+    }
 
     railNarrations.push({
       railId: input.railId,
@@ -1298,6 +1514,12 @@ async function buildArchitectureRailNarration({
 
         multiRailInstruction:
         input.multiRailInstruction,
+
+        journeyContext:
+        input.journeyContext,
+
+        journeyInstruction:
+        input.journeyInstruction,
 
         directionInstruction:
         input.directionInstruction,

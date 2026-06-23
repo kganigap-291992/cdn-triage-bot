@@ -59,6 +59,15 @@ const VIOLATION_TYPES = {
 
     DIRECTION_UNSUPPORTED_BIDIRECTIONAL_CLAIM:
     "direction_unsupported_bidirectional_claim",
+
+    JOURNEY_SUPPORTING_AS_CANONICAL:
+    "journey_supporting_as_canonical",
+
+    JOURNEY_TYPE_MISMATCH:
+    "journey_type_mismatch",
+
+    JOURNEY_UNKNOWN_OVEREXPLAINED:
+    "journey_unknown_overexplained",
 };
 
 const UNSAFE_PHRASE_RULES = [
@@ -616,12 +625,15 @@ function validateResponsibilityLanguage(
 ) {
   const violations = [];
 
-  const text = normalizeText(narration);
+  const text = normalizeText(narration).replace(
+    /\bresponsibility progression:[^.]+\.?/gi,
+    ""
+  );
 
-  const pattern =
-  /\bresponsibility\s+(?:then\s+)?moves\s+from\s+(?:the\s+)?[A-Z][A-Za-z0-9 _-]+\s+to\s+(?:the\s+)?[A-Z][A-Za-z0-9 _-]+/;
+  const componentToComponentPattern =
+    /\bresponsibility\s+(?:then\s+)?moves\s+from\s+(?:the\s+)?[A-Z][A-Za-z0-9 _-]+\s+to\s+(?:the\s+)?[A-Z][A-Za-z0-9 _-]+/;
 
-  if (pattern.test(text)) {
+  if (componentToComponentPattern.test(text)) {
     violations.push({
       type:
         VIOLATION_TYPES
@@ -687,6 +699,109 @@ function validateDirectionNarration({
   return violations;
 }
 
+
+function validateJourneyNarration({
+  narration = "",
+  railInput = {},
+} = {}) {
+  const violations = [];
+
+  const text =
+    normalizeText(narration).toLowerCase();
+
+  const journeyContext =
+    railInput.journeyContext || {};
+
+  const primaryJourneyType =
+    safeString(
+      journeyContext.primaryJourneyType
+    );
+
+  const enterpriseMembership =
+    journeyContext.enterpriseMembership || {};
+
+  if (
+    enterpriseMembership.supportsRequestJourney === true &&
+    !/\balongside the canonical journey\b/i.test(text) &&
+    /\bis the canonical\b|\bis the main walkthrough\b|\bis the primary journey\b/i.test(
+        text
+    )
+    ) {
+    violations.push({
+      type:
+        VIOLATION_TYPES
+          .JOURNEY_SUPPORTING_AS_CANONICAL,
+
+      severity: "high",
+
+      reason:
+        "Supporting journey is being described as the canonical request journey.",
+    });
+  }
+
+  if (
+    primaryJourneyType ===
+      "validation_journey" &&
+    /\bcontent delivery\b|\bpayload delivery\b/i.test(
+      text
+    )
+  ) {
+    violations.push({
+      type:
+        VIOLATION_TYPES
+          .JOURNEY_TYPE_MISMATCH,
+
+      severity: "medium",
+
+      reason:
+        "Validation journey is being described as a content delivery journey.",
+    });
+  }
+
+  if (
+    primaryJourneyType ===
+      "control_journey" &&
+    /\bcontent delivery\b|\bpayload delivery\b/i.test(
+      text
+    )
+  ) {
+    violations.push({
+      type:
+        VIOLATION_TYPES
+          .JOURNEY_TYPE_MISMATCH,
+
+      severity: "medium",
+
+      reason:
+        "Control journey is being described as a content delivery journey.",
+    });
+  }
+
+  if (
+    primaryJourneyType ===
+      "unknown_journey"
+  ) {
+    if (
+      /\bresponsible for\b|\bhandles\b|\bprocesses\b|\bvalidates\b/i.test(
+        text
+      )
+    ) {
+      violations.push({
+        type:
+          VIOLATION_TYPES
+            .JOURNEY_UNKNOWN_OVEREXPLAINED,
+
+        severity: "medium",
+
+        reason:
+          "Unknown journey is receiving implementation-level explanation.",
+      });
+    }
+  }
+
+  return violations;
+}
+
 function validateRailNarration({
   narration = "",
   railInput = {},
@@ -738,6 +853,12 @@ const unsafePhraseViolations =
         railInput,
     });
 
+    const journeyViolations =
+    validateJourneyNarration({
+        narration,
+        railInput,
+    });
+
     const violations = [
     ...unsafePhraseViolations,
     ...internalBehaviorViolations,
@@ -746,6 +867,7 @@ const unsafePhraseViolations =
     ...multiRailViolations,
     ...responsibilityLanguageViolations,
     ...directionViolations,
+    ...journeyViolations,
     ];
 
   return {
@@ -773,7 +895,10 @@ const unsafePhraseViolations =
         responsibilityLanguageViolations.length,
 
     directionViolationCount:
-        directionViolations.length,
+    directionViolations.length,
+
+    journeyViolationCount:
+    journeyViolations.length,
     }
   };
 }
@@ -791,5 +916,6 @@ module.exports = {
   collectInternalComponents,
   findInternalBehaviorClaims,
   validateSharedNodeNarration,
+  validateJourneyNarration,
   validateRailNarration,
 };

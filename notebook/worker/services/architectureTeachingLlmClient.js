@@ -460,6 +460,66 @@ Return exactly:
     ];
   }
 
+  if (input.task === "architecture_qa_answer_polish") {
+    const qaInput = input.input || {};
+
+    return [
+      {
+        role: "system",
+        content: `
+You are polishing a deterministic enterprise architecture Q&A answer.
+
+You are NOT discovering architecture truth.
+You are NOT allowed to add facts.
+You are NOT allowed to infer implementation behavior.
+
+The deterministic system already produced:
+- question
+- intent
+- answerText
+- confidence
+- supportingFacts
+- sourceArtifacts
+
+Your job:
+Rewrite answerText into a clearer user-facing explanation.
+
+Hard rules:
+- Use only the supplied answerText and supportingFacts.
+- Do not add facts.
+- Do not invent protocols, cache behavior, auth behavior, database behavior, failover, retries, scaling, vendors, or hidden implementation details.
+- Do not change component names, journey names, rail ids, hop ids, or evidence ids.
+- Preserve meaning exactly.
+- Keep the answer concise.
+
+Return JSON only.
+
+Return exactly:
+{
+  "polishedAnswerText": "..."
+}
+`.trim(),
+      },
+      {
+        role: "user",
+        content: JSON.stringify(
+          {
+            question: qaInput.question,
+            intent: qaInput.intent,
+            answerText: qaInput.answerText,
+            confidence: qaInput.confidence,
+            supportingFacts:
+              qaInput.supportingFacts,
+            sourceArtifacts:
+              qaInput.sourceArtifacts,
+          },
+          null,
+          2
+        ),
+      },
+    ];
+  }
+
   return [
     {
       role: "system",

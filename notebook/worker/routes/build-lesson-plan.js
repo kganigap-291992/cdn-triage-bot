@@ -66,6 +66,10 @@ const {
 } = require("../services/bidirectionalRailUnderstandingBuilder");
 
 const {
+  buildJourneyUnderstanding,
+} = require("../services/journeyUnderstandingBuilder");
+
+const {
   buildEvidenceTeachingSupport,
 } = require("../services/evidenceTeachingSupportBuilder");
 
@@ -118,6 +122,30 @@ const {
   buildNarrationContinuity,
 } = require("../services/narrationContinuityBuilder");
 
+const {
+  buildHopContinuityMemory,
+} = require("../services/hopContinuityMemoryBuilder");
+
+const {
+  buildArchitectureQaContext,
+} = require("../services/architectureQaContextBuilder");
+
+const {
+  classifyArchitectureQuestion,
+} = require("../services/architectureQuestionClassifier");
+
+const {
+  buildArchitectureQuestionAnswer,
+} = require("../services/architectureQuestionAnswerBuilder");
+
+const {
+  validateArchitectureQaAnswer,
+} = require("../services/architectureQaValidator");
+
+const {
+  polishArchitectureQaAnswer,
+} = require("../services/architectureQaAnswerPolisher");
+
 const router = express.Router();
 
 function writeJson(filePath, data) {
@@ -150,6 +178,135 @@ function getRailNarrationTitle(rail = {}) {
     "Architecture Rail"
   );
 }
+
+router.post(
+  "/architecture-question/:jobId",
+  async (req, res) => {
+    try {
+      const { jobId } = req.params;
+
+      const question = String(
+        req.body?.question || ""
+      ).trim();
+
+      if (!question) {
+        return res.status(400).json({
+          ok: false,
+          error: "question is required",
+        });
+      }
+
+      const jobDir = path.join(
+        process.env.NOTEBOOK_TEMP_DIR ||
+          path.join(__dirname, "../temp"),
+        jobId
+      );
+
+      const qaContext =
+        buildArchitectureQaContext({
+          journeyUnderstanding: readJson(
+            path.join(
+              jobDir,
+              "journey-understanding.json"
+            )
+          ),
+
+          componentUnderstanding: readJson(
+            path.join(
+              jobDir,
+              "component-understanding.json"
+            )
+          ),
+
+          responsibilityUnderstanding: readJson(
+            path.join(
+              jobDir,
+              "responsibility-understanding.json"
+            )
+          ),
+
+          sharedNodeUnderstanding: readJson(
+            path.join(
+              jobDir,
+              "shared-node-understanding.json"
+            )
+          ),
+
+          multiRailUnderstanding: readJson(
+            path.join(
+              jobDir,
+              "multi-rail-understanding.json"
+            )
+          ),
+
+          architectureEvidence: readJson(
+            path.join(
+              jobDir,
+              "architecture-evidence.json"
+            )
+          ),
+
+          evidenceTeachingSupport: readJson(
+            path.join(
+              jobDir,
+              "evidence-teaching-support.json"
+            )
+          ),
+
+          hopContinuityMemory: readJson(
+            path.join(
+              jobDir,
+              "hop-continuity-memory.json"
+            )
+          ),
+        });
+
+      const classification =
+        classifyArchitectureQuestion(
+          question
+        );
+
+      const answer =
+        buildArchitectureQuestionAnswer({
+          qaContext,
+          classification,
+        });
+
+      const validation =
+        validateArchitectureQaAnswer({
+          answer,
+        });
+
+      const qaLlmClient =
+        createArchitectureTeachingLlmClient();
+
+      const polishedAnswer =
+        await polishArchitectureQaAnswer({
+          question,
+          answer,
+          classification,
+          llmClient: qaLlmClient,
+        });
+
+      return res.json({
+        ok: true,
+        jobId,
+        question,
+        classification,
+
+        answer,
+        polishedAnswer,
+
+        validation,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        ok: false,
+        error: error.message,
+      });
+    }
+  }
+);
 
 router.post("/:jobId", async (req, res) => {
   try {
@@ -405,6 +562,22 @@ router.post("/:jobId", async (req, res) => {
       bidirectionalRailUnderstanding.stats
     );
 
+    const journeyUnderstanding = buildJourneyUnderstanding({
+      multiRailUnderstanding,
+      bidirectionalRailUnderstanding,
+      outputDir: jobDir,
+    });
+
+    const journeyUnderstandingPath = path.join(
+      jobDir,
+      "journey-understanding.json"
+    );
+
+    console.log(
+      "[journey-understanding]",
+      journeyUnderstanding.stats
+    );
+
     const componentMeaningResolution = buildComponentMeaningResolution({
       componentUnderstanding,
       architectureEvidence,
@@ -607,6 +780,7 @@ router.post("/:jobId", async (req, res) => {
       sharedNodeUnderstanding,
       multiRailUnderstanding,
       bidirectionalRailUnderstanding,
+      journeyUnderstanding,
       architectureIndustryKnowledge,
       evidenceTeachingSupport,
       industryTeachingSupport,
@@ -617,6 +791,25 @@ router.post("/:jobId", async (req, res) => {
     const architectureRailNarrationPath = path.join(
       jobDir,
       "architecture-rail-narration.json"
+    );
+
+    const hopContinuityMemory =
+      buildHopContinuityMemory({
+        canonicalTraversalRail,
+        journeyUnderstanding,
+        architectureRailNarration,
+        responsibilityUnderstanding,
+        outputDir: jobDir,
+      });
+
+    const hopContinuityMemoryPath = path.join(
+      jobDir,
+      "hop-continuity-memory.json"
+    );
+
+    console.log(
+      "[hop-continuity-memory]",
+      hopContinuityMemory.stats
     );
 
     const calmExplainerNarrationPath = writeJson(
@@ -771,6 +964,17 @@ router.post("/:jobId", async (req, res) => {
           bidirectionalRailUnderstandingPath,
       },
 
+      journeyUnderstanding: {
+        version:
+          journeyUnderstanding.version,
+
+        stats:
+          journeyUnderstanding.stats,
+
+        output:
+          journeyUnderstandingPath,
+      },
+
       componentMeaningResolution: {
         version: componentMeaningResolution.version,
         stats: componentMeaningResolution.stats,
@@ -826,6 +1030,12 @@ router.post("/:jobId", async (req, res) => {
         version: architectureRailNarration.version,
         stats: architectureRailNarration.stats,
         output: architectureRailNarrationPath,
+      },
+
+      hopContinuityMemory: {
+        version: hopContinuityMemory.version,
+        stats: hopContinuityMemory.stats,
+        output: hopContinuityMemoryPath,
       },
 
       narrationContinuity: {
