@@ -108,6 +108,16 @@ function buildHopContinuityIndex(hopContinuityMemory = {}) {
   );
 }
 
+
+function buildComponentContinuityIndex(componentContinuityMemory = {}) {
+  return indexBy(
+    componentContinuityMemory.components,
+    (component) =>
+      component.normalizedName ||
+      normalizeKey(component.componentName)
+  );
+}
+
 function buildArchitectureQaContext({
   journeyUnderstanding = {},
   componentUnderstanding = {},
@@ -117,6 +127,7 @@ function buildArchitectureQaContext({
   architectureEvidence = {},
   evidenceTeachingSupport = {},
   hopContinuityMemory = {},
+  componentContinuityMemory = {},
 } = {}) {
   const contract = buildArchitectureQaContract();
 
@@ -138,6 +149,7 @@ function buildArchitectureQaContext({
         architectureEvidence,
         evidenceTeachingSupport,
         hopContinuityMemory,
+        componentContinuityMemory,
         },
 
     indexes: {
@@ -163,6 +175,9 @@ function buildArchitectureQaContext({
 
         hopContinuityByHopId:
         buildHopContinuityIndex(hopContinuityMemory),
+
+        componentContinuityByName:
+        buildComponentContinuityIndex(componentContinuityMemory),
     },
 
     stats: {
@@ -195,6 +210,12 @@ function buildArchitectureQaContext({
 
         explainedHopCount:
         asArray(hopContinuityMemory.explainedHopIds).length,
+
+        componentContinuityCount:
+        asArray(componentContinuityMemory.components).length,
+
+        introducedComponentCount:
+        asArray(componentContinuityMemory.introducedComponentNames).length,
 
         traversalChanged:
         false,

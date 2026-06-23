@@ -127,6 +127,10 @@ const {
 } = require("../services/hopContinuityMemoryBuilder");
 
 const {
+  buildComponentContinuityMemory,
+} = require("../services/componentContinuityMemoryBuilder");
+
+const {
   buildArchitectureQaContext,
 } = require("../services/architectureQaContextBuilder");
 
@@ -257,6 +261,13 @@ router.post(
             path.join(
               jobDir,
               "hop-continuity-memory.json"
+            )
+          ),
+
+          componentContinuityMemory: readJson(
+            path.join(
+              jobDir,
+              "component-continuity-memory.json"
             )
           ),
         });
@@ -795,24 +806,43 @@ router.post("/:jobId", async (req, res) => {
 
     const hopContinuityMemory =
       buildHopContinuityMemory({
-        canonicalTraversalRail,
-        journeyUnderstanding,
-        architectureRailNarration,
-        responsibilityUnderstanding,
-        outputDir: jobDir,
-      });
+      canonicalTraversalRail,
+      journeyUnderstanding,
+      architectureRailNarration,
+      responsibilityUnderstanding,
+      outputDir: jobDir,
+    });
 
-    const hopContinuityMemoryPath = path.join(
+  const hopContinuityMemoryPath = path.join(
+    jobDir,
+    "hop-continuity-memory.json"
+  );
+
+  console.log(
+    "[hop-continuity-memory]",
+    hopContinuityMemory.stats
+  );
+
+  const componentContinuityMemory =
+    buildComponentContinuityMemory({
+      componentUnderstanding,
+      evidenceTeachingSupport,
+      hopContinuityMemory,
+      outputDir: jobDir,
+    });
+
+  const componentContinuityMemoryPath =
+    path.join(
       jobDir,
-      "hop-continuity-memory.json"
+      "component-continuity-memory.json"
     );
 
-    console.log(
-      "[hop-continuity-memory]",
-      hopContinuityMemory.stats
-    );
+  console.log(
+    "[component-continuity-memory]",
+    componentContinuityMemory.stats
+  );
 
-    const calmExplainerNarrationPath = writeJson(
+  const calmExplainerNarrationPath = writeJson(
       path.join(jobDir, "calm-explainer-narration.json"),
       calmExplainerNarration
     );
@@ -1036,6 +1066,12 @@ router.post("/:jobId", async (req, res) => {
         version: hopContinuityMemory.version,
         stats: hopContinuityMemory.stats,
         output: hopContinuityMemoryPath,
+      },
+
+      componentContinuityMemory: {
+        version: componentContinuityMemory.version,
+        stats: componentContinuityMemory.stats,
+        output: componentContinuityMemoryPath,
       },
 
       narrationContinuity: {

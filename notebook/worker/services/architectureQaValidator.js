@@ -1,11 +1,12 @@
 /**
  * architectureQaValidator.js
  *
- * BUG-9F.2 / BUG-10E — Architecture QA Validator
+ * BUG-9F.2 / BUG-10E / BUG-11E — Architecture QA Validator
  *
  * Owns:
  * - validate deterministic Q&A answer objects before API response
  * - validate hop continuity metadata for journey-hop answers
+ * - validate component continuity metadata for component-role answers
  *
  * Does NOT:
  * - classify questions
@@ -35,6 +36,9 @@ const QA_VALIDATION_TYPES = {
 
   MISSING_HOP_CONTINUITY:
     "missing_hop_continuity",
+
+  MISSING_COMPONENT_CONTINUITY:
+    "missing_component_continuity",
 };
 
 function asArray(value) {
@@ -91,6 +95,42 @@ function validateJourneyHopContinuity({
         severity: "medium",
         reason:
           "Journey hop continuity metadata must include hopId and status.",
+      });
+    }
+  }
+}
+
+function validateComponentContinuity({
+  answer = {},
+  violations = [],
+} = {}) {
+  if (
+    answer.answered !== true ||
+    answer.intent !== "component_role"
+  ) {
+    return;
+  }
+
+  const componentRoleFacts =
+    asArray(answer.supportingFacts).filter(
+      (fact) => fact.type === "component_role"
+    );
+
+  for (const fact of componentRoleFacts) {
+    const continuity =
+      fact.componentContinuity;
+
+    if (
+      !continuity ||
+      !continuity.status ||
+      typeof continuity.alreadyExplained !== "boolean"
+    ) {
+      violations.push({
+        type:
+          QA_VALIDATION_TYPES.MISSING_COMPONENT_CONTINUITY,
+        severity: "medium",
+        reason:
+          "Component role answer must include component continuity metadata.",
       });
     }
   }
@@ -154,6 +194,11 @@ function validateArchitectureQaAnswer({
     violations,
   });
 
+  validateComponentContinuity({
+    answer,
+    violations,
+  });
+
   if (
     answer.traversalChanged === true ||
     answer.mutatedTraversal === true
@@ -207,6 +252,12 @@ function validateArchitectureQaAnswer({
         countByType(
           violations,
           QA_VALIDATION_TYPES.MISSING_HOP_CONTINUITY
+        ),
+
+      missingComponentContinuityCount:
+        countByType(
+          violations,
+          QA_VALIDATION_TYPES.MISSING_COMPONENT_CONTINUITY
         ),
     },
   };

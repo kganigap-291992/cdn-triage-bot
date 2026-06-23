@@ -44,6 +44,22 @@ function getHopContinuity({
   );
 }
 
+function getComponentContinuity({
+  qaContext = {},
+  componentName,
+} = {}) {
+  const key = safeString(componentName)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  return (
+    qaContext.indexes?.componentContinuityByName?.[
+      key
+    ] || null
+  );
+}
+
 function buildCannotAnswer({
   classification = {},
   reason = "The available architecture artifacts do not contain enough deterministic context to answer this question.",
@@ -310,12 +326,24 @@ function buildComponentRoleAnswer({
     component.journeyPosition ||
     null;
 
+  const componentMemory =
+  getComponentContinuity({
+    qaContext,
+    componentName:
+      component.componentName ||
+      componentName,
+  });  
+
   return {
     version: ANSWER_BUILDER_VERSION,
     intent: classification.intent,
     answered: true,
     answerText:
-      position
+    componentMemory?.alreadyExplained
+        ? position
+        ? `${component.componentName || componentName} was already introduced in ${componentMemory.firstExplainedInJourneyType}. It is classified with the ${role} role around journey position ${position}.`
+        : `${component.componentName || componentName} was already introduced in ${componentMemory.firstExplainedInJourneyType}. It is classified with the ${role} role.`
+        : position
         ? `${component.componentName || componentName} is classified with the ${role} role around journey position ${position}.`
         : `${component.componentName || componentName} is classified with the ${role} role.`,
     supportingFacts: [
@@ -329,6 +357,26 @@ function buildComponentRoleAnswer({
           component.knowledgeType || "unknown",
         documentDefinition:
           component.documentDefinition || null,
+
+        componentContinuity: {
+        status:
+            componentMemory?.status || "unknown",
+
+        alreadyExplained:
+            componentMemory?.alreadyExplained || false,
+
+        firstExplainedInJourneyType:
+            componentMemory?.firstExplainedInJourneyType ||
+            null,
+
+        firstExplainedInRailTitle:
+            componentMemory?.firstExplainedInRailTitle ||
+            null,
+
+        revisitGuidance:
+            componentMemory?.revisitGuidance ||
+            null,
+        },
       },
     ],
     sourceArtifacts: [
