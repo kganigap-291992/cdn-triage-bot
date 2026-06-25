@@ -36,15 +36,45 @@ function classifyArchitectureQuestion(question = "") {
 
   if (!text) {
     return {
-      version: CLASSIFIER_VERSION,
-      intent: QA_INTENTS.UNKNOWN,
-      confidence: "low",
-      entities: {},
-      reason: "No question text was provided.",
+        version: CLASSIFIER_VERSION,
+        intent: QA_INTENTS.UNKNOWN,
+        confidence: "low",
+        entities: {},
+        reason: "No question text was provided.",
     };
-  }
+    }
 
-  if (
+    if (
+    /\bwhat have we learned\b|\bwhat did we learn\b|\bwhat was introduced\b|\bwhat have we covered\b|\bsummarize what we learned\b|\brecap\b/.test(
+        text
+    )
+    ) {
+    return {
+        version: CLASSIFIER_VERSION,
+        intent: QA_INTENTS.LEARNING_RECAP,
+        confidence: "high",
+        entities: {},
+        reason:
+        "Question asks for a learning recap.",
+    };
+    }
+
+    if (
+    /\breinforce\b|\breinforced\b|\breinforcement\b|\breview again\b|\bwhat should we review\b|\bwhat should be reviewed\b|\bwhat should be reinforced\b/.test(
+        text
+    )
+    ) {
+    return {
+        version: CLASSIFIER_VERSION,
+        intent: QA_INTENTS.REINFORCEMENT_RECAP,
+        confidence: "high",
+        entities: {},
+        reason:
+        "Question asks what should be reinforced or reviewed.",
+    };
+    }
+
+    if (
     /\bwhat supports\b|\bsupporting journeys?\b|\bsupporting rails?\b|\bsupports the request\b/.test(
         text
     )

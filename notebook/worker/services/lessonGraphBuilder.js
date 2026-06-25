@@ -2130,17 +2130,164 @@ function buildTeachingFocusSequence({ flowGroups = [] } = {}) {
   return sequence;
 }
 
+function buildArchitectureLearningFocusSequence({
+  architectureLearningGraph = {},
+} = {}) {
+  const nodes = asArray(architectureLearningGraph.nodes);
+
+  const order = {
+    journey: 1,
+    role: 2,
+    component: 3,
+    hop: 4,
+  };
+
+  return nodes
+    .filter((node) =>
+      ["journey", "role", "component", "hop"].includes(node.type)
+    )
+    .sort((a, b) => {
+      const typeDiff =
+        (order[a.type] || 99) - (order[b.type] || 99);
+
+      if (typeDiff !== 0) return typeDiff;
+
+      return safeString(a.label).localeCompare(
+        safeString(b.label)
+      );
+    })
+    .map((node, index) => ({
+      focusId: `learning_focus_${index + 1}_${node.id}`,
+      entityId: node.id,
+      focusType: "architecture_learning",
+      focusEntityType: node.type,
+      label: node.label,
+      flowGroupId: "architecture_learning_progression",
+
+      journeyType:
+        node.type === "journey" ? node.label : null,
+
+      role:
+        node.type === "role" ? node.label : null,
+
+      component:
+        node.type === "component" ? node.label : null,
+
+      hopId:
+        node.type === "hop"
+          ? node.metadata?.hopId || node.label
+          : null,
+
+      reason:
+        node.type === "journey"
+          ? "establish_journey_context"
+          : node.type === "role"
+            ? "teach_responsibility_role"
+            : node.type === "component"
+              ? "inspect_component_role"
+              : "follow_handoff_detail",
+
+      priority: Number((0.98 - index * 0.01).toFixed(2)),
+      durationWeight:
+        node.type === "journey"
+          ? 0.85
+          : node.type === "role"
+            ? 0.78
+            : node.type === "component"
+              ? 0.72
+              : 0.68,
+
+      confidence: "medium",
+      source: "architectureLearningGraph",
+    }));
+}
+
+function getLearningMotionIntent(focus = {}) {
+  if (focus.focusType === "architecture_learning") {
+    switch (focus.focusEntityType) {
+      case "journey":
+        return "establish_journey_context";
+
+      case "role":
+        return "explain_responsibility_role";
+
+      case "component":
+        return "inspect_component_role";
+
+      case "hop":
+        return "follow_handoff_detail";
+
+      default:
+        return "guided_learning_focus";
+    }
+  }
+
+  if (focus.reason === "flow_entry_point") {
+    return "zoom_to_flow_entry";
+  }
+
+  if (focus.reason === "flow_intermediate_component") {
+    return "follow_flow_to_component";
+  }
+
+  if (focus.reason === "flow_destination") {
+    return "settle_on_flow_destination";
+  }
+
+  return "guided_focus";
+}
+
+function getLearningCameraBehavior(focus = {}, index = 0) {
+  if (focus.focusType !== "architecture_learning") {
+    return index === 0
+      ? "establish_context_then_zoom"
+      : "smooth_pan_or_zoom_from_previous_focus";
+  }
+
+  switch (focus.focusEntityType) {
+    case "journey":
+      return "broad_establish_journey_context";
+
+    case "role":
+      return "hold_context_explain_responsibility";
+
+    case "component":
+      return "inspect_component_without_losing_flow";
+
+    case "hop":
+      return "follow_handoff_between_components";
+
+    default:
+      return "guided_learning_camera_move";
+  }
+}
+
+function getLearningOverlayBehavior(focus = {}) {
+  if (focus.focusType !== "architecture_learning") {
+    return "minimal_context_label";
+  }
+
+  switch (focus.focusEntityType) {
+    case "journey":
+      return "journey_context_label";
+
+    case "role":
+      return "responsibility_role_label";
+
+    case "component":
+      return "component_role_label";
+
+    case "hop":
+      return "handoff_transition_label";
+
+    default:
+      return "minimal_learning_label";
+  }
+}
+
 function buildChoreographyIntent({ teachingFocusSequence = [] } = {}) {
   return teachingFocusSequence.map((focus, index) => {
-    let motionIntent = "guided_focus";
-
-    if (focus.reason === "flow_entry_point") {
-      motionIntent = "zoom_to_flow_entry";
-    } else if (focus.reason === "flow_intermediate_component") {
-      motionIntent = "follow_flow_to_component";
-    } else if (focus.reason === "flow_destination") {
-      motionIntent = "settle_on_flow_destination";
-    }
+    const motionIntent = getLearningMotionIntent(focus);
 
     return {
       choreographyId: `${focus.focusId}_choreography`,
@@ -2148,15 +2295,612 @@ function buildChoreographyIntent({ teachingFocusSequence = [] } = {}) {
       entityId: focus.entityId,
       flowGroupId: focus.flowGroupId,
       sequenceIndex: index,
+
+      focusType: focus.focusType || null,
+      focusEntityType: focus.focusEntityType || null,
+      label: focus.label || null,
+      journeyType: focus.journeyType || null,
+      role: focus.role || null,
+      component: focus.component || null,
+      hopId: focus.hopId || null,
+
       motionIntent,
-      cameraBehavior: index === 0 ? "establish_context_then_zoom" : "smooth_pan_or_zoom_from_previous_focus",
-      overlayBehavior: "minimal_context_label",
-      pacing: focus.durationWeight >= 0.8 ? "slower_establishing_beat" : "steady_flow_beat",
+      cameraBehavior: getLearningCameraBehavior(focus, index),
+      overlayBehavior: getLearningOverlayBehavior(focus),
+
+      pacing:
+        focus.focusEntityType === "journey" ||
+        focus.durationWeight >= 0.8
+          ? "slower_establishing_beat"
+          : focus.focusEntityType === "hop"
+            ? "steady_handoff_beat"
+            : "steady_learning_beat",
+
       confidence: focus.confidence,
       source: "lessonGraphBuilder",
-      borrowedIdeas: ["tldraw_zoom_to_bounds", "motion_canvas_timeline_choreography"],
+      borrowedIdeas: [
+        "tldraw_zoom_to_bounds",
+        "motion_canvas_timeline_choreography",
+        "notebooklm_learning_progression",
+      ],
     };
   });
+}
+
+
+function makeLearningGraphNode({
+  id,
+  type,
+  label,
+  source,
+  metadata = {},
+} = {}) {
+  return {
+    id,
+    type,
+    label,
+    source,
+    metadata,
+  };
+}
+
+function makeLearningGraphEdge({
+  from,
+  to,
+  type = "teaches_before",
+  reason,
+  source,
+  metadata = {},
+} = {}) {
+  return {
+    from,
+    to,
+    type,
+    reason,
+    source,
+    metadata,
+  };
+}
+
+function buildArchitectureLearningGraph({
+  journeyUnderstanding = {},
+  responsibilityUnderstanding = {},
+  learningMemory = {},
+} = {}) {
+  const nodes = [];
+  const edges = [];
+
+  const knownNodeIds = new Set();
+
+  function addNode(node) {
+    if (!node?.id || knownNodeIds.has(node.id)) {
+      return;
+    }
+
+    knownNodeIds.add(node.id);
+    nodes.push(node);
+  }
+
+  const knownEdgeIds = new Set();
+
+  function addEdge(edge) {
+    if (!edge?.from || !edge?.to) {
+      return;
+    }
+
+    const edgeKey = [
+      edge.from,
+      edge.to,
+      edge.type || "teaches_before",
+      edge.reason || "",
+    ].join("::");
+
+    if (knownEdgeIds.has(edgeKey)) {
+      return;
+    }
+
+    knownEdgeIds.add(edgeKey);
+    edges.push(edge);
+  }
+
+  const introducedComponents =
+    asArray(learningMemory.introducedComponents);
+
+  const introducedHops =
+    asArray(learningMemory.introducedHops);
+
+  const introducedRoles =
+    asArray(learningMemory.introducedRoles);
+
+  const introducedJourneyTypes =
+    asArray(learningMemory.introducedJourneyTypes)
+      .filter((journeyType) =>
+        safeString(journeyType).endsWith("_journey")
+      );
+
+  for (const journeyType of introducedJourneyTypes) {
+    addNode(
+      makeLearningGraphNode({
+        id: `journey_${slugify(journeyType)}`,
+        type: "journey",
+        label: journeyType,
+        source: "learning-memory.json",
+      })
+    );
+  }
+
+  for (const role of introducedRoles) {
+    addNode(
+      makeLearningGraphNode({
+        id: `role_${slugify(role)}`,
+        type: "role",
+        label: role,
+        source: "learning-memory.json",
+      })
+    );
+  }
+
+  for (const component of introducedComponents) {
+    const componentId =
+      `component_${component.normalizedName || slugify(component.componentName)}`;
+
+    addNode(
+      makeLearningGraphNode({
+        id: componentId,
+        type: "component",
+        label: component.componentName,
+        source: "learning-memory.json",
+        metadata: {
+          primaryJourneyRole:
+            component.primaryJourneyRole || "unknown",
+          firstExplainedInJourneyType:
+            component.firstExplainedInJourneyType || null,
+          supportingHopIds:
+            asArray(component.supportingHopIds),
+        },
+      })
+    );
+
+    for (const journeyType of asArray(component.journeyTypes)) {
+      if (!safeString(journeyType).endsWith("_journey")) {
+        continue;
+      }
+
+      addEdge(
+        makeLearningGraphEdge({
+          from: `journey_${slugify(journeyType)}`,
+          to: `component_${component.normalizedName || slugify(component.componentName)}`,
+          reason:
+            "journey introduces or revisits component",
+          source: "learning-memory.json",
+        })
+      );
+    }
+
+    const role =
+      component.primaryJourneyRole || "unknown";
+
+    if (role && role !== "unknown") {
+      addEdge(
+        makeLearningGraphEdge({
+          from: `role_${slugify(role)}`,
+          to: componentId,
+          reason:
+            "role explains component responsibility",
+          source: "learning-memory.json",
+        })
+      );
+    }
+  }
+
+  for (const hop of introducedHops) {
+    const hopId = `hop_${slugify(hop.hopId)}`;
+
+    addNode(
+      makeLearningGraphNode({
+        id: hopId,
+        type: "hop",
+        label: hop.label || hop.hopId,
+        source: "learning-memory.json",
+        metadata: {
+          hopId: hop.hopId,
+          journeyTypes:
+            asArray(hop.journeyTypes),
+          roleTransitionText:
+            hop.roleTransitionText || null,
+        },
+      })
+    );
+
+    for (const journeyType of asArray(hop.journeyTypes)) {
+      if (!safeString(journeyType).endsWith("_journey")) {
+        continue;
+      }
+
+      addEdge(
+        makeLearningGraphEdge({
+          from: `journey_${slugify(journeyType)}`,
+          to: hopId,
+          reason:
+            "journey contains hop",
+          source: "learning-memory.json",
+        })
+      );
+    }
+
+    const transitionRoles =
+      safeString(hop.roleTransitionText)
+        .split("→")
+        .map((part) => part.trim())
+        .filter(
+          (role) =>
+            role &&
+            role !== "unknown"
+        );
+
+    for (const role of transitionRoles) {
+      addEdge(
+        makeLearningGraphEdge({
+          from: `role_${slugify(role)}`,
+          to: hopId,
+          reason:
+            "role participates in hop transition",
+          source: "learning-memory.json",
+        })
+      );
+    }
+  }
+
+  const journeyRoleEdges = [];
+
+  for (const hop of asArray(responsibilityUnderstanding.hops)) {
+    const roles = [
+      hop.from?.responsibility?.role,
+      hop.to?.responsibility?.role,
+      hop.handoffResponsibility?.fromRole,
+      hop.handoffResponsibility?.toRole,
+    ]
+      .map(safeString)
+      .filter(
+        (role) =>
+          role &&
+          role !== "unknown"
+      );
+
+    const journeyTypes =
+      asArray(hop.journeyTypes || hop.primaryJourneyTypes);
+
+    for (const journeyType of journeyTypes) {
+      if (!safeString(journeyType).endsWith("_journey")) {
+        continue;
+      }
+
+      for (const role of roles) {
+        journeyRoleEdges.push({
+          journeyType,
+          role,
+        });
+      }
+    }
+  }
+
+  for (const { journeyType, role } of uniqueBy(
+    journeyRoleEdges,
+    (item) => `${item.journeyType}:${item.role}`
+  )) {
+    addEdge(
+      makeLearningGraphEdge({
+        from: `journey_${slugify(journeyType)}`,
+        to: `role_${slugify(role)}`,
+        reason:
+          "journey teaches role before component details",
+        source: "responsibility-understanding.json",
+      })
+    );
+  }
+
+  const journeyRolePairs = [];
+
+  for (const component of introducedComponents) {
+    const role =
+      component.primaryJourneyRole || "unknown";
+
+    if (!role || role === "unknown") {
+      continue;
+    }
+
+    for (const journeyType of asArray(component.journeyTypes)) {
+      if (!safeString(journeyType).endsWith("_journey")) {
+        continue;
+      }
+
+      journeyRolePairs.push({
+        journeyType,
+        role,
+      });
+    }
+  }
+
+  for (const { journeyType, role } of uniqueBy(
+    journeyRolePairs,
+    (item) => `${item.journeyType}:${item.role}`
+  )) {
+    addEdge(
+      makeLearningGraphEdge({
+        from: `journey_${slugify(journeyType)}`,
+        to: `role_${slugify(role)}`,
+        reason:
+          "journey teaches role before component details",
+        source: "learning-memory.json",
+      })
+    );
+}
+
+
+  const journeyRolePairsFromHops = [];
+
+  for (const hop of introducedHops) {
+    const roles =
+      safeString(hop.roleTransitionText)
+        .split("→")
+        .map((part) => part.trim())
+        .filter(
+          (role) =>
+            role &&
+            role !== "unknown"
+        );
+
+    for (const journeyType of asArray(hop.journeyTypes)) {
+      if (!safeString(journeyType).endsWith("_journey")) {
+        continue;
+      }
+
+      for (const role of roles) {
+        journeyRolePairsFromHops.push({
+          journeyType,
+          role,
+        });
+      }
+    }
+  }
+
+  for (const { journeyType, role } of uniqueBy(
+    journeyRolePairsFromHops,
+    (item) => `${item.journeyType}:${item.role}`
+  )) {
+    addEdge(
+      makeLearningGraphEdge({
+        from: `journey_${slugify(journeyType)}`,
+        to: `role_${slugify(role)}`,
+        reason:
+          "journey teaches role from hop transition context",
+        source: "learning-memory.json",
+      })
+    );
+  }
+
+  const nodeTypeCounts =
+    nodes.reduce((acc, node) => {
+      acc[node.type] = (acc[node.type] || 0) + 1;
+      return acc;
+    }, {});
+
+  return {
+    version: "architecture-learning-graph-v1",
+    source: "lessonGraphBuilder",
+    purpose:
+      "Represent deterministic teaching dependencies so journeys can be taught before roles, roles before components, and components before hops.",
+    rules: {
+      traversalMutation: "forbidden",
+      llmGeneratedGraph: "forbidden",
+      dependencyOnly: true,
+    },
+    nodes,
+    edges,
+    stats: {
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+      uniqueEdgeCount: edges.length,
+      duplicateEdgeCount: 0,
+      journeyNodeCount: nodeTypeCounts.journey || 0,
+      roleNodeCount: nodeTypeCounts.role || 0,
+      componentNodeCount: nodeTypeCounts.component || 0,
+      hopNodeCount: nodeTypeCounts.hop || 0,
+      traversalChanged: false,
+    },
+  };
+}
+
+function buildArchitectureLearningGraphHealth(
+  architectureLearningGraph = {}
+) {
+  const nodes = asArray(architectureLearningGraph.nodes);
+  const edges = asArray(architectureLearningGraph.edges);
+
+  const nodeIds = new Set(nodes.map((node) => node.id));
+
+  const incomingByNode = edges.reduce((acc, edge) => {
+    if (!edge.to) return acc;
+    acc[edge.to] = (acc[edge.to] || 0) + 1;
+    return acc;
+  }, {});
+
+  const missingEndpointEdges = edges.filter(
+    (edge) =>
+      !nodeIds.has(edge.from) ||
+      !nodeIds.has(edge.to)
+  );
+
+  const orphanComponents = nodes.filter(
+    (node) =>
+      node.type === "component" &&
+      !incomingByNode[node.id]
+  );
+
+  const orphanRoles = nodes.filter(
+    (node) =>
+      node.type === "role" &&
+      !incomingByNode[node.id]
+  );
+
+  const orphanHops = nodes.filter(
+    (node) =>
+      node.type === "hop" &&
+      !incomingByNode[node.id]
+  );
+
+  return {
+    version: "architecture-learning-graph-health-v1",
+    valid:
+      missingEndpointEdges.length === 0 &&
+      orphanComponents.length === 0 &&
+      orphanRoles.length === 0 &&
+      orphanHops.length === 0 &&
+      architectureLearningGraph.stats?.traversalChanged !== true,
+
+    missingEndpointEdgeCount:
+      missingEndpointEdges.length,
+
+    orphanComponentCount:
+      orphanComponents.length,
+
+    orphanRoleCount:
+      orphanRoles.length,
+
+    orphanHopCount:
+      orphanHops.length,
+
+    traversalChanged:
+      architectureLearningGraph.stats?.traversalChanged === true,
+
+    samples: {
+      orphanComponents:
+        orphanComponents.slice(0, 5),
+
+      orphanRoles:
+        orphanRoles.slice(0, 5),
+
+      orphanHops:
+        orphanHops.slice(0, 5),
+
+      missingEndpointEdges:
+        missingEndpointEdges.slice(0, 5),
+    },
+  };
+}
+
+function buildArchitectureLearningTraversalHealth({
+  teachingFocusSequence = [],
+  choreographyIntent = [],
+  learningTraversal = {},
+} = {}) {
+  const focusItems = asArray(teachingFocusSequence);
+
+  const firstIndexByType = focusItems.reduce(
+    (acc, focus, index) => {
+      const type = focus.focusEntityType;
+      if (type && acc[type] === undefined) {
+        acc[type] = index;
+      }
+      return acc;
+    },
+    {}
+  );
+
+  const expectedOrder = [
+    "journey",
+    "role",
+    "component",
+    "hop",
+  ];
+
+  const orderViolations = [];
+
+  for (let index = 0; index < expectedOrder.length - 1; index += 1) {
+    const currentType = expectedOrder[index];
+    const nextType = expectedOrder[index + 1];
+
+    const currentIndex = firstIndexByType[currentType];
+    const nextIndex = firstIndexByType[nextType];
+
+    if (
+      currentIndex !== undefined &&
+      nextIndex !== undefined &&
+      currentIndex > nextIndex
+    ) {
+      orderViolations.push({
+        type: "learning_focus_order_violation",
+        severity: "high",
+        reason:
+          `${currentType} focus must appear before ${nextType} focus.`,
+        currentType,
+        nextType,
+        currentIndex,
+        nextIndex,
+      });
+    }
+  }
+
+  const choreographyByFocusId = new Set(
+    asArray(choreographyIntent).map((item) => item.focusId)
+  );
+
+  const focusWithoutChoreography =
+    focusItems.filter(
+      (focus) =>
+        focus.focusId &&
+        !choreographyByFocusId.has(focus.focusId)
+    );
+
+  const missingFocusType =
+    expectedOrder.filter(
+      (type) => firstIndexByType[type] === undefined
+    );
+
+  const violations = [
+    ...orderViolations,
+    ...focusWithoutChoreography.map((focus) => ({
+      type: "missing_choreography_for_focus",
+      severity: "medium",
+      reason:
+        "Every learning focus item should have a matching choreography intent.",
+      focusId: focus.focusId,
+      focusEntityType: focus.focusEntityType,
+    })),
+    ...missingFocusType.map((type) => ({
+      type: "missing_learning_focus_type",
+      severity: "medium",
+      reason:
+        `${type} focus is missing from the learning traversal.`,
+      focusEntityType: type,
+    })),
+  ];
+
+  return {
+    version: "architecture-learning-traversal-health-v1",
+    valid:
+      violations.length === 0 &&
+      learningTraversal?.traversalChanged !== true,
+
+    violationCount: violations.length,
+    violations,
+
+    stats: {
+      focusCount: focusItems.length,
+      choreographyIntentCount:
+        asArray(choreographyIntent).length,
+      journeyFocusCount:
+        focusItems.filter((item) => item.focusEntityType === "journey").length,
+      roleFocusCount:
+        focusItems.filter((item) => item.focusEntityType === "role").length,
+      componentFocusCount:
+        focusItems.filter((item) => item.focusEntityType === "component").length,
+      hopFocusCount:
+        focusItems.filter((item) => item.focusEntityType === "hop").length,
+      traversalChanged:
+        learningTraversal?.traversalChanged === true,
+    },
+  };
 }
 
 function buildLessonGraph({
@@ -2168,6 +2912,12 @@ function buildLessonGraph({
   architectureTeaching = {},
   architectureReasoning = {},
   canonicalTraversalRail = {},
+
+  journeyUnderstanding = {},
+  responsibilityUnderstanding = {},
+  learningMemory = {},
+  learningRecap = {},
+
   jobDir = null,
 } = {}) {
   const pageCount = getPageCount(diagramAnalysis);
@@ -2284,14 +3034,77 @@ function buildLessonGraph({
     : null;
 
 
-  const teachingFocusSequence = usingArchitectureTeaching
-    ? buildTeachingFocusSequenceFromTeachingUnits({ teachingUnits })
-    : buildTeachingFocusSequence({ flowGroups: architectureFlowGroups });
+  const architectureLearningGraph =
+    buildArchitectureLearningGraph({
+      journeyUnderstanding,
+      responsibilityUnderstanding,
+      learningMemory,
+    });
+
+  const learningFocusSequence =
+    buildArchitectureLearningFocusSequence({
+      architectureLearningGraph,
+    });
+
+  const teachingFocusSequence =
+    learningFocusSequence.length > 0
+      ? learningFocusSequence
+      : usingArchitectureTeaching
+        ? buildTeachingFocusSequenceFromTeachingUnits({ teachingUnits })
+        : buildTeachingFocusSequence({ flowGroups: architectureFlowGroups });
 
   const choreographyIntent = buildChoreographyIntent({
     teachingFocusSequence,
   });
+    
+  const architectureLearningGraphHealth =
+      buildArchitectureLearningGraphHealth(
+        architectureLearningGraph
+      );  
+    
 
+
+    const learningTraversal = {
+      version: "architecture-learning-traversal-v1",
+      enabled: true,
+      source: "architectureLearningGraph",
+      focusSequenceSource: "architectureLearningGraph",
+
+      nodeCount:
+        architectureLearningGraph?.stats?.nodeCount || 0,
+
+      edgeCount:
+        architectureLearningGraph?.stats?.edgeCount || 0,
+
+      journeyFocusCount:
+        architectureLearningGraph?.stats?.journeyNodeCount || 0,
+
+      roleFocusCount:
+        architectureLearningGraph?.stats?.roleNodeCount || 0,
+
+      componentFocusCount:
+        architectureLearningGraph?.stats?.componentNodeCount || 0,
+
+      hopFocusCount:
+        architectureLearningGraph?.stats?.hopNodeCount || 0,
+
+      choreographyIntentCount:
+        choreographyIntent.length,
+
+      graphHealthValid:
+        architectureLearningGraphHealth?.valid === true,
+
+      traversalChanged: false,
+    };
+
+    const learningTraversalHealth =
+      buildArchitectureLearningTraversalHealth({
+        teachingFocusSequence,
+        choreographyIntent,
+        learningTraversal,
+      });
+  
+    
   const architectureTraversal = {
     version: usingArchitectureTeaching
         ? "architecture-traversal-v2-teaching-driven"
@@ -2382,10 +3195,16 @@ function buildLessonGraph({
     reasoningModeCount: asArray(architectureReasoning?.reasoningModes).length,
     reasonedFlowSummaryCount: asArray(architectureReasoning?.reasonedFlowSummaries).length,
     directionalInteractionCount: asArray(architectureReasoning?.directionalInteractions).length,
+    
+    learningTraversal,
+    learningTraversalHealth,
+
     teachingFocusSequenceCount: teachingFocusSequence.length,
     teachingFocusSequence,
+
     choreographyIntentCount: choreographyIntent.length,
     choreographyIntent,
+
     borrowedIdeas: [
         "langgraph_traversal_state",
         "motion_canvas_semantic_beats",
@@ -2439,6 +3258,24 @@ function buildLessonGraph({
     },
     architectureTraversal,
     architectureTeachingRegions,
+
+    architectureLearningInputs: {
+      version: "architecture-learning-inputs-v1",
+      journeyCount:
+        asArray(journeyUnderstanding.journeys).length,
+      responsibilityHopCount:
+        asArray(responsibilityUnderstanding.hops).length,
+      introducedComponentCount:
+        asArray(learningMemory.introducedComponents).length,
+      recapComponentCount:
+        asArray(learningRecap.recap?.componentNames).length,
+      traversalChanged: false,
+    },
+
+    architectureLearningGraph,
+    architectureLearningGraphHealth,
+    learningTraversalHealth,
+
     teachingUnits,
     stats: {
       teachingUnitCount: teachingUnits.length,

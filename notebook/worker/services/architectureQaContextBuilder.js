@@ -118,6 +118,34 @@ function buildComponentContinuityIndex(componentContinuityMemory = {}) {
   );
 }
 
+function buildLearningRecapComponentIndex(
+  learningRecap = {}
+) {
+  const out = {};
+
+  for (const componentName of asArray(
+    learningRecap.recap?.componentNames
+  )) {
+    out[normalizeKey(componentName)] = {
+      componentName,
+      introduced: true,
+    };
+  }
+
+  return out;
+}
+
+function buildLearningMemoryComponentIndex(
+  learningMemory = {}
+) {
+  return indexBy(
+    learningMemory.introducedComponents,
+    (component) =>
+      component.normalizedName ||
+      normalizeKey(component.componentName)
+  );
+}
+
 function buildArchitectureQaContext({
   journeyUnderstanding = {},
   componentUnderstanding = {},
@@ -128,6 +156,8 @@ function buildArchitectureQaContext({
   evidenceTeachingSupport = {},
   hopContinuityMemory = {},
   componentContinuityMemory = {},
+    learningMemory = {},
+    learningRecap = {},
 } = {}) {
   const contract = buildArchitectureQaContract();
 
@@ -150,6 +180,8 @@ function buildArchitectureQaContext({
         evidenceTeachingSupport,
         hopContinuityMemory,
         componentContinuityMemory,
+        learningMemory,
+        learningRecap,
         },
 
     indexes: {
@@ -178,6 +210,16 @@ function buildArchitectureQaContext({
 
         componentContinuityByName:
         buildComponentContinuityIndex(componentContinuityMemory),
+
+        learningMemoryByComponent:
+        buildLearningMemoryComponentIndex(
+            learningMemory
+        ),
+
+        learningRecapByComponent:
+        buildLearningRecapComponentIndex(
+            learningRecap
+        ),
     },
 
     stats: {
@@ -216,6 +258,31 @@ function buildArchitectureQaContext({
 
         introducedComponentCount:
         asArray(componentContinuityMemory.introducedComponentNames).length,
+
+        learningMemoryComponentCount:
+        asArray(
+            learningMemory.introducedComponents
+        ).length,
+
+        learningMemoryJourneyCount:
+        asArray(
+            learningMemory.introducedJourneyTypes
+        ).length,
+
+        learningRecapComponentCount:
+        asArray(
+            learningRecap.recap?.componentNames
+        ).length,
+
+        learningRecapJourneyCount:
+        asArray(
+            learningRecap.recap?.journeyTypes
+        ).length,
+
+        learningRecapRoleCount:
+        asArray(
+            learningRecap.recap?.roles
+        ).length,
 
         traversalChanged:
         false,

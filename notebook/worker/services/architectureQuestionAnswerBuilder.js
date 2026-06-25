@@ -60,6 +60,22 @@ function getComponentContinuity({
   );
 }
 
+function getLearningMemoryForComponent({
+  qaContext = {},
+  componentName,
+} = {}) {
+  const key = safeString(componentName)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  return (
+    qaContext.indexes?.learningMemoryByComponent?.[
+      key
+    ] || null
+  );
+}
+
 function buildCannotAnswer({
   classification = {},
   reason = "The available architecture artifacts do not contain enough deterministic context to answer this question.",
@@ -334,6 +350,14 @@ function buildComponentRoleAnswer({
       componentName,
   });  
 
+  const learningMemory =
+  getLearningMemoryForComponent({
+    qaContext,
+    componentName:
+      component.componentName ||
+      componentName,
+  });
+
   return {
     version: ANSWER_BUILDER_VERSION,
     intent: classification.intent,
@@ -377,6 +401,20 @@ function buildComponentRoleAnswer({
             componentMemory?.revisitGuidance ||
             null,
         },
+        learningMemory: {
+        seenBefore:
+            Boolean(learningMemory),
+
+        knownJourneyTypes:
+            learningMemory?.journeyTypes || [],
+
+        knownRoles:
+            learningMemory?.journeyRoles || [],
+
+        supportingHopIds:
+            learningMemory?.supportingHopIds || [],
+        },
+
       },
     ],
     sourceArtifacts: [
@@ -566,6 +604,125 @@ function buildEvidenceSupportAnswer({
     };
 }
 
+function buildLearningRecapAnswer({
+  qaContext = {},
+  classification = {},
+} = {}) {
+  const recap =
+    qaContext.artifacts?.learningRecap || {};
+
+  const componentNames =
+    asArray(recap.recap?.componentNames);
+
+  const journeyTypes =
+    asArray(recap.recap?.journeyTypes);
+
+  const roles =
+    asArray(recap.recap?.roles);
+
+  if (
+    !componentNames.length &&
+    !journeyTypes.length &&
+    !roles.length
+  ) {
+    return buildCannotAnswer({
+      classification,
+      reason:
+        "No deterministic learning recap was available.",
+    });
+  }
+
+  return {
+    version: ANSWER_BUILDER_VERSION,
+    intent: classification.intent,
+    answered: true,
+
+    answerText:
+      `We have introduced ${componentNames.length} component(s), ${journeyTypes.length} journey context(s), and ${roles.length} role(s). Components covered include ${componentNames.join(", ")}. Journeys covered include ${journeyTypes.join(", ")}.`,
+
+    supportingFacts: [
+      {
+        type: "learning_recap",
+
+        componentNames,
+
+        journeyTypes,
+
+        roles,
+
+        summary:
+          recap.summary || {},
+      },
+    ],
+
+    sourceArtifacts: [
+      "learning-recap.json",
+    ],
+
+    confidence: "high",
+
+    cannotAnswerReason:
+      null,
+  };
+}
+
+function buildReinforcementRecapAnswer({
+  qaContext = {},
+  classification = {},
+} = {}) {
+  const recap =
+    qaContext.artifacts?.learningRecap || {};
+
+  const reinforcement =
+    recap.reinforcement || {};
+
+  const components =
+    asArray(reinforcement.components);
+
+  const hops =
+    asArray(reinforcement.hops);
+
+  if (
+    !components.length &&
+    !hops.length
+  ) {
+    return buildCannotAnswer({
+      classification,
+      reason:
+        "No deterministic reinforcement candidates were available.",
+    });
+  }
+
+  return {
+    version: ANSWER_BUILDER_VERSION,
+    intent: classification.intent,
+    answered: true,
+
+    answerText:
+      `There are ${components.length + hops.length} reinforcement candidate(s): ${components.length} component-based and ${hops.length} hop-based.`,
+
+    supportingFacts: [
+      {
+        type: "reinforcement_recap",
+
+        components,
+
+        hops,
+      },
+    ],
+
+    sourceArtifacts: [
+      "learning-recap.json",
+    ],
+
+    confidence: "high",
+
+    cannotAnswerReason:
+      null,
+  };
+}
+
+
 function buildArchitectureQuestionAnswer({
   qaContext = {},
   classification = {},
@@ -596,10 +753,22 @@ function buildArchitectureQuestionAnswer({
       });
 
     case QA_INTENTS.EVIDENCE_SUPPORT:
-      return buildEvidenceSupportAnswer({
+    return buildEvidenceSupportAnswer({
         qaContext,
         classification,
-      });
+    });
+
+    case QA_INTENTS.LEARNING_RECAP:
+    return buildLearningRecapAnswer({
+        qaContext,
+        classification,
+    });
+
+    case QA_INTENTS.REINFORCEMENT_RECAP:
+    return buildReinforcementRecapAnswer({
+        qaContext,
+        classification,
+    });
 
     default:
       return buildCannotAnswer({

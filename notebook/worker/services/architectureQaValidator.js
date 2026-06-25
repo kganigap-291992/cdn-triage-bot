@@ -39,6 +39,12 @@ const QA_VALIDATION_TYPES = {
 
   MISSING_COMPONENT_CONTINUITY:
     "missing_component_continuity",
+
+  MISSING_LEARNING_MEMORY:
+    "missing_learning_memory",
+
+    MISSING_RECAP_MEMORY:
+    "missing_recap_memory",
 };
 
 function asArray(value) {
@@ -136,6 +142,93 @@ function validateComponentContinuity({
   }
 }
 
+function validateLearningMemory({
+  answer = {},
+  violations = [],
+} = {}) {
+  if (
+    answer.answered !== true ||
+    answer.intent !== "component_role"
+  ) {
+    return;
+  }
+
+  const componentRoleFacts =
+    asArray(answer.supportingFacts).filter(
+      (fact) => fact.type === "component_role"
+    );
+
+  for (const fact of componentRoleFacts) {
+    const learningMemory =
+      fact.learningMemory;
+
+    if (
+      !learningMemory ||
+      typeof learningMemory.seenBefore !== "boolean" ||
+      !Array.isArray(learningMemory.knownJourneyTypes) ||
+      !Array.isArray(learningMemory.knownRoles) ||
+      !Array.isArray(learningMemory.supportingHopIds)
+    ) {
+      violations.push({
+        type:
+          QA_VALIDATION_TYPES.MISSING_LEARNING_MEMORY,
+        severity: "medium",
+        reason:
+          "Component role answer must include learning memory metadata.",
+      });
+    }
+  }
+}
+
+function validateRecapMemory({
+  answer = {},
+  violations = [],
+} = {}) {
+  if (
+    answer.answered !== true ||
+    ![
+      "learning_recap",
+      "reinforcement_recap",
+    ].includes(answer.intent)
+  ) {
+    return;
+  }
+
+  const sourceArtifacts =
+    asArray(answer.sourceArtifacts);
+
+  const supportingFacts =
+    asArray(answer.supportingFacts);
+
+  if (!sourceArtifacts.includes("learning-recap.json")) {
+    violations.push({
+      type:
+        QA_VALIDATION_TYPES.MISSING_RECAP_MEMORY,
+      severity: "high",
+      reason:
+        "Recap answer must cite learning-recap.json.",
+    });
+  }
+
+  const hasRecapFact =
+    supportingFacts.some(
+      (fact) =>
+        fact.type === "learning_recap" ||
+        fact.type === "reinforcement_recap"
+    );
+
+  if (!hasRecapFact) {
+    violations.push({
+      type:
+        QA_VALIDATION_TYPES.MISSING_RECAP_MEMORY,
+      severity: "medium",
+      reason:
+        "Recap answer must include recap supporting facts.",
+    });
+  }
+}
+
+
 function countByType(violations = [], type) {
   return violations.filter(
     (item) => item.type === type
@@ -199,6 +292,16 @@ function validateArchitectureQaAnswer({
     violations,
   });
 
+  validateLearningMemory({
+    answer,
+    violations,
+    });
+
+  validateRecapMemory({
+    answer,
+    violations,
+    });  
+
   if (
     answer.traversalChanged === true ||
     answer.mutatedTraversal === true
@@ -256,9 +359,22 @@ function validateArchitectureQaAnswer({
 
       missingComponentContinuityCount:
         countByType(
-          violations,
-          QA_VALIDATION_TYPES.MISSING_COMPONENT_CONTINUITY
+            violations,
+            QA_VALIDATION_TYPES.MISSING_COMPONENT_CONTINUITY
         ),
+
+        missingLearningMemoryCount:
+        countByType(
+            violations,
+            QA_VALIDATION_TYPES.MISSING_LEARNING_MEMORY
+        ),
+
+        missingRecapMemoryCount:
+        countByType(
+            violations,
+            QA_VALIDATION_TYPES.MISSING_RECAP_MEMORY
+        ),
+        
     },
   };
 }

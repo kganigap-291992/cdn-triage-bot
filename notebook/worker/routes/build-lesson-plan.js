@@ -131,6 +131,14 @@ const {
 } = require("../services/componentContinuityMemoryBuilder");
 
 const {
+  buildLearningMemory,
+} = require("../services/learningMemoryBuilder");
+
+const {
+  buildLearningRecap,
+} = require("../services/learningRecapBuilder");
+
+const {
   buildArchitectureQaContext,
 } = require("../services/architectureQaContextBuilder");
 
@@ -268,6 +276,20 @@ router.post(
             path.join(
               jobDir,
               "component-continuity-memory.json"
+            )
+          ),
+
+          learningMemory: readJson(
+            path.join(
+              jobDir,
+              "learning-memory.json"
+            )
+          ),
+
+          learningRecap: readJson(
+            path.join(
+              jobDir,
+              "learning-recap.json"
             )
           ),
         });
@@ -842,6 +864,43 @@ router.post("/:jobId", async (req, res) => {
     componentContinuityMemory.stats
   );
 
+  const learningMemory =
+    buildLearningMemory({
+      hopContinuityMemory,
+      componentContinuityMemory,
+      journeyUnderstanding,
+      responsibilityUnderstanding,
+      outputDir: jobDir,
+    });
+
+  const learningMemoryPath = path.join(
+    jobDir,
+    "learning-memory.json"
+  );
+
+  console.log(
+    "[learning-memory]",
+    learningMemory.stats
+  );
+
+  const learningRecap =
+    buildLearningRecap({
+      learningMemory,
+      journeyUnderstanding,
+      responsibilityUnderstanding,
+      outputDir: jobDir,
+    });
+
+  const learningRecapPath = path.join(
+    jobDir,
+    "learning-recap.json"
+  );
+
+  console.log(
+    "[learning-recap]",
+    learningRecap.stats
+  );
+
   const calmExplainerNarrationPath = writeJson(
       path.join(jobDir, "calm-explainer-narration.json"),
       calmExplainerNarration
@@ -1072,6 +1131,18 @@ router.post("/:jobId", async (req, res) => {
         version: componentContinuityMemory.version,
         stats: componentContinuityMemory.stats,
         output: componentContinuityMemoryPath,
+      },
+
+      learningMemory: {
+        version: learningMemory.version,
+        stats: learningMemory.stats,
+        output: learningMemoryPath,
+      },
+
+      learningRecap: {
+        version: learningRecap.version,
+        stats: learningRecap.stats,
+        output: learningRecapPath,
       },
 
       narrationContinuity: {

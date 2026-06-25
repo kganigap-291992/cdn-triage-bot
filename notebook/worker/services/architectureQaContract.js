@@ -25,6 +25,8 @@ const QA_INTENTS = {
   SHARED_NODE: "shared_node",
   RESPONSIBILITY_HANDOFF: "responsibility_handoff",
   EVIDENCE_SUPPORT: "evidence_support",
+  LEARNING_RECAP: "learning_recap",
+  REINFORCEMENT_RECAP: "reinforcement_recap",
   UNKNOWN: "unknown",
 };
 

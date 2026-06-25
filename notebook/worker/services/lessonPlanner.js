@@ -185,22 +185,34 @@ function buildLessonPlan({
   architectureTeaching = {},
   architectureReasoning = {},
   canonicalTraversalRail = {},
+
+  journeyUnderstanding = {},
+  responsibilityUnderstanding = {},
+  learningMemory = {},
+  learningRecap = {},
+
   jobDir = null,
 } = {}) {
   const concepts = getConceptList(conceptsData);
   const topConcepts = concepts.slice(0, 5);
 
     const lessonGraph = buildLessonGraph({
-      documentIntelligence,
-      conceptsData,
-      extractedData,
-      diagramAnalysis,
-      architectureUnderstanding,
-      architectureTeaching,
-      architectureReasoning,
-      canonicalTraversalRail,
-      jobDir,
-    });
+    documentIntelligence,
+    conceptsData,
+    extractedData,
+    diagramAnalysis,
+    architectureUnderstanding,
+    architectureTeaching,
+    architectureReasoning,
+    canonicalTraversalRail,
+
+    journeyUnderstanding,
+    responsibilityUnderstanding,
+    learningMemory,
+    learningRecap,
+
+    jobDir,
+  });
 
   return {
     generatedAt: new Date().toISOString(),
@@ -304,6 +316,26 @@ function generateLessonPlan(jobDir) {
     "canonical-traversal-rail.json"
   );
 
+  const journeyUnderstandingPath = path.join(
+    jobDir,
+    "journey-understanding.json"
+  );
+
+  const responsibilityUnderstandingPath = path.join(
+    jobDir,
+    "responsibility-understanding.json"
+  );
+
+  const learningMemoryPath = path.join(
+    jobDir,
+    "learning-memory.json"
+  );
+
+  const learningRecapPath = path.join(
+    jobDir,
+    "learning-recap.json"
+  );
+
   const conceptsData = readJsonIfExists(conceptsPath, {});
   const extractedData = readJsonIfExists(extractedPath, {});
   const pageImageCount = countPageImages(jobDir);
@@ -341,6 +373,26 @@ function generateLessonPlan(jobDir) {
     {}
   );
 
+  const journeyUnderstanding = readJsonIfExists(
+    journeyUnderstandingPath,
+    {}
+  );
+
+  const responsibilityUnderstanding = readJsonIfExists(
+    responsibilityUnderstandingPath,
+    {}
+  );
+
+  const learningMemory = readJsonIfExists(
+    learningMemoryPath,
+    {}
+  );
+
+  const learningRecap = readJsonIfExists(
+    learningRecapPath,
+    {}
+  );
+
   const diagramAnalysis = {
     ...rawDiagramAnalysis,
     pageCount:
@@ -358,6 +410,12 @@ function generateLessonPlan(jobDir) {
     architectureTeaching,
     architectureReasoning,
     canonicalTraversalRail,
+
+    journeyUnderstanding,
+    responsibilityUnderstanding,
+    learningMemory,
+    learningRecap,
+
     jobDir,
   });
 }
