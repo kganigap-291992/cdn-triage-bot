@@ -33,6 +33,39 @@ function getRegion(unit = {}) {
   );
 }
 
+function getArchitectureBoundary(unit = {}) {
+  const boundary =
+    unit.metadata?.architectureBoundary ||
+    unit.metadata?.boundary ||
+    unit.metadata?.componentBoundary ||
+    unit.metadata?.teachingFocus?.boundary ||
+    null;
+
+  if (!boundary) return null;
+
+  if (typeof boundary === "string") {
+    return normalizeText(boundary);
+  }
+
+  if (Array.isArray(boundary)) {
+    return boundary
+      .map(item =>
+        normalizeText(
+          item.rawText ||
+          item.label ||
+          item.boundaryType
+        )
+      )
+      .filter(Boolean);
+  }
+
+  return normalizeText(
+    boundary.rawText ||
+    boundary.label ||
+    boundary.boundaryType
+  );
+}
+
 function getTitle(unit = {}, index = 0) {
   return normalizeText(unit.title || unit.name || unit.label || `Scene ${index + 1}`);
 }
@@ -475,7 +508,14 @@ function buildNarrationContinuity({
     const unit = mergeUnitWithReasoning(rawUnit, architectureReasoning);
 
     const title = getTitle(unit, index);
-    const region = getRegion(unit);
+    const semanticRegion = getRegion(unit);
+
+    const architectureBoundary =
+    getArchitectureBoundary(unit);
+
+    const region =
+    architectureBoundary ||
+    semanticRegion;
     const components = collectStepNames(unit);
     const handoffs = collectHandoffs(unit);
     const concepts = inferConcepts(unit);
@@ -521,6 +561,8 @@ function buildNarrationContinuity({
 
         title,
         region,
+        semanticRegion,
+        architectureBoundary,
         primaryEntity,
       concepts,
       components,

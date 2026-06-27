@@ -58,6 +58,10 @@ const {
   buildArchitectureTraversalAudit,
 } = require("./architectureTraversalAuditBuilder");
 
+const {
+  buildLearningChapters,
+} = require("./learningChapterBuilder");
+
 function getArchitectureRegionLabel(regionType) {
   return ARCHITECTURE_REGION_LABELS[regionType] || "Architecture Region";
 }
@@ -1381,6 +1385,88 @@ function buildRailGroupsForTeaching(canonicalTraversalRail = {}) {
   ];
 }
 
+
+function getChapterComponentNames(chapter = {}) {
+  return uniq(
+    asArray(chapter.enrichedSegments)
+      .flatMap((segment) => [
+        segment.from?.name,
+        segment.to?.name,
+      ])
+      .filter(Boolean)
+  );
+}
+
+function findArchitectureBoundaryForChapter(
+  chapter = {},
+  architectureUnderstanding = {}
+) {
+  const componentNames = new Set(
+    getChapterComponentNames(chapter).map((name) =>
+      safeLower(name)
+    )
+  );
+
+  const components =
+    architectureUnderstanding?.deterministicGraph?.components || [];
+
+  const matchedBoundaries = components
+    .filter((component) =>
+      componentNames.has(safeLower(component.name))
+    )
+    .flatMap((component) =>
+      asArray(component.boundaries).map((boundary) => ({
+        rawText: boundary.rawText,
+        boundaryType: boundary.boundaryType,
+        confidence: boundary.confidence,
+        source: boundary.source,
+        componentName: component.name,
+      }))
+    )
+    .filter((boundary) => boundary.rawText);
+
+  const architectureBoundaryCandidates = uniqueBy(
+    matchedBoundaries,
+    (boundary) =>
+      `${boundary.boundaryType}:${safeLower(boundary.rawText)}`
+  ).slice(0, 8);
+
+  const GENERIC_BOUNDARY_LABELS = new Set([
+  "multi",
+  "region",
+  "regions",
+  "cross-region",
+  "cross region",
+  "global",
+  "system",
+  "architecture",
+]);
+
+const rankedCandidates =
+  architectureBoundaryCandidates.filter((boundary) => {
+    const label = safeLower(boundary.rawText);
+
+    return !GENERIC_BOUNDARY_LABELS.has(label);
+  });
+
+const preferred =
+  rankedCandidates.find(
+    (boundary) => boundary.boundaryType === "region_group"
+  ) ||
+  rankedCandidates.find(
+    (boundary) =>
+      boundary.boundaryType === "deployment_boundary"
+  ) ||
+  rankedCandidates[0] ||
+  architectureBoundaryCandidates[0] ||
+  null;
+
+  return {
+    architectureBoundary: preferred?.rawText || null,
+    architectureBoundaryCandidates,
+  };
+}
+
 function buildArchitectureTeachingUnitFromChapter({
   chapter,
   chapterIndex,
@@ -1388,6 +1474,7 @@ function buildArchitectureTeachingUnitFromChapter({
   sourcePages,
   documentIntelligence,
   canonicalRailSummary = null,
+  architectureUnderstanding = {},
 }) {
   const title = getArchitectureChapterTitle(chapter);
   const presentationStyle = getArchitectureChapterPresentationStyle(chapter);
@@ -1397,6 +1484,14 @@ function buildArchitectureTeachingUnitFromChapter({
   const isRecap = chapter?.type === "architecture_recap";
   const isRailGroup = chapter?.type === "architecture_rail_group";
   const teachingRegion = buildArchitectureTeachingRegion(chapter, chapterIndex);
+
+  const {
+    architectureBoundary,
+    architectureBoundaryCandidates,
+  } = findArchitectureBoundaryForChapter(
+    chapter,
+    architectureUnderstanding
+  );
 
   const canonicalTraversal =
     chapter?.canonicalTraversal ||
@@ -1480,6 +1575,8 @@ function buildArchitectureTeachingUnitFromChapter({
       chapterType: chapter?.type || null,
 
       teachingRegion,
+      architectureBoundary,
+      architectureBoundaryCandidates,
       responsibilityLayer: teachingRegion.responsibilityLayer,
       regionLabel: teachingRegion.regionLabel,
       cameraStrategy: teachingRegion.cameraStrategy,
@@ -1857,6 +1954,7 @@ function buildTeachingUnitsFromArchitectureTeaching({
       sourcePages,
       documentIntelligence,
       canonicalRailSummary,
+      architectureUnderstanding,
     })
   );
 }
@@ -3046,6 +3144,15 @@ function buildLessonGraph({
       architectureLearningGraph,
     });
 
+  const learningChapters =
+    buildLearningChapters({
+      teachingFocusSequence: learningFocusSequence,
+      learningTraversal: {},
+      architectureLearningGraph,
+      learningRecap,
+      journeyUnderstanding,
+    });
+
   const teachingFocusSequence =
     learningFocusSequence.length > 0
       ? learningFocusSequence
@@ -3274,7 +3381,9 @@ function buildLessonGraph({
 
     architectureLearningGraph,
     architectureLearningGraphHealth,
+    learningTraversal,
     learningTraversalHealth,
+    learningChapters,
 
     teachingUnits,
     stats: {

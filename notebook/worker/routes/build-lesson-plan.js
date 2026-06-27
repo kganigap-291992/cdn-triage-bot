@@ -123,6 +123,22 @@ const {
 } = require("../services/narrationContinuityBuilder");
 
 const {
+  buildRegionTraversalTeaching,
+} = require("../services/regionTraversalTeachingBuilder");
+
+const {
+  buildDeploymentBoundaryNormalization,
+} = require("../services/deploymentBoundaryNormalizationBuilder");
+
+const {
+  buildDeploymentUnitDiscovery,
+} = require("../services/deploymentUnitDiscoveryBuilder");
+
+const {
+  buildEnterpriseDeploymentUnderstanding,
+} = require("../services/enterpriseDeploymentUnderstandingBuilder");
+
+const {
   buildHopContinuityMemory,
 } = require("../services/hopContinuityMemoryBuilder");
 
@@ -137,6 +153,7 @@ const {
 const {
   buildLearningRecap,
 } = require("../services/learningRecapBuilder");
+
 
 const {
   buildArchitectureQaContext,
@@ -926,6 +943,19 @@ router.post("/:jobId", async (req, res) => {
 
     const outputPath = saveLessonPlan(jobDir, lessonPlan);
 
+    const learningChapters =
+      lessonPlan.lessonGraph?.learningChapters || {};
+
+    const learningChaptersPath = writeJson(
+      path.join(jobDir, "learning-chapters.json"),
+      learningChapters
+    );
+
+    console.log(
+      "[learning-chapters]",
+      learningChapters.stats
+    );
+
     const narrationContinuity = buildNarrationContinuity({
       lessonGraph: lessonPlan?.lessonGraph,
       architectureReasoning,
@@ -943,6 +973,95 @@ router.post("/:jobId", async (req, res) => {
       concepts: narrationContinuity.stats.conceptCount,
       handoffs: narrationContinuity.stats.handoffCount,
     });
+
+    const regionTraversal =
+      buildRegionTraversalTeaching({
+        lessonGraph: lessonPlan.lessonGraph,
+        learningChapters,
+        narrationContinuity,
+        outputDir: jobDir,
+      });
+
+    const regionTraversalPath = path.join(
+      jobDir,
+      "region-traversal.json"
+    );
+
+    console.log(
+      "[region-traversal]",
+      regionTraversal.stats
+    );
+
+    /* ------------------------------------------------------- */
+    /* 17F.1 Deployment Boundary Normalization                 */
+    /* ------------------------------------------------------- */
+
+    const deploymentBoundaryNormalization =
+      buildDeploymentBoundaryNormalization({
+        architectureUnderstanding,
+        regionTraversal,
+        outputDir: jobDir,
+      });
+
+    const deploymentBoundaryNormalizationPath =
+      path.join(
+        jobDir,
+        "deployment-boundaries-normalized.json"
+      );
+
+    console.log(
+      "[deployment-boundary-normalization]",
+      deploymentBoundaryNormalization.stats
+    );
+
+    /* ------------------------------------------------------- */
+    /* 17F.2 Deployment Unit Discovery                         */
+    /* ------------------------------------------------------- */
+
+    const deploymentUnitDiscovery =
+      buildDeploymentUnitDiscovery({
+        architectureUnderstanding,
+        deploymentBoundaryNormalization,
+        outputDir: jobDir,
+      });
+
+    const deploymentUnitDiscoveryPath =
+      path.join(
+        jobDir,
+        "deployment-units.json"
+      );
+
+    console.log(
+      "[deployment-unit-discovery]",
+      deploymentUnitDiscovery.stats
+    );
+
+    /* ------------------------------------------------------- */
+    /* 17F.3 Enterprise Deployment Understanding               */
+    /* ------------------------------------------------------- */
+
+    const enterpriseDeployment =
+      buildEnterpriseDeploymentUnderstanding({
+        architectureUnderstanding,
+        regionTraversal,
+        deploymentBoundaryNormalization,
+        deploymentUnitDiscovery,
+        sharedNodeUnderstanding,
+        multiRailUnderstanding,
+        bidirectionalRailUnderstanding,
+        outputDir: jobDir,
+      });
+
+    const enterpriseDeploymentPath =
+      path.join(
+        jobDir,
+        "enterprise-deployment-understanding.json"
+      );
+
+    console.log(
+      "[enterprise-deployment-understanding]",
+      enterpriseDeployment.stats
+    );
 
     const architectureTeachingRegions = Array.isArray(
       lessonPlan?.lessonGraph?.architectureTeachingRegions
@@ -1145,10 +1264,40 @@ router.post("/:jobId", async (req, res) => {
         output: learningRecapPath,
       },
 
+      learningChapters: {
+        version: learningChapters.version,
+        stats: learningChapters.stats,
+        output: learningChaptersPath,
+      },
+
       narrationContinuity: {
         version: narrationContinuity.version,
         stats: narrationContinuity.stats,
         output: narrationContinuityPath,
+      },
+      regionTraversal: {
+        deploymentBoundaryNormalization: {
+          version: deploymentBoundaryNormalization.version,
+          stats: deploymentBoundaryNormalization.stats,
+          output: deploymentBoundaryNormalizationPath,
+        },
+
+        deploymentUnitDiscovery: {
+          version: deploymentUnitDiscovery.version,
+          stats: deploymentUnitDiscovery.stats,
+          output: deploymentUnitDiscoveryPath,
+        },
+
+        enterpriseDeployment: {
+          version: enterpriseDeployment.version,
+          stats: enterpriseDeployment.stats,
+          health: enterpriseDeployment.health,
+          output: enterpriseDeploymentPath,
+        },
+        version: regionTraversal.version,
+        stats: regionTraversal.stats,
+        health: regionTraversal.health,
+        output: regionTraversalPath,
       },
       sectionCount: lessonPlan.lessonStructure.length,
       conceptCount: lessonPlan.prioritizedConcepts.length,
