@@ -461,30 +461,249 @@ function buildSharedInfrastructure({
   });
 }
 
-function buildReplicaRelationships({
-  enterpriseDeployment = {},
+function getTopologyRole(component = {}) {
+  const text = safeLower([
+    component.name,
+    component.architectureRole,
+    component.role,
+    component.type,
+  ].filter(Boolean).join(' '));
+
+  if (/\b(client|user|browser|mobile|player|consumer)\b/.test(text)) {
+    return 'external_interface';
+  }
+
+  if (/\b(cdn|edge|ingress|gateway|api gateway|load balancer|waf|bot shield|dns)\b/.test(text)) {
+    return 'entry_or_security';
+  }
+
+  if (/\b(route|routing|router|broker|queue|kafka|event bus)\b/.test(text)) {
+    return 'routing_or_messaging';
+  }
+
+  if (/\b(app|application|service|worker|processor|cluster|transcoder|packager)\b/.test(text)) {
+    return 'processing';
+  }
+
+  if (/\b(db|database|cache|redis|store|storage|origin|regional db)\b/.test(text)) {
+    return 'state_or_storage';
+  }
+
+  if (/\b(metrics|monitor|log|collector|observability|alert)\b/.test(text)) {
+    return 'observability';
+  }
+
+  return 'unknown';
+}
+
+function buildDeploymentUnitTopologySignatures({
+  deploymentUnits = [],
+  relationships = [],
+  componentIndex = {},
 } = {}) {
-  return asArray(enterpriseDeployment.replicatedRegionCandidates)
-    .map((candidate) => ({
-      replicaRelationshipId:
-        candidate.replicationId ||
-        `replica_${slugify(asArray(candidate.regionIds).join('_'))}`,
-      relationshipType: candidate.classification || 'replica_candidate',
-      deploymentUnitTitles: [
-        candidate.regionA,
-        candidate.regionB,
-      ].filter(Boolean),
-      deploymentRegionIds: asArray(candidate.regionIds),
-      sharedBaseComponents: asArray(candidate.sharedBaseComponents),
-      similarity: candidate.similarity ?? null,
-      confidence: candidate.confidence || 'low',
-      source: candidate.source || 'enterprise-deployment-understanding.json',
-      safety: {
+  return deploymentUnits.map((unit) => {
+    const unitComponentNames = new Set(
+      asArray(unit.componentNames).map(safeLower)
+    );
+
+    const unitComponents =
+      asArray(unit.components)
+        .map((component) => {
+          const indexed =
+            component.componentId
+              ? componentIndex.byId.get(component.componentId)
+              : componentIndex.byName.get(safeLower(component.componentName));
+
+          return indexed || {
+            id: component.componentId,
+            name: component.componentName,
+            architectureRole: component.architectureRole,
+          };
+        })
+        .filter((component) => safeString(component.name));
+
+    const roleCounts = unitComponents.reduce((acc, component) => {
+      const role = getTopologyRole(component);
+      acc[role] = (acc[role] || 0) + 1;
+      return acc;
+    }, {});
+
+    const internalRelationships =
+      relationships.filter((relationship) => {
+        const fromComponent = resolveRelationshipEndpoint({
+          endpointId: relationship.from,
+          componentIndex,
+        });
+
+        const toComponent = resolveRelationshipEndpoint({
+          endpointId: relationship.to,
+          componentIndex,
+        });
+
+        return (
+          unitComponentNames.has(safeLower(fromComponent.name)) &&
+          unitComponentNames.has(safeLower(toComponent.name))
+        );
+      });
+
+    const relationshipShape =
+      internalRelationships
+        .map((relationship) => {
+          const fromComponent = resolveRelationshipEndpoint({
+            endpointId: relationship.from,
+            componentIndex,
+          });
+
+          const toComponent = resolveRelationshipEndpoint({
+            endpointId: relationship.to,
+            componentIndex,
+          });
+
+          return [
+            getTopologyRole(fromComponent),
+            relationship.type || relationship.relationshipType || 'relationship',
+            getTopologyRole(toComponent),
+          ].join('->');
+        })
+        .sort();
+
+    const canonicalTopologySignature = uniq([
+      ...Object.keys(roleCounts)
+        .sort()
+        .map((role) => `${role}:${roleCounts[role]}`),
+      ...relationshipShape,
+    ]);
+
+    return {
+      deploymentUnitId: unit.deploymentUnitId,
+      deploymentUnitTitle: unit.title,
+      unitScope: unit.unitScope,
+      componentCount: unitComponents.length,
+      roleCounts,
+      relationshipShape,
+      canonicalTopologySignature,
+      source: 'enterpriseTopologyBuilder',
+      borrowedIdea:
+        'kubernetes_deployment_template_and_service_graph_topology_signature',
+    };
+  });
+}
+
+function jaccardSimilarity(leftValues = [], rightValues = []) {
+  const left = new Set(asArray(leftValues));
+  const right = new Set(asArray(rightValues));
+
+  if (!left.size || !right.size) return 0;
+
+  const intersection =
+    [...left].filter((value) => right.has(value)).length;
+
+  const union = new Set([...left, ...right]).size;
+
+  return union ? intersection / union : 0;
+}
+
+
+function calculateWeightedTopologySimilarity({
+  left = {},
+  right = {},
+} = {}) {
+  const leftRoles = Object.keys(left.roleCounts || {});
+  const rightRoles = Object.keys(right.roleCounts || {});
+
+  const presenceScore =
+    jaccardSimilarity(leftRoles, rightRoles);
+
+  const allRoles =
+    uniq([...leftRoles, ...rightRoles]);
+
+  const countScores =
+    allRoles.map((role) => {
+      const leftCount = Number(left.roleCounts?.[role] || 0);
+      const rightCount = Number(right.roleCounts?.[role] || 0);
+      const maxCount = Math.max(leftCount, rightCount);
+
+      if (maxCount === 0) return 1;
+
+      return 1 - (Math.abs(leftCount - rightCount) / maxCount);
+    });
+
+  const countScore =
+    countScores.length
+      ? countScores.reduce((sum, score) => sum + score, 0) / countScores.length
+      : 0;
+
+  const relationshipScore =
+    asArray(left.relationshipShape).length || asArray(right.relationshipShape).length
+      ? jaccardSimilarity(left.relationshipShape, right.relationshipShape)
+      : presenceScore;
+
+  const weightedScore =
+    (presenceScore * 0.45) +
+    (countScore * 0.35) +
+    (relationshipScore * 0.20);
+
+  return Number(weightedScore.toFixed(2));
+}
+
+function buildReplicaRelationshipsFromTopology({
+  topologySignatures = [],
+} = {}) {
+  const relationships = [];
+
+  for (let i = 0; i < topologySignatures.length; i += 1) {
+    for (let j = i + 1; j < topologySignatures.length; j += 1) {
+      const left = topologySignatures[i];
+      const right = topologySignatures[j];
+
+      const similarity =
+        calculateWeightedTopologySimilarity({
+            left,
+            right,
+        });
+
+      if (similarity < 0.45) continue;
+
+      relationships.push({
+        replicaRelationshipId:
+          `replica_${slugify(left.deploymentUnitTitle)}_${slugify(right.deploymentUnitTitle)}`,
+        relationshipType:
+          similarity >= 0.75
+            ? 'mirrored_topology_candidate'
+            : 'partial_replica_candidate',
+        deploymentUnitA: {
+          deploymentUnitId: left.deploymentUnitId,
+          deploymentUnitTitle: left.deploymentUnitTitle,
+        },
+        deploymentUnitB: {
+          deploymentUnitId: right.deploymentUnitId,
+          deploymentUnitTitle: right.deploymentUnitTitle,
+        },
+        similarity: Number(similarity.toFixed(2)),
+        confidence: similarity >= 0.75 ? 'high' : 'medium',
         candidateOnly: true,
-        doNotClaimFailover: true,
-        doNotClaimActiveActive: true,
-      },
-    }));
+        basis: 'structural_topology_signature_similarity',
+        similarityMethod: 'presence_weighted_role_and_relationship_similarity',
+        sharedTopologySignature:
+          left.canonicalTopologySignature.filter((item) =>
+            right.canonicalTopologySignature.includes(item)
+          ),
+        borrowedIdea:
+          'kubernetes_deployment_template_comparison_c4_deployment_topology_service_graph_similarity',
+        source: 'enterpriseTopologyBuilder',
+        safety: {
+          candidateOnly: true,
+          doNotClaimFailover: true,
+          doNotClaimActiveActive: true,
+          doNotClaimDisasterRecovery: true,
+          doNotClaimReplicationTechnology: true,
+          doNotClaimTrafficRouting: true,
+        },
+      });
+    }
+  }
+
+  return relationships;
 }
 
 function buildTopologyHealth({
@@ -574,9 +793,16 @@ function buildEnterpriseTopology({
       componentIndex,
     });
 
-  const replicaRelationships =
-    buildReplicaRelationships({
-      enterpriseDeployment,
+  const topologySignatures =
+    buildDeploymentUnitTopologySignatures({
+        deploymentUnits,
+        relationships,
+        componentIndex,
+    });
+
+    const replicaRelationships =
+    buildReplicaRelationshipsFromTopology({
+        topologySignatures,
     });
 
   const crossUnitRelationships =
@@ -650,6 +876,7 @@ function buildEnterpriseTopology({
 
     deploymentUnits,
     componentToDeploymentUnit,
+    topologySignatures,
     sharedInfrastructure,
     replicaRelationships,
     aggregationPoints,
@@ -684,25 +911,38 @@ function buildEnterpriseTopology({
     health,
 
     stats: {
-      deploymentUnitCount: deploymentUnits.length,
-      componentToDeploymentUnitCount:
-        Object.keys(componentToDeploymentUnit).length,
-      sharedInfrastructureCount:
-        sharedInfrastructure.length,
-      replicaRelationshipCount:
-        replicaRelationships.length,
-      aggregationPointCount:
-        aggregationPoints.length,
-      fanOutPointCount:
-        fanOutPoints.length,
-      crossUnitRelationshipCount:
-        crossUnitRelationships.length,
-      trafficEntryPointCount:
-        trafficEntryPoints.length,
-      trafficExitPointCount:
-        trafficExitPoints.length,
-      traversalChanged: false,
-    },
+        deploymentUnitCount: deploymentUnits.length,
+
+        componentToDeploymentUnitCount:
+            Object.keys(componentToDeploymentUnit).length,
+
+        // NEW
+        topologySignatureCount:
+            topologySignatures.length,
+
+        sharedInfrastructureCount:
+            sharedInfrastructure.length,
+
+        replicaRelationshipCount:
+            replicaRelationships.length,
+
+        aggregationPointCount:
+            aggregationPoints.length,
+
+        fanOutPointCount:
+            fanOutPoints.length,
+
+        crossUnitRelationshipCount:
+            crossUnitRelationships.length,
+
+        trafficEntryPointCount:
+            trafficEntryPoints.length,
+
+        trafficExitPointCount:
+            trafficExitPoints.length,
+
+        traversalChanged: false,
+        },
   };
 
   if (outputDir) {
