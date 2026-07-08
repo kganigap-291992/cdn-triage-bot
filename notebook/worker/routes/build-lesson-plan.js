@@ -139,6 +139,10 @@ const {
 } = require("../services/enterpriseDeploymentUnderstandingBuilder");
 
 const {
+  buildEnterpriseTopology,
+} = require("../services/enterpriseTopologyBuilder");
+
+const {
   buildHopContinuityMemory,
 } = require("../services/hopContinuityMemoryBuilder");
 
@@ -1062,6 +1066,33 @@ router.post("/:jobId", async (req, res) => {
       "[enterprise-deployment-understanding]",
       enterpriseDeployment.stats
     );
+    
+
+    const enterpriseTopology =
+      buildEnterpriseTopology({
+        architectureUnderstanding,
+        canonicalTraversalRail,
+        responsibilityUnderstanding,
+        journeyUnderstanding,
+        deploymentBoundaryNormalization,
+        deploymentUnitDiscovery,
+        enterpriseDeployment,
+        sharedNodeUnderstanding,
+        multiRailUnderstanding,
+        bidirectionalRailUnderstanding,
+        outputDir: jobDir,
+      });
+
+    const enterpriseTopologyPath =
+      path.join(
+        jobDir,
+        "enterprise-topology.json"
+      );
+
+    console.log(
+      "[enterprise-topology]",
+      enterpriseTopology.stats
+    );
 
     const architectureTeachingRegions = Array.isArray(
       lessonPlan?.lessonGraph?.architectureTeachingRegions
@@ -1294,6 +1325,14 @@ router.post("/:jobId", async (req, res) => {
           health: enterpriseDeployment.health,
           output: enterpriseDeploymentPath,
         },
+        
+        enterpriseTopology: {
+          version: enterpriseTopology.version,
+          stats: enterpriseTopology.stats,
+          health: enterpriseTopology.health,
+          output: enterpriseTopologyPath,
+        },
+
         version: regionTraversal.version,
         stats: regionTraversal.stats,
         health: regionTraversal.health,

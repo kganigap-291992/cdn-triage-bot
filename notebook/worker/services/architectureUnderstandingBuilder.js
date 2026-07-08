@@ -111,6 +111,10 @@ function lower(value) {
   return normalizeText(value).toLowerCase();
 }
 
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function normalizeKey(value) {
   return lower(value)
     .replace(/[^a-z0-9]+/g, "_")
@@ -333,14 +337,34 @@ function extractComponents(documentUnderstanding = {}) {
   );
 
 const fromEvidence = evidence
-  .map((item) => ({
-    id: null,
-    name: getEvidenceText(item),
-    source: "evidence",
-    type: item.type || "component",
-    evidenceIds: [item.id].filter(Boolean),
-    confidence: item.confidence || "medium",
-  }))
+  .flatMap((item) => {
+    const text = getEvidenceText(item);
+
+    const qualified =
+      extractDeploymentQualifiedPhrases(text);
+
+    if (qualified.length > 0) {
+      return qualified.map((name) => ({
+        id: null,
+        name,
+        source: "deployment_qualified_evidence",
+        type: item.type || "component",
+        evidenceIds: [item.id].filter(Boolean),
+        confidence: item.confidence || "medium",
+      }));
+    }
+
+    return [
+      {
+        id: null,
+        name: text,
+        source: "evidence",
+        type: item.type || "component",
+        evidenceIds: [item.id].filter(Boolean),
+        confidence: item.confidence || "medium",
+      },
+    ];
+  })
   .filter(
     (component) =>
       looksLikeArchitectureCandidate(component.name) &&
@@ -452,6 +476,26 @@ function extractTitleCasePhrases(text) {
 
       if (wordCount < 2) return false;
       if (phrase.length > 80) return false;
+
+      return true;
+    });
+}
+
+function extractDeploymentQualifiedPhrases(text = "") {
+  const value = normalizeText(text);
+
+  const matches =
+    value.match(
+      /\b[A-Z][A-Za-z0-9/+.-]*(?:\s+[A-Z][A-Za-z0-9/+.-]*){0,2}\s+(?:A|B|C|D|East|West|North|South|Primary|Secondary)\b/g
+    ) || [];
+
+  return uniqueBy(matches, lower)
+    .filter((phrase) => {
+      if (/^region\s+/i.test(phrase)) return false;
+      if (/^engine\s+/i.test(phrase)) return false;
+
+      const words = phrase.split(/\s+/);
+      if (words.length > 4) return false;
 
       return true;
     });
@@ -1470,9 +1514,9 @@ function buildArchitectureUnderstanding(
     );
 
     const components = attachBoundariesToComponents(
-    rawComponents,
-    options.architectureEvidence || {},
-    documentUnderstanding
+      rawComponents,
+      options.architectureEvidence || {},
+      documentUnderstanding
     );
 
   const spatialRelationshipCandidates =
