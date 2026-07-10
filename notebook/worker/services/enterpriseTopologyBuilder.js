@@ -461,6 +461,253 @@ function buildSharedInfrastructure({
   });
 }
 
+function buildDeploymentUnitComponentNameMap({
+  deploymentUnits = [],
+} = {}) {
+  const componentNameToUnit = new Map();
+
+  for (const unit of deploymentUnits) {
+    for (const componentName of asArray(unit.componentNames)) {
+      const key = safeLower(componentName);
+      if (!key) continue;
+
+      componentNameToUnit.set(key, {
+        deploymentUnitId: unit.deploymentUnitId,
+        deploymentUnitTitle: unit.title,
+      });
+    }
+  }
+
+  return componentNameToUnit;
+}
+
+function classifySharedInfrastructureRole(componentName = '') {
+  const value = safeLower(componentName);
+
+  if (/\b(auth|identity|iam|ckm|key|token|policy)\b/.test(value)) {
+    return 'shared_identity_or_policy';
+  }
+
+  if (/\b(redis|cache|db|database|store|storage|origin|object)\b/.test(value)) {
+    return 'shared_state_or_storage';
+  }
+
+  if (/\b(kafka|queue|broker|event|bus|stream)\b/.test(value)) {
+    return 'shared_messaging';
+  }
+
+  if (/\b(metrics|monitor|collector|observability|log|alert)\b/.test(value)) {
+    return 'shared_observability';
+  }
+
+  if (/\b(cdn|edge|dns|gateway|load balancer|waf)\b/.test(value)) {
+    return 'shared_entry_or_delivery';
+  }
+
+  return 'shared_dependency';
+}
+
+function buildGraphDrivenSharedInfrastructure({
+  relationships = [],
+  componentIndex = {},
+  deploymentUnits = [],
+} = {}) {
+  const componentNameToUnit =
+    buildDeploymentUnitComponentNameMap({
+      deploymentUnits,
+    });
+
+  const dependencyMap = new Map();
+
+  function ensureSharedCandidate(component = {}) {
+    const name = safeString(component.name);
+    if (!name) return null;
+
+    const key = safeLower(name);
+
+    if (!dependencyMap.has(key)) {
+      dependencyMap.set(key, {
+        componentId: component.id || null,
+        componentName: name,
+        connectedDeploymentUnits: new Map(),
+        incomingFromDeploymentUnits: new Map(),
+        outgoingToDeploymentUnits: new Map(),
+        evidenceRelationshipIds: [],
+        connectedComponents: [],
+      });
+    }
+
+    return dependencyMap.get(key);
+  }
+
+  for (const relationship of relationships) {
+    const fromComponent = resolveRelationshipEndpoint({
+      endpointId: relationship.from,
+      componentIndex,
+    });
+
+    const toComponent = resolveRelationshipEndpoint({
+      endpointId: relationship.to,
+      componentIndex,
+    });
+
+    const fromUnit =
+      componentNameToUnit.get(safeLower(fromComponent.name));
+
+    const toUnit =
+      componentNameToUnit.get(safeLower(toComponent.name));
+
+    if (fromUnit && !toUnit) {
+      const candidate = ensureSharedCandidate(toComponent);
+      if (!candidate) continue;
+
+      candidate.connectedDeploymentUnits.set(
+        fromUnit.deploymentUnitId,
+        fromUnit
+      );
+
+      candidate.incomingFromDeploymentUnits.set(
+        fromUnit.deploymentUnitId,
+        fromUnit
+      );
+
+      candidate.evidenceRelationshipIds.push(
+        relationship.id || null
+      );
+
+      candidate.connectedComponents.push(
+        fromComponent.name
+      );
+    }
+
+    if (!fromUnit && toUnit) {
+      const candidate = ensureSharedCandidate(fromComponent);
+      if (!candidate) continue;
+
+      candidate.connectedDeploymentUnits.set(
+        toUnit.deploymentUnitId,
+        toUnit
+      );
+
+      candidate.outgoingToDeploymentUnits.set(
+        toUnit.deploymentUnitId,
+        toUnit
+      );
+
+      candidate.evidenceRelationshipIds.push(
+        relationship.id || null
+      );
+
+      candidate.connectedComponents.push(
+        toComponent.name
+      );
+    }
+  }
+
+  return Array.from(dependencyMap.values())
+    .filter((candidate) =>
+      candidate.connectedDeploymentUnits.size >= 2
+    )
+    .map((candidate) => {
+      const connectedDeploymentUnits =
+        Array.from(candidate.connectedDeploymentUnits.values());
+
+      return {
+        nodeId:
+          candidate.componentId ||
+          `graph_shared_${slugify(candidate.componentName)}`,
+        nodeName: candidate.componentName,
+        componentId: candidate.componentId,
+        deploymentUnitId: null,
+        deploymentUnitTitle: null,
+
+        classification:
+          classifySharedInfrastructureRole(candidate.componentName),
+
+        topologyRole: 'shared_infrastructure',
+        graphBacked: true,
+        candidateOnly: true,
+
+        connectedDeploymentUnitCount:
+          connectedDeploymentUnits.length,
+
+        connectedDeploymentUnits,
+
+        incomingFromDeploymentUnitCount:
+          candidate.incomingFromDeploymentUnits.size,
+
+        outgoingToDeploymentUnitCount:
+          candidate.outgoingToDeploymentUnits.size,
+
+        connectedComponents:
+          uniq(candidate.connectedComponents),
+
+        evidenceRelationshipIds:
+          uniq(candidate.evidenceRelationshipIds),
+
+        basis:
+          'graph_connected_to_multiple_deployment_units',
+
+        borrowedIdea:
+          'opentelemetry_service_graph_istio_kiali_shared_dependency_detection',
+
+        confidence: 'medium',
+        source: 'architecture-understanding.json',
+
+        safety: {
+          candidateOnly: true,
+          doNotClaimOwnership: true,
+          doNotClaimFailover: true,
+          doNotClaimActiveActive: true,
+          doNotClaimDeploymentPattern: true,
+        },
+      };
+    });
+}
+
+function mergeSharedInfrastructure({
+  explicitSharedInfrastructure = [],
+  graphSharedInfrastructure = [],
+} = {}) {
+  const merged = new Map();
+
+  for (const item of [
+    ...explicitSharedInfrastructure,
+    ...graphSharedInfrastructure,
+  ]) {
+    const key =
+      item.componentId ||
+      safeLower(item.nodeName) ||
+      safeLower(item.componentName);
+
+    if (!key) continue;
+
+    if (!merged.has(key)) {
+      merged.set(key, item);
+      continue;
+    }
+
+    const existing = merged.get(key);
+
+    merged.set(key, {
+      ...existing,
+      ...item,
+      sources: uniq([
+        existing.source,
+        item.source,
+        ...asArray(existing.sources),
+        ...asArray(item.sources),
+      ]),
+      graphBacked:
+        Boolean(existing.graphBacked || item.graphBacked),
+      candidateOnly:
+        Boolean(existing.candidateOnly || item.candidateOnly),
+    });
+  }
+
+  return Array.from(merged.values());
+}
+
 function getTopologyRole(component = {}) {
   const text = safeLower([
     component.name,
@@ -706,11 +953,128 @@ function buildReplicaRelationshipsFromTopology({
   return relationships;
 }
 
+
+
+function buildDeploymentPatternCandidates({
+  deploymentUnits = [],
+  replicaRelationships = [],
+  sharedInfrastructure = [],
+  aggregationPoints = [],
+  fanOutPoints = [],
+  crossUnitRelationships = [],
+} = {}) {
+  const candidates = [];
+
+  const mirroredReplicas =
+    asArray(replicaRelationships).filter((relationship) =>
+      relationship.relationshipType === 'mirrored_topology_candidate'
+    );
+
+  if (deploymentUnits.length <= 1) {
+    candidates.push({
+      pattern: 'single_deployment',
+      confidence: 'medium',
+      candidateOnly: true,
+      basis: 'one_or_fewer_deployment_units_detected',
+      source: 'enterpriseTopologyBuilder',
+    });
+  }
+
+  if (mirroredReplicas.length > 0) {
+    candidates.push({
+      pattern: 'mirrored_topology',
+      confidence:
+        mirroredReplicas.some((relationship) => relationship.confidence === 'high')
+          ? 'high'
+          : 'medium',
+      candidateOnly: true,
+      basis: 'mirrored_replica_relationship_detected',
+      supportingReplicaRelationshipIds:
+        mirroredReplicas.map((relationship) => relationship.replicaRelationshipId),
+      source: 'enterpriseTopologyBuilder',
+      safety: {
+        doNotClaimActiveActive: true,
+        doNotClaimFailover: true,
+        doNotClaimDisasterRecovery: true,
+        doNotClaimReplicationTechnology: true,
+        doNotClaimTrafficRouting: true,
+      },
+    });
+  }
+
+  const graphShared =
+    asArray(sharedInfrastructure).filter((item) => item.graphBacked);
+
+  if (graphShared.length > 0) {
+    candidates.push({
+      pattern: 'shared_infrastructure_topology',
+      confidence: 'medium',
+      candidateOnly: true,
+      basis: 'graph_shared_infrastructure_detected',
+      supportingSharedInfrastructureIds:
+        graphShared.map((item) => item.nodeId),
+      source: 'enterpriseTopologyBuilder',
+    });
+  }
+
+  if (aggregationPoints.length > 0) {
+    candidates.push({
+      pattern: 'fan_in',
+      confidence: 'medium',
+      candidateOnly: true,
+      basis: 'aggregation_points_detected',
+      source: 'enterpriseTopologyBuilder',
+    });
+  }
+
+  if (fanOutPoints.length > 0) {
+    candidates.push({
+      pattern: 'fan_out',
+      confidence: 'medium',
+      candidateOnly: true,
+      basis: 'fan_out_points_detected',
+      source: 'enterpriseTopologyBuilder',
+    });
+  }
+
+  if (crossUnitRelationships.length > 0) {
+    candidates.push({
+      pattern: 'cross_unit_connected_topology',
+      confidence: 'medium',
+      candidateOnly: true,
+      basis: 'cross_unit_relationships_detected',
+      source: 'enterpriseTopologyBuilder',
+    });
+  }
+
+  if (!candidates.length && deploymentUnits.length > 1) {
+    candidates.push({
+      pattern: 'multi_deployment_unknown_relationship',
+      confidence: 'low',
+      candidateOnly: true,
+      basis: 'multiple_deployment_units_without_strong_pattern_signal',
+      source: 'enterpriseTopologyBuilder',
+    });
+  }
+
+  return candidates;
+}
+
 function buildTopologyHealth({
   deploymentUnits = [],
   componentToDeploymentUnit = {},
+  replicaRelationships = [],
+  sharedInfrastructure = [],
+  deploymentPatternCandidates = [],
   crossUnitRelationships = [],
+  enterpriseDeployment = {},
 } = {}) {
+  const deploymentUnitIds = new Set(
+    deploymentUnits
+      .map((unit) => safeString(unit.deploymentUnitId))
+      .filter(Boolean)
+  );
+
   const missingDeploymentUnitIds = deploymentUnits.filter(
     (unit) => !safeString(unit.deploymentUnitId)
   );
@@ -719,10 +1083,116 @@ function buildTopologyHealth({
     (unit) => !safeString(unit.title)
   );
 
+  const deploymentUnitsWithoutEvidence = deploymentUnits.filter(
+    (unit) =>
+      !safeString(unit.sourceBoundaryId) &&
+      asArray(unit.sourceBoundaries).length === 0 &&
+      asArray(unit.componentIds).length === 0 &&
+      asArray(unit.componentNames).length === 0
+  );
+
   const duplicateDeploymentUnitIds =
     deploymentUnits
       .map((unit) => unit.deploymentUnitId)
-      .filter((id, index, ids) => ids.indexOf(id) !== index);
+      .filter((id, index, ids) => id && ids.indexOf(id) !== index);
+
+  const replicaRelationshipsWithUnknownUnits =
+    replicaRelationships.filter((relationship) => {
+      const leftId =
+        relationship?.deploymentUnitA?.deploymentUnitId;
+
+      const rightId =
+        relationship?.deploymentUnitB?.deploymentUnitId;
+
+      return (
+        !deploymentUnitIds.has(leftId) ||
+        !deploymentUnitIds.has(rightId)
+      );
+    });
+
+  const replicaRelationshipsNotCandidateOnly =
+    replicaRelationships.filter(
+      (relationship) => relationship.candidateOnly !== true
+    );
+
+  const replicaRelationshipsWithoutEvidence =
+    replicaRelationships.filter(
+      (relationship) =>
+        !safeString(relationship.basis) ||
+        typeof relationship.similarity !== 'number'
+    );
+
+  const invalidGraphSharedInfrastructure =
+    sharedInfrastructure.filter(
+      (item) =>
+        item.graphBacked === true &&
+        Number(item.connectedDeploymentUnitCount || 0) < 2
+    );
+
+  const graphSharedInfrastructureWithoutEvidence =
+    sharedInfrastructure.filter(
+      (item) =>
+        item.graphBacked === true &&
+        asArray(item.evidenceRelationshipIds).length === 0
+    );
+
+  const patternCandidatesNotCandidateOnly =
+    deploymentPatternCandidates.filter(
+      (candidate) => candidate.candidateOnly !== true
+    );
+
+  const patternCandidatesWithoutBasis =
+    deploymentPatternCandidates.filter(
+      (candidate) =>
+        !safeString(candidate.pattern) ||
+        !safeString(candidate.basis) ||
+        !safeString(candidate.confidence)
+    );
+
+  const unsupportedOperationalPatternClaims =
+    deploymentPatternCandidates.filter((candidate) =>
+      /\b(active[_ -]?active|active[_ -]?passive|failover|disaster[_ -]?recovery|standby)\b/i.test(
+        safeString(candidate.pattern)
+      )
+    );
+
+  const crossUnitRelationshipsWithUnknownUnits =
+    crossUnitRelationships.filter(
+      (relationship) =>
+        !deploymentUnitIds.has(
+          relationship.fromDeploymentUnitId
+        ) ||
+        !deploymentUnitIds.has(
+          relationship.toDeploymentUnitId
+        )
+    );
+
+  const crossUnitSelfRelationships =
+    crossUnitRelationships.filter(
+      (relationship) =>
+        relationship.fromDeploymentUnitId &&
+        relationship.fromDeploymentUnitId ===
+          relationship.toDeploymentUnitId
+    );
+
+  const legacyDeploymentPattern =
+    safeString(enterpriseDeployment?.deploymentPattern?.pattern);
+
+  const legacyUnsafePatternWarnings =
+    /\b(active[_ -]?active|active[_ -]?passive|failover|disaster[_ -]?recovery|standby|synchronized)\b/i.test(
+      legacyDeploymentPattern
+    )
+      ? [
+          {
+            type: 'legacy_operational_pattern_claim',
+            severity: 'warning',
+            pattern: legacyDeploymentPattern,
+            preferredSource: 'enterprise-topology.json',
+            message:
+              'Legacy enterprise deployment output contains a stronger operational pattern claim. Use enterprise-topology.json deploymentPatternCandidates as the canonical safe source.',
+          },
+        ]
+      : [];
 
   const traversalChanged = false;
 
@@ -739,25 +1209,164 @@ function buildTopologyHealth({
       deploymentUnitId: unit.deploymentUnitId || null,
     })),
 
+    ...deploymentUnitsWithoutEvidence.map((unit) => ({
+      type: 'deployment_unit_without_evidence',
+      severity: 'high',
+      deploymentUnitId: unit.deploymentUnitId || null,
+      title: unit.title || null,
+    })),
+
     ...duplicateDeploymentUnitIds.map((deploymentUnitId) => ({
       type: 'duplicate_deployment_unit_id',
       severity: 'high',
       deploymentUnitId,
     })),
+
+    ...replicaRelationshipsWithUnknownUnits.map((relationship) => ({
+      type: 'replica_relationship_unknown_deployment_unit',
+      severity: 'high',
+      replicaRelationshipId:
+        relationship.replicaRelationshipId || null,
+    })),
+
+    ...replicaRelationshipsNotCandidateOnly.map((relationship) => ({
+      type: 'replica_relationship_not_candidate_only',
+      severity: 'high',
+      replicaRelationshipId:
+        relationship.replicaRelationshipId || null,
+    })),
+
+    ...replicaRelationshipsWithoutEvidence.map((relationship) => ({
+      type: 'replica_relationship_without_structural_evidence',
+      severity: 'high',
+      replicaRelationshipId:
+        relationship.replicaRelationshipId || null,
+    })),
+
+    ...invalidGraphSharedInfrastructure.map((item) => ({
+      type: 'graph_shared_infrastructure_insufficient_unit_connections',
+      severity: 'high',
+      nodeId: item.nodeId || null,
+      nodeName: item.nodeName || null,
+    })),
+
+    ...graphSharedInfrastructureWithoutEvidence.map((item) => ({
+      type: 'graph_shared_infrastructure_without_relationship_evidence',
+      severity: 'high',
+      nodeId: item.nodeId || null,
+      nodeName: item.nodeName || null,
+    })),
+
+    ...patternCandidatesNotCandidateOnly.map((candidate) => ({
+      type: 'deployment_pattern_not_candidate_only',
+      severity: 'high',
+      pattern: candidate.pattern || null,
+    })),
+
+    ...patternCandidatesWithoutBasis.map((candidate) => ({
+      type: 'deployment_pattern_missing_basis',
+      severity: 'high',
+      pattern: candidate.pattern || null,
+    })),
+
+    ...unsupportedOperationalPatternClaims.map((candidate) => ({
+      type: 'unsupported_operational_pattern_claim',
+      severity: 'high',
+      pattern: candidate.pattern || null,
+    })),
+
+    ...crossUnitRelationshipsWithUnknownUnits.map((relationship) => ({
+      type: 'cross_unit_relationship_unknown_deployment_unit',
+      severity: 'high',
+      relationshipId: relationship.relationshipId || null,
+    })),
+
+    ...crossUnitSelfRelationships.map((relationship) => ({
+      type: 'cross_unit_relationship_same_deployment_unit',
+      severity: 'high',
+      relationshipId: relationship.relationshipId || null,
+      deploymentUnitId:
+        relationship.fromDeploymentUnitId || null,
+    })),
+  ];
+
+  const warnings = [
+    ...legacyUnsafePatternWarnings,
   ];
 
   return {
-    version: 'enterprise-topology-health-v1',
-    valid: violations.length === 0 && traversalChanged === false,
+    version: 'enterprise-topology-health-v2',
+
+    valid:
+      violations.length === 0 &&
+      traversalChanged === false,
+
     violationCount: violations.length,
-    missingDeploymentUnitIdCount: missingDeploymentUnitIds.length,
-    missingDeploymentUnitTitleCount: missingDeploymentUnitTitles.length,
-    duplicateDeploymentUnitIdCount: duplicateDeploymentUnitIds.length,
+    warningCount: warnings.length,
+
+    missingDeploymentUnitIdCount:
+      missingDeploymentUnitIds.length,
+
+    missingDeploymentUnitTitleCount:
+      missingDeploymentUnitTitles.length,
+
+    deploymentUnitWithoutEvidenceCount:
+      deploymentUnitsWithoutEvidence.length,
+
+    duplicateDeploymentUnitIdCount:
+      duplicateDeploymentUnitIds.length,
+
+    replicaRelationshipUnknownUnitCount:
+      replicaRelationshipsWithUnknownUnits.length,
+
+    replicaRelationshipNotCandidateOnlyCount:
+      replicaRelationshipsNotCandidateOnly.length,
+
+    replicaRelationshipWithoutEvidenceCount:
+      replicaRelationshipsWithoutEvidence.length,
+
+    invalidGraphSharedInfrastructureCount:
+      invalidGraphSharedInfrastructure.length,
+
+    graphSharedInfrastructureWithoutEvidenceCount:
+      graphSharedInfrastructureWithoutEvidence.length,
+
+    deploymentPatternNotCandidateOnlyCount:
+      patternCandidatesNotCandidateOnly.length,
+
+    deploymentPatternMissingBasisCount:
+      patternCandidatesWithoutBasis.length,
+
+    unsupportedOperationalPatternClaimCount:
+      unsupportedOperationalPatternClaims.length,
+
+    crossUnitRelationshipUnknownUnitCount:
+      crossUnitRelationshipsWithUnknownUnits.length,
+
+    crossUnitSelfRelationshipCount:
+      crossUnitSelfRelationships.length,
+
     componentToDeploymentUnitCount:
       Object.keys(componentToDeploymentUnit).length,
-    crossUnitRelationshipCount: crossUnitRelationships.length,
+
+    replicaRelationshipCount:
+      replicaRelationships.length,
+
+    sharedInfrastructureCount:
+      sharedInfrastructure.length,
+
+    deploymentPatternCandidateCount:
+      deploymentPatternCandidates.length,
+
+    crossUnitRelationshipCount:
+      crossUnitRelationships.length,
+
+    canonicalPatternSource:
+      'enterprise-topology.json',
+
     traversalChanged,
     violations,
+    warnings,
   };
 }
 
@@ -786,11 +1395,24 @@ function buildEnterpriseTopology({
       deploymentUnits,
     });
 
-  const sharedInfrastructure =
+  const explicitSharedInfrastructure =
     buildSharedInfrastructure({
       sharedNodeUnderstanding,
       componentToDeploymentUnit,
       componentIndex,
+    });
+
+  const graphSharedInfrastructure =
+    buildGraphDrivenSharedInfrastructure({
+      relationships,
+      componentIndex,
+      deploymentUnits,
+    });
+
+  const sharedInfrastructure =
+    mergeSharedInfrastructure({
+      explicitSharedInfrastructure,
+      graphSharedInfrastructure,
     });
 
   const topologySignatures =
@@ -840,11 +1462,25 @@ function buildEnterpriseTopology({
       componentToDeploymentUnit,
     });
 
+  const deploymentPatternCandidates =
+    buildDeploymentPatternCandidates({
+      deploymentUnits,
+      replicaRelationships,
+      sharedInfrastructure,
+      aggregationPoints,
+      fanOutPoints,
+      crossUnitRelationships,
+    });
+
   const health =
     buildTopologyHealth({
       deploymentUnits,
       componentToDeploymentUnit,
+      replicaRelationships,
+      sharedInfrastructure,
+      deploymentPatternCandidates,
       crossUnitRelationships,
+      enterpriseDeployment,
     });
 
   const payload = {
@@ -879,6 +1515,9 @@ function buildEnterpriseTopology({
     topologySignatures,
     sharedInfrastructure,
     replicaRelationships,
+
+    deploymentPatternCandidates,
+
     aggregationPoints,
     fanOutPoints,
     crossUnitRelationships,
@@ -921,10 +1560,19 @@ function buildEnterpriseTopology({
             topologySignatures.length,
 
         sharedInfrastructureCount:
-            sharedInfrastructure.length,
+          sharedInfrastructure.length,
+
+        explicitSharedInfrastructureCount:
+          explicitSharedInfrastructure.length,
+
+        graphSharedInfrastructureCount:
+          graphSharedInfrastructure.length,
 
         replicaRelationshipCount:
             replicaRelationships.length,
+
+        deploymentPatternCandidateCount:
+            deploymentPatternCandidates.length,
 
         aggregationPointCount:
             aggregationPoints.length,
