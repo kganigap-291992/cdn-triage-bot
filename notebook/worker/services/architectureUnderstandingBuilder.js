@@ -215,13 +215,221 @@ function computeComponentStructuralScore(component, evidenceItems = []) {
   return Math.max(0, Number((totalWeight - labelPenalty - longValuePenalty).toFixed(2)));
 }
 
+const DOCUMENT_ONLY_COMPONENT_LABELS = new Set([
+  "all",
+  "architecture",
+  "brown",
+  "component",
+  "content delivery",
+  "control",
+  "cross-region",
+  "dashed",
+  "deployment",
+  "designed",
+  "explicit",
+  "expected",
+  "fan-in",
+  "fan-out",
+  "instance",
+  "journey",
+  "learning",
+  "membership",
+  "mirrored",
+  "observability",
+  "pattern",
+  "primary",
+  "recommendation",
+  "region",
+  "regional",
+  "rendering",
+  "replica detection",
+  "shared",
+  "solid",
+  "state",
+  "synchronization",
+  "validation",
+]);
+
+
+function evaluateComponentCandidate({
+  component = {},
+  evidenceItems = [],
+} = {}) {
+  const name = normalizeText(component.name);
+  const wordCount = name.split(/\s+/).filter(Boolean).length;
+  const sourceType = lower(component.type);
+  const source = lower(component.source);
+
+  let score = 0;
+  const signals = [];
+
+  if (!name) {
+    return {
+      eligible: false,
+      score: 0,
+      signals: ["missing_name"],
+    };
+  }
+
+  /*
+   * Strong structural signals.
+   */
+  if (
+    source.includes("diagram") ||
+    sourceType.includes("diagram") ||
+    sourceType.includes("figure") ||
+    sourceType.includes("node")
+  ) {
+    score += 3;
+    signals.push("diagram_or_visual_structure");
+  }
+
+  if (
+    sourceType.includes("component") ||
+    sourceType.includes("service") ||
+    sourceType.includes("system")
+  ) {
+    score += 2;
+    signals.push("component_source_type");
+  }
+
+  /*
+   * Enterprise/cloud/video architecture vocabulary.
+   * This is a positive signal, not an allowlist.
+   */
+  if (
+    /\b(service|gateway|api|load balancer|waf|firewall|cdn|edge|origin|cache|redis|database|db|storage|bucket|queue|broker|kafka|event bus|stream|worker|processor|controller|cluster|node|pod|container|function|lambda|router|mesh|proxy|identity|auth|policy|metrics|logging|telemetry|alerting|packager|transcoder|manifest|playback|session|client|player)\b/i.test(
+      name
+    )
+  ) {
+    score += 2;
+    signals.push("enterprise_architecture_term");
+  }
+
+  /*
+   * Explicit deployment identity.
+   */
+  if (
+    /\b(region|zone|availability zone|az|site|cell|data center|datacenter)\s+[a-z0-9-]+\b/i.test(
+      name
+    )
+  ) {
+    score += 2;
+    signals.push("explicit_deployment_identity");
+  }
+
+  /*
+   * Relationship/flow evidence.
+   */
+  if (
+    evidenceItems.some((item) =>
+      /→|->|=>|⇒|⟶/.test(getEvidenceText(item))
+    )
+  ) {
+    score += 2;
+    signals.push("directional_flow_evidence");
+  }
+
+  if (
+    evidenceItems.some((item) =>
+      /\b(sends?|routes?|calls?|writes?|reads?|publishes?|connects?|forwards?|delivers?|receives?)\b/i.test(
+        getEvidenceText(item)
+      )
+    )
+  ) {
+    score += 1;
+    signals.push("flow_language_evidence");
+  }
+
+  if (evidenceItems.length >= 2) {
+    score += 1;
+    signals.push("repeated_evidence");
+  }
+
+  if (wordCount <= 6 && !/[.!?]$/.test(name)) {
+    score += 1;
+    signals.push("compact_label");
+  }
+
+  /*
+   * Negative document signals.
+   */
+  if (
+    sourceType === "section" ||
+    sourceType === "heading" ||
+    sourceType === "line" ||
+    sourceType === "fallback_text"
+  ) {
+    score -= 1;
+    signals.push("document_text_penalty");
+  }
+
+  if (/[.!?]$/.test(name) && wordCount >= 3) {
+    score -= 3;
+    signals.push("sentence_penalty");
+  }
+
+  if (
+    /^(solid|dashed|dotted|colored|brown|blue|red|green)\s+(arrows?|lines?|connectors?)\b/i.test(
+      name
+    )
+  ) {
+    score -= 4;
+    signals.push("diagram_legend_penalty");
+  }
+
+  if (
+    sourceType === "line" &&
+    /^[a-z][a-z _-]*\s*\/\s*[a-z][a-z _-]*$/.test(name)
+  ) {
+    score -= 4;
+    signals.push("lowercase_role_label_penalty");
+  }
+
+  if (
+    /^(why|expected|purpose|overview|notes?|legend|rules?|goals?|example|examples|component pattern|design goals?)\b/i.test(
+      name
+    )
+  ) {
+    score -= 2;
+    signals.push("document_heading_penalty");
+  }
+
+  if (
+    /\b(conformance|regression|candidate-only|health\.valid|traversal|rendering|narration|learning engine|synthetic and generic)\b/i.test(
+      name
+    )
+  ) {
+    score -= 2;
+    signals.push("test_or_documentation_penalty");
+  }
+
+  if (
+    /^(fan[_ -]?in|fan[_ -]?out|mirrored_topology|shared_infrastructure_topology|cross_unit_connected_topology|external_interface)$/i.test(
+      name
+    )
+  ) {
+    score -= 3;
+    signals.push("topology_classification_not_component");
+  }
+
+  return {
+    eligible: score >= 2,
+    score,
+    signals,
+  };
+}
+
 function isLikelyJunkArchitectureCandidate(component) {
   const name = normalizeText(component.name);
+  const normalizedName = lower(name);
+  const wordCount = name.split(/\s+/).filter(Boolean).length;
 
   if (!name) return true;
-  if (/[.!?]$/.test(name) && name.split(/\s+/).length > 4) return true;
-  if (/\/issues\/\d+/i.test(name)) return true;
-  if (/https?:\/\//i.test(name)) return true;
+
+  if (DOCUMENT_ONLY_COMPONENT_LABELS.has(normalizedName)) {
+    return true;
+  }
 
   if (
     /^(item|type|value|values|format|source|content|application|only|team|production|qa|fqdn|id)$/i.test(
@@ -231,8 +439,62 @@ function isLikelyJunkArchitectureCandidate(component) {
     return true;
   }
 
-  if (/^(new|old)\s+/i.test(name) && name.split(/\s+/).length <= 5) return true;
-  if (name.length > 42 && /[0-9_-]{6,}/.test(name)) return true;
+  if (
+    /^(applies|builds|chooses|controls|creates|distributes|indexes|performs|produces|receives|runs|selects|stores|aggregates)$/i.test(
+      name
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(expected|regression targets?|safety expectations?|design goals?|demo safety rules?|instance rule)\b/i.test(
+      name
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(candidate-only|high-severity|health\.valid|traversal unchanged|do not claim)\b/i.test(
+      name
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /[.!?]$/.test(name) &&
+    wordCount > 3
+  ) {
+    return true;
+  }
+
+  if (
+    wordCount > 7 &&
+    !/\b(service|gateway|cluster|database|cache|store|storage|queue|broker|worker|processor|controller|engine|client|server)\b/i.test(
+      name
+    )
+  ) {
+    return true;
+  }
+
+  if (/\/issues\/\d+/i.test(name)) return true;
+  if (/https?:\/\//i.test(name)) return true;
+
+  if (
+    /^(new|old)\s+/i.test(name) &&
+    wordCount <= 5
+  ) {
+    return true;
+  }
+
+  if (
+    name.length > 42 &&
+    /[0-9_-]{6,}/.test(name)
+  ) {
+    return true;
+  }
 
   return false;
 }
@@ -371,11 +633,32 @@ const fromEvidence = evidence
       !isArtifactOnlyLabel(component.name)
   );
 
-  return uniqueBy([...fromEntities, ...fromEvidence], (component) => lower(component.name))
+  return uniqueBy(
+    [...fromEntities, ...fromEvidence],
+    (component) => lower(component.name)
+  )
+    .filter(
+      (component) =>
+        !isLikelyJunkArchitectureCandidate(component)
+    )
     .map((component, index) => {
-      const componentEvidence = getEvidenceForComponent(component, evidence);
-      const role = classifyArchitectureRole(component, componentEvidence);
-      const structuralScore = computeComponentStructuralScore(component, componentEvidence);
+      const componentEvidence =
+        getEvidenceForComponent(component, evidence);
+
+      const role =
+        classifyArchitectureRole(component, componentEvidence);
+
+      const structuralScore =
+        computeComponentStructuralScore(
+          component,
+          componentEvidence
+        );
+
+      const componentAdmission =
+        evaluateComponentCandidate({
+          component,
+          evidenceItems: componentEvidence,
+        });
 
       return {
         id: component.id || `arch_component_${index + 1}`,
@@ -385,8 +668,13 @@ const fromEvidence = evidence
         graphEligible:
           isGraphEligibleRole(role) &&
           structuralScore >= 0.5 &&
+          componentAdmission.eligible &&
           !isLikelyJunkArchitectureCandidate(component),
         structuralScore,
+        componentAdmission: {
+          score: componentAdmission.score,
+          signals: componentAdmission.signals,
+        },
         source: component.source,
         evidenceIds: component.evidenceIds || [],
         confidence: component.confidence || "medium",
@@ -523,7 +811,16 @@ function extractExternalActorFromSequenceText(text) {
 }
 
 function buildFallbackSequenceEntities(text) {
-  const phrases = extractTitleCasePhrases(text);
+  const phrases =
+    extractTitleCasePhrases(text)
+      .filter((phrase) =>
+        looksLikeArchitectureCandidate(phrase)
+      )
+      .filter((phrase) =>
+        !isLikelyJunkArchitectureCandidate({
+          name: phrase,
+        })
+      );
 
   if (phrases.length > 0) {
     return phrases.map((phrase) => ({
@@ -538,16 +835,22 @@ function buildFallbackSequenceEntities(text) {
   return [
     {
       component: {
-        id: `sequence_entity_${normalizeKey(text).slice(0, 40)}`,
+        id: `sequence_reference_${normalizeKey(text).slice(0, 40)}`,
         name: text,
-        role: "document_sequence_entity",
+        role: "document_sequence_reference",
       },
     },
   ];
 }
 
-function extractSequencePromotedComponents(explicitSequences = [], existingComponents = []) {
-  const existingIds = new Set(existingComponents.map((component) => component.id));
+function extractSequencePromotedComponents(
+  explicitSequences = [],
+  existingComponents = []
+) {
+  const existingIds = new Set(
+    existingComponents.map((component) => component.id)
+  );
+
   const promoted = [];
 
   for (const sequence of explicitSequences) {
@@ -555,21 +858,67 @@ function extractSequencePromotedComponents(explicitSequences = [], existingCompo
       for (const entity of item.entities || []) {
         if (!entity?.id || !entity?.name) continue;
         if (existingIds.has(entity.id)) continue;
+
         if (
-        entity.role !== "document_sequence_entity" &&
-        entity.role !== "external_actor"
-        ) continue;
+          entity.role !== "document_sequence_entity" &&
+          entity.role !== "external_actor"
+        ) {
+          continue;
+        }
+
+        if (
+          entity.role === "document_sequence_entity" &&
+          (
+            !looksLikeArchitectureCandidate(entity.name) ||
+            isLikelyJunkArchitectureCandidate({
+              name: entity.name,
+            })
+          )
+        ) {
+          continue;
+        }
+
+        const componentAdmission =
+          evaluateComponentCandidate({
+            component: {
+              name: entity.name,
+              type:
+                entity.role === "external_actor"
+                  ? "external_actor"
+                  : "sequence_entity",
+              source: "explicit_sequence",
+            },
+            evidenceItems: [],
+          });
+
+        if (
+          entity.role === "document_sequence_entity" &&
+          !componentAdmission.eligible
+        ) {
+          continue;
+        }
 
         promoted.push({
-        id: entity.id,
-        name: entity.name,
-        type: entity.role === "external_actor" ? "external_actor" : "sequence_entity",
-        role: entity.role === "external_actor" ? "external_actor" : "process_step",
+          id: entity.id,
+          name: entity.name,
+          type:
+            entity.role === "external_actor"
+              ? "external_actor"
+              : "sequence_entity",
+          role:
+            entity.role === "external_actor"
+              ? "external_actor"
+              : "process_step",
           graphEligible: true,
           structuralScore: 1,
+          componentAdmission: {
+            score: componentAdmission.score,
+            signals: componentAdmission.signals,
+          },
           source: "explicit_sequence",
           evidenceIds: [item.evidenceId].filter(Boolean),
-          confidence: sequence.confidence || "deterministic",
+          confidence:
+            sequence.confidence || "deterministic",
         });
 
         existingIds.add(entity.id);
