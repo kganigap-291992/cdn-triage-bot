@@ -342,9 +342,22 @@ function normalizeBoundaryCandidate(candidate = {}) {
     keep: true,
     boundaryId:
       `deployment_boundary_${slugify(normalizedLabel)}`,
+
     normalizedLabel,
+
+    rawBoundaryLabel:
+      safeString(candidate.rawBoundaryLabel) ||
+      rawText,
+
+    canonicalBoundaryType:
+      safeString(candidate.canonicalBoundaryType) ||
+      candidate.boundaryType ||
+      'unknown',
+
     deploymentDifferentiator:
+      safeString(candidate.deploymentDifferentiator) ||
       extractDeploymentDifferentiator(normalizedLabel),
+
     rawText,
     boundaryType: candidate.boundaryType || 'unknown',
     confidence:
@@ -369,16 +382,35 @@ function collectBoundaryCandidatesFromComponents(
     );
 
   return components.flatMap((component) =>
-    asArray(component.boundaries).map((boundary) => ({
-      rawText: safeString(boundary.rawText || boundary.label),
-      boundaryType: safeString(boundary.boundaryType),
-      confidence: boundary.confidence || 'unknown',
-      source: boundary.source || 'component_boundary',
-      sceneIndexes: asArray(boundary.sceneIndexes),
-      teachingUnitIds: asArray(boundary.teachingUnitIds),
-      candidateSource:
-        'architectureUnderstanding.deterministicGraph.components.boundaries',
-    }))
+    asArray(component.boundaries).map((boundary) => {
+      const rawBoundaryLabel = safeString(
+        boundary.rawBoundaryLabel ||
+        boundary.rawText ||
+        boundary.label
+      );
+
+      return {
+        rawText: rawBoundaryLabel,
+        rawBoundaryLabel,
+
+        canonicalBoundaryType: safeString(
+          boundary.canonicalBoundaryType ||
+          boundary.boundaryType
+        ),
+
+        deploymentDifferentiator: safeString(
+          boundary.deploymentDifferentiator
+        ),
+
+        boundaryType: safeString(boundary.boundaryType),
+        confidence: boundary.confidence || 'unknown',
+        source: boundary.source || 'component_boundary',
+        sceneIndexes: asArray(boundary.sceneIndexes),
+        teachingUnitIds: asArray(boundary.teachingUnitIds),
+        candidateSource:
+          'architectureUnderstanding.deterministicGraph.components.boundaries',
+      };
+    })
   );
 }
 

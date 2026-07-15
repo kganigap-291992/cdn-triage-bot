@@ -413,6 +413,26 @@ function evaluateComponentCandidate({
     signals.push("topology_classification_not_component");
   }
 
+  
+  if (
+    /^(pdf|document|page|slide|figure|diagram|chapter|section)$/i.test(
+      name
+    )
+  ) {
+    score -= 6;
+    signals.push("document_artifact_identifier_penalty");
+  }
+
+  
+  if (
+    /^bug[-_ ]?\d+(?:[a-z0-9._-]*)?$/i.test(
+      name
+    )
+  ) {
+    score -= 6;
+    signals.push("roadmap_bug_identifier_penalty");
+  }
+
   return {
     eligible: score >= 2,
     score,
@@ -2105,6 +2125,35 @@ function componentEvidenceMentionsBoundary(component = {}, boundary = {}, eviden
   return false;
 }
 
+
+function extractExplicitDeploymentIdentityBoundary(component = {}) {
+  const name = normalizeText(component.name);
+
+  if (!name) return null;
+
+  const match = name.match(
+    /\b(region|availability zone|az|zone|site|cell|data center|datacenter)\s+([a-z0-9-]+)\b/i
+  );
+
+  if (!match) return null;
+
+  const deploymentScope = lower(match[1]);
+  const deploymentDifferentiator =
+    normalizeText(match[2]);
+
+  return {
+    rawText: name,
+    rawBoundaryLabel: name,
+    canonicalBoundaryType: "region_group",
+    boundaryType: "region_group",
+    deploymentScope,
+    deploymentDifferentiator,
+    confidence: "high",
+    source: "explicit_component_deployment_identity",
+    evidenceIds: asArray(component.evidenceIds),
+  };
+}
+
 function attachBoundariesToComponents(
   components = [],
   architectureEvidence = {},
@@ -2115,34 +2164,57 @@ function attachBoundariesToComponents(
     architectureEvidence.boundaryEvidence || []
   );
 
-  if (!boundaries.length) {
-    return components.map((component) => ({
-      ...component,
-      boundaries: [],
-    }));
-  }
-
   return components.map((component) => {
     const matchedBoundaries = boundaries
       .filter((boundary) => {
         return (
           boundaryMentionsComponent(boundary, component) ||
-          componentEvidenceMentionsBoundary(component, boundary, evidence)
+          componentEvidenceMentionsBoundary(
+            component,
+            boundary,
+            evidence
+          )
         );
       })
       .map((boundary) => ({
         rawText: boundary.rawText,
+
+        rawBoundaryLabel:
+          boundary.rawBoundaryLabel ||
+          boundary.rawText,
+
+        canonicalBoundaryType:
+          boundary.canonicalBoundaryType ||
+          boundary.boundaryType,
+
+        deploymentDifferentiator:
+          boundary.deploymentDifferentiator ||
+          null,
+
         boundaryType: boundary.boundaryType,
         confidence: boundary.confidence,
         source: boundary.source,
         evidenceIds: boundary.evidenceIds || [],
       }));
 
+    const explicitDeploymentIdentity =
+      extractExplicitDeploymentIdentityBoundary(component);
+
+    const combinedBoundaries = [
+      ...matchedBoundaries,
+      ...(explicitDeploymentIdentity
+        ? [explicitDeploymentIdentity]
+        : []),
+    ];
+
     return {
       ...component,
       boundaries: uniqueBy(
-        matchedBoundaries,
-        (item) => `${item.boundaryType}:${lower(item.rawText)}`
+        combinedBoundaries,
+        (item) =>
+          `${item.boundaryType}:${lower(
+            item.rawBoundaryLabel || item.rawText
+          )}`
       ),
     };
   });

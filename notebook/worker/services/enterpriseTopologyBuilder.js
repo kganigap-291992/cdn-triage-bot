@@ -424,41 +424,250 @@ function buildTrafficExitPoints({
     });
 }
 
+function isRegionalOrDeploymentScopedName(name = '') {
+  const value = safeLower(name);
+
+  return (
+    /\b(region|zone|az|site|cell|data center|datacenter)\s+(a|b|c|d|1|2|3|4|east|west|north|south|primary|secondary)\b/i.test(
+      value
+    ) ||
+    /\b(regional)\b/i.test(value)
+  );
+}
+
+function isTraversalConceptOrDocumentNoise({
+  node = {},
+  component = null,
+} = {}) {
+  const nodeId = safeLower(node.nodeId);
+
+  const name = safeString(
+    component?.name ||
+    node.nodeName
+  );
+
+  const wordCount =
+    name.split(/\s+/).filter(Boolean).length;
+
+  if (!name) {
+    return true;
+  }
+
+  /*
+   * Internal synthetic traversal nodes.
+   */
+  if (
+    nodeId.startsWith("sequence_reference_") ||
+    nodeId.startsWith("sequence_entity_all_")
+  ) {
+    return true;
+  }
+
+  /*
+   * Long prose sentences are documentation,
+   * not architecture components.
+   */
+  if (
+    /[.!?]$/.test(name) &&
+    wordCount >= 4
+  ) {
+    return true;
+  }
+
+  /*
+   * Documentation / validation concepts.
+   */
+  if (
+    /\b(pattern\s+classification|validator|health\.valid|learning\s+engine|content\s+delivery|state\s+synchronization|authentication|cross-unit|fan-out|fan-in)\b/i.test(
+      name
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function hasExplicitSharedInfrastructureSignal({
+  node = {},
+  component = {},
+} = {}) {
+  const value = safeLower(
+    [
+      component.name,
+      component.role,
+      component.architectureRole,
+      component.type,
+      node.nodeName,
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
+
+  /*
+   * Explicit placement/scope signals.
+   */
+  if (/\b(global|shared|central|common)\b/i.test(value)) {
+    return true;
+  }
+
+  /*
+   * Enterprise infrastructure categories.
+   * These are positive signals, not an allowlist.
+   */
+  return /\b(dns|cdn|gateway|identity|iam|auth|ckm|key|policy|config|redis|cache|database|db|store|storage|origin|object|kafka|queue|broker|event\s+bus|telemetry|logging|metrics|monitoring|observability|collector|alert)\b/i.test(
+    value
+  );
+}
+
+function isEnterpriseSharedInfrastructureCandidate({
+  node = {},
+  component = null,
+  deploymentUnit = null,
+} = {}) {
+  const reasons = [];
+
+  if (!component) {
+    reasons.push('missing_architecture_component');
+  }
+
+  if (deploymentUnit) {
+    reasons.push('assigned_to_single_deployment_unit');
+  }
+
+  if (
+    isRegionalOrDeploymentScopedName(
+      component?.name || node.nodeName
+    )
+  ) {
+    reasons.push('regional_or_deployment_scoped');
+  }
+
+  if (
+    isTraversalConceptOrDocumentNoise({
+      node,
+      component,
+    })
+  ) {
+    reasons.push('traversal_concept_or_document_noise');
+  }
+
+  if (
+    !hasExplicitSharedInfrastructureSignal({
+      node,
+      component: component || {},
+    })
+  ) {
+    reasons.push('missing_shared_infrastructure_signal');
+  }
+
+  return {
+    eligible: reasons.length === 0,
+    reasons,
+  };
+}
+
 function buildSharedInfrastructure({
   sharedNodeUnderstanding = {},
   componentToDeploymentUnit = {},
   componentIndex = {},
 } = {}) {
-  return asArray(sharedNodeUnderstanding.nodes).map((node) => {
-    const component =
-      componentIndex.byId.get(node.nodeId) ||
-      componentIndex.byName.get(safeLower(node.nodeName)) ||
-      null;
+  return asArray(sharedNodeUnderstanding.nodes)
+    .map((node) => {
+      const component =
+        componentIndex.byId.get(node.nodeId) ||
+        componentIndex.byName.get(
+          safeLower(node.nodeName)
+        ) ||
+        null;
 
-    const deploymentUnit = resolveComponentDeploymentUnit({
-      componentId: component?.id || node.nodeId,
-      componentName: component?.name || node.nodeName,
-      componentToDeploymentUnit,
+      const deploymentUnit =
+        resolveComponentDeploymentUnit({
+          componentId:
+            component?.id || node.nodeId,
+          componentName:
+            component?.name || node.nodeName,
+          componentToDeploymentUnit,
+        });
+
+      const admission =
+        isEnterpriseSharedInfrastructureCandidate({
+          node,
+          component,
+          deploymentUnit,
+        });
+
+      return {
+        node,
+        component,
+        deploymentUnit,
+        admission,
+      };
+    })
+    .filter((candidate) =>
+      candidate.admission.eligible
+    )
+    .map((candidate) => {
+      const {
+        node,
+        component,
+        deploymentUnit,
+        admission,
+      } = candidate;
+
+      return {
+        nodeId: node.nodeId,
+        nodeName:
+          component?.name || node.nodeName,
+        componentId: component?.id || null,
+
+        deploymentUnitId:
+          deploymentUnit?.deploymentUnitId || null,
+
+        deploymentUnitTitle:
+          deploymentUnit?.deploymentUnitTitle || null,
+
+        classification: node.classification,
+
+        railRoleClassification:
+          node.railRoleClassification || null,
+
+        participatingLaneTypes:
+          asArray(node.participatingLaneTypes),
+
+        membershipCount:
+          node.membershipCount || 0,
+
+        laneCount:
+          node.laneCount || 0,
+
+        roleCount:
+          node.roleCount || 0,
+
+        topologyRole:
+          'shared_infrastructure_candidate',
+
+        explicitSharedEvidence: {
+          traversalShared: true,
+          outsideDeploymentUnits:
+            !deploymentUnit,
+          architectureComponentResolved:
+            Boolean(component),
+          admissionReasons:
+            admission.reasons,
+        },
+
+        candidateOnly: true,
+        graphBacked: false,
+
+        borrowedIdea:
+          'c4_deployment_node_scope_and_observability_service_map_shared_dependency',
+
+        confidence: 'medium',
+        source:
+          'shared-node-understanding.json',
+      };
     });
-
-    return {
-      nodeId: node.nodeId,
-      nodeName: node.nodeName,
-      componentId: component?.id || null,
-      deploymentUnitId: deploymentUnit?.deploymentUnitId || null,
-      deploymentUnitTitle: deploymentUnit?.deploymentUnitTitle || null,
-      classification: node.classification,
-      railRoleClassification: node.railRoleClassification || null,
-      participatingLaneTypes: asArray(node.participatingLaneTypes),
-      membershipCount: node.membershipCount || 0,
-      laneCount: node.laneCount || 0,
-      roleCount: node.roleCount || 0,
-      topologyRole: 'shared_infrastructure',
-      borrowedIdea: 'observability_service_map_shared_dependency',
-      confidence: 'medium',
-      source: 'shared-node-understanding.json',
-    };
-  });
 }
 
 function buildDeploymentUnitComponentNameMap({
@@ -1012,7 +1221,9 @@ function buildDeploymentPatternCandidates({
       candidateOnly: true,
       basis: 'graph_shared_infrastructure_detected',
       supportingSharedInfrastructureIds:
-        graphShared.map((item) => item.nodeId),
+        graphShared
+          .map((item) => item.sharedInfrastructureId)
+          .filter(Boolean),
       source: 'enterpriseTopologyBuilder',
     });
   }
@@ -1378,7 +1589,11 @@ function buildEnterpriseTopology({
   deploymentBoundaryNormalization = {},
   deploymentUnitDiscovery = {},
   enterpriseDeployment = {},
+
   sharedNodeUnderstanding = {},
+
+  enterpriseSharedInfrastructure = {},   // <-- NEW
+
   multiRailUnderstanding = {},
   bidirectionalRailUnderstanding = {},
   outputDir = null,
@@ -1395,25 +1610,19 @@ function buildEnterpriseTopology({
       deploymentUnits,
     });
 
-  const explicitSharedInfrastructure =
-    buildSharedInfrastructure({
-      sharedNodeUnderstanding,
-      componentToDeploymentUnit,
-      componentIndex,
-    });
 
-  const graphSharedInfrastructure =
-    buildGraphDrivenSharedInfrastructure({
-      relationships,
-      componentIndex,
-      deploymentUnits,
-    });
+const explicitSharedInfrastructure =
+  asArray(
+    enterpriseSharedInfrastructure.sharedInfrastructure
+  );
 
-  const sharedInfrastructure =
-    mergeSharedInfrastructure({
-      explicitSharedInfrastructure,
-      graphSharedInfrastructure,
-    });
+const graphSharedInfrastructure = [];
+
+const sharedInfrastructure =
+  mergeSharedInfrastructure({
+    explicitSharedInfrastructure,
+    graphSharedInfrastructure,
+  });
 
   const topologySignatures =
     buildDeploymentUnitTopologySignatures({
@@ -1541,6 +1750,10 @@ function buildEnterpriseTopology({
         enterpriseDeployment.version || null,
       sharedNodeUnderstanding:
         sharedNodeUnderstanding.version || null,
+
+      enterpriseSharedInfrastructure:
+        enterpriseSharedInfrastructure.version || null,
+
       multiRailUnderstanding:
         multiRailUnderstanding.version || null,
       bidirectionalRailUnderstanding:

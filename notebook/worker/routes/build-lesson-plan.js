@@ -134,6 +134,11 @@ const {
   buildDeploymentUnitDiscovery,
 } = require("../services/deploymentUnitDiscoveryBuilder");
 
+
+const {
+  buildEnterpriseSharedInfrastructure,
+} = require("../services/enterpriseSharedInfrastructureBuilder");
+
 const {
   buildEnterpriseDeploymentUnderstanding,
 } = require("../services/enterpriseDeploymentUnderstandingBuilder");
@@ -1041,7 +1046,30 @@ router.post("/:jobId", async (req, res) => {
     );
 
     /* ------------------------------------------------------- */
-    /* 17F.3 Enterprise Deployment Understanding               */
+    /* 17F.3 Enterprise Shared Infrastructure Discovery        */
+    /* ------------------------------------------------------- */
+
+    const enterpriseSharedInfrastructure =
+      buildEnterpriseSharedInfrastructure({
+        architectureUnderstanding,
+        deploymentUnitDiscovery,
+        sharedNodeUnderstanding,
+        outputDir: jobDir,
+      });
+
+    const enterpriseSharedInfrastructurePath =
+      path.join(
+        jobDir,
+        "enterprise-shared-infrastructure.json"
+      );
+
+    console.log(
+      "[enterprise-shared-infrastructure]",
+      enterpriseSharedInfrastructure.stats
+    );
+
+    /* ------------------------------------------------------- */
+    /* 17F.4 Enterprise Deployment Understanding               */
     /* ------------------------------------------------------- */
 
     const enterpriseDeployment =
@@ -1078,6 +1106,7 @@ router.post("/:jobId", async (req, res) => {
         deploymentUnitDiscovery,
         enterpriseDeployment,
         sharedNodeUnderstanding,
+        enterpriseSharedInfrastructure,
         multiRailUnderstanding,
         bidirectionalRailUnderstanding,
         outputDir: jobDir,
@@ -1317,6 +1346,13 @@ router.post("/:jobId", async (req, res) => {
           version: deploymentUnitDiscovery.version,
           stats: deploymentUnitDiscovery.stats,
           output: deploymentUnitDiscoveryPath,
+        },
+
+        enterpriseSharedInfrastructure: {
+          version: enterpriseSharedInfrastructure.version,
+          stats: enterpriseSharedInfrastructure.stats,
+          health: enterpriseSharedInfrastructure.health,
+          output: enterpriseSharedInfrastructurePath,
         },
 
         enterpriseDeployment: {
