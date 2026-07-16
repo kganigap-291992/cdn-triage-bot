@@ -354,6 +354,60 @@ function hasInfrastructureSignal(
     .test(value);
 }
 
+function hasInfrastructureSignal(
+  component = {}
+) {
+  const value = safeLower([
+    component.name,
+    component.architectureRole,
+    component.role,
+    component.type,
+  ].filter(Boolean).join(' '));
+
+  /*
+   * Positive signal only.
+   * This is not used as a hard allowlist by itself.
+   */
+  return /\b(dns|cdn|gateway|load balancer|proxy|identity|iam|auth|authentication|authorization|ckm|key|policy|config|configuration|redis|cache|database|db|store|storage|origin|object storage|bucket|kafka|queue|broker|event bus|stream|telemetry|logging|metrics|monitoring|observability|collector|alerting|mesh|router|routing)\b/i
+    .test(value);
+}
+
+/*
+ * Bounded graph reachability is weaker than direct cross-unit
+ * connectivity, so only infrastructure-like runtime components
+ * may be promoted by the bounded graph rule.
+ *
+ * This prevents clients, application workloads, UIs, jobs, and
+ * generic interfaces from becoming shared infrastructure merely
+ * because they can reach multiple deployment units.
+ */
+function isEligibleBoundedSharedInfrastructure(
+  component = {}
+) {
+  const value = safeLower([
+    component.name,
+    component.architectureRole,
+    component.role,
+    component.type,
+  ].filter(Boolean).join(' '));
+
+  const positiveInfrastructureCategory =
+    /\b(dns|cdn|edge|load balancer|proxy|identity|iam|oidc|auth|authentication|authorization|ckm|key|policy|config|configuration|secrets?|vault|redis|cache|database|db|postgres|store|storage|object storage|bucket|feature store|kafka|queue|broker|event bus|schema registry|registry|telemetry|logging|metrics|monitoring|observability|collector|alerting|mesh|router|routing|catalog)\b/i.test(
+      value
+    );
+
+  const applicationOrEndpointCategory =
+    /\b(client|consumer|user|partner client|web|ui|frontend|api pod|gateway pod|public ingress|worker|processor|orchestrator|training jobs?|batch jobs?|application|app|route|routes)\b/i.test(
+      value
+    );
+
+  return (
+    positiveInfrastructureCategory &&
+    !applicationOrEndpointCategory
+  );
+}
+
+
 function buildRelationshipAdjacency(
   architectureUnderstanding = {}
 ) {
@@ -447,7 +501,7 @@ function buildRelationshipAdjacency(
   };
 }
 
-function analyzeComponentConnectivity({
+function analyzeDirectComponentConnectivity({
   component = {},
   componentIndex = {},
   deploymentIndexes = {},
@@ -547,10 +601,365 @@ function analyzeComponentConnectivity({
   };
 }
 
+function escapeRegExp(value = '') {
+  return safeString(value)
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+
+function findDeploymentLocalVariants({
+  component = {},
+  componentIndex = {},
+  deploymentIndexes = {},
+} = {}) {
+  const baseName = safeString(component.name);
+
+  if (!baseName) {
+    return {
+      replicatedFamily: false,
+      familyName: null,
+      variantCount: 0,
+      deploymentUnitCount: 0,
+      variants: [],
+      deploymentUnits: [],
+    };
+  }
+
+  const escapedBaseName =
+    escapeRegExp(baseName);
+
+  const variantPattern =
+    new RegExp(
+      `^${escapedBaseName}\\s+(?:` +
+      `[a-z]|` +
+      `[0-9]+|` +
+      `east|west|north|south|` +
+      `primary|secondary|` +
+      `active|standby|` +
+      `replica[-_ ]?[a-z0-9]+|` +
+      `instance[-_ ]?[a-z0-9]+|` +
+      `az[-_ ]?[a-z0-9]+|` +
+      `zone[-_ ]?[a-z0-9]+|` +
+      `region[-_ ]?[a-z0-9]+` +
+      `)$`,
+      'i'
+    );
+
+  const variants = [];
+  const deploymentUnits = new Map();
+
+  for (const candidate of asArray(
+    componentIndex.components
+  )) {
+    if (
+      !candidate?.id ||
+      candidate.id === component.id
+    ) {
+      continue;
+    }
+
+    const candidateName =
+      safeString(candidate.name);
+
+    if (
+      !candidateName ||
+      !variantPattern.test(candidateName)
+    ) {
+      continue;
+    }
+
+    const deploymentUnit =
+      resolveComponentDeploymentUnit({
+        component: candidate,
+        deploymentIndexes,
+      });
+
+    if (!deploymentUnit?.deploymentUnitId) {
+      continue;
+    }
+
+    variants.push({
+      componentId: candidate.id,
+      componentName: candidate.name,
+      deploymentUnitId:
+        deploymentUnit.deploymentUnitId,
+      deploymentUnitTitle:
+        deploymentUnit.deploymentUnitTitle,
+    });
+
+    deploymentUnits.set(
+      deploymentUnit.deploymentUnitId,
+      deploymentUnit
+    );
+  }
+
+  const uniqueVariants =
+    uniqueObjectsBy(
+      variants,
+      (item) => item.componentId
+    );
+
+  return {
+    replicatedFamily:
+      uniqueVariants.length >= 2 &&
+      deploymentUnits.size >= 2,
+
+    familyName: baseName,
+
+    variantCount:
+      uniqueVariants.length,
+
+    deploymentUnitCount:
+      deploymentUnits.size,
+
+    variants:
+      uniqueVariants,
+
+    deploymentUnits:
+      Array.from(deploymentUnits.values()),
+  };
+}
+
+
+/*
+ * Discover deployment units reachable through a bounded graph walk.
+ *
+ * Safety rules:
+ * - stop a branch as soon as a deployment-local component is reached
+ * - never traverse through a deployment unit to another unit
+ * - never revisit a component
+ * - never exceed maxDepth
+ * - retain evidence paths for explainability
+ */
+function analyzeReachableDeploymentUnitConnectivity({
+  component = {},
+  componentIndex = {},
+  deploymentIndexes = {},
+  relationshipAdjacency = {},
+  maxDepth = 3,
+} = {}) {
+  if (!component?.id) {
+    return {
+      maxDepth,
+      reachableDeploymentUnitCount: 0,
+      reachableDeploymentUnits: [],
+      reachablePaths: [],
+      evidenceRelationshipIds: [],
+      evidenceIds: [],
+    };
+  }
+
+  const queue = [
+    {
+      componentId: component.id,
+      depth: 0,
+      pathComponentIds: [component.id],
+      pathComponentNames: [component.name],
+      pathRelationshipIds: [],
+      pathEvidenceIds: [],
+    },
+  ];
+
+  const visitedDepthByComponentId =
+    new Map([
+      [component.id, 0],
+    ]);
+
+  const deploymentUnits = new Map();
+  const reachablePaths = [];
+  const evidenceRelationshipIds = [];
+  const evidenceIds = [];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+
+    if (
+      !current ||
+      current.depth >= maxDepth
+    ) {
+      continue;
+    }
+
+    const edges = asArray(
+      relationshipAdjacency
+        .adjacencyByComponentId
+        ?.get(current.componentId)
+    );
+
+    for (const edge of edges) {
+      const neighbor =
+        componentIndex.byId.get(
+          edge.neighborId
+        ) || null;
+
+      if (!neighbor?.id) {
+        continue;
+      }
+
+      const nextDepth =
+        current.depth + 1;
+
+      const relationshipId =
+        edge.relationship
+          ?.relationshipId || null;
+
+      const relationshipEvidenceIds =
+        asArray(
+          edge.relationship?.evidenceIds
+        );
+
+      const nextRelationshipIds =
+        uniq([
+          ...current.pathRelationshipIds,
+          relationshipId,
+        ]);
+
+      const nextEvidenceIds =
+        uniq([
+          ...current.pathEvidenceIds,
+          ...relationshipEvidenceIds,
+        ]);
+
+      const neighborDeploymentUnit =
+        resolveComponentDeploymentUnit({
+          component: neighbor,
+          deploymentIndexes,
+        });
+
+      /*
+       * A deployment-local component is a terminal for this branch.
+       * Record its unit, but do not traverse through it.
+       */
+      if (
+        neighborDeploymentUnit
+          ?.deploymentUnitId
+      ) {
+        deploymentUnits.set(
+          neighborDeploymentUnit
+            .deploymentUnitId,
+          neighborDeploymentUnit
+        );
+
+        reachablePaths.push({
+          deploymentUnitId:
+            neighborDeploymentUnit
+              .deploymentUnitId,
+
+          deploymentUnitTitle:
+            neighborDeploymentUnit
+              .deploymentUnitTitle,
+
+          depth: nextDepth,
+
+          terminalComponentId:
+            neighbor.id,
+
+          terminalComponentName:
+            neighbor.name,
+
+          componentPath: [
+            ...current.pathComponentIds,
+            neighbor.id,
+          ],
+
+          componentNamePath: [
+            ...current.pathComponentNames,
+            neighbor.name,
+          ],
+
+          relationshipIds:
+            nextRelationshipIds,
+
+          evidenceIds:
+            nextEvidenceIds,
+        });
+
+        evidenceRelationshipIds.push(
+          ...nextRelationshipIds
+        );
+
+        evidenceIds.push(
+          ...nextEvidenceIds
+        );
+
+        continue;
+      }
+
+      const previouslyVisitedDepth =
+        visitedDepthByComponentId.get(
+          neighbor.id
+        );
+
+      if (
+        previouslyVisitedDepth !== undefined &&
+        previouslyVisitedDepth <= nextDepth
+      ) {
+        continue;
+      }
+
+      visitedDepthByComponentId.set(
+        neighbor.id,
+        nextDepth
+      );
+
+      queue.push({
+        componentId: neighbor.id,
+        depth: nextDepth,
+
+        pathComponentIds: [
+          ...current.pathComponentIds,
+          neighbor.id,
+        ],
+
+        pathComponentNames: [
+          ...current.pathComponentNames,
+          neighbor.name,
+        ],
+
+        pathRelationshipIds:
+          nextRelationshipIds,
+
+        pathEvidenceIds:
+          nextEvidenceIds,
+      });
+    }
+  }
+
+  const uniquePaths =
+    uniqueObjectsBy(
+      reachablePaths,
+      (item) =>
+        `${item.deploymentUnitId}:` +
+        `${item.terminalComponentId}:` +
+        `${item.relationshipIds.join('|')}`
+    );
+
+  return {
+    maxDepth,
+
+    reachableDeploymentUnitCount:
+      deploymentUnits.size,
+
+    reachableDeploymentUnits:
+      Array.from(deploymentUnits.values()),
+
+    reachablePaths:
+      uniquePaths,
+
+    evidenceRelationshipIds:
+      uniq(evidenceRelationshipIds),
+
+    evidenceIds:
+      uniq(evidenceIds),
+  };
+}
+
 function classifyEnterpriseSharing({
   component = {},
   ownDeploymentUnit = null,
-  connectivity = {},
+  directConnectivity = {},
+  reachableConnectivity = {},
+  replicatedFamily = {},
   traversalNode = null,
 } = {}) {
   const reasons = [];
@@ -596,7 +1005,7 @@ function classifyEnterpriseSharing({
   }
 
   if (
-    isDocumentOrTraversalConcept({
+  isDocumentOrTraversalConcept({
       component,
       traversalNode,
     })
@@ -612,9 +1021,34 @@ function classifyEnterpriseSharing({
     };
   }
 
+  /*
+  * A generic family node is not a shared singleton when concrete
+  * deployment-local variants exist across multiple units.
+  */
+  if (replicatedFamily.replicatedFamily) {
+    return {
+      eligible: false,
+
+      classification:
+        'replicated_component_family',
+
+      confidence: 'high',
+
+      reasons: [
+        'deployment_local_variants_detected',
+        'generic_family_node_not_shared_singleton',
+        'variants_span_multiple_deployment_units',
+      ],
+    };
+  }
+
   const connectedUnitCount =
-    connectivity
+    directConnectivity
       .connectedDeploymentUnitCount || 0;
+
+  const reachableUnitCount =
+    reachableConnectivity
+      .reachableDeploymentUnitCount || 0;
 
   const explicitScope =
     hasExplicitGlobalOrSharedScope(
@@ -657,6 +1091,7 @@ function classifyEnterpriseSharing({
 
     return {
       eligible: true,
+
       classification:
         'graph_shared_across_deployment_units',
 
@@ -670,8 +1105,63 @@ function classifyEnterpriseSharing({
     };
   }
 
+  const boundedInfrastructureEligible =
+    isEligibleBoundedSharedInfrastructure(
+      component
+    );
+
+  if (
+    reachableUnitCount >= 2 &&
+    boundedInfrastructureEligible
+  ) {
+    reasons.push(
+      'bounded_graph_reaches_multiple_deployment_units'
+    );
+
+    reasons.push(
+      'bounded_graph_infrastructure_semantic_gate_passed'
+    );
+
+    reasons.push(
+      `bounded_graph_max_depth_${reachableConnectivity.maxDepth}`
+    );
+
+    if (explicitScope) {
+      reasons.push(
+        'explicit_global_or_shared_scope'
+      );
+    }
+
+    if (infrastructureSignal) {
+      reasons.push(
+        'infrastructure_semantic_signal'
+      );
+    }
+
+    if (traversalShared) {
+      reasons.push(
+        'also_shared_across_traversal'
+      );
+    }
+
+    return {
+      eligible: true,
+
+      classification:
+        'bounded_graph_shared_across_deployment_units',
+
+      confidence:
+        explicitScope &&
+        infrastructureSignal
+          ? 'high'
+          : 'medium',
+
+      reasons,
+    };
+  }
+
   /*
-   * Conservative explicit candidate:
+  * Conservative explicit candidate:
    * explicit global/shared scope plus actual graph
    * connection to at least one deployment unit and
    * independent traversal-sharing evidence.
@@ -710,9 +1200,14 @@ function classifyEnterpriseSharing({
     confidence: 'low',
 
     reasons: [
-      connectedUnitCount === 0
+      connectedUnitCount === 0 &&
+      reachableUnitCount === 0
         ? 'no_graph_connection_to_deployment_unit'
-        : 'connected_to_only_one_deployment_unit',
+        : 'connected_or_reachable_to_only_one_deployment_unit',
+
+      !boundedInfrastructureEligible
+        ? 'not_eligible_for_bounded_shared_infrastructure'
+        : null,
 
       !explicitScope
         ? 'no_explicit_global_or_shared_scope'
@@ -732,7 +1227,8 @@ function classifyEnterpriseSharing({
 function buildCandidate({
   component = {},
   ownDeploymentUnit = null,
-  connectivity = {},
+  directConnectivity = {},
+  reachableConnectivity = {},
   traversalNode = null,
   enterpriseSharing = {},
 } = {}) {
@@ -764,30 +1260,71 @@ function buildCandidate({
     enterpriseSharedClassification:
       enterpriseSharing.classification,
 
-    connectedDeploymentUnitCount:
-      connectivity
+    directConnectedDeploymentUnitCount:
+      directConnectivity
         .connectedDeploymentUnitCount,
 
+    directConnectedDeploymentUnits:
+      directConnectivity
+        .connectedDeploymentUnits,
+
+    reachableDeploymentUnitCount:
+      reachableConnectivity
+        .reachableDeploymentUnitCount,
+
+    reachableDeploymentUnits:
+      reachableConnectivity
+        .reachableDeploymentUnits,
+
+    reachableMaxDepth:
+      reachableConnectivity.maxDepth,
+
+    reachablePaths:
+      reachableConnectivity
+        .reachablePaths,
+
+    connectedDeploymentUnitCount:
+      directConnectivity
+        .connectedDeploymentUnitCount >= 2
+        ? directConnectivity
+            .connectedDeploymentUnitCount
+        : reachableConnectivity
+            .reachableDeploymentUnitCount,
+
     connectedDeploymentUnits:
-      connectivity.connectedDeploymentUnits,
+      directConnectivity
+        .connectedDeploymentUnitCount >= 2
+        ? directConnectivity
+            .connectedDeploymentUnits
+        : reachableConnectivity
+            .reachableDeploymentUnits,
 
     connectedComponents:
-      connectivity.connectedComponents,
+      directConnectivity
+        .connectedComponents,
 
     incomingRelationshipCount:
-      connectivity
+      directConnectivity
         .incomingRelationshipCount,
 
     outgoingRelationshipCount:
-      connectivity
+      directConnectivity
         .outgoingRelationshipCount,
 
     adjacencyCount:
-      connectivity.adjacencyCount,
+      directConnectivity.adjacencyCount,
+
+    graphEvidenceMode:
+      directConnectivity
+        .connectedDeploymentUnitCount >= 2
+        ? 'direct_connectivity'
+        : 'bounded_reachability',
 
     graphBacked:
-      connectivity
-        .connectedDeploymentUnitCount >= 2,
+      directConnectivity
+        .connectedDeploymentUnitCount >= 2 ||
+      reachableConnectivity
+        .reachableDeploymentUnitCount >= 2,
 
     explicitScopeBacked:
       hasExplicitGlobalOrSharedScope(
@@ -806,11 +1343,26 @@ function buildCandidate({
       ),
 
     evidenceRelationshipIds:
-      connectivity
-        .evidenceRelationshipIds,
+      uniq([
+        ...asArray(
+          directConnectivity
+            .evidenceRelationshipIds
+        ),
+        ...asArray(
+          reachableConnectivity
+            .evidenceRelationshipIds
+        ),
+      ]),
 
     evidenceIds:
-      connectivity.evidenceIds,
+      uniq([
+        ...asArray(
+          directConnectivity.evidenceIds
+        ),
+        ...asArray(
+          reachableConnectivity.evidenceIds
+        ),
+      ]),
 
     basis:
       enterpriseSharing.reasons,
@@ -1021,19 +1573,37 @@ function buildEnterpriseSharedInfrastructure({
         traversalSharedIndex,
       });
 
-    const connectivity =
-      analyzeComponentConnectivity({
+    const directConnectivity =
+      analyzeDirectComponentConnectivity({
         component,
         componentIndex,
         deploymentIndexes,
         relationshipAdjacency,
       });
 
+    const reachableConnectivity =
+      analyzeReachableDeploymentUnitConnectivity({
+        component,
+        componentIndex,
+        deploymentIndexes,
+        relationshipAdjacency,
+        maxDepth: 3,
+      });
+
+    const replicatedFamily =
+      findDeploymentLocalVariants({
+        component,
+        componentIndex,
+        deploymentIndexes,
+      });
+
     const enterpriseSharing =
       classifyEnterpriseSharing({
         component,
         ownDeploymentUnit,
-        connectivity,
+        directConnectivity,
+        reachableConnectivity,
+        replicatedFamily,
         traversalNode,
       });
 
@@ -1042,7 +1612,8 @@ function buildEnterpriseSharedInfrastructure({
         buildCandidate({
           component,
           ownDeploymentUnit,
-          connectivity,
+          directConnectivity,
+          reachableConnectivity,
           traversalNode,
           enterpriseSharing,
         })
@@ -1062,13 +1633,35 @@ function buildEnterpriseSharedInfrastructure({
         ownDeploymentUnit
           ?.deploymentUnitId || null,
 
-      connectedDeploymentUnitCount:
-        connectivity
+      directConnectedDeploymentUnitCount:
+        directConnectivity
           .connectedDeploymentUnitCount,
 
-      connectedDeploymentUnits:
-        connectivity
+      directConnectedDeploymentUnits:
+        directConnectivity
           .connectedDeploymentUnits,
+
+      reachableDeploymentUnitCount:
+        reachableConnectivity
+          .reachableDeploymentUnitCount,
+
+      reachableDeploymentUnits:
+        reachableConnectivity
+          .reachableDeploymentUnits,
+
+      replicatedFamily:
+        Boolean(
+          replicatedFamily.replicatedFamily
+        ),
+
+      replicatedFamilyName:
+        replicatedFamily.familyName,
+
+      replicatedVariantCount:
+        replicatedFamily.variantCount,
+
+      replicatedVariants:
+        replicatedFamily.variants,
 
       traversalShared:
         Boolean(traversalNode?.shared),
@@ -1167,14 +1760,37 @@ function buildEnterpriseSharedInfrastructure({
         sharedInfrastructure.filter(
           (item) =>
             item.enterpriseSharedClassification ===
-            'graph_shared_across_deployment_units'
+              'graph_shared_across_deployment_units' ||
+            item.enterpriseSharedClassification ===
+              'bounded_graph_shared_across_deployment_units'
+        ).length,
+
+      directGraphSharedInfrastructureCount:
+        sharedInfrastructure.filter(
+          (item) =>
+            item.enterpriseSharedClassification ===
+              'graph_shared_across_deployment_units'
+        ).length,
+
+      boundedGraphSharedInfrastructureCount:
+        sharedInfrastructure.filter(
+          (item) =>
+            item.enterpriseSharedClassification ===
+              'bounded_graph_shared_across_deployment_units'
+        ).length,
+
+      replicatedComponentFamilyRejectedCount:
+        rejectedCandidates.filter(
+          (item) =>
+            item.classification ===
+              'replicated_component_family'
         ).length,
 
       explicitGlobalSharedCandidateCount:
         sharedInfrastructure.filter(
           (item) =>
             item.enterpriseSharedClassification ===
-            'explicit_global_shared_candidate'
+              'explicit_global_shared_candidate'
         ).length,
 
       rejectedCandidateCount:

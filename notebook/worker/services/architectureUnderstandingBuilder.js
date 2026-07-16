@@ -115,6 +115,14 @@ function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function normalizeComponentIdentity(value) {
+  return lower(
+    normalizeText(value)
+      .replace(/^[•◦▪‣*-]\s+/, "")
+      .trim()
+  );
+}
+
 function normalizeKey(value) {
   return lower(value)
     .replace(/[^a-z0-9]+/g, "_")
@@ -143,10 +151,47 @@ const ARTIFACT_NODE_BLOCKLIST = new Set([
   "jwt",
 ]);
 
+
 function isArtifactOnlyLabel(value) {
   const compact = lower(value).replace(/[^a-z0-9.]/g, "");
   return ARTIFACT_NODE_BLOCKLIST.has(compact);
 }
+
+function isVariantFamilySummaryLabel(value) {
+  const text = normalizeText(value)
+    .replace(/^[•◦▪‣*-]\s+/, "")
+    .trim();
+
+  if (!text) {
+    return false;
+  }
+
+  const slashSeparatedVariants =
+    /\b(?:[A-Z0-9-]+)(?:\s*\/\s*[A-Z0-9-]+){1,}\b/i.test(text);
+
+  const commaSeparatedVariants =
+    /\b(?:[A-Z0-9-]+)(?:\s*,\s*[A-Z0-9-]+){2,}\b/i.test(text);
+
+  const explicitRangeLanguage =
+    /\b(all|each|across|instances?|variants?|replicas?|zones?|regions?)\b/i.test(
+      text
+    );
+
+  const architectureFamilyTerm =
+    /\b(service|controller|gateway|pod|worker|processor|cache|database|replica|origin|cluster|node|client|application|workload|instance)\b/i.test(
+      text
+    );
+
+  return (
+    architectureFamilyTerm &&
+    (
+      slashSeparatedVariants ||
+      commaSeparatedVariants ||
+      explicitRangeLanguage
+    )
+  );
+}
+
 
 function uniqueBy(items, keyFn) {
   const seen = new Set();
@@ -161,6 +206,166 @@ function uniqueBy(items, keyFn) {
 
   return out;
 }
+
+
+function isLikelyConcatenatedSiblingLabel(value) {
+  const name = normalizeText(value);
+
+  if (!name) {
+    return false;
+  }
+
+  /*
+   * Known-valid compound architecture patterns.
+   * These represent one component, not adjacent sibling labels.
+   */
+  const validCompoundPattern =
+    /\b(api gateway(?: pod)?|ingress controller|query service|metadata service|origin service|kafka cluster|schema registry|object storage|feature store|identity(?:\s*\/\s*oidc)?|config(?:\s*\/\s*gitops)?|telemetry stack|data catalog|secrets manager|backup vault|batch orchestrator|ml training jobs?)\b/i;
+
+  if (validCompoundPattern.test(name)) {
+    /*
+     * A valid phrase embedded inside a substantially longer label may
+     * still be a concatenation, so only accept close matches.
+     */
+    const normalizedValidMatch =
+      name.match(validCompoundPattern)?.[0] || "";
+
+    const extraWordCount =
+      name
+        .replace(normalizedValidMatch, "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .length;
+
+    if (extraWordCount <= 1) {
+      return false;
+    }
+  }
+
+  const componentHeadMatches =
+    name.match(
+      /\b(service|controller|gateway|pod|worker|processor|cache|database|replica|origin|cluster|registry|storage|store|identity|telemetry|stack|catalog|manager|vault|orchestrator|batch|jobs?|gitops)\b/gi
+    ) || [];
+
+  if (componentHeadMatches.length < 2) {
+    return false;
+  }
+
+  const hasRelationshipLanguage =
+    /\b(and|to|via|through|uses?|calls?|routes?|sends?|writes?|reads?|feeds?|with|for)\b/i.test(
+      name
+    );
+
+  const hasStructuralSeparator =
+    /[→>;|,]/.test(name);
+
+  return (
+    !hasRelationshipLanguage &&
+    !hasStructuralSeparator
+  );
+}
+
+function suppressContainedComponentFragments(components = []) {
+  const genericFragmentTerms = new Set([
+    "api",
+    "app",
+    "application",
+    "auth",
+    "authorization",
+    "cache",
+    "client",
+    "cluster",
+    "controller",
+    "database",
+    "door",
+    "gateway",
+    "identity",
+    "ingress",
+    "node",
+    "object",
+    "oidc",
+    "origin",
+    "pod",
+    "processor",
+    "query",
+    "registry",
+    "service",
+    "storage",
+    "telemetry",
+    "worker",
+  ]);
+
+  return asArray(components).filter((candidate) => {
+    const candidateName = normalizeText(candidate.name);
+    const candidateLower = lower(candidateName);
+
+    if (!candidateLower) {
+      return false;
+    }
+
+    const candidateEvidenceIds = new Set(
+      asArray(candidate.evidenceIds)
+    );
+
+    return !asArray(components).some((other) => {
+      if (!other || other === candidate) {
+        return false;
+      }
+
+      const otherName = normalizeText(other.name);
+      const otherLower = lower(otherName);
+
+      if (
+        !otherLower ||
+        otherLower === candidateLower ||
+        otherName.length <= candidateName.length
+      ) {
+        return false;
+      }
+
+      if (isLikelyConcatenatedSiblingLabel(otherName)) {
+        return false;
+      }
+
+      if (isLikelyJunkArchitectureCandidate(other)) {
+        return false;
+      }
+
+      const escapedCandidate =
+        candidateLower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+      const containedAsWholeSpan =
+        new RegExp(
+          `(^|[^a-z0-9])${escapedCandidate}([^a-z0-9]|$)`,
+          "i"
+        ).test(otherLower);
+
+      if (!containedAsWholeSpan) {
+        return false;
+      }
+
+      const sharedEvidenceCount =
+        asArray(other.evidenceIds).filter((evidenceId) =>
+          candidateEvidenceIds.has(evidenceId)
+        ).length;
+
+      if (sharedEvidenceCount === 0) {
+        return false;
+      }
+
+      const candidateWordCount =
+        candidateName.split(/\s+/).filter(Boolean).length;
+
+      const genericOrShort =
+        candidateWordCount === 1 ||
+        genericFragmentTerms.has(candidateLower);
+
+      return genericOrShort;
+    });
+  });
+}
+
 
 function getEvidenceText(evidence) {
   return normalizeText(evidence?.text || evidence?.content || evidence?.label || "");
@@ -447,6 +652,14 @@ function isLikelyJunkArchitectureCandidate(component) {
 
   if (!name) return true;
 
+  if (isVariantFamilySummaryLabel(name)) {
+    return true;
+  }
+
+  if (isLikelyConcatenatedSiblingLabel(name)) {
+    return true;
+  }
+
   if (DOCUMENT_ONLY_COMPONENT_LABELS.has(normalizedName)) {
     return true;
   }
@@ -541,9 +754,34 @@ function classifyArchitectureRole(component, evidenceItems = []) {
   const name = normalizeText(component.name);
   const text = lower(name);
   const sourceType = lower(component.type);
-  const evidenceText = lower(evidenceItems.map(getEvidenceText).join(" "));
+  const evidenceText = lower(
+    evidenceItems.map(getEvidenceText).join(" ")
+  );
 
-  if (/^[A-Z][a-z]+ [A-Z][a-z]+/.test(name)) return "person_or_team";
+  const architectureComponentName =
+    /\b(service|server|gateway|proxy|controller|worker|processor|engine|component|module|platform|application|app|cluster|node|pod|layer|system|storage|store|database|cache|registry|telemetry|origin|ingress|queue|broker|catalog|manager|vault|orchestrator)\b/i.test(
+      name
+    );
+
+  const explicitPersonOrTeamSource =
+    /\b(person|people|team|owner|organization|group|role)\b/i.test(
+      sourceType
+    );
+
+  const explicitPersonOrTeamEvidence =
+    /\b(owned by|maintained by|operated by|team responsible|engineering team|platform team|support team|owner)\b/i.test(
+      evidenceText
+    );
+
+  if (
+    !architectureComponentName &&
+    (
+      explicitPersonOrTeamSource ||
+      explicitPersonOrTeamEvidence
+    )
+  ) {
+    return "person_or_team";
+  }
 
   const documentSectionSignals =
     /\b(overview|notes|possible|future|resource|wiki|ownership|configuration|details|expectations|table of contents|agenda|introduction|summary|examples|appendix|version|history)\b/i;
@@ -653,14 +891,31 @@ const fromEvidence = evidence
       !isArtifactOnlyLabel(component.name)
   );
 
-  return uniqueBy(
+  const uniqueCandidates = uniqueBy(
     [...fromEntities, ...fromEvidence],
-    (component) => lower(component.name)
-  )
-    .filter(
+    (component) =>
+      normalizeComponentIdentity(
+        component.name
+      )
+  );
+
+  /*
+  * Remove documentation summaries and malformed candidates before
+  * longest-span resolution. Junk candidates must never suppress
+  * valid canonical entities.
+  */
+  const eligibleCandidates =
+    uniqueCandidates.filter(
       (component) =>
         !isLikelyJunkArchitectureCandidate(component)
-    )
+    );
+
+  const resolvedCandidates =
+    suppressContainedComponentFragments(
+      eligibleCandidates
+    );
+
+  return resolvedCandidates
     .map((component, index) => {
       const componentEvidence =
         getEvidenceForComponent(component, evidence);
