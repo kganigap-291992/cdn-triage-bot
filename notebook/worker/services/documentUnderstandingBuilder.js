@@ -70,6 +70,65 @@ function isStructuralContainer(value = {}) {
   );
 }
 
+function extractProperTerms(value) {
+  const text = normalizeText(value);
+
+  if (!text) {
+    return [];
+  }
+
+  return (
+    text.match(
+      /\b[A-Z][a-zA-Z0-9_-]{2,}(?:\s+[A-Z][a-zA-Z0-9_-]{2,}){0,3}\b/g
+    ) || []
+  )
+    .map(normalizeText)
+    .filter(Boolean);
+}
+
+function buildEntityIneligibleNameSet(
+  evidence = []
+) {
+  const names = new Set();
+
+  evidence
+    .filter(
+      (ev) => !isEligibleFor(ev, "entity")
+    )
+    .forEach((ev) => {
+      const fullText =
+        normalizeText(ev.text).toLowerCase();
+
+      if (fullText) {
+        names.add(fullText);
+      }
+
+      extractProperTerms(ev.text).forEach(
+        (term) => {
+          const normalizedTerm =
+            normalizeText(term);
+
+          /*
+          * Derived aliases must resemble structural phrases.
+          * Single-word terms such as OIDC, HTTPS, SFTP and GET
+          * may be legitimate architecture entities.
+          *
+          * Exact full structural text is already protected above.
+          */
+          if (!normalizedTerm.includes(" ")) {
+            return;
+          }
+
+          names.add(
+            normalizedTerm.toLowerCase()
+          );
+        }
+      );
+    });
+
+  return names;
+}
+
 function getPageNumber(value, fallback = 1) {
   const page = Number(value);
   return Number.isFinite(page) && page > 0 ? page : fallback;
@@ -269,7 +328,7 @@ function collectFallbackEvidence(extractedData = {}) {
 }
 
 function mergeEvidence(...groups) {
-  const seen = new Set();
+  const indexByKey = new Map();
   const merged = [];
 
   groups.flat().forEach((item) => {
@@ -277,8 +336,38 @@ function mergeEvidence(...groups) {
     if (!text) return;
 
     const key = `${item.page || "unknown"}:${text.toLowerCase()}`;
-    if (seen.has(key)) return;
-    seen.add(key);
+    const existingIndex = indexByKey.get(key);
+
+    if (existingIndex !== undefined) {
+      const existing = merged[existingIndex];
+
+      merged[existingIndex] = {
+        ...existing,
+
+        headingKind:
+          item.headingKind ||
+          existing.headingKind ||
+          null,
+
+        architectureContainer:
+          existing.architectureContainer === true ||
+          item.architectureContainer === true,
+
+        structuralRole:
+          item.structuralRole ||
+          existing.structuralRole ||
+          null,
+
+        eligibility: {
+          ...(existing.eligibility || {}),
+          ...(item.eligibility || {}),
+        },
+      };
+
+      return;
+    }
+
+    indexByKey.set(key, merged.length);
 
     merged.push({
       ...item,
@@ -414,6 +503,19 @@ function extractStructureEntities(documentStructure = {}) {
 }
 
 function extractTextMentionEntities(evidence = []) {
+  const entityIneligibleNames =
+  buildEntityIneligibleNameSet(
+    evidence
+  );
+
+  const audit = {
+    entityIneligibleNameCount:
+      entityIneligibleNames.size,
+
+    ineligibleEvidenceSkippedCount: 0,
+    structuralTextMentionSuppressedCount: 0,
+  };
+
   const stopWords = new Set([
     "The",
     "This",
@@ -448,6 +550,11 @@ function extractTextMentionEntities(evidence = []) {
   const entities = [];
 
   evidence.forEach((ev) => {
+    if (!isEligibleFor(ev, "entity")) {
+      audit.ineligibleEvidenceSkippedCount += 1;
+      return;
+    }
+
     const text = ev.text;
 
     const commandMatches =
@@ -476,14 +583,29 @@ function extractTextMentionEntities(evidence = []) {
     });
 
     const properTerms =
-      text.match(/\b[A-Z][a-zA-Z0-9_-]{2,}(?:\s+[A-Z][a-zA-Z0-9_-]{2,}){0,3}\b/g) ||
-      [];
+      extractProperTerms(text);
 
     properTerms.forEach((term) => {
-      if (stopWords.has(term)) return;
+      const normalizedTerm = normalizeText(term);
+
+      if (!normalizedTerm) return;
+      if (stopWords.has(normalizedTerm)) return;
+
+      /*
+      * Prevent structural headings from being rediscovered through another
+      * evidence source or from a different page.
+      */
+      if (
+        entityIneligibleNames.has(
+          normalizedTerm.toLowerCase()
+        )
+      ) {
+        audit.structuralTextMentionSuppressedCount += 1;
+        return;
+      }
 
       entities.push({
-        name: term,
+        name: normalizedTerm,
         type: "named_thing",
         page: ev.page,
         source: "text_mentions",
@@ -492,7 +614,10 @@ function extractTextMentionEntities(evidence = []) {
     });
   });
 
-  return entities;
+  return {
+      entities,
+      audit,
+    };
 }
 
 function mergeEntities(rawEntities = [], evidence = []) {
@@ -772,13 +897,32 @@ function buildDocumentUnderstanding({
     collectFallbackEvidence(extractedData)
   );
 
+  const textMentionExtraction =
+    extractTextMentionEntities(evidence);
+
   const rawEntities = [
     ...extractConceptEntities(conceptsData),
     ...extractStructureEntities(documentStructure),
-    ...extractTextMentionEntities(evidence),
+    ...textMentionExtraction.entities,
   ];
 
   const entities = mergeEntities(rawEntities, evidence);
+
+  const entityIneligibleNames =
+    buildEntityIneligibleNameSet(
+      evidence
+    );
+
+  const ineligibleEntityLeaks = entities.filter(
+    (entity) =>
+      entityIneligibleNames.has(
+        normalizeText(entity.name).toLowerCase()
+      )
+  );
+
+  const ineligibleEntityLeakCount =
+    ineligibleEntityLeaks.length;
+
   const relationships = extractRelationships(entities, evidence);
   const sequences = extractSequences(evidence, documentStructure);
 
@@ -808,6 +952,34 @@ function buildDocumentUnderstanding({
       )
     ).length;
 
+      const structuralEligibilityHealth = {
+      version: "structural-eligibility-health-v1",
+
+      valid:
+        structuralEntityLeakCount === 0 &&
+        ineligibleEntityLeakCount === 0,
+
+      structuralEntityLeakCount,
+      ineligibleEntityLeakCount,
+
+      entityIneligibleNameCount:
+        textMentionExtraction.audit
+          .entityIneligibleNameCount,
+
+      ineligibleEvidenceSkippedCount:
+        textMentionExtraction.audit
+          .ineligibleEvidenceSkippedCount,
+
+      structuralTextMentionSuppressedCount:
+        textMentionExtraction.audit
+          .structuralTextMentionSuppressedCount,
+
+      leakedEntityIds:
+        ineligibleEntityLeaks.map(
+          (entity) => entity.id
+        ),
+    };
+
   const artifact = {
     version: VERSION,
     layoutBoxes,
@@ -816,6 +988,11 @@ function buildDocumentUnderstanding({
     relationships,
     sequences,
     evidence,
+    health: {
+      structuralEligibility:
+        structuralEligibilityHealth,
+    },
+
     confidence: {
       overall:
         entities.length > 0 && evidence.length > 0
@@ -844,6 +1021,25 @@ function buildDocumentUnderstanding({
       sequenceCount: sequences.length,
       structuralContainerCount,
       structuralEntityLeakCount,
+            structuralEligibilityValid:
+        structuralEligibilityHealth.valid,
+
+      entityIneligibleNameCount:
+        structuralEligibilityHealth
+          .entityIneligibleNameCount,
+
+      ineligibleEvidenceSkippedCount:
+        structuralEligibilityHealth
+          .ineligibleEvidenceSkippedCount,
+
+      structuralTextMentionSuppressedCount:
+        structuralEligibilityHealth
+          .structuralTextMentionSuppressedCount,
+
+      ineligibleEntityLeakCount:
+        structuralEligibilityHealth
+          .ineligibleEntityLeakCount,
+
       layoutPageCount: Array.isArray(layoutBoxes.pages)
         ? layoutBoxes.pages.length
         : 0,
