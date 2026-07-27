@@ -6,7 +6,8 @@ const { buildDocumentStructure } = require("./documentStructureBuilder");
 const { buildSourceGrounding } = require("./sourceGroundingBuilder");
 const { buildDocumentIntelligence } = require("./documentIntelligence");
 
-const VERSION = "document-understanding-v1";
+const VERSION =
+  "document-understanding-v2-structural-eligibility";
 
 function safeReadJson(filePath, fallback = null) {
   try {
@@ -37,6 +38,36 @@ function slugify(value) {
 
 function unique(values = []) {
   return Array.from(new Set(values.filter(Boolean)));
+}
+
+function getEligibility(value = {}) {
+  return value?.eligibility &&
+    typeof value.eligibility === "object"
+    ? value.eligibility
+    : {};
+}
+
+function isEligibleFor(value = {}, target) {
+  const eligibility = getEligibility(value);
+
+  /*
+   * Backward compatibility:
+   * old artifacts without an eligibility contract retain
+   * their existing behavior.
+   */
+  if (!(target in eligibility)) {
+    return true;
+  }
+
+  return eligibility[target] !== false;
+}
+
+function isStructuralContainer(value = {}) {
+  return (
+    value.architectureContainer === true ||
+    value.structuralRole === "architecture_container" ||
+    value.structuralRole === "document_container"
+  );
 }
 
 function getPageNumber(value, fallback = 1) {
@@ -89,7 +120,22 @@ function collectLayoutEvidence(layoutBoxes = {}) {
         bbox: item.bbox || item.box || item.focusRegion || null,
         sectionId: item.sectionId || null,
         order: item.order ?? itemIndex,
-        confidence: item.confidence || layoutBoxes.pdfLayout?.ok ? "high" : "medium",
+        confidence:
+          item.confidence ||
+          (layoutBoxes.pdfLayout?.ok ? "high" : "medium"),
+
+        headingKind:
+          item.headingKind || null,
+
+        architectureContainer:
+          item.architectureContainer === true,
+
+        structuralRole:
+          item.structuralRole || null,
+
+        eligibility: {
+          ...(item.eligibility || {}),
+        },
       });
     });
   });
@@ -127,6 +173,26 @@ function collectStructureEvidence(documentStructure = {}) {
       sectionId: section.id || slugify(title),
       order: section.order ?? index,
       confidence: "medium",
+
+      headingKind:
+        section.headingKind || null,
+
+      architectureContainer:
+        section.architectureContainer === true,
+
+      structuralRole:
+        section.structuralRole ||
+        "document_container",
+
+      eligibility: {
+        ...(section.eligibility || {
+          entity: false,
+          component: false,
+          relationship: false,
+          sequence: false,
+          evidenceContext: true,
+        }),
+      },
     });
   });
 
@@ -155,11 +221,25 @@ function collectStructureEvidence(documentStructure = {}) {
       bbox: element.bbox || element.focusRegion || null,
       sectionId: element.sectionId || null,
       order: element.order ?? index,
+
       confidence:
         element.type === "heading" ||
         element.type === "code_or_command"
           ? "high"
           : "medium",
+
+      headingKind:
+        element.headingKind || null,
+
+      architectureContainer:
+        element.architectureContainer === true,
+
+      structuralRole:
+        element.structuralRole || null,
+
+      eligibility: {
+        ...(element.eligibility || {}),
+      },
     });
   });
 
@@ -263,8 +343,25 @@ function extractStructureEntities(documentStructure = {}) {
     : [];
 
   sections.forEach((section) => {
-    const name = normalizeText(section.title || section.heading || section.text);
+    const name = normalizeText(
+      section.title ||
+      section.heading ||
+      section.text
+    );
+
     if (!name) return;
+
+    /*
+    * Sections are structural context. They remain in
+    * documentStructure and evidence, but must not become
+    * architecture entities.
+    */
+    if (
+      isStructuralContainer(section) ||
+      !isEligibleFor(section, "entity")
+    ) {
+      return;
+    }
 
     entities.push({
       name,
@@ -284,7 +381,11 @@ function extractStructureEntities(documentStructure = {}) {
     const text = normalizeText(element.text || element.content || element.value);
     if (!text) return;
 
-    if (element.type === "heading") {
+    if (
+      element.type === "heading" &&
+      isEligibleFor(element, "entity") &&
+      !isStructuralContainer(element)
+    ) {
       entities.push({
         name: text,
         type: "heading",
@@ -681,6 +782,32 @@ function buildDocumentUnderstanding({
   const relationships = extractRelationships(entities, evidence);
   const sequences = extractSequences(evidence, documentStructure);
 
+  const structuralItems = [
+    ...(Array.isArray(documentStructure.sections)
+      ? documentStructure.sections
+      : []),
+
+    ...(Array.isArray(documentStructure.elements)
+      ? documentStructure.elements
+      : []),
+  ];
+
+  const structuralContainerCount =
+    structuralItems.filter((item) =>
+      isStructuralContainer(item)
+    ).length;
+
+  const structuralEntityLeakCount =
+    entities.filter((entity) =>
+      entity.sources?.includes(
+        "documentStructureBuilder"
+      ) &&
+      (
+        entity.type === "heading" ||
+        entity.type === "section"
+      )
+    ).length;
+
   const artifact = {
     version: VERSION,
     layoutBoxes,
@@ -715,6 +842,8 @@ function buildDocumentUnderstanding({
       entityCount: entities.length,
       relationshipCount: relationships.length,
       sequenceCount: sequences.length,
+      structuralContainerCount,
+      structuralEntityLeakCount,
       layoutPageCount: Array.isArray(layoutBoxes.pages)
         ? layoutBoxes.pages.length
         : 0,

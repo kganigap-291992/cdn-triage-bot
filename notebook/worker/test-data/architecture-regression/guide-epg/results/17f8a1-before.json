@@ -1,0 +1,440 @@
+{
+  "version": "document-structure-v1",
+  "elementCount": 129,
+  "sectionCount": 71,
+  "stats": {
+    "headingCount": 71,
+    "commandCount": 0,
+    "tableRowCount": 0,
+    "listItemCount": 8,
+    "narrativeTextCount": 50
+  },
+  "headings": [
+    {
+      "text": "Synthetic Guide / EPG Enterprise Backend",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Regression Fixture v1",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Regression objective Expected evidence",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Guide / EPG Enterprise Backend - Canonical Architecture",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Provider Feeds",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Schedule and program data",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Operations Console",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Manual replay and feed status",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Client Apps",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Orion",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Provider feed intake gateway",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Super8",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Shared reverse proxy and",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Guide API",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Read API for schedules and",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Atlas",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Validation and canonical",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Meridian",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Metadata enrichment and",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Northstar",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Search indexing and query",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "RelayOne",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Shared event bus",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Nimbus",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Canonical metadata store",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Raw Vault",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Raw provider-feed object storage",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "PulseGrid",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Distributed read cache",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Dead Letter Queue",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Failed records and replay",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Identity / OIDC",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Authentication for APIs and",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Telemetry Stack",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "ConfigHub",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Shared configuration and",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Schedule Export",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Downstream partner publication",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "HTTPS / SFTP accepted payload",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "GET guide",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Component Definitions",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Numbered System Journeys",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Journey 1 - Provider feed ingestion",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Journey 2 - Client guide query",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Journey 3 - Update propagation",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Journey 4 - Failure and replay",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Journey 5 - Partner schedule export",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Deployment Topology - Three Availability Zones",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Availability Zone 1",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Atlas Worker 1",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Meridian Worker 1",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Guide API 1",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Northstar Indexer 1",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "PulseGrid Cache 1",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Local Postgres Replica 1",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Availability Zone 2",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Atlas Worker 2",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Meridian Worker 2",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Guide API 2",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Northstar Indexer 2",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "PulseGrid Cache 2",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Local Postgres Replica 2",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Availability Zone 3",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Atlas Worker 3",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Meridian Worker 3",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Guide API 3",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Northstar Indexer 3",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "PulseGrid Cache 3",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Local Postgres Replica 3",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Shared platform services",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    },
+    {
+      "text": "Deployment and Evidence Notes",
+      "type": "heading",
+      "page": 1,
+      "headingKind": null
+    }
+  ]
+}
