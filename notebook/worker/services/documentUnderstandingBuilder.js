@@ -1722,10 +1722,12 @@ function buildDocumentUnderstanding({
 
   const layoutBoxes = buildLayoutBoxes(jobDir);
 
-  const documentStructure = buildDocumentStructure({
-    extractedData,
-    documentIntelligence,
-  });
+  const documentStructure =
+    buildDocumentStructure({
+      extractedData,
+      documentIntelligence,
+      layoutBoxes,
+    });
 
   const sourceGrounding = buildSourceGrounding({
     teachingUnits: [],

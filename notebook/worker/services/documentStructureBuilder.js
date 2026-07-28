@@ -206,6 +206,216 @@ function slugify(value) {
     .slice(0, 80);
 }
 
+function normalizeHeadingMatchKey(value) {
+  return safeLower(
+    normalizeHeadingText(value)
+  )
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildLayoutHeadingPageIndex(
+  layoutBoxes = {}
+) {
+  const headingPageIndex = new Map();
+
+  const pages = Array.isArray(
+    layoutBoxes.pages
+  )
+    ? layoutBoxes.pages
+    : [];
+
+  pages
+    .slice()
+    .sort(
+      (a, b) =>
+        Number(a.page || 0) -
+        Number(b.page || 0)
+    )
+    .forEach((page, pageIndex) => {
+      const pageNumber = Number(
+        page.page ||
+        page.pageNumber ||
+        pageIndex + 1
+      );
+
+      const blocks = Array.isArray(
+        page.blocks
+      )
+        ? page.blocks
+        : [];
+
+      blocks
+        .filter(
+          (block) =>
+            block.type === "heading"
+        )
+        .slice()
+        .sort(
+          (a, b) =>
+            Number(a.y || 0) -
+            Number(b.y || 0)
+        )
+        .forEach((block) => {
+          const key =
+            normalizeHeadingMatchKey(
+              block.text
+            );
+
+          if (!key) return;
+
+          if (
+            !headingPageIndex.has(key)
+          ) {
+            headingPageIndex.set(
+              key,
+              []
+            );
+          }
+
+          headingPageIndex
+            .get(key)
+            .push({
+              page: pageNumber,
+              blockId:
+                block.id || null,
+              y:
+                Number(block.y) || null,
+            });
+        });
+    });
+
+  return headingPageIndex;
+}
+
+function attributeElementPagesFromLayout(
+  elements = [],
+  layoutBoxes = {}
+) {
+  const layoutPages =
+    Array.isArray(layoutBoxes.pages)
+      ? layoutBoxes.pages
+      : [];
+
+  const existingPages = new Set(
+    elements
+      .map((element) =>
+        Number(element.page)
+      )
+      .filter(
+        (page) =>
+          Number.isFinite(page) &&
+          page > 0
+      )
+  );
+
+  /*
+   * Preserve already-correct multi-page
+   * extraction. BUG-4 only repairs the
+   * collapsed full-text fallback.
+   */
+  const shouldAttribute =
+    layoutPages.length > 1 &&
+    existingPages.size <= 1;
+
+  const audit = {
+    attempted: shouldAttribute,
+    matchedHeadingCount: 0,
+    unmatchedHeadingCount: 0,
+    attributedElementCount: 0,
+  };
+
+  if (!shouldAttribute) {
+    return audit;
+  }
+
+  const headingPageIndex =
+    buildLayoutHeadingPageIndex(
+      layoutBoxes
+    );
+
+  let activePage = null;
+
+  elements.forEach((element) => {
+    if (element.type === "heading") {
+      const key =
+        normalizeHeadingMatchKey(
+          element.text
+        );
+
+      const candidates =
+        headingPageIndex.get(key) || [];
+
+      const match =
+        candidates.shift() || null;
+
+      if (match) {
+        activePage = match.page;
+
+        element.page =
+          match.page;
+
+        element.pageSource =
+          "layout_heading_match";
+
+        element.layoutHeadingBlockId =
+          match.blockId;
+
+        audit.matchedHeadingCount += 1;
+      } else {
+        audit.unmatchedHeadingCount += 1;
+
+        if (activePage) {
+          element.page = activePage;
+          element.pageSource =
+            "previous_layout_heading";
+        }
+      }
+
+      return;
+    }
+
+    if (activePage) {
+      element.page = activePage;
+      element.pageSource =
+        "layout_section_inheritance";
+
+      audit.attributedElementCount += 1;
+    }
+  });
+
+  return audit;
+}
+
+function createUniqueSectionId({
+  title,
+  fallbackIndex,
+  usedSectionIds,
+}) {
+  const baseId =
+    `section_${
+      slugify(title) ||
+      fallbackIndex
+    }`;
+
+  let sectionId = baseId;
+  let suffix = 2;
+
+  while (
+    usedSectionIds.has(sectionId)
+  ) {
+    sectionId =
+      `${baseId}_${suffix}`;
+
+    suffix += 1;
+  }
+
+  usedSectionIds.add(sectionId);
+
+  return sectionId;
+}
+
 function getPageTexts(extractedData = {}) {
   if (Array.isArray(extractedData.pages)) {
     return extractedData.pages
@@ -648,6 +858,8 @@ function shouldStartNewSection(element) {
 function createUntitledSection(page = 1) {
   return {
     id: "section_document_overview",
+    parentSectionId: null,
+    sectionOrder: 1,
     title: "Document overview",
     sourceTitle: "Document overview",
     page,
@@ -723,6 +935,8 @@ function finalizeSection(section) {
 
 function buildSections(elements = []) {
   const sections = [];
+  const usedSectionIds = new Set();
+
   let current = null;
 
   for (const element of elements) {
@@ -741,11 +955,35 @@ function buildSections(elements = []) {
         element.headingKind ||
         classifyHeadingKind(title);
 
+      const sectionOrder =
+        sections.length + 1;
+
+      const sectionId =
+        createUniqueSectionId({
+          title,
+          fallbackIndex:
+            sectionOrder,
+          usedSectionIds,
+        });
+
+      element.sectionId =
+        sectionId;
+
+      element.parentSectionId =
+        null;
+
+      element.sectionOrder =
+        sectionOrder;
+
+      element.orderWithinSection =
+        0;
+
       current = {
-        id: `section_${
-          slugify(title) ||
-          sections.length + 1
-        }`,
+        id: sectionId,
+
+        parentSectionId: null,
+
+        sectionOrder,
 
         title:
           title ||
@@ -793,6 +1031,20 @@ function buildSections(elements = []) {
         element.page
       );
     }
+
+    element.sectionId =
+      current.id;
+
+    element.parentSectionId =
+      current.parentSectionId ||
+      null;
+
+    element.sectionOrder =
+      current.sectionOrder ||
+      sections.length + 1;
+
+    element.orderWithinSection =
+      current.elements.length + 1;
 
     current.elements.push(element);
   }
@@ -880,9 +1132,16 @@ function buildHierarchy(sections = []) {
 function buildDocumentStructure({
   extractedData = {},
   documentIntelligence = {},
+  layoutBoxes = {},
 } = {}) {
   const elements =
     buildFlatElements(extractedData);
+
+  const pageAttribution =
+    attributeElementPagesFromLayout(
+      elements,
+      layoutBoxes
+    );
 
   const sections =
     buildSections(elements);
@@ -914,7 +1173,7 @@ function buildDocumentStructure({
 
   return {
     version:
-       "document-structure-v3-structural-eligibility",
+       "document-structure-v4-page-section-attribution",
     source: "documentStructureBuilder",
     borrowedIdeas: [
       "marker_structured_markdown",
@@ -936,6 +1195,7 @@ function buildDocumentStructure({
       ).length,
 
       headingKindBreakdown,
+      pageAttribution,
 
       architectureContainerHeadingCount,
 
