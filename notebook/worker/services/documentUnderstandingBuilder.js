@@ -586,14 +586,36 @@ function extractTextMentionEntities(evidence = []) {
       extractProperTerms(text);
 
     properTerms.forEach((term) => {
-      const normalizedTerm = normalizeText(term);
+      const normalizedTerm =
+        normalizeText(term);
 
       if (!normalizedTerm) return;
       if (stopWords.has(normalizedTerm)) return;
 
       /*
-      * Prevent structural headings from being rediscovered through another
-      * evidence source or from a different page.
+      * Prevent concatenated structural headings from
+      * becoming entities.
+      *
+      * Examples:
+      * Component Definitions Orion Provider
+      * Numbered System Journeys Journey
+      * Deployment Topology Availability Zone
+      */
+      const concatenatedStructuralPrefixPattern =
+        /^(Component Definitions|Numbered System Journeys|Deployment Topology|Shared Platform Services|Deployment and Evidence Notes)\s+/i;
+
+      if (
+        concatenatedStructuralPrefixPattern.test(
+          normalizedTerm
+        )
+      ) {
+        audit.structuralTextMentionSuppressedCount += 1;
+        return;
+      }
+
+      /*
+      * Prevent structural headings from being rediscovered
+      * through another evidence source.
       */
       if (
         entityIneligibleNames.has(
@@ -612,6 +634,7 @@ function extractTextMentionEntities(evidence = []) {
         confidence: 0.46,
       });
     });
+   
   });
 
   return {
@@ -657,7 +680,11 @@ function mergeEntities(rawEntities = [], evidence = []) {
       existing.sources.push(entity.source);
     }
 
-    existing.confidence = Math.max(existing.confidence, entity.confidence || 0.45);
+    existing.confidence = Math.max(
+      existing.confidence,
+      entity.confidence || 0.45
+    );
+
     entityMap.set(id, existing);
   });
 
@@ -686,95 +713,914 @@ function mergeEntities(rawEntities = [], evidence = []) {
         confidence: Number(entity.confidence.toFixed(2)),
       };
     })
-    .filter((entity) => entity.evidenceIds.length > 0 || entity.sources.includes("conceptExtractor"))
-    .sort((a, b) => b.confidence - a.confidence || b.mentions - a.mentions)
+    .filter(
+      (entity) =>
+        entity.evidenceIds.length > 0 ||
+        entity.sources.includes("conceptExtractor")
+    )
+    .sort(
+      (a, b) =>
+        b.confidence - a.confidence ||
+        b.mentions - a.mentions
+    )
     .slice(0, 200);
 }
 
-function extractRelationships(entities = [], evidence = []) {
+function buildCanonicalComponents(
+  entities = [],
+  evidence = []
+) {
+  /*
+   * BUG-3.1 — Canonical Component Promotion
+   *
+   * This helper does not rediscover entities.
+   * It conservatively promotes existing entities that have
+   * deterministic evidence of representing architecture objects.
+   *
+   * Generic concepts, actions, protocols and document words remain
+   * available in entities[], but are not promoted to components.
+   */
+
+  const genericNames = new Set([
+    "api",
+    "apis",
+    "authentication",
+    "canonical",
+    "client",
+    "deployment",
+    "distributed",
+    "document-defined",
+    "enterprise",
+    "epg",
+    "expected",
+    "explicit",
+    "failure",
+    "fixture",
+    "guide",
+    "identity",
+    "internal",
+    "journey",
+    "manual",
+    "metadata",
+    "metrics",
+    "multiple",
+    "numbered",
+    "object",
+    "page",
+    "partner",
+    "provider",
+    "purpose",
+    "raw",
+    "regression",
+    "relationship",
+    "replicated",
+    "safety",
+    "schedule",
+    "search",
+    "shared",
+    "synthetic",
+    "system",
+    "three",
+    "topology",
+    "update",
+    "validation",
+    "zones",
+  ]);
+
+  const protocolOrOperationNames = new Set([
+    "get",
+    "http",
+    "https",
+    "oidc",
+    "sftp",
+  ]);
+
+  const actionNames = new Set([
+    "accepts",
+    "checks",
+    "distributes",
+    "joins",
+    "persists",
+    "preserve",
+    "routes",
+    "successful",
+  ]);
+
+  const architectureNouns = [
+    "api",
+    "app",
+    "apps",
+    "authentication",
+    "broker",
+    "cache",
+    "canonical",
+    "client",
+    "cluster",
+    "console",
+    "database",
+    "db",
+    "distributed",
+    "edge",
+    "export",
+    "gateway",
+    "hub",
+    "identity",
+    "index",
+    "metadata",
+    "object",
+    "origin",
+    "packager",
+    "provider",
+    "queue",
+    "router",
+    "search",
+    "service",
+    "stack",
+    "store",
+    "telemetry",
+    "validation",
+    "vault",
+  ];
+
+  const contextualTailTokens = new Set([
+    "downstream",
+    "failed",
+    "manual",
+    "metrics",
+    "raw",
+    "schedule",
+    "stb",
+    "synthetic",
+  ]);
+
+  function tokenize(value) {
+    return normalizeText(value)
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+  }
+
+  function hasArchitectureNoun(name) {
+    const tokens = tokenize(name);
+
+    return tokens.some((token) =>
+      architectureNouns.includes(token)
+    );
+  }
+
+
+  function inferCanonicalComponentKind(
+    entity,
+    evidence = []
+  ) {
+    const entityName =
+      normalizeText(entity.name);
+
+    
+    const matchingEvidence = (
+      entity.evidenceIds || []
+    )
+      .map((id) =>
+        evidence.find((ev) => ev.id === id)
+      )
+      .filter(Boolean);
+
+    const focusedEvidence =
+      matchingEvidence.filter((ev) => {
+        const text = normalizeText(ev.text);
+
+        return (
+          text.length <= 400 &&
+          (
+            ev.type === "fallback_text" ||
+            text
+              .toLowerCase()
+              .includes(
+                entityName.toLowerCase()
+              )
+          )
+        );
+      });
+
+    const evidenceText = unique(
+      (
+        focusedEvidence.length > 0
+          ? focusedEvidence
+          : matchingEvidence.filter(
+              (ev) =>
+                normalizeText(ev.text).length <= 400
+            )
+      ).map((ev) => normalizeText(ev.text))
+    ).join(" ");
+
+    const value = (
+      entityName +
+      " " +
+      evidenceText
+    ).toLowerCase();
+
+    if (!value.trim()) {
+      return "unknown";
+    }
+
+    if (
+      /\b(database|db|cache|store|storage|vault|repository|metadata\s+store|object\s+storage|read\s+cache)\b/i.test(
+        value
+      )
+    ) {
+      return "data_store";
+    }
+
+    if (
+      /\b(worker|processor|orchestrator|job|task|workflow|process|validation\s+(?:and\s+canonical\s+)?normalization\s+service|normalization\s+service|enrichment\s+(?:and\s+channel-mapping\s+)?service)\b/i.test(
+        value
+      )
+    ) {
+      return "process";
+    }
+
+    if (
+      /\b(service|application|app|cluster|broker|queue|event\s+bus|origin|packager|hub|identity|authentication|telemetry|stack|configuration|publication|observability\s+platform)\b/i.test(
+        value
+      )
+    ) {
+      return "system_component";
+    }
+
+    if (
+      /\b(api|gateway|router|routing|proxy|reverse[- ]proxy|ingress|endpoint|console|interface)\b/i.test(
+        value
+      )
+    ) {
+      return "interface";
+    }
+
+    if (
+      /\b(client|provider|partner|consumer|user|browser|player|device|source|sink)\b/i.test(
+        value
+      )
+    ) {
+      return "external_actor";
+    }
+
+    if (
+      /\b(file|manifest|payload|artifact|document)\b/i.test(
+        value
+      )
+    ) {
+      return "artifact";
+    }
+
+    return "unknown";
+  }
+
+  function hasDocumentDefinedNameShape(name) {
+    const normalizedName = normalizeText(name);
+    const tokens = tokenize(normalizedName);
+
+    if (tokens.length < 2) {
+      return false;
+    }
+
+    /*
+     * Synthetic enterprise fixtures intentionally use labels such as:
+     * Super8 Shared
+     * RelayOne Shared
+     * ConfigHub Shared
+     *
+     * The first token must contain a digit, internal capitalization,
+     * or a sufficiently specific proper-name shape.
+     */
+    const firstToken =
+          normalizedName.split(/\s+/)[0] || "";
+
+        const hasDigit =
+      /\d/.test(firstToken);
+
+    const hasInternalCapital =
+      /[a-z][A-Z]/.test(firstToken);
+
+    const looksLikeSpecificProperName =
+      /^[A-Z][a-z]{3,}$/.test(firstToken);
+
+    const looksLikeUppercaseAcronym =
+      /^[A-Z][A-Z0-9]{2,}$/.test(firstToken);
+
+    const endsWithShared =
+      /\sShared$/i.test(normalizedName);
+
+    return (
+      endsWithShared &&
+      (
+        hasDigit ||
+        hasInternalCapital ||
+        looksLikeSpecificProperName ||
+        looksLikeUppercaseAcronym
+      )
+    );
+  }
+
+    function hasContextualTail(entity) {
+    const tokens = tokenize(entity.name);
+
+    if (tokens.length < 3) {
+      return false;
+    }
+
+    const lastToken =
+      tokens[tokens.length - 1];
+
+    return (
+      (entity.mentions || 0) <= 1 &&
+      contextualTailTokens.has(lastToken)
+    );
+  }
+
+  function containsStrongerCanonicalEntity(
+    entity,
+    allEntities = []
+  ) {
+    const candidateName =
+      normalizeText(entity.name).toLowerCase();
+
+    if (!candidateName) {
+      return false;
+    }
+
+    return allEntities.some((other) => {
+      if (!other || other.id === entity.id) {
+        return false;
+      }
+
+      if ((other.mentions || 0) < 2) {
+        return false;
+      }
+
+      const otherName =
+        normalizeText(other.name).toLowerCase();
+
+      if (!otherName) {
+        return false;
+      }
+
+      if (otherName.length >= candidateName.length) {
+        return false;
+      }
+
+      const otherTokens = tokenize(otherName);
+
+      const containsCanonicalName =
+        otherTokens.length === 1
+          ? candidateName.startsWith(
+              `${otherName} `
+            )
+          : candidateName.includes(
+              otherName
+            );
+
+      if (!containsCanonicalName) {
+        return false;
+      }
+
+      return hasArchitectureNoun(other.name);
+    });
+  }
+
+  return entities
+    .filter((entity) => {
+      const name = normalizeText(entity.name);
+      const lowerName = name.toLowerCase();
+
+      if (!name) {
+        return false;
+      }
+
+      if (genericNames.has(lowerName)) {
+        return false;
+      }
+
+      if (protocolOrOperationNames.has(lowerName)) {
+        return false;
+      }
+
+      if (actionNames.has(lowerName)) {
+        return false;
+      }
+
+      if (
+        !Array.isArray(entity.evidenceIds) ||
+        entity.evidenceIds.length === 0
+      ) {
+        return false;
+      }
+
+      if (hasContextualTail(entity)) {
+        return false;
+      }
+
+      if (
+        containsStrongerCanonicalEntity(
+          entity,
+          entities
+        )
+      ) {
+        return false;
+      }
+
+      return (
+        hasArchitectureNoun(name) ||
+        hasDocumentDefinedNameShape(name)
+      );
+    })
+    .map((entity) => {
+      const architectureNounSignal =
+        hasArchitectureNoun(entity.name);
+
+      const documentDefinedNameSignal =
+        hasDocumentDefinedNameShape(
+          entity.name
+        );
+
+      const promotionReasons = [];
+
+      if (architectureNounSignal) {
+        promotionReasons.push(
+          "architecture_noun"
+        );
+      }
+
+      if (documentDefinedNameSignal) {
+        promotionReasons.push(
+          "document_defined_name_shape"
+        );
+      }
+
+      const confidence =
+        architectureNounSignal &&
+        documentDefinedNameSignal
+          ? 0.82
+          : architectureNounSignal
+            ? 0.76
+            : 0.68;
+
+      return {
+        id: entity.id,
+        title: entity.name,
+
+        kind: inferCanonicalComponentKind(
+          entity,
+          evidence
+        ),
+
+        entityId: entity.id,
+
+        evidenceIds: unique(
+          entity.evidenceIds
+        ),
+
+        pages: unique(entity.pages),
+
+        mentions: entity.mentions || 0,
+
+        confidence:
+          Number(confidence.toFixed(2)),
+
+        promotionReasons,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.confidence - a.confidence ||
+        b.mentions - a.mentions ||
+        a.title.localeCompare(b.title)
+    );
+}
+
+
+function extractRelationships(
+  canonicalComponents = [],
+  evidence = []
+) {
   const relationships = [];
-  const entityRefs = entities.map((entity) => ({
-    id: entity.id,
-    name: entity.name,
-    lower: entity.name.toLowerCase(),
-  }));
+  const seen = new Set();
+
+  function escapeRegExp(value) {
+    return String(value || "")
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function normalizeAlias(value) {
+    return normalizeText(value).toLowerCase();
+  }
+
+  const trailingQualifierPattern =
+    /\s+(shared|distributed|canonical|validation|metadata|authentication|provider|object)$/i;
+
+  /*
+   * Build deterministic aliases.
+   *
+   * Atlas Validation       -> Atlas Validation, Atlas
+   * Raw Vault Object       -> Raw Vault Object, Raw Vault
+   * Schedule Export Shared -> Schedule Export Shared, Schedule Export
+   */
+  const componentRefs = canonicalComponents
+    .map((component) => {
+      const title = normalizeText(component.title);
+
+      if (!component.id || !title) {
+        return null;
+      }
+
+      const aliases = new Set([title]);
+
+      const strippedTitle = title
+        .replace(trailingQualifierPattern, "")
+        .trim();
+
+      if (strippedTitle.length >= 3) {
+        aliases.add(strippedTitle);
+      }
+
+      const firstToken =
+        title.split(/\s+/)[0] || "";
+
+      if (
+        firstToken.length >= 4 &&
+        !/^(dead|raw|read|schedule)$/i.test(firstToken)
+      ) {
+        aliases.add(firstToken);
+      }
+
+      return {
+        id: component.id,
+        title,
+        aliases: [...aliases],
+      };
+    })
+    .filter(Boolean);
+
+  /*
+   * Reject ambiguous aliases.
+   *
+   * OIDC Authentication and OIDC Shared both produce OIDC,
+   * so the alias OIDC must not choose either component.
+   */
+  const aliasOwners = new Map();
+
+  componentRefs.forEach((component) => {
+    component.aliases.forEach((alias) => {
+      const key = normalizeAlias(alias);
+
+      if (!aliasOwners.has(key)) {
+        aliasOwners.set(key, new Set());
+      }
+
+      aliasOwners
+        .get(key)
+        .add(component.id);
+    });
+  });
+
+  componentRefs.forEach((component) => {
+    component.aliases =
+      component.aliases.filter((alias) => {
+        const owners =
+          aliasOwners.get(
+            normalizeAlias(alias)
+          );
+
+        return owners?.size === 1;
+      });
+  });
 
   const relationshipPatterns = [
     {
       type: "flows_to",
-      regex: /\b(.+?)\s+(routes to|connects to|calls|sends to|forwards to|flows to|then)\s+(.+?)\b/i,
-      confidence: 0.64,
+      regex:
+        /\b(routes|forwards|sends|delivers|passes|returns)\b[\s\S]{0,120}?\bto\b/gi,
+      matchedVerbGroup: 1,
+      confidence: 0.82,
+    },
+    {
+      type: "publishes_to",
+      regex:
+        /\b(publishes|emits|distributes)\b[\s\S]{0,120}?\bto\b/gi,
+      matchedVerbGroup: 1,
+      confidence: 0.84,
+    },
+    {
+      type: "writes_to",
+      regex:
+        /\b(writes|commits|persists)\b[\s\S]{0,120}?\bto\b/gi,
+      matchedVerbGroup: 1,
+      confidence: 0.84,
+    },
+    {
+      type: "writes_to",
+      regex:
+        /\b(stores|archives|saves)\b[\s\S]{0,120}?\b(?:in|to)\b/gi,
+      matchedVerbGroup: 1,
+      confidence: 0.82,
+    },
+    {
+      type: "reads_from",
+      regex:
+        /\b(reads|loads|retrieves|fetches)\b[\s\S]{0,120}?\bfrom\b/gi,
+      matchedVerbGroup: 1,
+      confidence: 0.84,
+    },
+    {
+      type: "calls",
+      regex:
+        /\b(calls|invokes|queries|checks)\b/gi,
+      matchedVerbGroup: 1,
+      confidence: 0.8,
     },
     {
       type: "depends_on",
-      regex: /\b(.+?)\s+(depends on|uses|runs on|backs|powers)\s+(.+?)\b/i,
-      confidence: 0.62,
+      regex:
+        /\b(depends\s+on|relies\s+on|uses)\b/gi,
+      matchedVerbGroup: 1,
+      confidence: 0.74,
     },
     {
-      type: "defined_as",
-      regex: /\b(.+?)\s+(is|acts as|serves as|means)\s+(.+?)\b/i,
-      confidence: 0.58,
-    },
-    {
-      type: "connects",
-      regex: /\b(.+?)\s+(connects|links|maps)\s+(.+?)\b/i,
-      confidence: 0.58,
+      type: "connects_to",
+      regex:
+        /\b(connects\s+to|links\s+to)\b/gi,
+      matchedVerbGroup: 1,
+      confidence: 0.72,
     },
   ];
 
-  evidence.forEach((ev) => {
-    const lower = ev.text.toLowerCase();
-    const mentioned = entityRefs
-      .filter((entity) => lower.includes(entity.lower))
-      .slice(0, 8);
+  function findComponentMentions(text) {
+    const mentions = [];
 
-    relationshipPatterns.forEach((pattern) => {
-      const match = ev.text.match(pattern.regex);
-      if (!match) return;
+    componentRefs.forEach((component) => {
+      component.aliases.forEach((alias) => {
+        const regex = new RegExp(
+          `(^|[^a-z0-9])(${escapeRegExp(alias)})(?=$|[^a-z0-9])`,
+          "gi"
+        );
 
-      const from = mentioned.find((entity) =>
-        match[1].toLowerCase().includes(entity.lower)
-      );
-      const to = mentioned.find((entity) =>
-        match[3].toLowerCase().includes(entity.lower)
-      );
+        let match;
 
-      if (from && to && from.id !== to.id) {
-        relationships.push({
-          id: `rel_${relationships.length + 1}`,
-          from: from.id,
-          to: to.id,
-          type: pattern.type,
-          evidenceIds: [ev.id],
-          confidence: pattern.confidence,
-        });
-      }
+        while ((match = regex.exec(text)) !== null) {
+          const boundaryLength =
+            match[1]?.length || 0;
+
+          const start =
+            match.index + boundaryLength;
+
+          const end =
+            start + match[2].length;
+
+          mentions.push({
+            component,
+            alias: match[2],
+            start,
+            end,
+          });
+
+          if (regex.lastIndex === match.index) {
+            regex.lastIndex += 1;
+          }
+        }
+      });
     });
 
-    if (mentioned.length >= 2) {
-      for (let index = 0; index < mentioned.length - 1; index += 1) {
-        relationships.push({
-          id: `rel_${relationships.length + 1}`,
-          from: mentioned[index].id,
-          to: mentioned[index + 1].id,
-          type: "co_mentions",
-          evidenceIds: [ev.id],
-          confidence: 0.38,
-        });
-      }
+    /*
+     * Prefer longer aliases beginning at the same position.
+     */
+    return mentions
+      .sort(
+        (a, b) =>
+          a.start - b.start ||
+          b.alias.length - a.alias.length
+      )
+      .filter(
+        (mention, index, all) =>
+          !all.some(
+            (other, otherIndex) =>
+              otherIndex < index &&
+              other.start === mention.start &&
+              other.end >= mention.end
+          )
+      );
+  }
+
+  function splitRelationshipClauses(text) {
+    return normalizeText(text)
+      /*
+       * Split numbered journeys:
+       * "1. X ... 2. Y ... 3. Z ..."
+       */
+      .replace(/\s+(?=\d+\.\s+)/g, "\n")
+      .split(/\n+|(?<=[.!?])\s+|;/)
+      .map(normalizeText)
+      .filter(Boolean);
+  }
+
+  function addRelationship({
+    from,
+    to,
+    type,
+    evidenceId,
+    confidence,
+    matchedVerb,
+  }) {
+    if (
+      !from?.id ||
+      !to?.id ||
+      from.id === to.id ||
+      !evidenceId
+    ) {
+      return;
     }
+
+    const key = [
+      from.id,
+      type,
+      to.id,
+    ].join(":");
+
+    const existing =
+      relationships.find(
+        (relationship) =>
+          relationship.from === from.id &&
+          relationship.type === type &&
+          relationship.to === to.id
+      );
+
+    if (existing) {
+      if (
+        !existing.evidenceIds.includes(
+          evidenceId
+        )
+      ) {
+        existing.evidenceIds.push(
+          evidenceId
+        );
+      }
+
+      if (
+        !existing.matchedVerbs.includes(
+          matchedVerb
+        )
+      ) {
+        existing.matchedVerbs.push(
+          matchedVerb
+        );
+      }
+
+      existing.confidence = Math.max(
+        existing.confidence,
+        confidence
+      );
+
+      return;
+    }
+
+    seen.add(key);
+
+    relationships.push({
+      id:
+        `rel_${String(
+          relationships.length + 1
+        ).padStart(4, "0")}`,
+
+      from: from.id,
+      to: to.id,
+      type,
+
+      evidenceIds: [
+        evidenceId,
+      ],
+
+      confidence,
+
+      basis:
+        "explicit_relationship_language",
+
+      matchedVerb,
+
+      matchedVerbs: [
+        matchedVerb,
+      ],
+    });
+  }
+
+  evidence.forEach((ev) => {
+    if (!isEligibleFor(ev, "relationship")) {
+      return;
+    }
+
+    const text = normalizeText(ev.text);
+
+    if (!text || !ev.id) {
+      return;
+    }
+
+    splitRelationshipClauses(text)
+      .forEach((clause) => {
+        const mentions =
+          findComponentMentions(clause);
+
+        if (mentions.length < 2) {
+          return;
+        }
+
+        relationshipPatterns.forEach(
+          (pattern) => {
+            pattern.regex.lastIndex = 0;
+
+            let match;
+
+            while (
+              (match =
+                pattern.regex.exec(clause)) !==
+              null
+            ) {
+              const verbStart = match.index;
+              const verbEnd =
+                match.index + match[0].length;
+
+              const beforeVerb =
+                mentions.filter(
+                  (mention) =>
+                    mention.end <= verbStart
+                );
+
+              const afterVerb =
+                mentions.filter(
+                  (mention) =>
+                    mention.start >= verbEnd
+                );
+
+              /*
+               * Usually the closest preceding mention is
+               * the subject.
+               *
+               * When a clause starts with a component and
+               * contains coordinated verbs, preserve that
+               * opening component as the subject:
+               *
+               * Atlas archives ... Raw Vault and publishes ... RelayOne
+               */
+              const openingMention =
+                beforeVerb.find(
+                  (mention) =>
+                    mention.start <= 12
+                );
+
+              const fromMention =
+                openingMention ||
+                beforeVerb[
+                  beforeVerb.length - 1
+                ];
+
+              const toMention =
+                afterVerb[0];
+
+              if (
+                !fromMention ||
+                !toMention
+              ) {
+                continue;
+              }
+
+              addRelationship({
+                from:
+                  fromMention.component,
+
+                to:
+                  toMention.component,
+
+                type: pattern.type,
+
+                evidenceId: ev.id,
+
+                confidence:
+                  pattern.confidence,
+
+                matchedVerb:
+                  match[
+                    pattern.matchedVerbGroup
+                  ] || match[0],
+              });
+
+              if (
+                pattern.regex.lastIndex ===
+                match.index
+              ) {
+                pattern.regex.lastIndex += 1;
+              }
+            }
+          }
+        );
+      });
   });
 
-  const seen = new Set();
-
-  return relationships
-    .filter((relationship) => {
-      const key = `${relationship.from}:${relationship.to}:${relationship.type}:${relationship.evidenceIds.join(",")}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .slice(0, 160);
+  return relationships;
 }
 
 function extractSequences(evidence = [], documentStructure = {}) {
@@ -906,7 +1752,16 @@ function buildDocumentUnderstanding({
     ...textMentionExtraction.entities,
   ];
 
-  const entities = mergeEntities(rawEntities, evidence);
+  const entities = mergeEntities(
+    rawEntities,
+    evidence
+  );
+
+  const canonicalComponents =
+    buildCanonicalComponents(
+      entities,
+      evidence
+    );
 
   const entityIneligibleNames =
     buildEntityIneligibleNameSet(
@@ -923,7 +1778,7 @@ function buildDocumentUnderstanding({
   const ineligibleEntityLeakCount =
     ineligibleEntityLeaks.length;
 
-  const relationships = extractRelationships(entities, evidence);
+  const relationships = extractRelationships(canonicalComponents, evidence);
   const sequences = extractSequences(evidence, documentStructure);
 
   const structuralItems = [
@@ -985,6 +1840,7 @@ function buildDocumentUnderstanding({
     layoutBoxes,
     documentStructure,
     entities,
+    canonicalComponents,
     relationships,
     sequences,
     evidence,
@@ -1012,11 +1868,37 @@ function buildDocumentUnderstanding({
             ],
     },
     stats: {
-      documentType: documentIntelligence.primaryType || "unknown",
-      secondaryTypes: documentIntelligence.secondaryTypes || [],
+      documentType:
+        documentIntelligence.primaryType ||
+        "unknown",
+
+      secondaryTypes:
+        documentIntelligence.secondaryTypes ||
+        [],
+
       textItemCount: evidence.length,
       evidenceCount: evidence.length,
       entityCount: entities.length,
+
+      canonicalComponentCount:
+        canonicalComponents.length,
+
+      canonicalComponentArchitectureNounCount:
+        canonicalComponents.filter(
+          (component) =>
+            component.promotionReasons.includes(
+              "architecture_noun"
+            )
+        ).length,
+
+      canonicalComponentDocumentDefinedNameCount:
+        canonicalComponents.filter(
+          (component) =>
+            component.promotionReasons.includes(
+              "document_defined_name_shape"
+            )
+        ).length,
+
       relationshipCount: relationships.length,
       sequenceCount: sequences.length,
       structuralContainerCount,
