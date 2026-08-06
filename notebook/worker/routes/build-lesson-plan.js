@@ -134,6 +134,9 @@ const {
   buildDeploymentUnitDiscovery,
 } = require("../services/deploymentUnitDiscoveryBuilder");
 
+const {
+  buildRuntimeFamilyDiscovery,
+} = require("../services/runtimeFamilyDiscoveryBuilder");
 
 const {
   buildEnterpriseSharedInfrastructure,
@@ -1045,6 +1048,30 @@ router.post("/:jobId", async (req, res) => {
       deploymentUnitDiscovery.stats
     );
 
+
+    /* ------------------------------------------------------- */
+    /* BUG-8 Runtime Family Discovery                          */
+    /* ------------------------------------------------------- */
+
+    const runtimeFamilyDiscovery =
+      buildRuntimeFamilyDiscovery({
+        documentUnderstanding,
+        architectureUnderstanding,
+        deploymentUnitDiscovery,
+        outputDir: jobDir,
+      });
+
+    const runtimeFamilyDiscoveryPath =
+      path.join(
+        jobDir,
+        "runtime-families.json"
+      );
+
+    console.log(
+      "[runtime-family-discovery]",
+      runtimeFamilyDiscovery.stats
+    );
+
     /* ------------------------------------------------------- */
     /* 17F.3 Enterprise Shared Infrastructure Discovery        */
     /* ------------------------------------------------------- */
@@ -1104,6 +1131,7 @@ router.post("/:jobId", async (req, res) => {
         journeyUnderstanding,
         deploymentBoundaryNormalization,
         deploymentUnitDiscovery,
+        runtimeFamilyDiscovery,
         enterpriseDeployment,
         sharedNodeUnderstanding,
         enterpriseSharedInfrastructure,
@@ -1346,6 +1374,13 @@ router.post("/:jobId", async (req, res) => {
           version: deploymentUnitDiscovery.version,
           stats: deploymentUnitDiscovery.stats,
           output: deploymentUnitDiscoveryPath,
+        },
+
+        runtimeFamilyDiscovery: {
+          version: runtimeFamilyDiscovery.version,
+          stats: runtimeFamilyDiscovery.stats,
+          health: runtimeFamilyDiscovery.health,
+          output: runtimeFamilyDiscoveryPath,
         },
 
         enterpriseSharedInfrastructure: {

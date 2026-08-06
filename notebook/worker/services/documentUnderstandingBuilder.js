@@ -7,7 +7,7 @@ const { buildSourceGrounding } = require("./sourceGroundingBuilder");
 const { buildDocumentIntelligence } = require("./documentIntelligence");
 
 const VERSION =
-  "document-understanding-v2-structural-eligibility";
+  "document-understanding-v4-canonical-component-registry";
 
 function safeReadJson(filePath, fallback = null) {
   try {
@@ -224,17 +224,59 @@ function collectStructureEvidence(documentStructure = {}) {
 
     evidence.push({
       id: `ev_section_${String(index + 1).padStart(4, "0")}`,
-      page: section.page || section.pageNumber || null,
+
+      page:
+        section.page ||
+        section.pageNumber ||
+        null,
+
       text: title,
-      type: "section",
-      source: "documentStructureBuilder",
-      bbox: section.bbox || section.focusRegion || null,
-      sectionId: section.id || slugify(title),
-      order: section.order ?? index,
-      confidence: "medium",
+
+      type:
+        "section",
+
+      source:
+        "documentStructureBuilder",
+
+      bbox:
+        section.bbox ||
+        section.focusRegion ||
+        null,
+
+      sectionId:
+        section.id ||
+        slugify(title),
+
+      parentSectionId:
+        section.parentSectionId ||
+        null,
+
+      sectionOrder:
+        section.sectionOrder ??
+        index + 1,
+
+      orderWithinSection:
+        0,
+
+      sectionDepth:
+        section.sectionDepth ??
+        (
+          section.parentSectionId
+            ? 1
+            : 0
+        ),
+
+      order:
+        section.order ??
+        section.sectionOrder ??
+        index,
+
+      confidence:
+        "medium",
 
       headingKind:
-        section.headingKind || null,
+        section.headingKind ||
+        null,
 
       architectureContainer:
         section.architectureContainer === true,
@@ -273,13 +315,54 @@ function collectStructureEvidence(documentStructure = {}) {
 
     evidence.push({
       id: `ev_element_${String(index + 1).padStart(4, "0")}`,
-      page: element.page || element.pageNumber || null,
+
+      page:
+        element.page ||
+        element.pageNumber ||
+        null,
+
       text,
-      type: element.type || "document_element",
-      source: "documentStructureBuilder",
-      bbox: element.bbox || element.focusRegion || null,
-      sectionId: element.sectionId || null,
-      order: element.order ?? index,
+
+      type:
+        element.type ||
+        "document_element",
+
+      source:
+        "documentStructureBuilder",
+
+      bbox:
+        element.bbox ||
+        element.focusRegion ||
+        null,
+
+      sectionId:
+        element.sectionId ||
+        null,
+
+      parentSectionId:
+        element.parentSectionId ||
+        null,
+
+      sectionOrder:
+        element.sectionOrder ??
+        null,
+
+      orderWithinSection:
+        element.orderWithinSection ??
+        null,
+
+      sectionDepth:
+        element.sectionDepth ??
+        (
+          element.parentSectionId
+            ? 1
+            : 0
+        ),
+
+      order:
+        element.order ??
+        element.orderWithinSection ??
+        index,
 
       confidence:
         element.type === "heading" ||
@@ -288,13 +371,15 @@ function collectStructureEvidence(documentStructure = {}) {
           : "medium",
 
       headingKind:
-        element.headingKind || null,
+        element.headingKind ||
+        null,
 
       architectureContainer:
         element.architectureContainer === true,
 
       structuralRole:
-        element.structuralRole || null,
+        element.structuralRole ||
+        null,
 
       eligibility: {
         ...(element.eligibility || {}),
@@ -344,6 +429,56 @@ function mergeEvidence(...groups) {
       merged[existingIndex] = {
         ...existing,
 
+        sources:
+          unique([
+            ...(existing.sources || [
+              existing.source,
+            ]),
+
+            ...(item.sources || [
+              item.source,
+            ]),
+          ]),
+
+        /*
+        * BUG-6 — Provenance-preserving evidence merge.
+              *
+        * Layout evidence usually owns geometry.
+        * Document-structure evidence owns section identity.
+        * Preserve both instead of allowing merge order to
+        * erase structural lineage.
+        */
+
+        bbox:
+          existing.bbox ||
+          item.bbox ||
+          null,
+
+        sectionId:
+          item.sectionId ||
+          existing.sectionId ||
+          null,
+
+        parentSectionId:
+          item.parentSectionId ??
+          existing.parentSectionId ??
+          null,
+
+        sectionOrder:
+          item.sectionOrder ??
+          existing.sectionOrder ??
+          null,
+
+        orderWithinSection:
+          item.orderWithinSection ??
+          existing.orderWithinSection ??
+          null,
+
+        sectionDepth:
+          item.sectionDepth ??
+          existing.sectionDepth ??
+          null,
+
         headingKind:
           item.headingKind ||
           existing.headingKind ||
@@ -371,7 +506,18 @@ function mergeEvidence(...groups) {
 
     merged.push({
       ...item,
-      id: `ev_${String(merged.length + 1).padStart(4, "0")}`,
+
+      sources:
+        unique([
+          ...(item.sources || []),
+          item.source,
+        ]),
+
+      id:
+        `ev_${String(
+          merged.length + 1
+        ).padStart(4, "0")}`,
+
       text,
     });
   });
@@ -565,10 +711,28 @@ function extractTextMentionEntities(evidence = []) {
       entities.push({
         name: normalizeText(command),
         type: "command",
-        page: ev.page,
-        source: "command_mentions",
-        confidence: 0.8,
-      });
+
+        page:
+          ev.page,
+
+        sectionId:
+          ev.sectionId ||
+          null,
+
+        parentSectionId:
+          ev.parentSectionId ||
+          null,
+
+        headingKind:
+          ev.headingKind ||
+          null,
+
+        source:
+          "command_mentions",
+
+        confidence:
+          0.8,
+        });
     });
 
     const codeTerms = text.match(/\b[A-Z][A-Z0-9_-]{2,}\b/g) || [];
@@ -576,9 +740,27 @@ function extractTextMentionEntities(evidence = []) {
       entities.push({
         name: term,
         type: "component_or_code",
-        page: ev.page,
-        source: "repeated_mentions",
-        confidence: 0.56,
+
+        page:
+          ev.page,
+
+        sectionId:
+          ev.sectionId ||
+          null,
+
+        parentSectionId:
+          ev.parentSectionId ||
+          null,
+
+        headingKind:
+          ev.headingKind ||
+          null,
+
+        source:
+          "repeated_mentions",
+
+        confidence:
+          0.56,
       });
     });
 
@@ -629,9 +811,27 @@ function extractTextMentionEntities(evidence = []) {
       entities.push({
         name: normalizedTerm,
         type: "named_thing",
-        page: ev.page,
-        source: "text_mentions",
-        confidence: 0.46,
+
+        page:
+          ev.page,
+
+        sectionId:
+          ev.sectionId ||
+          null,
+
+        parentSectionId:
+          ev.parentSectionId ||
+          null,
+
+        headingKind:
+          ev.headingKind ||
+          null,
+
+        source:
+          "text_mentions",
+
+        confidence:
+          0.46,
       });
     });
    
@@ -656,13 +856,30 @@ function mergeEntities(rawEntities = [], evidence = []) {
     const existing = entityMap.get(id) || {
       id,
       name,
-      type: entity.type || "term",
+
+      type:
+        entity.type ||
+        "term",
+
       aliases: [],
-      mentions: 0,
+
+      mentions:
+        0,
+
       pages: [],
+
       sectionIds: [],
+
+      parentSectionIds: [],
+
+      headingKinds: [],
+
       evidenceIds: [],
-      confidence: entity.confidence || 0.45,
+
+      confidence:
+        entity.confidence ||
+        0.45,
+
       sources: [],
     };
 
@@ -674,6 +891,28 @@ function mergeEntities(rawEntities = [], evidence = []) {
 
     if (entity.sectionId && !existing.sectionIds.includes(entity.sectionId)) {
       existing.sectionIds.push(entity.sectionId);
+    }
+
+    if (
+      entity.parentSectionId &&
+      !existing.parentSectionIds.includes(
+        entity.parentSectionId
+      )
+    ) {
+      existing.parentSectionIds.push(
+        entity.parentSectionId
+      );
+    }
+
+    if (
+      entity.headingKind &&
+      !existing.headingKinds.includes(
+        entity.headingKind
+      )
+    ) {
+      existing.headingKinds.push(
+        entity.headingKind
+      );
     }
 
     if (entity.source && !existing.sources.includes(entity.source)) {
@@ -694,23 +933,66 @@ function mergeEntities(rawEntities = [], evidence = []) {
     .map((entity) => {
       const lower = entity.name.toLowerCase();
 
-      const matches = evidence
-        .filter((ev) => ev.text.toLowerCase().includes(lower))
-        .slice(0, 8)
-        .map((ev) => ev.id);
+      const matchingEvidence = evidence
+        .filter((ev) =>
+          ev.text
+            .toLowerCase()
+            .includes(lower)
+        )
+        .slice(0, 8);
+
+      const matches =
+        matchingEvidence.map(
+          (ev) => ev.id
+        );
 
       const pages = unique([
         ...entity.pages,
-        ...evidence
-          .filter((ev) => ev.text.toLowerCase().includes(lower))
-          .map((ev) => ev.page),
+
+        ...matchingEvidence.map(
+          (ev) => ev.page
+        ),
+      ]);
+
+      const sectionIds = unique([
+        ...entity.sectionIds,
+
+        ...matchingEvidence.map(
+          (ev) => ev.sectionId
+        ),
+      ]);
+
+      const parentSectionIds = unique([
+        ...entity.parentSectionIds,
+
+        ...matchingEvidence.map(
+          (ev) => ev.parentSectionId
+        ),
+      ]);
+
+      const headingKinds = unique([
+        ...entity.headingKinds,
+
+        ...matchingEvidence.map(
+          (ev) => ev.headingKind
+        ),
       ]);
 
       return {
         ...entity,
+
         pages,
-        evidenceIds: matches,
-        confidence: Number(entity.confidence.toFixed(2)),
+        sectionIds,
+        parentSectionIds,
+        headingKinds,
+
+        evidenceIds:
+          matches,
+
+        confidence:
+          Number(
+            entity.confidence.toFixed(2)
+          ),
       };
     })
     .filter(
@@ -1086,116 +1368,547 @@ function buildCanonicalComponents(
     });
   }
 
-  return entities
-    .filter((entity) => {
-      const name = normalizeText(entity.name);
-      const lowerName = name.toLowerCase();
+  const trailingIdentityQualifierPattern =
+    /\s+(shared|distributed|canonical|validation|metadata|provider|object|search)$/i;
 
-      if (!name) {
-        return false;
-      }
+  function findCleanerCanonicalEntity(
+    promotedEntity,
+    allEntities = []
+  ) {
+    const promotedName =
+      normalizeText(promotedEntity.name);
 
-      if (genericNames.has(lowerName)) {
-        return false;
-      }
-
-      if (protocolOrOperationNames.has(lowerName)) {
-        return false;
-      }
-
-      if (actionNames.has(lowerName)) {
-        return false;
-      }
-
-      if (
-        !Array.isArray(entity.evidenceIds) ||
-        entity.evidenceIds.length === 0
-      ) {
-        return false;
-      }
-
-      if (hasContextualTail(entity)) {
-        return false;
-      }
-
-      if (
-        containsStrongerCanonicalEntity(
-          entity,
-          entities
+    const strippedName =
+      promotedName
+        .replace(
+          trailingIdentityQualifierPattern,
+          ""
         )
-      ) {
-        return false;
-      }
+        .trim();
 
-      return (
-        hasArchitectureNoun(name) ||
-        hasDocumentDefinedNameShape(name)
+    if (
+      !strippedName ||
+      strippedName === promotedName ||
+      strippedName.length < 3
+    ) {
+      return null;
+    }
+
+    const strippedLower =
+      strippedName.toLowerCase();
+
+    /*
+     * Never promote a generic word, operation, or protocol
+     * into a canonical component identity.
+     */
+    if (
+      genericNames.has(strippedLower) ||
+      protocolOrOperationNames.has(strippedLower) ||
+      actionNames.has(strippedLower)
+    ) {
+      return null;
+    }
+
+    const cleanerEntity =
+      allEntities.find(
+        (candidate) =>
+          candidate.id !== promotedEntity.id &&
+          normalizeText(
+            candidate.name
+          ).toLowerCase() === strippedLower
       );
-    })
-    .map((entity) => {
-      const architectureNounSignal =
-        hasArchitectureNoun(entity.name);
 
-      const documentDefinedNameSignal =
-        hasDocumentDefinedNameShape(
-          entity.name
+    if (
+      cleanerEntity &&
+      Array.isArray(cleanerEntity.evidenceIds) &&
+      cleanerEntity.evidenceIds.length > 0
+    ) {
+      const promotedEvidenceIds =
+        new Set(
+          promotedEntity.evidenceIds || []
         );
 
-      const promotionReasons = [];
+      const sharedEvidenceCount =
+        (cleanerEntity.evidenceIds || [])
+          .filter((evidenceId) =>
+            promotedEvidenceIds.has(evidenceId)
+          )
+          .length;
 
-      if (architectureNounSignal) {
-        promotionReasons.push(
-          "architecture_noun"
+      const promotedSectionIds =
+        new Set(
+          promotedEntity.sectionIds || []
         );
+
+      const sharedSectionCount =
+        (cleanerEntity.sectionIds || [])
+          .filter((sectionId) =>
+            promotedSectionIds.has(sectionId)
+          )
+          .length;
+
+      if (
+        sharedEvidenceCount > 0 ||
+        sharedSectionCount > 0
+      ) {
+        return {
+          entity:
+            cleanerEntity,
+
+          derived:
+            false,
+        };
+      }
+    }
+
+    /*
+    * A clean standalone entity may not exist because PDF text
+    * extraction can join the component name with its descriptive
+    * qualifier.
+    *
+    * Derive the clean identity only from repeated,
+    * definition-section-backed evidence.
+    */
+    const definitionBacked =
+      (promotedEntity.sectionIds || [])
+        .some((sectionId) =>
+          /component[_ -]?definitions?/i.test(
+            String(sectionId || "")
+          )
+        );
+
+    const repeatedEvidence =
+      (promotedEntity.mentions || 0) >= 2 &&
+      (promotedEntity.evidenceIds || []).length >= 2;
+
+    if (
+      !definitionBacked ||
+      !repeatedEvidence
+    ) {
+      return null;
+    }
+
+    return {
+      entity: {
+        ...promotedEntity,
+
+        id:
+          slugify(strippedName),
+
+        name:
+          strippedName,
+      },
+
+      derived:
+        true,
+    };
+  }
+
+  const promotedComponents =
+    entities
+      .filter((entity) => {
+        const name =
+          normalizeText(entity.name);
+
+        const lowerName =
+          name.toLowerCase();
+
+        if (!name) {
+          return false;
+        }
+
+        if (genericNames.has(lowerName)) {
+          return false;
+        }
+
+        if (
+          protocolOrOperationNames.has(
+            lowerName
+          )
+        ) {
+          return false;
+        }
+
+        if (actionNames.has(lowerName)) {
+          return false;
+        }
+
+        if (
+          !Array.isArray(
+            entity.evidenceIds
+          ) ||
+          entity.evidenceIds.length === 0
+        ) {
+          return false;
+        }
+
+        if (hasContextualTail(entity)) {
+          return false;
+        }
+
+        if (
+          containsStrongerCanonicalEntity(
+            entity,
+            entities
+          )
+        ) {
+          return false;
+        }
+
+        return (
+          hasArchitectureNoun(name) ||
+          hasDocumentDefinedNameShape(name)
+        );
+      })
+      .map((entity) => {
+        const architectureNounSignal =
+          hasArchitectureNoun(
+            entity.name
+          );
+
+        const documentDefinedNameSignal =
+          hasDocumentDefinedNameShape(
+            entity.name
+          );
+
+        const promotionReasons = [];
+
+        if (architectureNounSignal) {
+          promotionReasons.push(
+            "architecture_noun"
+          );
+        }
+
+        if (documentDefinedNameSignal) {
+          promotionReasons.push(
+            "document_defined_name_shape"
+          );
+        }
+
+        const confidence =
+          architectureNounSignal &&
+          documentDefinedNameSignal
+            ? 0.82
+            : architectureNounSignal
+              ? 0.76
+              : 0.68;
+
+        const cleanIdentityResolution =
+          findCleanerCanonicalEntity(
+            entity,
+            entities
+          );
+
+        const canonicalEntity =
+          cleanIdentityResolution?.entity ||
+          entity;
+
+        if (cleanIdentityResolution) {
+          promotionReasons.push(
+            cleanIdentityResolution.derived
+              ? "derived_clean_document_identity"
+              : "clean_document_identity"
+          );
+        }
+
+        const combinedEvidenceIds =
+          unique([
+            ...(entity.evidenceIds || []),
+
+            ...(
+              canonicalEntity.evidenceIds ||
+              []
+            ),
+          ]);
+
+        const componentEvidence =
+          combinedEvidenceIds
+            .map((evidenceId) =>
+              evidence.find(
+                (item) =>
+                  item.id === evidenceId
+              )
+            )
+            .filter(Boolean);
+
+        return {
+          id:
+            canonicalEntity.id,
+
+          title:
+            canonicalEntity.name,
+
+          kind:
+            inferCanonicalComponentKind(
+              {
+                ...canonicalEntity,
+                evidenceIds:
+                  combinedEvidenceIds,
+              },
+              evidence
+            ),
+
+          entityId:
+            entity.id,
+
+          canonicalIdentitySource:
+            cleanIdentityResolution?.derived
+              ? "derived_from_definition_label"
+              : cleanIdentityResolution
+                ? "existing_clean_entity"
+                : "original_entity",
+
+          evidenceIds:
+            combinedEvidenceIds,
+
+          pages:
+            unique([
+              ...(entity.pages || []),
+
+              ...(
+                canonicalEntity.pages ||
+                []
+              ),
+
+              ...componentEvidence.map(
+                (item) =>
+                  item.page
+              ),
+            ]),
+
+          sectionIds:
+            unique([
+              ...(entity.sectionIds || []),
+
+              ...(
+                canonicalEntity.sectionIds ||
+                []
+              ),
+
+              ...componentEvidence.map(
+                (item) =>
+                  item.sectionId
+              ),
+            ]),
+
+          parentSectionIds:
+            unique([
+              ...(
+                entity.parentSectionIds ||
+                []
+              ),
+
+              ...(
+                canonicalEntity.parentSectionIds ||
+                []
+              ),
+
+              ...componentEvidence.map(
+                (item) =>
+                  item.parentSectionId
+              ),
+            ]),
+
+          headingKinds:
+            unique([
+              ...(entity.headingKinds || []),
+
+              ...(
+                canonicalEntity.headingKinds ||
+                []
+              ),
+
+              ...componentEvidence.map(
+                (item) =>
+                  item.headingKind
+              ),
+            ]),
+
+          mentions:
+            Math.max(
+              entity.mentions || 0,
+              canonicalEntity.mentions || 0
+            ),
+
+          confidence:
+            Number(
+              confidence.toFixed(2)
+            ),
+
+          promotionReasons:
+            unique(
+              promotionReasons
+            ),
+
+          rawIdentityIds:
+            unique([
+              entity.id,
+              canonicalEntity.id,
+            ]),
+
+          rawIdentityNames:
+            unique([
+              entity.name,
+              canonicalEntity.name,
+            ]),
+        };
+      });
+
+  /*
+   * Multiple decorated candidates may resolve to the same
+   * clean component identity. Merge them into one registry
+   * entry instead of emitting duplicates.
+   */
+  const registryById =
+    new Map();
+
+  promotedComponents.forEach(
+    (component) => {
+      const existing =
+        registryById.get(
+          component.id
+        );
+
+      if (!existing) {
+        registryById.set(
+          component.id,
+          component
+        );
+
+        return;
       }
 
-      if (documentDefinedNameSignal) {
-        promotionReasons.push(
-          "document_defined_name_shape"
-        );
-      }
+      registryById.set(
+        component.id,
+        {
+          ...existing,
 
-      const confidence =
-        architectureNounSignal &&
-        documentDefinedNameSignal
-          ? 0.82
-          : architectureNounSignal
-            ? 0.76
-            : 0.68;
+          evidenceIds:
+            unique([
+              ...(
+                existing.evidenceIds ||
+                []
+              ),
 
-      return {
-        id: entity.id,
-        title: entity.name,
+              ...(
+                component.evidenceIds ||
+                []
+              ),
+            ]),
 
-        kind: inferCanonicalComponentKind(
-          entity,
-          evidence
-        ),
+          pages:
+            unique([
+              ...(existing.pages || []),
+              ...(component.pages || []),
+            ]),
 
-        entityId: entity.id,
+          sectionIds:
+            unique([
+              ...(
+                existing.sectionIds ||
+                []
+              ),
 
-        evidenceIds: unique(
-          entity.evidenceIds
-        ),
+              ...(
+                component.sectionIds ||
+                []
+              ),
+            ]),
 
-        pages: unique(entity.pages),
+          parentSectionIds:
+            unique([
+              ...(
+                existing.parentSectionIds ||
+                []
+              ),
 
-        mentions: entity.mentions || 0,
+              ...(
+                component.parentSectionIds ||
+                []
+              ),
+            ]),
 
-        confidence:
-          Number(confidence.toFixed(2)),
+          headingKinds:
+            unique([
+              ...(
+                existing.headingKinds ||
+                []
+              ),
 
-        promotionReasons,
-      };
-    })
+              ...(
+                component.headingKinds ||
+                []
+              ),
+            ]),
+
+          promotionReasons:
+            unique([
+              ...(
+                existing.promotionReasons ||
+                []
+              ),
+
+              ...(
+                component.promotionReasons ||
+                []
+              ),
+            ]),
+
+          rawIdentityIds:
+            unique([
+              ...(
+                existing.rawIdentityIds ||
+                []
+              ),
+
+              ...(
+                component.rawIdentityIds ||
+                []
+              ),
+            ]),
+
+          rawIdentityNames:
+            unique([
+              ...(
+                existing.rawIdentityNames ||
+                []
+              ),
+
+              ...(
+                component.rawIdentityNames ||
+                []
+              ),
+            ]),
+
+          mentions:
+            Math.max(
+              existing.mentions || 0,
+              component.mentions || 0
+            ),
+
+          confidence:
+            Math.max(
+              existing.confidence || 0,
+              component.confidence || 0
+            ),
+        }
+      );
+    }
+  );
+
+  return Array
+    .from(
+      registryById.values()
+    )
     .sort(
       (a, b) =>
         b.confidence - a.confidence ||
         b.mentions - a.mentions ||
-        a.title.localeCompare(b.title)
+        a.title.localeCompare(
+          b.title
+        )
     );
 }
-
 
 function extractRelationships(
   canonicalComponents = [],
@@ -1424,10 +2137,13 @@ function extractRelationships(
     from,
     to,
     type,
-    evidenceId,
+    evidenceItem,
     confidence,
     matchedVerb,
   }) {
+    const evidenceId =
+      evidenceItem?.id ||
+      null;
     if (
       !from?.id ||
       !to?.id ||
@@ -1462,6 +2178,30 @@ function extractRelationships(
         );
       }
 
+      existing.pages =
+        unique([
+          ...(existing.pages || []),
+          evidenceItem?.page,
+        ]);
+
+      existing.sectionIds =
+        unique([
+          ...(existing.sectionIds || []),
+          evidenceItem?.sectionId,
+        ]);
+
+      existing.parentSectionIds =
+        unique([
+          ...(existing.parentSectionIds || []),
+          evidenceItem?.parentSectionId,
+        ]);
+
+      existing.headingKinds =
+        unique([
+          ...(existing.headingKinds || []),
+          evidenceItem?.headingKind,
+        ]);
+
       if (
         !existing.matchedVerbs.includes(
           matchedVerb
@@ -1488,13 +2228,37 @@ function extractRelationships(
           relationships.length + 1
         ).padStart(4, "0")}`,
 
-      from: from.id,
-      to: to.id,
+      from:
+        from.id,
+
+      to:
+        to.id,
+
       type,
 
       evidenceIds: [
         evidenceId,
       ],
+
+      pages:
+        unique([
+          evidenceItem?.page,
+        ]),
+
+      sectionIds:
+        unique([
+          evidenceItem?.sectionId,
+        ]),
+
+      parentSectionIds:
+        unique([
+          evidenceItem?.parentSectionId,
+        ]),
+
+      headingKinds:
+        unique([
+          evidenceItem?.headingKind,
+        ]),
 
       confidence,
 
@@ -1595,9 +2359,11 @@ function extractRelationships(
                 to:
                   toMention.component,
 
-                type: pattern.type,
+                type:
+                  pattern.type,
 
-                evidenceId: ev.id,
+                evidenceItem:
+                  ev,
 
                 confidence:
                   pattern.confidence,
@@ -1634,10 +2400,48 @@ function extractSequences(evidence = [], documentStructure = {}) {
     ? documentStructure.sections
         .filter((section) => normalizeText(section.title || section.heading || section.text))
         .map((section, index) => ({
-          order: index + 1,
-          sectionId: section.id || slugify(section.title || section.heading || section.text),
-          page: section.page || section.pageNumber || null,
-          text: normalizeText(section.title || section.heading || section.text),
+          order:
+            index + 1,
+
+          sectionId:
+            section.id ||
+            slugify(
+              section.title ||
+              section.heading ||
+              section.text
+            ),
+
+          parentSectionId:
+            section.parentSectionId ||
+            null,
+
+          sectionOrder:
+            section.sectionOrder ??
+            index + 1,
+
+          sectionDepth:
+            section.sectionDepth ??
+            (
+              section.parentSectionId
+                ? 1
+                : 0
+            ),
+
+          headingKind:
+            section.headingKind ||
+            null,
+
+          page:
+            section.page ||
+            section.pageNumber ||
+            null,
+
+          text:
+            normalizeText(
+              section.title ||
+              section.heading ||
+              section.text
+            ),
         }))
     : [];
 
@@ -1658,12 +2462,42 @@ function extractSequences(evidence = [], documentStructure = {}) {
       id: "seq_detected_steps",
       type: "detected_steps",
       title: "Detected ordered steps",
-      steps: sequenceEvidence.slice(0, 80).map((ev, index) => ({
-        order: index + 1,
-        evidenceId: ev.id,
-        page: ev.page,
-        text: ev.text,
-      })),
+      steps:
+      sequenceEvidence
+        .slice(0, 80)
+        .map((ev, index) => ({
+          order:
+            index + 1,
+
+          evidenceId:
+            ev.id,
+
+          page:
+            ev.page,
+
+          sectionId:
+            ev.sectionId ||
+            null,
+
+          parentSectionId:
+            ev.parentSectionId ||
+            null,
+
+          sectionOrder:
+            ev.sectionOrder ??
+            null,
+
+          sectionDepth:
+            ev.sectionDepth ??
+            null,
+
+          headingKind:
+            ev.headingKind ||
+            null,
+
+          text:
+            ev.text,
+        })),
       confidence: sequenceEvidence.length >= 3 ? 0.68 : 0.45,
     });
   }
@@ -1783,6 +2617,70 @@ function buildDocumentUnderstanding({
   const relationships = extractRelationships(canonicalComponents, evidence);
   const sequences = extractSequences(evidence, documentStructure);
 
+  const structureEvidence =
+    evidence.filter(
+      (item) =>
+        item.source ===
+          "documentStructureBuilder" ||
+        (
+          Array.isArray(item.sources) &&
+          item.sources.includes(
+            "documentStructureBuilder"
+          )
+        )
+    );
+
+  const structureEvidenceWithoutSectionIdCount =
+    structureEvidence.filter(
+      (item) =>
+        !item.sectionId
+    ).length;
+
+  const canonicalComponentWithoutSectionContextCount =
+    canonicalComponents.filter(
+      (component) =>
+        !Array.isArray(
+          component.sectionIds
+        ) ||
+        component.sectionIds.length === 0
+    ).length;
+
+  const relationshipWithoutSectionContextCount =
+    relationships.filter(
+      (relationship) =>
+        !Array.isArray(
+          relationship.sectionIds
+        ) ||
+        relationship.sectionIds.length === 0
+    ).length;
+
+  const contextPropagationHealth = {
+    version:
+      "document-context-propagation-health-v1",
+
+    valid:
+      structureEvidenceWithoutSectionIdCount === 0,
+
+    warningCount:
+      canonicalComponentWithoutSectionContextCount +
+      relationshipWithoutSectionContextCount,
+
+    structureEvidenceCount:
+      structureEvidence.length,
+
+    structureEvidenceWithoutSectionIdCount,
+
+    canonicalComponentCount:
+      canonicalComponents.length,
+
+    canonicalComponentWithoutSectionContextCount,
+
+    relationshipCount:
+      relationships.length,
+
+    relationshipWithoutSectionContextCount,
+  };
+
   const structuralItems = [
     ...(Array.isArray(documentStructure.sections)
       ? documentStructure.sections
@@ -1849,6 +2747,9 @@ function buildDocumentUnderstanding({
     health: {
       structuralEligibility:
         structuralEligibilityHealth,
+
+      contextPropagation:
+        contextPropagationHealth,
     },
 
     confidence: {
@@ -1903,6 +2804,22 @@ function buildDocumentUnderstanding({
 
       relationshipCount: relationships.length,
       sequenceCount: sequences.length,
+
+      contextPropagationValid:
+        contextPropagationHealth.valid,
+
+      structureEvidenceWithoutSectionIdCount:
+        contextPropagationHealth
+          .structureEvidenceWithoutSectionIdCount,
+
+      canonicalComponentWithoutSectionContextCount:
+        contextPropagationHealth
+          .canonicalComponentWithoutSectionContextCount,
+
+      relationshipWithoutSectionContextCount:
+        contextPropagationHealth
+          .relationshipWithoutSectionContextCount,
+
       structuralContainerCount,
       structuralEntityLeakCount,
             structuralEligibilityValid:

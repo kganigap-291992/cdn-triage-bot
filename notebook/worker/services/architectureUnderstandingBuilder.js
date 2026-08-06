@@ -207,6 +207,19 @@ function uniqueBy(items, keyFn) {
   return out;
 }
 
+function uniqueValues(values = []) {
+  return Array.from(
+    new Set(
+      asArray(values).filter(
+        (value) =>
+          value !== null &&
+          value !== undefined &&
+          value !== ""
+      )
+    )
+  );
+}
+
 
 function isLikelyConcatenatedSiblingLabel(value) {
   const name = normalizeText(value);
@@ -368,10 +381,160 @@ function suppressContainedComponentFragments(components = []) {
 
 
 function getEvidenceText(evidence) {
-  return normalizeText(evidence?.text || evidence?.content || evidence?.label || "");
+  return normalizeText(
+    evidence?.text ||
+    evidence?.content ||
+    evidence?.label ||
+    ""
+  );
 }
 
-function getEvidenceForComponent(component, evidence = []) {
+function collectEvidenceContext({
+  evidenceIds = [],
+  evidence = [],
+} = {}) {
+  const evidenceIdSet =
+    new Set(
+      asArray(evidenceIds)
+    );
+
+  const matchedEvidence =
+    asArray(evidence).filter(
+      (item) =>
+        item?.id &&
+        evidenceIdSet.has(item.id)
+    );
+
+  return {
+    pages:
+      uniqueValues(
+        matchedEvidence.map(
+          (item) => item.page
+        )
+      ),
+
+    sectionIds:
+      uniqueValues(
+        matchedEvidence.map(
+          (item) => item.sectionId
+        )
+      ),
+
+    parentSectionIds:
+      uniqueValues(
+        matchedEvidence.map(
+          (item) =>
+            item.parentSectionId
+        )
+      ),
+
+    sectionOrders:
+      uniqueValues(
+        matchedEvidence.map(
+          (item) =>
+            item.sectionOrder
+        )
+      ),
+
+    sectionDepths:
+      uniqueValues(
+        matchedEvidence.map(
+          (item) =>
+            item.sectionDepth
+        )
+      ),
+
+    headingKinds:
+      uniqueValues(
+        matchedEvidence.map(
+          (item) =>
+            item.headingKind
+        )
+      ),
+
+    structureBackedEvidenceIds:
+      uniqueValues(
+        matchedEvidence
+          .filter(
+            (item) =>
+              Boolean(item.sectionId)
+          )
+          .map(
+            (item) => item.id
+          )
+      ),
+  };
+}
+
+function attachDocumentContextToComponents(
+  components = [],
+  evidence = []
+) {
+  return asArray(components).map(
+    (component) => {
+      const evidenceContext =
+        collectEvidenceContext({
+          evidenceIds:
+            component.evidenceIds,
+          evidence,
+        });
+
+      return {
+        ...component,
+
+        pages:
+          uniqueValues([
+            ...asArray(component.pages),
+            ...evidenceContext.pages,
+          ]),
+
+        sectionIds:
+          uniqueValues([
+            ...asArray(component.sectionIds),
+            ...evidenceContext.sectionIds,
+          ]),
+
+        parentSectionIds:
+          uniqueValues([
+            ...asArray(component.parentSectionIds),
+            ...evidenceContext.parentSectionIds,
+          ]),
+
+        sectionOrders:
+          uniqueValues([
+            ...asArray(component.sectionOrders),
+            ...evidenceContext.sectionOrders,
+          ]),
+
+        sectionDepths:
+          uniqueValues([
+            ...asArray(component.sectionDepths),
+            ...evidenceContext.sectionDepths,
+          ]),
+
+        headingKinds:
+          uniqueValues([
+            ...asArray(component.headingKinds),
+            ...evidenceContext.headingKinds,
+          ]),
+
+        structureBackedEvidenceIds:
+          uniqueValues([
+            ...asArray(
+              component.structureBackedEvidenceIds
+            ),
+            ...evidenceContext.structureBackedEvidenceIds,
+          ]),
+      };
+    }
+  );
+}
+
+
+function getEvidenceForComponent(
+  component,
+  evidence = []
+) {
   const ids = new Set(component.evidenceIds || []);
   const name = lower(component.name);
 
@@ -837,19 +1000,102 @@ function isGraphEligibleRole(role) {
   return GRAPH_ELIGIBLE_ROLES.has(role);
 }
 
+
+function extractCanonicalRegistryComponents(
+  documentUnderstanding = {}
+) {
+  return asArray(
+    documentUnderstanding.canonicalComponents
+  ).map((component) => ({
+    id: component.id,
+    name: component.title,
+    type: component.kind,
+    role: classifyArchitectureRole(
+      {
+        name: component.title,
+        type: component.kind,
+      },
+      []
+    ),
+    graphEligible: true,
+    structuralScore: 1,
+    componentAdmission: {
+      score: 4,
+      signals: [
+        "canonical_component_registry",
+      ],
+    },
+    source:
+      "canonical_component_registry",
+
+    sourceEntityId:
+      component.entityId,
+
+    evidenceIds:
+      component.evidenceIds || [],
+
+    pages:
+      component.pages || [],
+
+    sectionIds:
+      component.sectionIds || [],
+
+    parentSectionIds:
+      component.parentSectionIds || [],
+
+    headingKinds:
+      component.headingKinds || [],
+
+    confidence:
+      component.confidence,
+  }));
+}
+
 function extractComponents(documentUnderstanding = {}) {
   const entities = documentUnderstanding.entities || [];
   const evidence = documentUnderstanding.evidence || [];
 
   const fromEntities = entities
-  .map((entity) => ({
-    id: entity.id,
-    name: normalizeText(entity.name || entity.label || entity.text),
-    source: "entity",
-    type: entity.type || "component",
-    evidenceIds: entity.evidenceIds || [entity.evidenceId].filter(Boolean),
-    confidence: entity.confidence || "medium",
-  }))
+    .map((entity) => ({
+      id:
+        entity.id,
+
+      name:
+        normalizeText(
+          entity.name ||
+          entity.label ||
+          entity.text
+        ),
+
+      source:
+        "entity",
+
+      type:
+        entity.type ||
+        "component",
+
+      evidenceIds:
+        entity.evidenceIds ||
+        [entity.evidenceId].filter(Boolean),
+
+      pages:
+        asArray(entity.pages),
+
+      sectionIds:
+        asArray(entity.sectionIds),
+
+      parentSectionIds:
+        asArray(
+          entity.parentSectionIds
+        ),
+
+      headingKinds:
+        asArray(entity.headingKinds),
+
+      confidence:
+        entity.confidence ||
+        "medium",
+    }))
   .filter(
     (component) =>
       looksLikeArchitectureCandidate(component.name) &&
@@ -865,23 +1111,88 @@ const fromEvidence = evidence
 
     if (qualified.length > 0) {
       return qualified.map((name) => ({
-        id: null,
+        id:
+          null,
+
         name,
-        source: "deployment_qualified_evidence",
-        type: item.type || "component",
-        evidenceIds: [item.id].filter(Boolean),
-        confidence: item.confidence || "medium",
+
+        source:
+          "deployment_qualified_evidence",
+
+        type:
+          item.type ||
+          "component",
+
+        evidenceIds:
+          [item.id].filter(Boolean),
+
+        pages:
+          uniqueValues([
+            item.page,
+          ]),
+
+        sectionIds:
+          uniqueValues([
+            item.sectionId,
+          ]),
+
+        parentSectionIds:
+          uniqueValues([
+            item.parentSectionId,
+          ]),
+
+        headingKinds:
+          uniqueValues([
+            item.headingKind,
+          ]),
+
+        confidence:
+          item.confidence ||
+          "medium",
       }));
     }
 
     return [
       {
-        id: null,
-        name: text,
-        source: "evidence",
-        type: item.type || "component",
-        evidenceIds: [item.id].filter(Boolean),
-        confidence: item.confidence || "medium",
+        id:
+          null,
+
+        name:
+          text,
+
+        source:
+          "evidence",
+
+        type:
+          item.type ||
+          "component",
+
+        evidenceIds:
+          [item.id].filter(Boolean),
+
+        pages:
+          uniqueValues([
+            item.page,
+          ]),
+
+        sectionIds:
+          uniqueValues([
+            item.sectionId,
+          ]),
+
+        parentSectionIds:
+          uniqueValues([
+            item.parentSectionId,
+          ]),
+
+        headingKinds:
+          uniqueValues([
+            item.headingKind,
+          ]),
+
+        confidence:
+          item.confidence ||
+          "medium",
       },
     ];
   })
@@ -918,10 +1229,24 @@ const fromEvidence = evidence
   return resolvedCandidates
     .map((component, index) => {
       const componentEvidence =
-        getEvidenceForComponent(component, evidence);
+        getEvidenceForComponent(
+          component,
+          evidence
+        );
+
+      const evidenceContext =
+        collectEvidenceContext({
+          evidenceIds:
+            component.evidenceIds,
+
+          evidence,
+        });
 
       const role =
-        classifyArchitectureRole(component, componentEvidence);
+        classifyArchitectureRole(
+          component,
+          componentEvidence
+        );
 
       const structuralScore =
         computeComponentStructuralScore(
@@ -950,9 +1275,57 @@ const fromEvidence = evidence
           score: componentAdmission.score,
           signals: componentAdmission.signals,
         },
-        source: component.source,
-        evidenceIds: component.evidenceIds || [],
-        confidence: component.confidence || "medium",
+        source:
+          component.source,
+
+        evidenceIds:
+          uniqueValues(
+            component.evidenceIds
+          ),
+
+        pages:
+          uniqueValues([
+            ...asArray(component.pages),
+            ...evidenceContext.pages,
+          ]),
+
+        sectionIds:
+          uniqueValues([
+            ...asArray(
+              component.sectionIds
+            ),
+            ...evidenceContext.sectionIds,
+          ]),
+
+        parentSectionIds:
+          uniqueValues([
+            ...asArray(
+              component.parentSectionIds
+            ),
+            ...evidenceContext.parentSectionIds,
+          ]),
+
+        sectionOrders:
+          evidenceContext.sectionOrders,
+
+        sectionDepths:
+          evidenceContext.sectionDepths,
+
+        headingKinds:
+          uniqueValues([
+            ...asArray(
+              component.headingKinds
+            ),
+            ...evidenceContext.headingKinds,
+          ]),
+
+        structureBackedEvidenceIds:
+          evidenceContext
+            .structureBackedEvidenceIds,
+
+        confidence:
+          component.confidence ||
+          "medium",
       };
     })
     .filter((component) => component.graphEligible);
@@ -1270,18 +1643,61 @@ function extractExplicitSequences(documentUnderstanding = {}, components = []) {
             }
 
             return {
-            order: index + 1,
-            text,
-            rawText,
-            source: inferSequenceSource(rawText),
-            sequenceSource: inferSequenceSource(rawText),
-            evidenceId: item.id || null,
-            page: item.page || null,
-            entities: mentioned.map((entry) => ({
-                id: entry.component.id,
-                name: entry.component.name,
-                role: entry.component.role,
-            })),
+              order:
+                index + 1,
+
+              text,
+              rawText,
+
+              source:
+                inferSequenceSource(rawText),
+
+              sequenceSource:
+                inferSequenceSource(rawText),
+
+              evidenceId:
+                item.id ||
+                null,
+
+              page:
+                item.page ||
+                null,
+
+              sectionId:
+                item.sectionId ||
+                null,
+
+              parentSectionId:
+                item.parentSectionId ||
+                null,
+
+              sectionOrder:
+                item.sectionOrder ??
+                null,
+
+              orderWithinSection:
+                item.orderWithinSection ??
+                null,
+
+              sectionDepth:
+                item.sectionDepth ??
+                null,
+
+              headingKind:
+                item.headingKind ||
+                null,
+
+              entities:
+                mentioned.map((entry) => ({
+                  id:
+                    entry.component.id,
+
+                  name:
+                    entry.component.name,
+
+                  role:
+                    entry.component.role,
+                })),
             };
         })
         .filter((item) => item.text && item.entities.length > 0);
@@ -1363,6 +1779,86 @@ function makeRelationship({
       semanticFlowMetadata?.flowPriority || undefined,
   };
 }
+
+function attachDocumentContextToRelationships(
+  relationships = [],
+  evidence = []
+) {
+  return asArray(relationships).map(
+    (relationship) => {
+      const evidenceContext =
+        collectEvidenceContext({
+          evidenceIds:
+            relationship.evidenceIds,
+
+          evidence,
+        });
+
+      return {
+        ...relationship,
+
+        pages:
+          uniqueValues([
+            ...asArray(
+              relationship.pages
+            ),
+            ...evidenceContext.pages,
+          ]),
+
+        sectionIds:
+          uniqueValues([
+            ...asArray(
+              relationship.sectionIds
+            ),
+            ...evidenceContext.sectionIds,
+          ]),
+
+        parentSectionIds:
+          uniqueValues([
+            ...asArray(
+              relationship.parentSectionIds
+            ),
+            ...evidenceContext.parentSectionIds,
+          ]),
+
+        sectionOrders:
+          uniqueValues([
+            ...asArray(
+              relationship.sectionOrders
+            ),
+            ...evidenceContext.sectionOrders,
+          ]),
+
+        sectionDepths:
+          uniqueValues([
+            ...asArray(
+              relationship.sectionDepths
+            ),
+            ...evidenceContext.sectionDepths,
+          ]),
+
+        headingKinds:
+          uniqueValues([
+            ...asArray(
+              relationship.headingKinds
+            ),
+            ...evidenceContext.headingKinds,
+          ]),
+
+        structureBackedEvidenceIds:
+          uniqueValues([
+            ...asArray(
+              relationship
+                .structureBackedEvidenceIds
+            ),
+            ...evidenceContext
+              .structureBackedEvidenceIds,
+          ]),
+      };
+    }
+  );
+}
+
 
 function extractExplicitRelationships(documentUnderstanding = {}, components = []) {
   const relationships = [];
@@ -2126,7 +2622,17 @@ function buildArchitectureUnderstanding(
   spatialUnderstanding = {},
   options = {}
 ) {
-  const baseComponents = extractComponents(documentUnderstanding);
+  const registryComponents =
+    extractCanonicalRegistryComponents(
+      documentUnderstanding
+    );
+
+  const baseComponents =
+    registryComponents.length > 0
+      ? registryComponents
+      : extractComponents(
+          documentUnderstanding
+        );
   const explicitSequences = extractExplicitSequences(documentUnderstanding, baseComponents);
   const promotedComponents = extractSequencePromotedComponents(
     explicitSequences,
@@ -2135,13 +2641,20 @@ function buildArchitectureUnderstanding(
   const rawComponents = uniqueBy(
     [...baseComponents, ...promotedComponents],
     (component) => component.id
+  );
+
+  const contextEnrichedComponents =
+    attachDocumentContextToComponents(
+      rawComponents,
+      documentUnderstanding.evidence || []
     );
 
-    const components = attachBoundariesToComponents(
-      rawComponents,
-      options.architectureEvidence || {},
-      documentUnderstanding
-    );
+  const components =
+  attachBoundariesToComponents(
+    contextEnrichedComponents,
+    options.architectureEvidence || {},
+    documentUnderstanding
+  );
 
   const spatialRelationshipCandidates =
     collectSpatialRelationshipCandidates(spatialUnderstanding);
@@ -2188,9 +2701,17 @@ function buildArchitectureUnderstanding(
       explicitSequences,
     });
 
-    const relationships = attachContextualRolesToRelationships(
-      stepArrowFusion.relationships || classifiedRelationships
-    );
+    const contextualRelationships =
+      attachContextualRolesToRelationships(
+        stepArrowFusion.relationships ||
+        classifiedRelationships
+      );
+
+    const relationships =
+      attachDocumentContextToRelationships(
+        contextualRelationships,
+        documentUnderstanding.evidence || []
+      );
 
     const unknownComponentInference =
       inferUnknownEnterpriseComponents({
@@ -2211,9 +2732,98 @@ function buildArchitectureUnderstanding(
         relationships,
     });
 
+    const contextEligibleComponents =
+  components.filter(
+    (component) =>
+      asArray(
+        component.structureBackedEvidenceIds
+      ).length > 0
+  );
+
+const contextEligibleRelationships =
+  relationships.filter(
+    (relationship) =>
+      asArray(
+        relationship.structureBackedEvidenceIds
+      ).length > 0
+  );
+
+const componentContextMissingCount =
+  contextEligibleComponents.filter(
+    (component) =>
+      asArray(
+        component.sectionIds
+      ).length === 0
+  ).length;
+
+const relationshipContextMissingCount =
+  contextEligibleRelationships.filter(
+    (relationship) =>
+      asArray(
+        relationship.sectionIds
+      ).length === 0
+  ).length;
+
+const explicitSequenceItemCount =
+  explicitSequences.reduce(
+    (sum, sequence) =>
+      sum +
+      asArray(sequence.items).length,
+    0
+  );
+
+const explicitSequenceItemWithSectionCount =
+  explicitSequences.reduce(
+    (sum, sequence) =>
+      sum +
+      asArray(sequence.items).filter(
+        (item) =>
+          Boolean(item.sectionId)
+      ).length,
+    0
+  );
+
+const architectureContextPropagationHealth = {
+  version:
+    "architecture-context-propagation-health-v1",
+
+  valid:
+    componentContextMissingCount === 0 &&
+    relationshipContextMissingCount === 0,
+
+  componentCount:
+    components.length,
+
+  contextEligibleComponentCount:
+    contextEligibleComponents.length,
+
+  componentContextMissingCount,
+
+  relationshipCount:
+    relationships.length,
+
+  contextEligibleRelationshipCount:
+    contextEligibleRelationships.length,
+
+  relationshipContextMissingCount,
+
+  explicitSequenceItemCount,
+
+  explicitSequenceItemWithSectionCount,
+};
+
   return {
-    version: "architecture-understanding-v4-sequence-entity-promotion",
-    sourceVersion: documentUnderstanding.version || null,
+    version:
+      "architecture-understanding-v5-context-propagation",
+
+    sourceVersion:
+      documentUnderstanding.version ||
+      null,
+
+    health: {
+      contextPropagation:
+        architectureContextPropagationHealth,
+    },
 
     explicitSequences,
 
@@ -2281,6 +2891,29 @@ function buildArchitectureUnderstanding(
       ),
       relationshipCount: relationships.length,
       flowCount: flows.length,
+
+      contextPropagationValid:
+        architectureContextPropagationHealth.valid,
+
+      contextEligibleComponentCount:
+        architectureContextPropagationHealth
+          .contextEligibleComponentCount,
+
+      componentContextMissingCount:
+        architectureContextPropagationHealth
+          .componentContextMissingCount,
+
+      contextEligibleRelationshipCount:
+        architectureContextPropagationHealth
+          .contextEligibleRelationshipCount,
+
+      relationshipContextMissingCount:
+        architectureContextPropagationHealth
+          .relationshipContextMissingCount,
+
+      explicitSequenceItemWithSectionCount:
+        architectureContextPropagationHealth
+          .explicitSequenceItemWithSectionCount,
 
       stepArrowFusedRelationshipCount:
         stepArrowFusion.stats.fusedRelationshipCount,

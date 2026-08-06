@@ -855,11 +855,106 @@ function shouldStartNewSection(element) {
   return element?.type === "heading";
 }
 
+/*
+ * BUG-5 — Section Identity and Parentage
+ *
+ * Only broad structural headings establish parent scope.
+ * Specific headings such as "Journey 1", "Atlas Validation",
+ * or "Availability Zone 1" remain child sections.
+ *
+ * This deliberately avoids guessing hierarchy from page position
+ * or typography alone.
+ */
+function isBroadContainerHeading({
+  title = "",
+  headingKind = HEADING_KINDS.GENERIC,
+} = {}) {
+  const text = normalizeHeadingText(title);
+
+  if (!text) {
+    return false;
+  }
+
+  if (
+    /^(component|service|system)\s+definitions?$/i.test(text)
+  ) {
+    return true;
+  }
+
+  if (
+    /^(numbered\s+)?system journeys?$/i.test(text) ||
+    /^documented journeys?$/i.test(text)
+  ) {
+    return true;
+  }
+
+  if (
+    /^(deployment topology|deployment model|deployment architecture)(?:\s*[-–—:]\s*.+)?$/i.test(
+      text
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /^(shared platform services?|shared infrastructure|shared services?)$/i.test(
+      text
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /^(architecture reference|architecture overview|system architecture|system topology)$/i.test(
+      text
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /^(glossary|terminology|acronyms?|legend|diagram key|visual key)$/i.test(
+      text
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function clearsParentSectionScope({
+  title = "",
+  headingKind = HEADING_KINDS.GENERIC,
+  architectureContainer = false,
+} = {}) {
+  const text =
+    normalizeHeadingText(title);
+
+  const explicitDocumentationHeading =
+    /\b(notes?|appendix|summary|recap|recommendations?|evidence notes?)\b/i.test(
+      text
+    );
+
+  if (explicitDocumentationHeading) {
+    return true;
+  }
+
+  return (
+    architectureContainer !== true &&
+    (
+      headingKind === HEADING_KINDS.DOCUMENTATION ||
+      headingKind === HEADING_KINDS.VALIDATION
+    )
+  );
+}
+
 function createUntitledSection(page = 1) {
   return {
     id: "section_document_overview",
     parentSectionId: null,
     sectionOrder: 1,
+    sectionDepth: 0,
     title: "Document overview",
     sourceTitle: "Document overview",
     page,
@@ -938,18 +1033,28 @@ function buildSections(elements = []) {
   const usedSectionIds = new Set();
 
   let current = null;
+  let activeParentSectionId = null;
+
+  function pushCurrent() {
+    if (!current) {
+      return;
+    }
+
+    sections.push(
+      finalizeSection(current)
+    );
+
+    current = null;
+  }
 
   for (const element of elements) {
     if (shouldStartNewSection(element)) {
-      if (current) {
-        sections.push(
-          finalizeSection(current)
-        );
-      }
+      pushCurrent();
 
-      const title = normalizeHeadingText(
-        element.text
-      );
+      const title =
+        normalizeHeadingText(
+          element.text
+        );
 
       const headingKind =
         element.headingKind ||
@@ -961,16 +1066,40 @@ function buildSections(elements = []) {
       const sectionId =
         createUniqueSectionId({
           title,
-          fallbackIndex:
-            sectionOrder,
+          fallbackIndex: sectionOrder,
           usedSectionIds,
         });
+
+      const startsParentScope =
+        isBroadContainerHeading({
+          title,
+          headingKind,
+        });
+
+      const clearsParentScope =
+        clearsParentSectionScope({
+          title,
+          headingKind,
+          architectureContainer:
+            element.architectureContainer === true,
+        });
+
+      const parentSectionId =
+      startsParentScope ||
+      clearsParentScope
+        ? null
+        : activeParentSectionId;
+
+    const sectionDepth =
+      parentSectionId
+        ? 1
+        : 0;
 
       element.sectionId =
         sectionId;
 
       element.parentSectionId =
-        null;
+        parentSectionId;
 
       element.sectionOrder =
         sectionOrder;
@@ -978,23 +1107,30 @@ function buildSections(elements = []) {
       element.orderWithinSection =
         0;
 
+      element.sectionDepth =
+        sectionDepth;
+
       current = {
         id: sectionId,
 
-        parentSectionId: null,
+        parentSectionId,
 
         sectionOrder,
 
+        sectionDepth,
+
         title:
           title ||
-          `Section ${sections.length + 1}`,
+          `Section ${sectionOrder}`,
 
-        sourceTitle: title || "",
-        page: element.page,
+        sourceTitle:
+          title || "",
 
-        sourcePages: [element.page].filter(
-          Boolean
-        ),
+        page:
+          element.page,
+
+        sourcePages:
+          [element.page].filter(Boolean),
 
         headingKind,
 
@@ -1014,23 +1150,45 @@ function buildSections(elements = []) {
             STRUCTURAL_CONTAINER_ELIGIBILITY),
         },
 
-        role: semanticRoleFromText({
-          title,
-        }),
+        role:
+          semanticRoleFromText({
+            title,
+          }),
 
-        confidence: "medium",
-        headingElement: element,
-        elements: [],
+        confidence:
+          "medium",
+
+        headingElement:
+          element,
+
+        elements:
+          [],
       };
+
+      if (startsParentScope) {
+        activeParentSectionId =
+          sectionId;
+      } else if (clearsParentScope) {
+        activeParentSectionId =
+          null;
+      }
 
       continue;
     }
 
     if (!current) {
-      current = createUntitledSection(
+    current =
+      createUntitledSection(
         element.page
       );
-    }
+
+    usedSectionIds.add(
+      current.id
+    );
+
+    activeParentSectionId =
+      null;
+  }
 
     element.sectionId =
       current.id;
@@ -1046,86 +1204,201 @@ function buildSections(elements = []) {
     element.orderWithinSection =
       current.elements.length + 1;
 
-    current.elements.push(element);
-  }
+    element.sectionDepth =
+      current.sectionDepth || 0;
 
-  if (current) {
-    sections.push(
-      finalizeSection(current)
+    current.elements.push(
+      element
     );
   }
 
-  return sections.filter((section) => {
-    return (
+  pushCurrent();
+
+  return sections.filter(
+    (section) =>
       section.title ||
       section.childCount > 0 ||
       section.textPreview
-    );
-  });
+  );
 }
 
 function buildHierarchy(sections = []) {
-  return {
-    type: "document",
-    title: "Document",
-    children: sections.map((section) => ({
-      id: section.id,
-      type: "section",
-      title: section.title,
-      role: section.role,
+  const sectionNodes = new Map();
+
+  function buildElementNode({
+    section,
+    element,
+    index,
+  }) {
+    return {
+      id:
+        `${section.id}_element_${index + 1}`,
+
+      type:
+        element.type,
+
+      text:
+        element.text,
+
+      page:
+        element.page,
+
+      sectionId:
+        element.sectionId ||
+        section.id,
+
+      parentSectionId:
+        element.parentSectionId ||
+        null,
+
+      sectionOrder:
+        element.sectionOrder ||
+        section.sectionOrder ||
+        null,
+
+      orderWithinSection:
+        element.orderWithinSection ??
+        index + 1,
+
+      sectionDepth:
+        element.sectionDepth ??
+        section.sectionDepth ??
+        0,
 
       headingKind:
-        section.headingKind ||
-        HEADING_KINDS.GENERIC,
+        element.headingKind ||
+        null,
 
       architectureContainer:
-        section.architectureContainer === true,
+        element.architectureContainer ===
+        true,
 
       structuralRole:
-        section.structuralRole ||
-        STRUCTURAL_ROLES.DOCUMENT_CONTAINER,
+        element.structuralRole ||
+        STRUCTURAL_ROLES.CONTENT,
 
       eligibility: {
-        ...(section.eligibility ||
-          STRUCTURAL_CONTAINER_ELIGIBILITY),
+        ...(element.eligibility ||
+          buildElementEligibility({
+            type:
+              element.type,
+
+            architectureContainer:
+              element.architectureContainer ===
+              true,
+          }).eligibility),
       },
+    };
+  }
 
-      page: section.page,
-      sourcePages: section.sourcePages,
-      childCount: section.childCount,
+  for (const section of sections) {
+    sectionNodes.set(
+      section.id,
+      {
+        id:
+          section.id,
 
-      children: section.elements.map(
-        (element, index) => ({
-          id: `${section.id}_element_${
-            index + 1
-          }`,
+        type:
+          "section",
 
-          type: element.type,
-          text: element.text,
-          page: element.page,
+        title:
+          section.title,
 
-          headingKind:
-            element.headingKind || null,
+        role:
+          section.role,
 
-          architectureContainer:
-            element.architectureContainer ===
-            true,
+        parentSectionId:
+          section.parentSectionId ||
+          null,
 
-          structuralRole:
-            element.structuralRole ||
-            STRUCTURAL_ROLES.CONTENT,
+        sectionOrder:
+          section.sectionOrder ||
+          null,
 
-          eligibility: {
-            ...(element.eligibility ||
-              buildElementEligibility({
-                type: element.type,
-                architectureContainer:
-                  element.architectureContainer === true,
-              }).eligibility),
-          },
-        })
-      ),
-    }))
+        sectionDepth:
+          section.sectionDepth ||
+          0,
+
+        headingKind:
+          section.headingKind ||
+          HEADING_KINDS.GENERIC,
+
+        architectureContainer:
+          section.architectureContainer ===
+          true,
+
+        structuralRole:
+          section.structuralRole ||
+          STRUCTURAL_ROLES.DOCUMENT_CONTAINER,
+
+        eligibility: {
+          ...(section.eligibility ||
+            STRUCTURAL_CONTAINER_ELIGIBILITY),
+        },
+
+        page:
+          section.page,
+
+        sourcePages:
+          section.sourcePages,
+
+        childCount:
+          section.childCount,
+
+        sectionChildren:
+          [],
+
+        children:
+          section.elements.map(
+            (element, index) =>
+              buildElementNode({
+                section,
+                element,
+                index,
+              })
+          ),
+      }
+    );
+  }
+
+  const rootSections = [];
+
+  for (const section of sections) {
+    const node =
+      sectionNodes.get(
+        section.id
+      );
+
+    const parentNode =
+      section.parentSectionId
+        ? sectionNodes.get(
+            section.parentSectionId
+          )
+        : null;
+
+    if (
+      parentNode &&
+      parentNode.id !== node.id
+    ) {
+      parentNode.sectionChildren.push(
+        node
+      );
+    } else {
+      rootSections.push(
+        node
+      );
+    }
+  }
+
+  return {
+    type:
+      "document",
+
+    title:
+      "Document",
+
+    children:
+      rootSections,
   };
 }
 
@@ -1149,20 +1422,145 @@ function buildDocumentStructure({
   const hierarchy =
     buildHierarchy(sections);
 
-  const headingKindBreakdown = elements
-    .filter(
-      (item) => item.type === "heading"
-    )
-    .reduce((acc, item) => {
-      const headingKind =
-        item.headingKind ||
-        HEADING_KINDS.GENERIC;
+  /*
+   * BUG-5 — Section identity and parentage health.
+   *
+   * Validate that:
+   * - every parent section exists
+   * - no section points to itself
+   * - element parentage matches its owning section
+   */
+  const sectionIds =
+    new Set(
+      sections
+        .map((section) => section.id)
+        .filter(Boolean)
+    );
 
-      acc[headingKind] =
-        (acc[headingKind] || 0) + 1;
+  const invalidParentSectionReferenceCount =
+    sections.filter(
+      (section) =>
+        section.parentSectionId &&
+        !sectionIds.has(
+          section.parentSectionId
+        )
+    ).length;
 
-      return acc;
-    }, {});
+  const selfParentSectionCount =
+    sections.filter(
+      (section) =>
+        section.parentSectionId &&
+        section.parentSectionId ===
+          section.id
+    ).length;
+
+  const childSectionCount =
+    sections.filter(
+      (section) =>
+        Boolean(
+          section.parentSectionId
+        )
+    ).length;
+
+  const rootSectionCount =
+    sections.length -
+    childSectionCount;
+
+  const sectionById =
+    new Map(
+      sections.map((section) => [
+        section.id,
+        section,
+      ])
+    );
+
+  const elementWithoutSectionIdCount =
+    elements.filter(
+      (element) =>
+        !element.sectionId
+    ).length;
+
+  const invalidElementSectionReferenceCount =
+    elements.filter(
+      (element) =>
+        element.sectionId &&
+        !sectionById.has(
+          element.sectionId
+        )
+    ).length;
+
+  const elementSectionParentMismatchCount =
+    elements.filter((element) => {
+      if (!element.sectionId) {
+        return true;
+      }
+
+      const owningSection =
+        sectionById.get(
+          element.sectionId
+        );
+
+      if (!owningSection) {
+        return true;
+      }
+
+      return (
+        (
+          element.parentSectionId ||
+          null
+        ) !==
+        (
+          owningSection.parentSectionId ||
+          null
+        )
+      );
+    }).length;
+
+  const duplicateSectionIdCount =
+    sections.length -
+    sectionIds.size;
+
+  const sectionIdentityHealth = {
+    version:
+      "section-identity-health-v1",
+
+    valid:
+      invalidParentSectionReferenceCount === 0 &&
+      selfParentSectionCount === 0 &&
+      duplicateSectionIdCount === 0 &&
+      elementWithoutSectionIdCount === 0 &&
+      invalidElementSectionReferenceCount === 0 &&
+      elementSectionParentMismatchCount === 0,
+
+    rootSectionCount,
+    childSectionCount,
+
+    duplicateSectionIdCount,
+
+    invalidParentSectionReferenceCount,
+    selfParentSectionCount,
+
+    elementWithoutSectionIdCount,
+    invalidElementSectionReferenceCount,
+    elementSectionParentMismatchCount,
+  };
+
+  const headingKindBreakdown =
+    elements
+      .filter(
+        (item) =>
+          item.type === "heading"
+      )
+      .reduce((acc, item) => {
+        const headingKind =
+          item.headingKind ||
+          HEADING_KINDS.GENERIC;
+
+        acc[headingKind] =
+          (acc[headingKind] || 0) + 1;
+
+        return acc;
+      }, {});
 
   const architectureContainerHeadingCount =
     elements.filter(
@@ -1173,29 +1571,60 @@ function buildDocumentStructure({
 
   return {
     version:
-       "document-structure-v4-page-section-attribution",
-    source: "documentStructureBuilder",
+      "document-structure-v5-section-parentage",
+
+    source:
+      "documentStructureBuilder",
+
     borrowedIdeas: [
       "marker_structured_markdown",
       "unstructured_document_elements",
       "llamaindex_hierarchical_nodes",
+      "compiler_ast_parent_child_scope",
+      "html_document_outline_active_parent",
     ],
+
     documentType:
       documentIntelligence?.primaryType ||
       "unknown",
-    elementCount: elements.length,
-    sectionCount: sections.length,
+
+    elementCount:
+      elements.length,
+
+    sectionCount:
+      sections.length,
+
     elements,
     sections,
     hierarchy,
+
+    health: {
+      sectionIdentity:
+        sectionIdentityHealth,
+    },
+
     stats: {
-      headingCount: elements.filter(
-        (item) =>
-          item.type === "heading"
-      ).length,
+      headingCount:
+        elements.filter(
+          (item) =>
+            item.type === "heading"
+        ).length,
 
       headingKindBreakdown,
+
       pageAttribution,
+
+      rootSectionCount,
+      childSectionCount,
+
+      duplicateSectionIdCount,
+
+      invalidParentSectionReferenceCount,
+      selfParentSectionCount,
+
+      elementWithoutSectionIdCount,
+      invalidElementSectionReferenceCount,
+      elementSectionParentMismatchCount,
 
       architectureContainerHeadingCount,
 
@@ -1229,25 +1658,33 @@ function buildDocumentStructure({
             item.eligibility?.sequence === false
         ).length,
 
-      commandCount: elements.filter(
-        (item) =>
-          item.type === "code_or_command"
-      ).length,
+      commandCount:
+        elements.filter(
+          (item) =>
+            item.type ===
+            "code_or_command"
+        ).length,
 
-      tableRowCount: elements.filter(
-        (item) =>
-          item.type === "table_row"
-      ).length,
+      tableRowCount:
+        elements.filter(
+          (item) =>
+            item.type ===
+            "table_row"
+        ).length,
 
-      listItemCount: elements.filter(
-        (item) =>
-          item.type === "list_item"
-      ).length,
+      listItemCount:
+        elements.filter(
+          (item) =>
+            item.type ===
+            "list_item"
+        ).length,
 
-      narrativeTextCount: elements.filter(
-        (item) =>
-          item.type === "narrative_text"
-      ).length,
+      narrativeTextCount:
+        elements.filter(
+          (item) =>
+            item.type ===
+            "narrative_text"
+        ).length,
     },
   };
 }
