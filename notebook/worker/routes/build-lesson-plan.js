@@ -578,10 +578,15 @@ router.post("/:jobId", async (req, res) => {
     const architectureTeachingLlmClient = createArchitectureTeachingLlmClient();
 
     const componentUnderstanding = buildComponentUnderstanding({
+      documentUnderstanding,
       architectureUnderstanding,
       canonicalTraversalRail,
-      glossaryTerms: architectureEvidence.glossaryTerms || [],
-      evidenceRecords: architectureEvidence.evidenceRecords || [],
+      glossaryTerms:
+        architectureEvidence.glossaryTerms || [],
+      evidenceRecords: [
+        ...(architectureEvidence.evidenceRecords || []),
+        ...(documentUnderstanding.evidence || []),
+      ],
       outputDir: jobDir,
     });
 

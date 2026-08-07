@@ -21,7 +21,8 @@
 const fs = require("fs");
 const path = require("path");
 
-const BUILDER_VERSION = "component-understanding-v2-rail-aware";
+const BUILDER_VERSION =
+  "component-understanding-v3-canonical-registry";
 
 const KNOWLEDGE_TYPES = {
   INDUSTRY_KNOWN: "industry_known",
@@ -205,6 +206,16 @@ function findEvidenceDefinition(componentName = "", evidenceRecords = []) {
       new RegExp(`${escapedName}\\s+is\\s+(.+?)(\\.|$)`, "i"),
       new RegExp(`${escapedName}\\s*=\\s*(.+?)(\\.|$)`, "i"),
       new RegExp(`${escapedName}\\s*:\\s*(.+?)(\\.|$)`, "i"),
+
+      new RegExp(
+        `^${escapedName}\\s+(.+?)(\\.|$)`,
+        "i"
+      ),
+
+      new RegExp(
+        `^(?:[^.]{1,80}?\\s*/\\s*)${escapedName}\\s+(.+?)(\\.|$)`,
+        "i"
+      ),
     ];
 
     for (const pattern of definitionPatterns) {
@@ -588,7 +599,33 @@ function buildComponentUnderstandingEntry({
 
   const parenthetical = candidate.parentheticalDefinition;
   const glossaryMatch = glossaryIndex.get(componentKey);
-  const evidenceMatch = findEvidenceDefinition(componentName, evidenceRecords);
+  const definitionNames =
+    Array.from(
+      new Set([
+        ...asArray(candidate.rawNames),
+        componentName,
+      ])
+    )
+      .map(safeString)
+      .filter(Boolean)
+      .sort(
+        (left, right) =>
+          right.length - left.length
+      );
+
+  let evidenceMatch = null;
+
+  for (const definitionName of definitionNames) {
+    evidenceMatch =
+      findEvidenceDefinition(
+        definitionName,
+        evidenceRecords
+      );
+
+    if (evidenceMatch) {
+      break;
+    }
+  }
 
   const documentDefinition =
     parenthetical?.documentDefinition ||
@@ -606,9 +643,24 @@ function buildComponentUnderstandingEntry({
     findIndustryConcept(documentDefinition) ||
     findIndustryConcept(componentName);
 
-  const hasDocumentDefinition = Boolean(documentDefinition);
+  const hasDocumentDefinition =
+    Boolean(documentDefinition);
+
+  const documentDefinedCanonical =
+    candidate.canonicalIdentitySource ===
+      "derived_from_definition_label" ||
+    (
+      asArray(candidate.canonicalEvidenceIds).length > 0 &&
+      candidate.sourceEntityId &&
+      candidate.canonicalIdentitySource ===
+        "original_entity"
+    );
+
   const likelyInternal =
-    isLikelyInternalName(componentName) &&
+    (
+      isLikelyInternalName(componentName) ||
+      documentDefinedCanonical
+    ) &&
     !isPublicIndustryTerm(componentName);
 
   let knowledgeType = KNOWLEDGE_TYPES.INTERNAL_UNRESOLVED;
@@ -637,14 +689,55 @@ const railContexts = buildRailContextsForComponent({
 const primaryRailContext = selectPrimaryRailContext(railContexts);
 
 return {
-  componentId: candidate.componentId || componentKey,
+  componentId:
+    candidate.componentId ||
+    componentKey,
+
   componentName,
-  normalizedName: componentKey,
-  rawNames: Array.from(new Set(candidate.rawNames || [componentName])),
+
+  normalizedName:
+    componentKey,
+
+  rawNames:
+    Array.from(
+      new Set(
+        candidate.rawNames ||
+        [componentName]
+      )
+    ),
+
+  sourceEntityId:
+    candidate.sourceEntityId ||
+    null,
+
+  canonicalIdentitySource:
+    candidate.canonicalIdentitySource ||
+    null,
+
+  canonicalEvidenceIds:
+    asArray(
+      candidate.canonicalEvidenceIds
+    ),
+
+  canonicalSectionIds:
+    asArray(
+      candidate.canonicalSectionIds
+    ),
+
+  canonicalPages:
+    asArray(
+      candidate.canonicalPages
+    ),
+
+  canonicalConfidence:
+    candidate.canonicalConfidence ||
+    "unknown",
 
   knowledgeType,
 
-    documentDefinition: documentDefinition || null,
+  documentDefinition:
+    documentDefinition ||
+    null,
     definitionSource,
     definitionEvidenceId: evidenceMatch?.evidenceId || null,
 
@@ -674,6 +767,7 @@ return {
 }
 
 function buildComponentUnderstanding({
+  documentUnderstanding = {},
   components = [],
   canonicalTraversalRail = {},
   architectureUnderstanding = {},
@@ -683,11 +777,70 @@ function buildComponentUnderstanding({
 } = {}) {
   const glossaryIndex = buildGlossaryIndex(glossaryTerms);
 
-  const candidates = collectComponentCandidates({
-    components,
-    canonicalTraversalRail,
-    architectureUnderstanding,
-  });
+  const candidates = asArray(
+    documentUnderstanding.canonicalComponents
+  )
+    .map((component) => {
+      const componentName = safeString(
+        component.title ||
+        component.name
+      );
+
+      if (
+        !component.id ||
+        !componentName
+      ) {
+        return null;
+      }
+
+      return {
+        componentId:
+          component.id,
+
+        componentName,
+
+        rawNames:
+          Array.from(
+            new Set([
+              componentName,
+              ...asArray(
+                component.rawIdentityNames
+              ),
+            ].filter(Boolean))
+          ),
+
+        parentheticalDefinition:
+          null,
+
+        canonicalIdentitySource:
+          component.canonicalIdentitySource ||
+          'original_entity',
+
+        sourceEntityId:
+          component.entityId ||
+          null,
+
+        canonicalEvidenceIds:
+          asArray(
+            component.evidenceIds
+          ),
+
+        canonicalSectionIds:
+          asArray(
+            component.sectionIds
+          ),
+
+        canonicalPages:
+          asArray(
+            component.pages
+          ),
+
+        canonicalConfidence:
+          component.confidence ||
+          'unknown',
+      };
+    })
+    .filter(Boolean);
 
   const entries = candidates.map((candidate) =>
     buildComponentUnderstandingEntry({
@@ -707,21 +860,52 @@ function buildComponentUnderstanding({
     components: entries,
     stats: {
       industryKnownCount: entries.filter(
-        (entry) => entry.knowledgeType === KNOWLEDGE_TYPES.INDUSTRY_KNOWN
+        (entry) =>
+          entry.knowledgeType ===
+          KNOWLEDGE_TYPES.INDUSTRY_KNOWN
       ).length,
+
       documentDefinedCount: entries.filter(
-        (entry) => entry.knowledgeType === KNOWLEDGE_TYPES.DOCUMENT_DEFINED
+        (entry) =>
+          entry.knowledgeType ===
+          KNOWLEDGE_TYPES.DOCUMENT_DEFINED
       ).length,
+
       internalUnresolvedCount: entries.filter(
-        (entry) => entry.knowledgeType === KNOWLEDGE_TYPES.INTERNAL_UNRESOLVED
+        (entry) =>
+          entry.knowledgeType ===
+          KNOWLEDGE_TYPES.INTERNAL_UNRESOLVED
       ).length,
+
       componentWithRailContextCount: entries.filter(
-        (entry) => entry.railContexts.length > 0
+        (entry) =>
+          entry.railContexts.length > 0
       ).length,
+
       railContextCount: entries.reduce(
-        (sum, entry) => sum + entry.railContexts.length,
+        (sum, entry) =>
+          sum + entry.railContexts.length,
         0
       ),
+
+      canonicalRegistryComponentCount:
+        candidates.length,
+    },
+
+    inputs: {
+      documentUnderstandingVersion:
+        documentUnderstanding.version ||
+        null,
+
+      canonicalComponentCount:
+        asArray(
+          documentUnderstanding
+            .canonicalComponents
+        ).length,
+
+      canonicalTraversalRailVersion:
+        canonicalTraversalRail.version ||
+        null,
     },
   };
 

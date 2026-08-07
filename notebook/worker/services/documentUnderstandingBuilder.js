@@ -1555,16 +1555,53 @@ function buildCanonicalComponents(
           return false;
         }
 
-        return (
-          hasArchitectureNoun(name) ||
-          hasDocumentDefinedNameShape(name)
-        );
-      })
-      .map((entity) => {
-        const architectureNounSignal =
-          hasArchitectureNoun(
-            entity.name
+        const architectureSignal =
+          hasArchitectureNoun(name);
+
+        const documentDefinedSignal =
+          hasDocumentDefinedNameShape(name);
+
+        const hasDefinitionSection =
+          (entity.sectionIds || []).some(
+            (sectionId) =>
+              /component[_ -]?definitions?/i.test(
+                String(sectionId || "")
+              )
           );
+
+        const extractedFallbackOnly =
+          (entity.evidenceIds || []).every(
+            (evidenceId) => {
+              const ev = evidence.find(
+                (item) => item.id === evidenceId
+              );
+
+              return (
+                ev &&
+                ev.source === "extracted_fallback"
+              );
+            }
+          );
+
+        if (
+          architectureSignal &&
+          !documentDefinedSignal &&
+          !hasDefinitionSection &&
+          extractedFallbackOnly
+        ) {
+          return false;
+        }
+
+        return (
+          architectureSignal ||
+          documentDefinedSignal
+        );
+              })
+              .map((entity) => {
+                const architectureNounSignal =
+                  hasArchitectureNoun(
+                    entity.name
+                  );
 
         const documentDefinedNameSignal =
           hasDocumentDefinedNameShape(
