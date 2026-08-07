@@ -9,6 +9,10 @@ const {
 } = require("../services/documentUnderstandingBuilder");
 
 const {
+  buildComponentAliasRegistry,
+} = require("../services/componentAliasRegistryBuilder");
+
+const {
   buildSpatialUnderstanding,
   saveSpatialUnderstanding,
 } = require("../services/spatialUnderstandingBuilder");
@@ -48,6 +52,10 @@ const {
 const {
   buildComponentUnderstanding,
 } = require("../services/componentUnderstandingBuilder");
+
+const {
+  buildComponentClaimRegistry,
+} = require("../services/componentClaimRegistryBuilder");
 
 const {
   buildResponsibilityUnderstanding,
@@ -396,6 +404,27 @@ router.post("/:jobId", async (req, res) => {
       sequences: documentUnderstanding.stats.sequenceCount,
     });
 
+    /* ------------------------------------------------------- */
+    /* BUG-10 Component Alias Registry                         */
+    /* ------------------------------------------------------- */
+
+    const componentAliasRegistry =
+      buildComponentAliasRegistry({
+        documentUnderstanding,
+        outputDir: jobDir,
+      });
+
+    const componentAliasRegistryPath =
+      path.join(
+        jobDir,
+        "component-aliases.json"
+      );
+
+    console.log(
+      "[component-alias-registry]",
+      componentAliasRegistry.stats
+    );
+
     const layoutBoxes = readJson(path.join(jobDir, "layout-boxes.json"), {});
     const documentStructure = readJson(
       path.join(jobDir, "document-structure.json"),
@@ -563,13 +592,36 @@ router.post("/:jobId", async (req, res) => {
 
     console.log("[component-understanding]", componentUnderstanding.stats);
 
-    const responsibilityUnderstanding = buildResponsibilityUnderstanding({
-      architectureUnderstanding,
-      canonicalTraversalRail,
-      componentUnderstanding,
-      architectureEvidence,
-      outputDir: jobDir,
-    });
+    /* ------------------------------------------------------- */
+    /* BUG-9 Component Claim Registry                          */
+    /* ------------------------------------------------------- */
+
+    const componentClaimRegistry =
+      buildComponentClaimRegistry({
+        documentUnderstanding,
+        componentAliasRegistry,
+        architectureEvidence,
+        outputDir: jobDir,
+      });
+
+    const componentClaimRegistryPath =
+      path.join(
+        jobDir,
+        "component-claims.json"
+      );
+
+    console.log(
+      "[component-claim-registry]",
+      componentClaimRegistry.stats
+    );
+
+const responsibilityUnderstanding = buildResponsibilityUnderstanding({
+  architectureUnderstanding,
+  canonicalTraversalRail,
+  componentUnderstanding,
+  architectureEvidence,
+  outputDir: jobDir,
+});
 
     const responsibilityUnderstandingPath = path.join(
       jobDir,
@@ -1177,6 +1229,14 @@ router.post("/:jobId", async (req, res) => {
         stats: documentUnderstanding.stats,
         confidence: documentUnderstanding.confidence,
       },
+
+      componentAliasRegistry: {
+        version: componentAliasRegistry.version,
+        stats: componentAliasRegistry.stats,
+        health: componentAliasRegistry.health,
+        output: componentAliasRegistryPath,
+      },
+
       spatialUnderstanding: {
         version: spatialUnderstanding.version,
         stats: spatialUnderstanding.stats,
@@ -1229,6 +1289,13 @@ router.post("/:jobId", async (req, res) => {
         version: componentUnderstanding.version,
         stats: componentUnderstanding.stats,
         output: componentUnderstandingPath,
+      },
+
+      componentClaimRegistry: {
+        version: componentClaimRegistry.version,
+        stats: componentClaimRegistry.stats,
+        health: componentClaimRegistry.health,
+        output: componentClaimRegistryPath,
       },
 
       responsibilityUnderstanding: {
