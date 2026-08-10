@@ -501,46 +501,166 @@ function componentMatchesRegion(component = {}, region = {}) {
   );
 }
 
+
+function runtimeInstanceMatchesRegion(
+  runtimeInstance = {},
+  region = {}
+) {
+  const runtimeOrdinal =
+    safeString(
+      runtimeInstance.runtimeOrdinal
+    );
+
+  const deploymentDifferentiator =
+    safeString(
+      region.deploymentDifferentiator
+    );
+
+  if (
+    !runtimeOrdinal ||
+    !deploymentDifferentiator
+  ) {
+    return false;
+  }
+
+  return (
+    safeLower(runtimeOrdinal) ===
+    safeLower(deploymentDifferentiator)
+  );
+}
+
 function assignRegionMembership({
   normalizedBoundaries = [],
   architectureUnderstanding = {},
 } = {}) {
   const components =
     asArray(
-      architectureUnderstanding?.deterministicGraph?.components
+      architectureUnderstanding
+        ?.deterministicGraph
+        ?.components
     );
 
-  return normalizedBoundaries.map((region) => {
-    const sourceBoundaryNames =
-        asArray(region.rawTexts)
-            .filter((name) =>
-            componentMatchesRegion({ name }, region)
-            );
+  const runtimeInstances =
+    asArray(
+      architectureUnderstanding
+        ?.deterministicGraph
+        ?.runtimeInstances
+    );
 
-        const matchedComponents =
-        components.filter((component) =>
-            componentMatchesRegion(component, region)
+  return normalizedBoundaries.map(
+    (region) => {
+      const matchedRuntimeInstances =
+        runtimeInstances.filter(
+          (runtimeInstance) =>
+            runtimeInstanceMatchesRegion(
+              runtimeInstance,
+              region
+            )
         );
 
-        const componentIds =
-        uniq(matchedComponents.map((component) => component.id));
+      const resolvedLogicalComponentIds =
+        uniq(
+          matchedRuntimeInstances
+            .map(
+              (instance) =>
+                instance.logicalComponentId
+            )
+            .filter(Boolean)
+        );
 
-        const componentNames =
-        uniq([
-            ...matchedComponents.map((component) => component.name),
-            ...sourceBoundaryNames,
-        ]);
+      const resolvedLogicalComponents =
+        components.filter(
+          (component) =>
+            resolvedLogicalComponentIds.includes(
+              component.id
+            )
+        );
 
-    return {
+      /*
+       * Backward-compatible fallback for fixtures
+       * that do not expose runtime instances.
+       */
+      const fallbackComponents =
+        matchedRuntimeInstances.length === 0
+          ? components.filter(
+              (component) =>
+                componentMatchesRegion(
+                  component,
+                  region
+                )
+            )
+          : [];
+
+      const finalComponents =
+        matchedRuntimeInstances.length > 0
+          ? resolvedLogicalComponents
+          : fallbackComponents;
+
+      return {
         ...region,
-        componentIds,
-        componentNames,
+
+        componentIds:
+          uniq(
+            finalComponents.map(
+              (component) =>
+                component.id
+            )
+          ),
+
+        componentNames:
+          uniq(
+            finalComponents.map(
+              (component) =>
+                component.name
+            )
+          ),
+
+        runtimeInstanceIds:
+          uniq(
+            matchedRuntimeInstances.map(
+              (instance) =>
+                instance.runtimeInstanceId
+            )
+          ),
+
+        runtimeInstanceNames:
+          uniq(
+            matchedRuntimeInstances.map(
+              (instance) =>
+                instance.runtimeInstanceName
+            )
+          ),
+
+        runtimeInstances:
+          matchedRuntimeInstances,
+
+        unresolvedRuntimeInstanceIds:
+          uniq(
+            matchedRuntimeInstances
+              .filter(
+                (instance) =>
+                  !instance.logicalComponentId
+              )
+              .map(
+                (instance) =>
+                  instance.runtimeInstanceId
+              )
+          ),
+
         membershipSource:
-            'architectureUnderstanding.deterministicGraph.components.name_differentiator_match_plus_source_boundaries',
+          matchedRuntimeInstances.length > 0
+            ? 'architectureUnderstanding.deterministicGraph.runtimeInstances'
+            : 'architectureUnderstanding.deterministicGraph.components.name_differentiator_fallback',
+
         membershipConfidence:
-            componentNames.length > 0 ? 'medium' : 'low',
-        };
-  });
+          matchedRuntimeInstances.length > 0
+            ? 'high'
+            : finalComponents.length > 0
+              ? 'medium'
+              : 'low',
+      };
+    }
+  );
 }
 
 function buildNormalizationHealth({
@@ -559,7 +679,9 @@ function buildNormalizationHealth({
 
   const emptyMemberships =
     normalizedBoundaries.filter(
-      (item) => asArray(item.componentNames).length === 0
+      (item) =>
+        asArray(item.componentNames).length === 0 &&
+        asArray(item.runtimeInstanceNames).length === 0
     );
 
   const traversalChanged = false;
@@ -671,8 +793,31 @@ function buildDeploymentBoundaryNormalization({
       rejectedBreakdown,
       regionWithMembershipCount:
         normalizedBoundaries.filter(
-          (region) => asArray(region.componentNames).length > 0
+          (region) =>
+            asArray(region.componentNames).length > 0 ||
+            asArray(region.runtimeInstanceNames).length > 0
         ).length,
+
+      runtimeInstanceCount:
+        normalizedBoundaries.reduce(
+          (sum, region) =>
+            sum +
+            asArray(
+              region.runtimeInstances
+            ).length,
+          0
+        ),
+
+      unresolvedRuntimeInstanceCount:
+        normalizedBoundaries.reduce(
+          (sum, region) =>
+            sum +
+            asArray(
+              region.unresolvedRuntimeInstanceIds
+            ).length,
+          0
+        ),
+
       traversalChanged: false,
     },
   };

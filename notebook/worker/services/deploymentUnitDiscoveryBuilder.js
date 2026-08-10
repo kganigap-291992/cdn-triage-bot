@@ -1,29 +1,5 @@
 'use strict';
 
-/**
- * deploymentUnitDiscoveryBuilder.js
- *
- * BUG-17F.2 — Deployment Unit Discovery
- *
- * Owns:
- * - convert explicit normalized deployment boundaries into deployment units
- * - prepare a stable deployment-unit model for later implicit graph grouping
- *
- * Borrowed ideas:
- * - C4 deployment diagrams: deployment nodes contain runtime components.
- * - Kubernetes: workloads can be grouped into deployment units.
- * - Network topology: sites, branches, clusters, cells, and regions are all units.
- * - Graph theory: explicit units first; implicit communities later.
- *
- * Does NOT:
- * - infer deployment pattern
- * - detect replica relationships
- * - detect shared infrastructure
- * - mutate traversal
- * - narrate
- * - call LLM
- */
-
 const fs = require('fs');
 const path = require('path');
 
@@ -62,8 +38,19 @@ function inferDeploymentUnitScope(label = '') {
   const value = safeLower(label);
 
   if (/\bregion\b/.test(value)) return 'region';
-  if (/\bavailability zone\b|\baz\b/.test(value)) return 'availability_zone';
-  if (/\bdata center\b|\bdatacenter\b|\bdc\b/.test(value)) return 'data_center';
+
+  if (
+    /\bavailability zone\b|\baz\b|\bzone\b/.test(value)
+  ) {
+    return 'availability_zone';
+  }
+
+  if (
+    /\bdata center\b|\bdatacenter\b|\bdc\b/.test(value)
+  ) {
+    return 'data_center';
+  }
+
   if (/\bsite\b/.test(value)) return 'site';
   if (/\bcell\b/.test(value)) return 'cell';
   if (/\bcluster\b/.test(value)) return 'cluster';
@@ -71,15 +58,25 @@ function inferDeploymentUnitScope(label = '') {
   return 'deployment_unit';
 }
 
-function buildComponentIndex(architectureUnderstanding = {}) {
-  const components = asArray(
-    architectureUnderstanding?.deterministicGraph?.components
-  );
+function buildComponentIndex(
+  architectureUnderstanding = {}
+) {
+  const components =
+    asArray(
+      architectureUnderstanding
+        ?.deterministicGraph
+        ?.components
+    );
 
   return new Map(
     components
       .filter((component) => component.id)
-      .map((component) => [component.id, component])
+      .map(
+        (component) => [
+          component.id,
+          component,
+        ]
+      )
   );
 }
 
@@ -88,96 +85,220 @@ function hydrateComponents({
   componentNames = [],
   architectureUnderstanding = {},
 } = {}) {
-  const componentById = buildComponentIndex(architectureUnderstanding);
+  const componentById =
+    buildComponentIndex(
+      architectureUnderstanding
+    );
 
   const fromIds =
     asArray(componentIds)
-      .map((componentId) => componentById.get(componentId))
+      .map(
+        (componentId) =>
+          componentById.get(componentId)
+      )
       .filter(Boolean)
       .map((component) => ({
-        componentId: component.id,
-        componentName: component.name,
+        componentId:
+          component.id,
+
+        componentName:
+          component.name,
+
         architectureRole:
           component.architectureRole ||
           component.role ||
           component.type ||
           'unknown',
-        source: 'architecture-understanding.json',
+
+        source:
+          'architecture-understanding.json',
       }));
 
-  const knownNames = new Set(
-    fromIds.map((component) =>
-      safeLower(component.componentName)
-    )
-  );
+  const knownNames =
+    new Set(
+      fromIds.map(
+        (component) =>
+          safeLower(
+            component.componentName
+          )
+      )
+    );
 
   const fromNames =
     asArray(componentNames)
-      .filter((name) => !knownNames.has(safeLower(name)))
+      .filter(
+        (name) =>
+          !knownNames.has(
+            safeLower(name)
+          )
+      )
       .map((name) => ({
-        componentId: null,
-        componentName: safeString(name),
-        architectureRole: 'unknown',
-        source: 'deployment-boundaries-normalized.json',
+        componentId:
+          null,
+
+        componentName:
+          safeString(name),
+
+        architectureRole:
+          'unknown',
+
+        source:
+          'deployment-boundaries-normalized.json',
       }));
 
-  return [...fromIds, ...fromNames];
+  return [
+    ...fromIds,
+    ...fromNames,
+  ];
 }
 
 function buildExplicitDeploymentUnits({
   deploymentBoundaryNormalization = {},
   architectureUnderstanding = {},
 } = {}) {
-  return asArray(deploymentBoundaryNormalization.normalizedBoundaries)
+  return asArray(
+    deploymentBoundaryNormalization
+      .normalizedBoundaries
+  )
     .map((boundary, index) => {
-      const title = safeString(
-        boundary.normalizedLabel ||
-        `Deployment Unit ${index + 1}`
-      );
+      const title =
+        safeString(
+          boundary.normalizedLabel ||
+          `Deployment Unit ${index + 1}`
+        );
 
-      const components = hydrateComponents({
-        componentIds: boundary.componentIds,
-        componentNames: boundary.componentNames,
-        architectureUnderstanding,
-      });
+      const components =
+        hydrateComponents({
+          componentIds:
+            boundary.componentIds,
+
+          componentNames:
+            boundary.componentNames,
+
+          architectureUnderstanding,
+        });
+
+      const runtimeInstances =
+        asArray(
+          boundary.runtimeInstances
+        );
 
       return {
         deploymentUnitId:
-          `deployment_unit_${slugify(title)}`,
+          `deployment_unit_${slugify(
+            title
+          )}`,
+
         title,
-        unitType: 'explicit_deployment_boundary',
-        unitScope: inferDeploymentUnitScope(title),
-        sourceBoundaryId: boundary.boundaryId || null,
-        sourceBoundaries: asArray(boundary.rawTexts),
+
+        unitType:
+          'explicit_deployment_boundary',
+
+        unitScope:
+          inferDeploymentUnitScope(
+            title
+          ),
+
+        sourceBoundaryId:
+          boundary.boundaryId ||
+          null,
+
+        sourceBoundaries:
+          asArray(
+            boundary.rawTexts
+          ),
+
         deploymentDifferentiator:
-          boundary.deploymentDifferentiator || null,
+          boundary
+            .deploymentDifferentiator ||
+          null,
+
         componentIds:
-          uniq(components.map((component) => component.componentId)),
+          uniq(
+            components.map(
+              (component) =>
+                component.componentId
+            )
+          ),
+
         componentNames:
-          uniq(components.map((component) => component.componentName)),
+          uniq(
+            components.map(
+              (component) =>
+                component.componentName
+            )
+          ),
+
         components,
+
+        runtimeInstanceIds:
+          uniq(
+            runtimeInstances.map(
+              (instance) =>
+                instance.runtimeInstanceId
+            )
+          ),
+
+        runtimeInstanceNames:
+          uniq(
+            runtimeInstances.map(
+              (instance) =>
+                instance.runtimeInstanceName
+            )
+          ),
+
+        runtimeInstances,
+
+        unresolvedRuntimeInstanceIds:
+          uniq(
+            asArray(
+              boundary
+                .unresolvedRuntimeInstanceIds
+            )
+          ),
+
         evidenceSources:
-          asArray(boundary.candidateSources),
-        confidence: boundary.confidence || 'medium',
-        source: 'deployment-boundaries-normalized.json',
+          asArray(
+            boundary.candidateSources
+          ),
+
+        confidence:
+          boundary.confidence ||
+          'medium',
+
+        source:
+          'deployment-boundaries-normalized.json',
       };
     })
-    .filter((unit) => unit.componentNames.length > 0);
+    .filter(
+      (unit) =>
+        unit.componentNames.length > 0 ||
+        unit.runtimeInstanceNames.length > 0
+    );
 }
 
 function buildImplicitDeploymentUnits({
   architectureUnderstanding = {},
 } = {}) {
-  const relationships = asArray(
-    architectureUnderstanding?.deterministicGraph?.relationships
-  );
+  const relationships =
+    asArray(
+      architectureUnderstanding
+        ?.deterministicGraph
+        ?.relationships
+    );
 
   return {
-    status: 'not_implemented',
+    status:
+      'not_implemented',
+
     reason:
       'Implicit deployment unit discovery will be added after explicit deployment units are stable.',
-    relationshipCount: relationships.length,
-    deploymentUnits: [],
+
+    relationshipCount:
+      relationships.length,
+
+    deploymentUnits:
+      [],
   };
 }
 
@@ -187,71 +308,141 @@ function buildDeploymentUnitHealth({
   implicitDiscovery = {},
 } = {}) {
   const missingIds =
-    deploymentUnits.filter((unit) =>
-      !safeString(unit.deploymentUnitId)
+    deploymentUnits.filter(
+      (unit) =>
+        !safeString(
+          unit.deploymentUnitId
+        )
     );
 
   const missingTitles =
-    deploymentUnits.filter((unit) =>
-      !safeString(unit.title)
+    deploymentUnits.filter(
+      (unit) =>
+        !safeString(
+          unit.title
+        )
     );
 
   const emptyUnits =
-    deploymentUnits.filter((unit) =>
-      asArray(unit.componentNames).length === 0
+    deploymentUnits.filter(
+      (unit) =>
+        asArray(
+          unit.componentNames
+        ).length === 0 &&
+        asArray(
+          unit.runtimeInstanceNames
+        ).length === 0
     );
 
   const duplicateIds =
     deploymentUnits
-      .map((unit) => unit.deploymentUnitId)
-      .filter((id, index, ids) => ids.indexOf(id) !== index);
+      .map(
+        (unit) =>
+          unit.deploymentUnitId
+      )
+      .filter(
+        (id, index, ids) =>
+          ids.indexOf(id) !== index
+      );
 
-  const traversalChanged = false;
+  const traversalChanged =
+    false;
 
   const violations = [
-    ...missingIds.map((unit) => ({
-      type: 'missing_deployment_unit_id',
-      severity: 'high',
-      title: unit.title || null,
-    })),
+    ...missingIds.map(
+      (unit) => ({
+        type:
+          'missing_deployment_unit_id',
 
-    ...missingTitles.map((unit) => ({
-      type: 'missing_deployment_unit_title',
-      severity: 'high',
-      deploymentUnitId: unit.deploymentUnitId || null,
-    })),
+        severity:
+          'high',
 
-    ...emptyUnits.map((unit) => ({
-      type: 'empty_deployment_unit',
-      severity: 'medium',
-      deploymentUnitId: unit.deploymentUnitId,
-      title: unit.title,
-    })),
+        title:
+          unit.title || null,
+      })
+    ),
 
-    ...duplicateIds.map((deploymentUnitId) => ({
-      type: 'duplicate_deployment_unit_id',
-      severity: 'high',
-      deploymentUnitId,
-    })),
+    ...missingTitles.map(
+      (unit) => ({
+        type:
+          'missing_deployment_unit_title',
+
+        severity:
+          'high',
+
+        deploymentUnitId:
+          unit.deploymentUnitId ||
+          null,
+      })
+    ),
+
+    ...emptyUnits.map(
+      (unit) => ({
+        type:
+          'empty_deployment_unit',
+
+        severity:
+          'medium',
+
+        deploymentUnitId:
+          unit.deploymentUnitId,
+
+        title:
+          unit.title,
+      })
+    ),
+
+    ...duplicateIds.map(
+      (deploymentUnitId) => ({
+        type:
+          'duplicate_deployment_unit_id',
+
+        severity:
+          'high',
+
+        deploymentUnitId,
+      })
+    ),
   ];
 
   return {
-    version: 'deployment-unit-discovery-health-v1',
+    version:
+      'deployment-unit-discovery-health-v1',
+
     valid:
       violations.length === 0 &&
       traversalChanged === false,
-    violationCount: violations.length,
-    missingDeploymentUnitIdCount: missingIds.length,
-    missingDeploymentUnitTitleCount: missingTitles.length,
-    emptyDeploymentUnitCount: emptyUnits.length,
-    duplicateDeploymentUnitIdCount: duplicateIds.length,
+
+    violationCount:
+      violations.length,
+
+    missingDeploymentUnitIdCount:
+      missingIds.length,
+
+    missingDeploymentUnitTitleCount:
+      missingTitles.length,
+
+    emptyDeploymentUnitCount:
+      emptyUnits.length,
+
+    duplicateDeploymentUnitIdCount:
+      duplicateIds.length,
+
     explicitDeploymentUnitCount:
       explicitDeploymentUnits.length,
+
     implicitDeploymentUnitCount:
-      asArray(implicitDiscovery.deploymentUnits).length,
+      asArray(
+        implicitDiscovery
+          .deploymentUnits
+      ).length,
+
     implicitDiscoveryStatus:
-      implicitDiscovery.status || 'unknown',
+      implicitDiscovery.status ||
+      'unknown',
+
     traversalChanged,
+
     violations,
   };
 }
@@ -273,7 +464,10 @@ function buildDeploymentUnitDiscovery({
     });
 
   const implicitDeploymentUnits =
-    asArray(implicitDiscovery.deploymentUnits);
+    asArray(
+      implicitDiscovery
+        .deploymentUnits
+    );
 
   const deploymentUnits = [
     ...explicitDeploymentUnits,
@@ -288,50 +482,120 @@ function buildDeploymentUnitDiscovery({
     });
 
   const payload = {
-    version: BUILDER_VERSION,
-    source: 'deploymentUnitDiscoveryBuilder',
+    version:
+      BUILDER_VERSION,
+
+    source:
+      'deploymentUnitDiscoveryBuilder',
 
     purpose:
       'Discover explicit and implicit enterprise deployment units without inferring deployment patterns or mutating traversal.',
 
     rules: {
-      traversalMutation: 'forbidden',
-      llmGeneratedDeploymentUnits: 'forbidden',
-      graphMutation: 'forbidden',
-      deterministicOnly: true,
-      explicitBoundariesPreferred: true,
-      unlabeledGroupsMustNotBeCalledRegions: true,
-      implicitGroupsRequireGraphEvidence: true,
+      traversalMutation:
+        'forbidden',
+
+      llmGeneratedDeploymentUnits:
+        'forbidden',
+
+      graphMutation:
+        'forbidden',
+
+      deterministicOnly:
+        true,
+
+      explicitBoundariesPreferred:
+        true,
+
+      unlabeledGroupsMustNotBeCalledRegions:
+        true,
+
+      implicitGroupsRequireGraphEvidence:
+        true,
     },
 
     explicitDeploymentUnits,
+
     implicitDiscovery,
+
     deploymentUnits,
+
     health,
 
     stats: {
       explicitDeploymentUnitCount:
         explicitDeploymentUnits.length,
+
       implicitDeploymentUnitCount:
         implicitDeploymentUnits.length,
+
       deploymentUnitCount:
         deploymentUnits.length,
+
       deploymentUnitWithComponentsCount:
         deploymentUnits.filter(
-          (unit) => asArray(unit.componentNames).length > 0
+          (unit) =>
+            asArray(
+              unit.componentNames
+            ).length > 0
         ).length,
+
+      deploymentUnitWithRuntimeInstancesCount:
+        deploymentUnits.filter(
+          (unit) =>
+            asArray(
+              unit.runtimeInstanceNames
+            ).length > 0
+        ).length,
+
+      runtimeInstanceCount:
+        deploymentUnits.reduce(
+          (sum, unit) =>
+            sum +
+            asArray(
+              unit.runtimeInstances
+            ).length,
+          0
+        ),
+
+      unresolvedRuntimeInstanceCount:
+        deploymentUnits.reduce(
+          (sum, unit) =>
+            sum +
+            asArray(
+              unit
+                .unresolvedRuntimeInstanceIds
+            ).length,
+          0
+        ),
+
       implicitDiscoveryStatus:
-        implicitDiscovery.status || 'unknown',
-      traversalChanged: false,
+        implicitDiscovery.status ||
+        'unknown',
+
+      traversalChanged:
+        false,
     },
   };
 
   if (outputDir) {
-    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(
+      outputDir,
+      {
+        recursive: true,
+      }
+    );
 
     fs.writeFileSync(
-      path.join(outputDir, 'deployment-units.json'),
-      JSON.stringify(payload, null, 2),
+      path.join(
+        outputDir,
+        'deployment-units.json'
+      ),
+      JSON.stringify(
+        payload,
+        null,
+        2
+      ),
       'utf8'
     );
   }

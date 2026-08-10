@@ -1417,6 +1417,177 @@ function extractTitleCasePhrases(text) {
     });
 }
 
+function extractDeploymentRuntimeInstances(
+  documentUnderstanding = {},
+  logicalComponents = []
+) {
+  const evidence = asArray(
+    documentUnderstanding.evidence
+  );
+
+  const runtimeInstances = [];
+
+  const runtimePattern =
+    /\b([A-Z][A-Za-z0-9/+.-]*(?:\s+[A-Z][A-Za-z0-9/+.-]*){0,3})\s+([1-9][0-9]*)\b/g;
+
+  const runtimeFamilyPattern =
+    /\b(api|service|worker|indexer|cache|replica|database|db|gateway|controller|processor|pod|node|instance|workload|cluster|origin|packager|transcoder|server)\b/i;
+
+  for (const item of evidence) {
+    const text = getEvidenceText(item);
+    if (!text) continue;
+
+    const matches =
+      [...text.matchAll(runtimePattern)];
+
+    for (const match of matches) {
+      const runtimeInstanceName =
+        normalizeText(match[0]);
+
+      const runtimeFamily =
+        normalizeText(match[1]);
+
+      if (
+        !runtimeInstanceName ||
+        !runtimeFamily
+      ) {
+        continue;
+      }
+
+      if (
+        /^(page|figure|table|section|journey|step|availability zone|zone|region)$/i.test(
+          runtimeFamily
+        )
+      ) {
+        continue;
+      }
+
+      if (
+        !runtimeFamilyPattern.test(
+          runtimeFamily
+        )
+      ) {
+        continue;
+      }
+
+      const logicalCandidates =
+        asArray(logicalComponents)
+          .filter((component) => {
+            const logicalName =
+              lower(component.name);
+
+            const familyName =
+              lower(runtimeFamily);
+
+            return (
+              familyName.includes(logicalName) ||
+              logicalName.includes(familyName)
+            );
+          })
+          .sort(
+            (a, b) =>
+              b.name.length - a.name.length
+          );
+
+      const logicalComponent =
+        logicalCandidates[0] || null;
+
+      runtimeInstances.push({
+        runtimeInstanceId:
+          `runtime_${normalizeKey(
+            runtimeInstanceName
+          )}`,
+
+        runtimeInstanceName,
+
+        runtimeFamily,
+
+        runtimeOrdinal:
+          Number(match[2]),
+
+        logicalComponentId:
+          logicalComponent?.id || null,
+
+        logicalComponentName:
+          logicalComponent?.name || null,
+
+        logicalComponentResolution:
+          logicalComponent
+            ? "document_name_family_match"
+            : "unresolved",
+
+        evidenceIds:
+          uniqueValues([
+            item.id,
+          ]),
+
+        pages:
+          uniqueValues([
+            item.page,
+          ]),
+
+        sectionIds:
+          uniqueValues([
+            item.sectionId,
+          ]),
+
+        confidence:
+          logicalComponent
+            ? "medium"
+            : "low",
+
+        source:
+          "document_deployment_runtime_evidence",
+      });
+    }
+  }
+
+  const mergedByInstance =
+    new Map();
+
+  for (const instance of runtimeInstances) {
+    const key =
+      lower(instance.runtimeInstanceName);
+
+    if (!mergedByInstance.has(key)) {
+      mergedByInstance.set(
+        key,
+        instance
+      );
+      continue;
+    }
+
+    const existing =
+      mergedByInstance.get(key);
+
+    mergedByInstance.set(key, {
+      ...existing,
+
+      evidenceIds:
+        uniqueValues([
+          ...asArray(existing.evidenceIds),
+          ...asArray(instance.evidenceIds),
+        ]),
+
+      pages:
+        uniqueValues([
+          ...asArray(existing.pages),
+          ...asArray(instance.pages),
+        ]),
+
+      sectionIds:
+        uniqueValues([
+          ...asArray(existing.sectionIds),
+          ...asArray(instance.sectionIds),
+        ]),
+    });
+  }
+
+  return Array.from(
+    mergedByInstance.values()
+  );
+}
+
 function extractDeploymentQualifiedPhrases(text = "") {
   const value = normalizeText(text);
 
@@ -2650,14 +2821,22 @@ function buildArchitectureUnderstanding(
     );
 
   const components =
-  attachBoundariesToComponents(
-    contextEnrichedComponents,
-    options.architectureEvidence || {},
-    documentUnderstanding
-  );
+    attachBoundariesToComponents(
+      contextEnrichedComponents,
+      options.architectureEvidence || {},
+      documentUnderstanding
+    );
+
+  const deploymentRuntimeInstances =
+    extractDeploymentRuntimeInstances(
+      documentUnderstanding,
+      components
+    );
 
   const spatialRelationshipCandidates =
-    collectSpatialRelationshipCandidates(spatialUnderstanding);
+    collectSpatialRelationshipCandidates(
+      spatialUnderstanding
+    );
 
   const knownFlowContext = [
     ...extractExplicitRelationships(documentUnderstanding, components),
@@ -2828,10 +3007,12 @@ const architectureContextPropagationHealth = {
     explicitSequences,
 
     deterministicGraph: {
-    components,
-    relationships,
-    flows,
-    partitions: graphPartitions,
+      components,
+      runtimeInstances:
+        deploymentRuntimeInstances,
+      relationships,
+      flows,
+      partitions: graphPartitions,
     },
 
     spatialRelationshipCandidates,
@@ -2891,6 +3072,27 @@ const architectureContextPropagationHealth = {
       ),
       relationshipCount: relationships.length,
       flowCount: flows.length,
+
+      deploymentRuntimeInstanceCount:
+        deploymentRuntimeInstances.length,
+
+      resolvedRuntimeInstanceCount:
+        deploymentRuntimeInstances.filter(
+          (item) =>
+            Boolean(item.logicalComponentId)
+        ).length,
+
+      unresolvedRuntimeInstanceCount:
+        deploymentRuntimeInstances.filter(
+          (item) =>
+            !item.logicalComponentId
+        ).length,
+
+      runtimeInstanceWithoutEvidenceCount:
+        deploymentRuntimeInstances.filter(
+          (item) =>
+            asArray(item.evidenceIds).length === 0
+        ).length,
 
       contextPropagationValid:
         architectureContextPropagationHealth.valid,
