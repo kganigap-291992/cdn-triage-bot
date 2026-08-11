@@ -1163,6 +1163,7 @@ const responsibilityUnderstanding = buildResponsibilityUnderstanding({
         deploymentBoundaryNormalization,
         deploymentUnitDiscovery,
         sharedNodeUnderstanding,
+        enterpriseSharedInfrastructure,
         multiRailUnderstanding,
         bidirectionalRailUnderstanding,
         outputDir: jobDir,

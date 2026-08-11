@@ -1611,18 +1611,22 @@ function buildEnterpriseTopology({
     });
 
 
-const explicitSharedInfrastructure =
-  asArray(
-    enterpriseSharedInfrastructure.sharedInfrastructure
-  );
+  const sharedInfrastructure =
+    asArray(
+      enterpriseSharedInfrastructure.sharedInfrastructure
+    );
 
-const graphSharedInfrastructure = [];
+  const explicitSharedInfrastructure =
+    sharedInfrastructure.filter(
+      (item) =>
+        item.explicitScopeBacked === true
+    );
 
-const sharedInfrastructure =
-  mergeSharedInfrastructure({
-    explicitSharedInfrastructure,
-    graphSharedInfrastructure,
-  });
+  const graphSharedInfrastructure =
+    sharedInfrastructure.filter(
+      (item) =>
+        item.graphBacked === true
+    );
 
   const topologySignatures =
     buildDeploymentUnitTopologySignatures({
@@ -1697,7 +1701,7 @@ const sharedInfrastructure =
     source: 'enterpriseTopologyBuilder',
 
     purpose:
-      'Create a canonical, deterministic enterprise topology model from deployment units, graph relationships, shared-node understanding, and enterprise deployment summaries.',
+      'Create a canonical, deterministic enterprise topology model from deployment units, canonical enterprise shared infrastructure, graph relationships, and enterprise deployment summaries.',
 
     borrowedIdeas: [
       'c4_deployment_view',
@@ -1715,6 +1719,10 @@ const sharedInfrastructure =
       narrationGeneration: 'forbidden',
       deterministicOnly: true,
       topologyTruthFromDeploymentUnits: true,
+
+      sharedInfrastructureSource:
+        'enterprise-shared-infrastructure.json',
+
       failoverClaimsForbiddenInF3: true,
       activeActiveClaimsForbiddenInF3: true,
     },

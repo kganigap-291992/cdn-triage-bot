@@ -530,6 +530,269 @@ function attachDocumentContextToComponents(
   );
 }
 
+function getComponentLocalEvidence({
+  component = {},
+  evidence = [],
+} = {}) {
+  const componentName =
+    lower(component.name);
+
+  if (!componentName) {
+    return [];
+  }
+
+  const localEvidence = [];
+
+  for (const item of asArray(evidence)) {
+    /*
+     * Extracted fallback often contains whole-page concatenation.
+     * It is useful for recovery, but unsafe for placement semantics
+     * because unrelated components/scopes can be collapsed together.
+     */
+    if (
+      lower(item.source).includes(
+        "extracted_fallback"
+      )
+    ) {
+      continue;
+    }
+
+    const text =
+      getEvidenceText(item);
+
+    if (
+      !text ||
+      !lower(text).includes(componentName)
+    ) {
+      continue;
+    }
+
+    const clauses =
+      splitIntoClauses(text);
+
+    for (const clause of clauses) {
+      if (
+        !lower(clause).includes(
+          componentName
+        )
+      ) {
+        continue;
+      }
+
+      localEvidence.push({
+        ...item,
+        localText: clause,
+      });
+    }
+  }
+
+  return localEvidence;
+}
+
+function inferEnterprisePlacement({
+  component = {},
+  evidence = [],
+} = {}) {
+  const localEvidence =
+    getComponentLocalEvidence({
+      component,
+      evidence,
+    });
+
+  const componentName =
+    normalizeText(component.name);
+
+  const escapedComponentName =
+    componentName.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
+    );
+
+  const headingKinds =
+    new Set(
+      asArray(
+        component.headingKinds
+      ).map(lower)
+    );
+
+  const explicitSharedByHeading =
+    headingKinds.has(
+      "shared_infrastructure"
+    );
+
+  /*
+   * Strong explicit-shared evidence must describe
+   * THIS component locally as shared/global/common/central.
+   *
+   * Examples:
+   *   ConfigHub Shared configuration service
+   *   RelayOne Shared event bus
+   *   Global DNS service
+   *
+   * Broad topology statements such as
+   * "A, B, C sit outside the zones"
+   * are placement evidence, not explicit-shared naming evidence.
+   */
+  const explicitSharedByName =
+    /\b(shared|global|central|common)\b/i.test(
+      componentName
+    );
+
+  const explicitSharedEvidence =
+    localEvidence.filter((item) => {
+      const text =
+        item.localText || "";
+
+      const suffixSharedPattern =
+        new RegExp(
+          `\\b${escapedComponentName}\\b\\s*[:\\-–—]?\\s*(shared|global|central|common)\\b`,
+          "i"
+        );
+
+      const prefixSharedPattern =
+        new RegExp(
+          `\\b(shared|global|central|common)\\b\\s*[:\\-–—]?\\s*${escapedComponentName}\\b`,
+          "i"
+        );
+
+      return (
+        suffixSharedPattern.test(text) ||
+        prefixSharedPattern.test(text)
+      );
+    });
+
+  /*
+   * Explicit placement outside deployment units.
+   * This is intentionally separate from explicitShared.
+   */
+  const outsideDeploymentEvidence =
+    localEvidence.filter((item) => {
+      const text =
+        item.localText || "";
+
+      return (
+        /\b(outside|external to)\b.{0,80}\b(zone|region|site|deployment unit)s?\b/i.test(
+          text
+        ) ||
+        /\bsit outside\b.{0,80}\b(zone|region|site|deployment unit)s?\b/i.test(
+          text
+        )
+      );
+    });
+
+  /*
+   * Evidence that the component serves more than one
+   * deployment unit. This is supporting topology evidence.
+   */
+  const multiUnitEvidence =
+    localEvidence.filter((item) => {
+      const text =
+        item.localText || "";
+
+      return (
+        /\b(serve|serves|serving|used by|across)\b.{0,100}\b(multiple|more than one|all|three|two)\b.{0,50}\b(zone|region|site|deployment unit)s?\b/i.test(
+          text
+        ) ||
+        /\bserve\b.{0,100}\bworkloads?\b.{0,100}\b(more than one|multiple)\b.{0,40}\b(zone|region|site|deployment unit)s?\b/i.test(
+          text
+        )
+      );
+    });
+
+  const explicitSharedByEvidence =
+    explicitSharedEvidence.length > 0;
+
+  const explicitOutsideDeploymentUnits =
+    outsideDeploymentEvidence.length > 0;
+
+  const explicitMultiUnitByEvidence =
+    multiUnitEvidence.length > 0;
+
+  /*
+   * Only strong local shared classification can set
+   * explicitShared.
+   *
+   * Outside/multi-unit evidence remains separate and can
+   * later be combined with graph evidence by the enterprise
+   * shared-infrastructure builder.
+   */
+  const explicitShared =
+    explicitSharedByHeading ||
+    explicitSharedByName ||
+    explicitSharedByEvidence;
+
+  const placement =
+    explicitShared ||
+    explicitOutsideDeploymentUnits
+      ? "shared_platform"
+      : "unspecified";
+
+  return {
+    placement,
+
+    explicitShared,
+
+    explicitSharedByName,
+
+    explicitSharedByHeading,
+
+    explicitSharedByEvidence,
+
+    explicitOutsideDeploymentUnits,
+
+    explicitMultiUnitByEvidence,
+
+    explicitSharedEvidenceIds:
+      uniqueValues(
+        explicitSharedEvidence.map(
+          (item) => item.id
+        )
+      ),
+
+    outsideDeploymentEvidenceIds:
+      uniqueValues(
+        outsideDeploymentEvidence.map(
+          (item) => item.id
+        )
+      ),
+
+    multiUnitEvidenceIds:
+      uniqueValues(
+        multiUnitEvidence.map(
+          (item) => item.id
+        )
+      ),
+
+    evidenceIds:
+      uniqueValues([
+        ...explicitSharedEvidence.map(
+          (item) => item.id
+        ),
+        ...outsideDeploymentEvidence.map(
+          (item) => item.id
+        ),
+        ...multiUnitEvidence.map(
+          (item) => item.id
+        ),
+      ]),
+
+    confidence:
+      explicitSharedByName ||
+      explicitSharedByHeading ||
+      explicitSharedByEvidence
+        ? "high"
+        : explicitOutsideDeploymentUnits &&
+          explicitMultiUnitByEvidence
+          ? "high"
+          : explicitOutsideDeploymentUnits ||
+            explicitMultiUnitByEvidence
+            ? "medium"
+            : "low",
+
+    source:
+      "architectureUnderstandingBuilder",
+  };
+}
 
 function getEvidenceForComponent(
   component,
@@ -2820,11 +3083,25 @@ function buildArchitectureUnderstanding(
       documentUnderstanding.evidence || []
     );
 
-  const components =
+  const boundaryEnrichedComponents =
     attachBoundariesToComponents(
       contextEnrichedComponents,
       options.architectureEvidence || {},
       documentUnderstanding
+    );
+
+  const components =
+    boundaryEnrichedComponents.map(
+      (component) => ({
+        ...component,
+
+        enterprisePlacement:
+          inferEnterprisePlacement({
+            component,
+            evidence:
+              documentUnderstanding.evidence || [],
+          }),
+      })
     );
 
   const deploymentRuntimeInstances =

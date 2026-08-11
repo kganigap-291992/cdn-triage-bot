@@ -252,18 +252,6 @@ function buildReplicatedRegionCandidates(profiles = []) {
   return candidates;
 }
 
-function buildSharedInfrastructureSummary(sharedNodeUnderstanding = {}) {
-  return asArray(sharedNodeUnderstanding.nodes).map((node) => ({
-    nodeId: node.nodeId,
-    nodeName: node.nodeName,
-    classification: node.classification,
-    participatingLaneTypes: asArray(node.participatingLaneTypes),
-    railRoleClassification: node.railRoleClassification || null,
-    teachingHint: node.teachingHint || null,
-    confidence: 'medium',
-    source: 'shared-node-understanding.json',
-  }));
-}
 
 function buildCrossRegionRelationshipSummary({
   bidirectionalRailUnderstanding = {},
@@ -423,6 +411,7 @@ function buildEnterpriseDeploymentUnderstanding({
   regionTraversal = {},
   deploymentBoundaryNormalization = {},
   sharedNodeUnderstanding = {},
+  enterpriseSharedInfrastructure = {},
   multiRailUnderstanding = {},
   bidirectionalRailUnderstanding = {},
   outputDir = null,
@@ -443,7 +432,9 @@ function buildEnterpriseDeploymentUnderstanding({
     buildReplicatedRegionCandidates(regionTopologyProfiles);
 
   const sharedInfrastructure =
-    buildSharedInfrastructureSummary(sharedNodeUnderstanding);
+    asArray(
+      enterpriseSharedInfrastructure.sharedInfrastructure
+    );
 
   const crossRegionRelationships =
     buildCrossRegionRelationshipSummary({
@@ -476,7 +467,7 @@ function buildEnterpriseDeploymentUnderstanding({
     source: 'enterpriseDeploymentUnderstandingBuilder',
 
     purpose:
-      'Create deterministic enterprise deployment understanding from normalized deployment boundaries, region traversal, shared-node, multi-rail, and bidirectional architecture cognition.',
+      'Create deterministic enterprise deployment understanding from normalized deployment boundaries, canonical enterprise shared infrastructure, region traversal, multi-rail, and bidirectional architecture cognition.',
 
     rules: {
       traversalMutation: 'forbidden',
@@ -485,6 +476,8 @@ function buildEnterpriseDeploymentUnderstanding({
       narrationGeneration: 'forbidden',
       deterministicOnly: true,
       normalizedDeploymentBoundariesPreferred: true,
+      sharedInfrastructureSource:
+        'enterprise-shared-infrastructure.json',
     },
 
     regions,
@@ -495,6 +488,13 @@ function buildEnterpriseDeploymentUnderstanding({
     deploymentPattern,
     teachingMetadata,
     health,
+
+    sourceArtifacts: {
+      enterpriseSharedInfrastructure:
+        enterpriseSharedInfrastructure.version || null,
+    },
+
+
 
     stats: {
       regionCount: regions.length,
