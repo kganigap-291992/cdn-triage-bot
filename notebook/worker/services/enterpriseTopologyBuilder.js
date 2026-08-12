@@ -88,19 +88,62 @@ function buildRelationshipIndex(architectureUnderstanding = {}) {
 function normalizeDeploymentUnit(unit = {}) {
   return {
     deploymentUnitId:
-      unit.deploymentUnitId || `deployment_unit_${slugify(unit.title)}`,
-    title: unit.title || 'Unknown Deployment Unit',
-    unitType: unit.unitType || 'deployment_unit',
-    unitScope: unit.unitScope || 'deployment_unit',
+      unit.deploymentUnitId ||
+      `deployment_unit_${slugify(unit.title)}`,
+
+    title:
+      unit.title ||
+      'Unknown Deployment Unit',
+
+    unitType:
+      unit.unitType ||
+      'deployment_unit',
+
+    unitScope:
+      unit.unitScope ||
+      'deployment_unit',
+
     deploymentDifferentiator:
-      unit.deploymentDifferentiator || null,
-    sourceBoundaryId: unit.sourceBoundaryId || null,
-    sourceBoundaries: asArray(unit.sourceBoundaries),
-    componentIds: uniq(unit.componentIds),
-    componentNames: uniq(unit.componentNames),
-    components: asArray(unit.components),
-    confidence: unit.confidence || 'medium',
-    source: unit.source || 'deployment-units.json',
+      unit.deploymentDifferentiator ||
+      null,
+
+    sourceBoundaryId:
+      unit.sourceBoundaryId ||
+      null,
+
+    sourceBoundaries:
+      asArray(unit.sourceBoundaries),
+
+    componentIds:
+      uniq(unit.componentIds),
+
+    componentNames:
+      uniq(unit.componentNames),
+
+    components:
+      asArray(unit.components),
+
+    runtimeInstanceIds:
+      uniq(unit.runtimeInstanceIds),
+
+    runtimeInstanceNames:
+      uniq(unit.runtimeInstanceNames),
+
+    runtimeInstances:
+      asArray(unit.runtimeInstances),
+
+    unresolvedRuntimeInstanceIds:
+      uniq(
+        unit.unresolvedRuntimeInstanceIds
+      ),
+
+    confidence:
+      unit.confidence ||
+      'medium',
+
+    source:
+      unit.source ||
+      'deployment-units.json',
   };
 }
 
@@ -937,12 +980,12 @@ function getTopologyRole(component = {}) {
     return 'routing_or_messaging';
   }
 
-  if (/\b(app|application|service|worker|processor|cluster|transcoder|packager)\b/.test(text)) {
-    return 'processing';
-  }
-
   if (/\b(db|database|cache|redis|store|storage|origin|regional db)\b/.test(text)) {
     return 'state_or_storage';
+  }
+
+  if (/\b(app|application|service|worker|processor|cluster|transcoder|packager)\b/.test(text)) {
+    return 'processing';
   }
 
   if (/\b(metrics|monitor|log|collector|observability|alert)\b/.test(text)) {
@@ -952,11 +995,20 @@ function getTopologyRole(component = {}) {
   return 'unknown';
 }
 
+
+
+
 function buildDeploymentUnitTopologySignatures({
   deploymentUnits = [],
   relationships = [],
   componentIndex = {},
+  runtimeFamilyDiscovery = {},
 } = {}) {
+  const runtimeFamilies =
+    asArray(
+      runtimeFamilyDiscovery.runtimeFamilies
+    );
+
   return deploymentUnits.map((unit) => {
     const unitComponentNames = new Set(
       asArray(unit.componentNames).map(safeLower)
@@ -978,11 +1030,85 @@ function buildDeploymentUnitTopologySignatures({
         })
         .filter((component) => safeString(component.name));
 
-    const roleCounts = unitComponents.reduce((acc, component) => {
-      const role = getTopologyRole(component);
-      acc[role] = (acc[role] || 0) + 1;
-      return acc;
-    }, {});
+    const unitRuntimeFamilies =
+      runtimeFamilies
+        .filter((family) =>
+          asArray(family.instances).some(
+            (instance) =>
+              instance.deploymentUnitId ===
+              unit.deploymentUnitId
+          )
+        )
+        .map((family) => ({
+          runtimeFamilyId:
+            family.runtimeFamilyId,
+
+          runtimeFamilyName:
+            family.runtimeFamilyName,
+
+          logicalComponentId:
+            family.logicalComponentId ||
+            null,
+
+          logicalComponentName:
+            family.logicalComponentName ||
+            null,
+
+          logicalComponentResolution:
+            family.logicalComponentResolution ||
+            'unresolved',
+
+          confidence:
+            family.confidence ||
+            'unknown',
+        }));    
+
+    const logicalComponentIds =
+      new Set(
+        unitComponents
+          .map((component) =>
+            safeString(component.id)
+          )
+          .filter(Boolean)
+      );
+
+    const supplementalRuntimeFamilies =
+      unitRuntimeFamilies.filter(
+        (family) =>
+          !family.logicalComponentId ||
+          !logicalComponentIds.has(
+            family.logicalComponentId
+          )
+      );
+
+    const roleCounts =
+      unitComponents.reduce(
+        (acc, component) => {
+          const role =
+            getTopologyRole(component);
+
+          acc[role] =
+            (acc[role] || 0) + 1;
+
+          return acc;
+        },
+        {}
+      );
+
+    for (
+      const family of
+      supplementalRuntimeFamilies
+    ) {
+      const role =
+        getTopologyRole({
+          name:
+            family.logicalComponentName ||
+            family.runtimeFamilyName,
+        });
+
+      roleCounts[role] =
+        (roleCounts[role] || 0) + 1;
+    }
 
     const internalRelationships =
       relationships.filter((relationship) => {
@@ -1030,17 +1156,76 @@ function buildDeploymentUnitTopologySignatures({
       ...relationshipShape,
     ]);
 
+    const signatureQuality =
+      buildTopologySignatureQuality({
+        componentCount:
+          unitComponents.length,
+
+        topologyEvidenceItemCount:
+          unitComponents.length +
+          supplementalRuntimeFamilies.length,
+
+        roleCounts,
+
+        relationshipShape,
+      });
+
     return {
-      deploymentUnitId: unit.deploymentUnitId,
-      deploymentUnitTitle: unit.title,
-      unitScope: unit.unitScope,
-      componentCount: unitComponents.length,
+      deploymentUnitId:
+        unit.deploymentUnitId,
+
+      deploymentUnitTitle:
+        unit.title,
+
+      unitScope:
+        unit.unitScope,
+
+      componentCount:
+        unitComponents.length,
+
+      runtimeFamilyCount:
+        unitRuntimeFamilies.length,
+
+      supplementalRuntimeFamilyCount:
+        supplementalRuntimeFamilies.length,
+
+      topologyEvidenceItemCount:
+        unitComponents.length +
+        supplementalRuntimeFamilies.length,
+
       roleCounts,
+
       relationshipShape,
+
       canonicalTopologySignature,
-      source: 'enterpriseTopologyBuilder',
+
+      signatureQuality,
+
+      runtimeFamilies:
+        unitRuntimeFamilies.map(
+          (family) => ({
+            runtimeFamilyId:
+              family.runtimeFamilyId,
+
+            runtimeFamilyName:
+              family.runtimeFamilyName,
+
+            logicalComponentId:
+              family.logicalComponentId,
+
+            logicalComponentName:
+              family.logicalComponentName,
+
+            logicalComponentResolution:
+              family.logicalComponentResolution,
+          })
+        ),
+
+      source:
+        'enterpriseTopologyBuilder',
+
       borrowedIdea:
-        'kubernetes_deployment_template_and_service_graph_topology_signature',
+        'kubernetes_deployment_template_c4_deployment_runtime_family_and_service_graph_topology_signature',
     };
   });
 }
@@ -1102,6 +1287,89 @@ function calculateWeightedTopologySimilarity({
   return Number(weightedScore.toFixed(2));
 }
 
+function buildTopologySignatureQuality(
+  signature = {}
+) {
+  const roleCounts =
+    signature.roleCounts || {};
+
+  const evidenceItemCount =
+    Number(
+      signature.topologyEvidenceItemCount ||
+      signature.componentCount ||
+      0
+    );
+
+  const unknownRoleCount =
+    Number(
+      roleCounts.unknown || 0
+    );
+
+  const knownRoleCount =
+    Object.entries(roleCounts)
+      .filter(
+        ([role]) =>
+          role !== 'unknown'
+      )
+      .reduce(
+        (sum, [, count]) =>
+          sum +
+          Number(count || 0),
+        0
+      );
+
+  const knownRoleDiversity =
+    Object.keys(roleCounts)
+      .filter(
+        (role) =>
+          role !== 'unknown' &&
+          Number(roleCounts[role] || 0) > 0
+      )
+      .length;
+
+  const unknownRatio =
+    evidenceItemCount > 0
+      ? unknownRoleCount /
+        evidenceItemCount
+      : 1;
+
+  const relationshipShapeCount =
+    asArray(
+      signature.relationshipShape
+    ).length;
+
+  const eligible =
+    evidenceItemCount >= 2 &&
+    knownRoleCount >= 2 &&
+    unknownRatio < 0.75;
+
+  return {
+    eligible,
+    evidenceItemCount,
+    knownRoleCount,
+    unknownRoleCount,
+    knownRoleDiversity,
+    unknownRatio:
+      Number(
+        unknownRatio.toFixed(2)
+      ),
+    relationshipShapeCount,
+    reasons: [
+      evidenceItemCount < 2
+        ? 'insufficient_topology_evidence_items'
+        : null,
+
+      knownRoleCount < 2
+        ? 'insufficient_known_topology_roles'
+        : null,
+
+      unknownRatio >= 0.75
+        ? 'topology_signature_mostly_unknown'
+        : null,
+    ].filter(Boolean),
+  };
+}
+
 function buildReplicaRelationshipsFromTopology({
   topologySignatures = [],
 } = {}) {
@@ -1111,6 +1379,21 @@ function buildReplicaRelationshipsFromTopology({
     for (let j = i + 1; j < topologySignatures.length; j += 1) {
       const left = topologySignatures[i];
       const right = topologySignatures[j];
+
+      const leftQuality =
+        left.signatureQuality ||
+        buildTopologySignatureQuality(left);
+
+      const rightQuality =
+        right.signatureQuality ||
+        buildTopologySignatureQuality(right);
+
+      if (
+        !leftQuality.eligible ||
+        !rightQuality.eligible
+      ) {
+        continue;
+      }
 
       const similarity =
         calculateWeightedTopologySimilarity({
@@ -1123,26 +1406,61 @@ function buildReplicaRelationshipsFromTopology({
       relationships.push({
         replicaRelationshipId:
           `replica_${slugify(left.deploymentUnitTitle)}_${slugify(right.deploymentUnitTitle)}`,
+
         relationshipType:
           similarity >= 0.75
             ? 'mirrored_topology_candidate'
             : 'partial_replica_candidate',
+
         deploymentUnitA: {
-          deploymentUnitId: left.deploymentUnitId,
-          deploymentUnitTitle: left.deploymentUnitTitle,
+          deploymentUnitId:
+            left.deploymentUnitId,
+
+          deploymentUnitTitle:
+            left.deploymentUnitTitle,
         },
+
         deploymentUnitB: {
-          deploymentUnitId: right.deploymentUnitId,
-          deploymentUnitTitle: right.deploymentUnitTitle,
+          deploymentUnitId:
+            right.deploymentUnitId,
+
+          deploymentUnitTitle:
+            right.deploymentUnitTitle,
         },
-        similarity: Number(similarity.toFixed(2)),
-        confidence: similarity >= 0.75 ? 'high' : 'medium',
-        candidateOnly: true,
-        basis: 'structural_topology_signature_similarity',
-        similarityMethod: 'presence_weighted_role_and_relationship_similarity',
+
+        similarity:
+          Number(
+            similarity.toFixed(2)
+          ),
+
+        confidence:
+          similarity >= 0.75
+            ? 'high'
+            : 'medium',
+
+        candidateOnly:
+          true,
+
+        basis:
+          'structural_topology_signature_similarity',
+
+        similarityMethod:
+          'presence_weighted_role_and_relationship_similarity',
+
+        signatureQuality: {
+          left:
+            leftQuality,
+
+          right:
+            rightQuality,
+        },
+
         sharedTopologySignature:
-          left.canonicalTopologySignature.filter((item) =>
-            right.canonicalTopologySignature.includes(item)
+          left.canonicalTopologySignature.filter(
+            (item) =>
+              right.canonicalTopologySignature.includes(
+                item
+              )
           ),
         borrowedIdea:
           'kubernetes_deployment_template_comparison_c4_deployment_topology_service_graph_similarity',
@@ -1588,6 +1906,7 @@ function buildEnterpriseTopology({
   journeyUnderstanding = {},
   deploymentBoundaryNormalization = {},
   deploymentUnitDiscovery = {},
+  runtimeFamilyDiscovery = {},
   enterpriseDeployment = {},
 
   sharedNodeUnderstanding = {},
@@ -1630,9 +1949,10 @@ function buildEnterpriseTopology({
 
   const topologySignatures =
     buildDeploymentUnitTopologySignatures({
-        deploymentUnits,
-        relationships,
-        componentIndex,
+      deploymentUnits,
+      relationships,
+      componentIndex,
+      runtimeFamilyDiscovery,
     });
 
     const replicaRelationships =
@@ -1754,6 +2074,10 @@ function buildEnterpriseTopology({
         deploymentBoundaryNormalization.version || null,
       deploymentUnitDiscovery:
         deploymentUnitDiscovery.version || null,
+
+      runtimeFamilyDiscovery:
+        runtimeFamilyDiscovery.version || null,
+
       enterpriseDeployment:
         enterpriseDeployment.version || null,
       sharedNodeUnderstanding:
