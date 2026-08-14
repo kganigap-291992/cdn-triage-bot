@@ -512,6 +512,7 @@ function resolveInstanceDeploymentUnit({
 function buildCanonicalComponentIndex({
   documentUnderstanding = {},
   architectureUnderstanding = {},
+  componentAliasRegistry = {},
 } = {}) {
   const documentComponents =
     asArray(
@@ -530,6 +531,9 @@ function buildCanonicalComponentIndex({
     new Map();
 
   const byName =
+    new Map();
+
+  const byAlias =
     new Map();
 
   for (const component of [
@@ -584,9 +588,58 @@ function buildCanonicalComponentIndex({
     );
   }
 
+  /*
+   * Consume only aliases already resolved by the
+   * canonical alias registry.
+   *
+   * componentAliasRegistry.aliasLookup contains
+   * deterministic, unambiguous alias ownership.
+   *
+   * Runtime-family discovery does not infer,
+   * expand, or guess aliases here.
+   */
+  for (
+    const aliasRecord of
+    asArray(
+      componentAliasRegistry.aliasLookup
+    )
+  ) {
+    const normalizedAlias =
+      safeLower(
+        aliasRecord.normalizedAlias ||
+        aliasRecord.alias
+      );
+
+    const componentId =
+      safeString(
+        aliasRecord.componentId
+      );
+
+    if (
+      !normalizedAlias ||
+      !componentId
+    ) {
+      continue;
+    }
+
+    const component =
+      byId.get(componentId);
+
+    if (!component) {
+      continue;
+    }
+
+    byAlias.set(
+      normalizedAlias,
+      component
+    );
+  }
+
   return {
     byId,
     byName,
+    byAlias,
+
     components:
       Array.from(
         byId.values()
@@ -634,18 +687,42 @@ function resolveLogicalComponent({
         'high',
     };
   }
+   
+  const exactAlias =
+        canonicalComponentIndex
+            .byAlias
+            ?.get(familyLower);
 
+        if (exactAlias) {
+        return {
+            logicalComponent:
+            exactAlias,
+
+            resolution:
+            'exact_registered_alias_match',
+
+            confidence:
+            'high',
+        };
+    }
   /*
-   * Conservative parent resolution:
-   *
-   * Atlas Worker      -> Atlas
-   * Meridian Worker   -> Meridian
-   * Northstar Indexer -> Northstar
-   * PulseGrid Cache   -> PulseGrid
-   *
-   * Guide API does not map to Read API because the
-   * names do not share an explicit canonical prefix.
-   */
+    * Conservative canonical-parent resolution.
+    *
+    * Resolution order:
+    *
+    * 1. Exact canonical component name.
+    * 2. Exact registered alias from the
+    *    canonical alias registry.
+    * 3. Explicit canonical-prefix match.
+    *
+    * Runtime role words such as Worker,
+    * API, Service, Cache, Replica,
+    * Pod or Instance never establish
+    * logical identity on their own.
+    *
+    * If no deterministic identity exists,
+    * the runtime family remains unresolved.
+    */
   const prefixCandidates =
     asArray(
       canonicalComponentIndex.components
@@ -759,6 +836,7 @@ function groupRuntimeFamilies({
   deploymentUnitDiscovery = {},
   documentUnderstanding = {},
   architectureUnderstanding = {},
+  componentAliasRegistry = {},
 } = {}) {
   const deploymentUnitIndex =
     buildDeploymentUnitIndex({
@@ -767,8 +845,9 @@ function groupRuntimeFamilies({
 
   const canonicalComponentIndex =
     buildCanonicalComponentIndex({
-      documentUnderstanding,
-      architectureUnderstanding,
+        documentUnderstanding,
+        architectureUnderstanding,
+        componentAliasRegistry,
     });
 
   const familyMap =
@@ -1385,6 +1464,7 @@ function buildRuntimeFamilyDiscovery({
   documentUnderstanding = {},
   architectureUnderstanding = {},
   deploymentUnitDiscovery = {},
+  componentAliasRegistry = {},
   outputDir = null,
 } = {}) {
   const runtimeInstanceCandidates =
@@ -1394,10 +1474,11 @@ function buildRuntimeFamilyDiscovery({
 
   const runtimeFamilies =
     groupRuntimeFamilies({
-      runtimeInstanceCandidates,
-      deploymentUnitDiscovery,
-      documentUnderstanding,
-      architectureUnderstanding,
+        runtimeInstanceCandidates,
+        deploymentUnitDiscovery,
+        documentUnderstanding,
+        architectureUnderstanding,
+        componentAliasRegistry,
     });
 
   const health =
@@ -1484,10 +1565,19 @@ function buildRuntimeFamilyDiscovery({
         true,
 
       deploymentDifferentiatorMatchPreferred:
-        true,
+            true,
 
-      unresolvedLogicalParentsAllowed:
-        true,
+        registeredAliasResolution:
+            'exact_unambiguous_only',
+
+        inferredSemanticAliasResolution:
+            'forbidden',
+
+        fuzzyLogicalComponentResolution:
+            'forbidden',
+
+        unresolvedLogicalParentsAllowed:
+            true,
     },
 
     runtimeInstanceCandidates,
@@ -1499,19 +1589,23 @@ function buildRuntimeFamilyDiscovery({
     health,
 
     sourceArtifacts: {
-      documentUnderstanding:
-        documentUnderstanding.version ||
-        null,
+        documentUnderstanding:
+            documentUnderstanding.version ||
+            null,
 
-      architectureUnderstanding:
-        architectureUnderstanding.version ||
-        architectureUnderstanding.schemaVersion ||
-        null,
+        architectureUnderstanding:
+            architectureUnderstanding.version ||
+            architectureUnderstanding.schemaVersion ||
+            null,
 
-      deploymentUnitDiscovery:
-        deploymentUnitDiscovery.version ||
-        null,
-    },
+        deploymentUnitDiscovery:
+            deploymentUnitDiscovery.version ||
+            null,
+
+        componentAliasRegistry:
+            componentAliasRegistry.version ||
+            null,
+        },
 
     stats: {
       runtimeInstanceCandidateCount:
@@ -1550,6 +1644,22 @@ function buildRuntimeFamilyDiscovery({
           (family) =>
             !family.logicalComponentId
         ).length,
+      
+      aliasResolvedFamilyCount:
+            runtimeFamilies.filter(
+                (family) =>
+                    family.logicalComponentResolution ===
+                    'exact_registered_alias_match'
+            ).length,
+
+        canonicalPrefixResolvedFamilyCount:
+            runtimeFamilies.filter(
+                (family) =>
+                    family.logicalComponentResolution ===
+                        'canonical_prefix_match' ||
+                    family.logicalComponentResolution ===
+                        'longest_canonical_prefix_match'
+            ).length,
 
       genericFamilySingletonCount:
         runtimeFamilies.filter(

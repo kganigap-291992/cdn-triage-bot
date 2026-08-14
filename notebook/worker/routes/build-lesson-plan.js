@@ -18,6 +18,25 @@ const {
 } = require("../services/spatialUnderstandingBuilder");
 
 const {
+  buildDiagramObjectRegistry,
+  saveDiagramObjectRegistry,
+} = require("../services/diagramObjectRegistryBuilder");
+
+const {
+  extractPdfLayoutForJob,
+} = require("../services/pdfLayoutExtractor");
+
+const {
+  buildVisualBoundaryUnderstanding,
+  saveVisualBoundaryUnderstanding,
+} = require("../services/visualBoundaryUnderstandingBuilder");
+
+const {
+  buildVisualEntityGrounding,
+  saveVisualEntityGrounding,
+} = require("../services/visualEntityGroundingBuilder");
+
+const {
   buildSpatialEntityGrounding,
 } = require("../services/spatialEntityGroundingBuilder");
 
@@ -31,6 +50,7 @@ const {
 
 const {
   buildBoundarySummary,
+  buildVisualBoundarySemanticSummary,
 } = require("../services/architectureBoundaryTyping");
 
 const {
@@ -396,14 +416,80 @@ router.post("/:jobId", async (req, res) => {
 
     const extracted = readJson(path.join(jobDir, "extracted.json"), {});
 
-    const documentUnderstanding = buildDocumentUnderstanding({ jobDir });
+    const documentUnderstanding =
+      buildDocumentUnderstanding({
+        jobDir
+      });
 
-    console.log("[document-understanding]", {
-      entities: documentUnderstanding.stats.entityCount,
-      relationships: documentUnderstanding.stats.relationshipCount,
-      sequences: documentUnderstanding.stats.sequenceCount,
-    });
+    /* ------------------------------------------------------- */
+    /* BUG-1A Component-Bearing Heading Identity               */
+    /* ------------------------------------------------------- */
 
+    const componentHeadingUnderstanding =
+      documentUnderstanding
+        .componentHeadingUnderstanding ||
+      {};
+
+    const componentHeadingUnderstandingPath =
+      path.join(
+        jobDir,
+        "component-heading-understanding.json"
+      );
+
+    console.log(
+      "[document-understanding]",
+      {
+        entities:
+          documentUnderstanding
+            .stats.entityCount,
+
+        canonicalComponents:
+          documentUnderstanding
+            .stats.canonicalComponentCount,
+
+        componentBearingHeadings:
+          documentUnderstanding
+            .stats
+            .componentBearingHeadingCount,
+
+        relationships:
+          documentUnderstanding
+            .stats.relationshipCount,
+
+        sequences:
+          documentUnderstanding
+            .stats.sequenceCount,
+      }
+    );
+
+    console.log(
+      "[component-heading-understanding]",
+      {
+        version:
+          componentHeadingUnderstanding
+            .version,
+
+        headings:
+          componentHeadingUnderstanding
+            ?.stats
+            ?.headingCount,
+
+        componentBearing:
+          componentHeadingUnderstanding
+            ?.stats
+            ?.componentBearingHeadingCount,
+
+        rejected:
+          componentHeadingUnderstanding
+            ?.stats
+            ?.rejectedHeadingCount,
+
+        health:
+          componentHeadingUnderstanding
+            ?.health
+            ?.valid,
+      }
+    );
     /* ------------------------------------------------------- */
     /* BUG-10 Component Alias Registry                         */
     /* ------------------------------------------------------- */
@@ -438,7 +524,109 @@ router.post("/:jobId", async (req, res) => {
       spatialUnderstanding
     );
 
-    console.log("[spatial-understanding]", spatialUnderstanding.stats);
+    console.log(
+      "[spatial-understanding]",
+      spatialUnderstanding.stats
+    );
+
+    /* ------------------------------------------------------- */
+    /* BUG-1 Diagram Object Registry                           */
+    /* ------------------------------------------------------- */
+
+    const diagramObjectRegistry =
+      buildDiagramObjectRegistry({
+        spatialUnderstanding,
+      });
+
+    const diagramObjectRegistryPath =
+      saveDiagramObjectRegistry(
+        jobDir,
+        diagramObjectRegistry
+      );
+
+    console.log(
+      "[diagram-object-registry]",
+      diagramObjectRegistry.stats
+    );
+
+    /* ------------------------------------------------------- */
+    /* BUG-2B Visual Boundary Understanding                   */
+    /* ------------------------------------------------------- */
+
+    const pdfLayout =
+      extractPdfLayoutForJob(jobDir);
+
+    const visualBoundaryUnderstanding =
+      buildVisualBoundaryUnderstanding({
+        pdfLayout,
+        diagramObjectRegistry,
+      });
+
+    const visualBoundaryUnderstandingPath =
+      saveVisualBoundaryUnderstanding(
+        jobDir,
+        visualBoundaryUnderstanding
+      );
+
+    console.log(
+      "[visual-boundary-understanding]",
+      visualBoundaryUnderstanding.stats
+    );
+
+    /* ------------------------------------------------------- */
+    /* BUG-2C Visual Boundary Semantics                        */
+    /* ------------------------------------------------------- */
+
+    const visualBoundarySemantics =
+      buildVisualBoundarySemanticSummary(
+        visualBoundaryUnderstanding
+      );
+
+    const visualBoundarySemanticsPath =
+      writeJson(
+        path.join(
+          jobDir,
+          "visual-boundary-semantics.json"
+        ),
+        visualBoundarySemantics
+      );
+
+    console.log(
+      "[visual-boundary-semantics]",
+      visualBoundarySemantics.stats
+    );
+
+    /* ------------------------------------------------------- */
+    /* BUG-2D Visual Entity Grounding                          */
+    /* ------------------------------------------------------- */
+
+    const visualEntityGrounding =
+      buildVisualEntityGrounding({
+        diagramObjectRegistry,
+        visualBoundaryUnderstanding,
+        visualBoundarySemantics,
+        componentAliasRegistry,
+
+        /*
+        * Runtime identity is intentionally optional here.
+        *
+        * runtimeFamilyDiscovery executes later and already
+        * depends on deployment discovery. Pulling it upstream
+        * would introduce a circular dependency.
+        */
+        runtimeFamilies: {},
+      });
+
+    const visualEntityGroundingPath =
+      saveVisualEntityGrounding(
+        jobDir,
+        visualEntityGrounding
+      );
+
+    console.log(
+      "[visual-entity-grounding]",
+      visualEntityGrounding.stats
+    );
 
     const spatialEntityGrounding = buildSpatialEntityGrounding({
       documentUnderstanding,
@@ -1115,6 +1303,7 @@ const responsibilityUnderstanding = buildResponsibilityUnderstanding({
         documentUnderstanding,
         architectureUnderstanding,
         deploymentUnitDiscovery,
+        componentAliasRegistry,
         outputDir: jobDir,
       });
 
@@ -1231,9 +1420,31 @@ const responsibilityUnderstanding = buildResponsibilityUnderstanding({
       version: lessonPlan.version,
       jobId,
       documentUnderstanding: {
-        version: documentUnderstanding.version,
-        stats: documentUnderstanding.stats,
-        confidence: documentUnderstanding.confidence,
+        version:
+          documentUnderstanding.version,
+
+        stats:
+          documentUnderstanding.stats,
+
+        confidence:
+          documentUnderstanding.confidence,
+      },
+
+      componentHeadingUnderstanding: {
+        version:
+          componentHeadingUnderstanding
+            .version,
+
+        stats:
+          componentHeadingUnderstanding
+            .stats,
+
+        health:
+          componentHeadingUnderstanding
+            .health,
+
+        output:
+          componentHeadingUnderstandingPath,
       },
 
       componentAliasRegistry: {
@@ -1248,6 +1459,57 @@ const responsibilityUnderstanding = buildResponsibilityUnderstanding({
         stats: spatialUnderstanding.stats,
         output: spatialUnderstandingPath,
       },
+
+      diagramObjectRegistry: {
+        version: diagramObjectRegistry.version,
+        stats: diagramObjectRegistry.stats,
+        health: diagramObjectRegistry.health,
+        output: diagramObjectRegistryPath,
+      },
+
+      visualBoundaryUnderstanding: {
+        version: visualBoundaryUnderstanding.version,
+        stats: visualBoundaryUnderstanding.stats,
+        health: visualBoundaryUnderstanding.health,
+        geometrySource:
+          visualBoundaryUnderstanding.geometrySource,
+        output: visualBoundaryUnderstandingPath,
+      },
+
+      visualBoundarySemantics: {
+        version: visualBoundarySemantics.version,
+        stats: visualBoundarySemantics.stats,
+        health: visualBoundarySemantics.health,
+        graphChanged:
+          visualBoundarySemantics.graphChanged,
+        traversalChanged:
+          visualBoundarySemantics.traversalChanged,
+        output: visualBoundarySemanticsPath,
+      },
+
+      visualEntityGrounding: {
+        version:
+          visualEntityGrounding.version,
+
+        stats:
+          visualEntityGrounding.stats,
+
+        health:
+          visualEntityGrounding.health,
+
+        identityPolicy:
+          visualEntityGrounding.identityPolicy,
+
+        graphChanged:
+          visualEntityGrounding.graphChanged,
+
+        traversalChanged:
+          visualEntityGrounding.traversalChanged,
+
+        output:
+          visualEntityGroundingPath,
+      },
+
       spatialEntityGrounding: {
         version: spatialEntityGrounding.version,
         stats: spatialEntityGrounding.stats,

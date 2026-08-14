@@ -3,11 +3,16 @@ const path = require("path");
 
 const { buildLayoutBoxes } = require("./layoutBoxBuilder");
 const { buildDocumentStructure } = require("./documentStructureBuilder");
+const {
+  buildComponentHeadingUnderstanding,
+} = require(
+  "./componentHeadingUnderstandingBuilder"
+);
 const { buildSourceGrounding } = require("./sourceGroundingBuilder");
 const { buildDocumentIntelligence } = require("./documentIntelligence");
 
 const VERSION =
-  "document-understanding-v4-canonical-component-registry";
+  "document-understanding-v5-component-heading-identity";
 
 function safeReadJson(filePath, fallback = null) {
   try {
@@ -1010,7 +1015,8 @@ function mergeEntities(rawEntities = [], evidence = []) {
 
 function buildCanonicalComponents(
   entities = [],
-  evidence = []
+  evidence = [],
+  componentHeadingUnderstanding = {}
 ) {
   /*
    * BUG-3.1 — Canonical Component Promotion
@@ -1398,9 +1404,9 @@ function buildCanonicalComponents(
       strippedName.toLowerCase();
 
     /*
-     * Never promote a generic word, operation, or protocol
-     * into a canonical component identity.
-     */
+    * Never promote a generic word, operation, or protocol
+    * into a canonical component identity.
+    */
     if (
       genericNames.has(strippedLower) ||
       protocolOrOperationNames.has(strippedLower) ||
@@ -1420,7 +1426,9 @@ function buildCanonicalComponents(
 
     if (
       cleanerEntity &&
-      Array.isArray(cleanerEntity.evidenceIds) &&
+      Array.isArray(
+        cleanerEntity.evidenceIds
+      ) &&
       cleanerEntity.evidenceIds.length > 0
     ) {
       const promotedEvidenceIds =
@@ -1429,28 +1437,24 @@ function buildCanonicalComponents(
         );
 
       const sharedEvidenceCount =
-        (cleanerEntity.evidenceIds || [])
+        (
+          cleanerEntity.evidenceIds ||
+          []
+        )
           .filter((evidenceId) =>
-            promotedEvidenceIds.has(evidenceId)
+            promotedEvidenceIds.has(
+              evidenceId
+            )
           )
           .length;
 
-      const promotedSectionIds =
-        new Set(
-          promotedEntity.sectionIds || []
-        );
-
-      const sharedSectionCount =
-        (cleanerEntity.sectionIds || [])
-          .filter((sectionId) =>
-            promotedSectionIds.has(sectionId)
-          )
-          .length;
-
-      if (
-        sharedEvidenceCount > 0 ||
-        sharedSectionCount > 0
-      ) {
+      /*
+      * Existing clean identity is accepted only when
+      * both entities are backed by the same evidence.
+      *
+      * Broad section overlap alone is not sufficient.
+      */
+      if (sharedEvidenceCount > 0) {
         return {
           entity:
             cleanerEntity,
@@ -1470,16 +1474,25 @@ function buildCanonicalComponents(
     * definition-section-backed evidence.
     */
     const definitionBacked =
-      (promotedEntity.sectionIds || [])
+      (
+        promotedEntity.sectionIds ||
+        []
+      )
         .some((sectionId) =>
           /component[_ -]?definitions?/i.test(
-            String(sectionId || "")
+            String(
+              sectionId ||
+              ""
+            )
           )
         );
 
     const repeatedEvidence =
       (promotedEntity.mentions || 0) >= 2 &&
-      (promotedEntity.evidenceIds || []).length >= 2;
+      (
+        promotedEntity.evidenceIds ||
+        []
+      ).length >= 2;
 
     if (
       !definitionBacked ||
@@ -1493,7 +1506,9 @@ function buildCanonicalComponents(
         ...promotedEntity,
 
         id:
-          slugify(strippedName),
+          slugify(
+            strippedName
+          ),
 
         name:
           strippedName,
@@ -1504,20 +1519,330 @@ function buildCanonicalComponents(
     };
   }
 
-  const promotedComponents =
-    entities
-      .filter((entity) => {
-        const name =
-          normalizeText(entity.name);
+  function findDocumentSiblingIdentities({
+    promotedEntity,
+    canonicalEntity,
+    allEntities = [],
+    evidence = [],
+  } = {}) {
+    const identityIds =
+      new Set([
+        promotedEntity?.id,
+        canonicalEntity?.id,
+      ].filter(Boolean));
 
-        const lowerName =
-          name.toLowerCase();
+    const identityNames =
+      new Set([
+        normalizeText(
+          promotedEntity?.name
+        ),
+        normalizeText(
+          canonicalEntity?.name
+        ),
+      ].filter(Boolean));
 
-        if (!name) {
-          return false;
+    const identityEvidenceIds =
+      new Set([
+        ...(
+          promotedEntity?.evidenceIds ||
+          []
+        ),
+        ...(
+          canonicalEntity?.evidenceIds ||
+          []
+        ),
+      ]);
+
+    /*
+    * Preserve another document-defined identity only when
+    * structural evidence ties it to the same component context.
+    *
+    * This deliberately does not use semantic similarity,
+    * product knowledge, or fuzzy name matching.
+    */
+    const promotedEvidence =
+      [...identityEvidenceIds]
+        .map((evidenceId) =>
+          evidence.find(
+            (item) =>
+              item.id === evidenceId
+          )
+        )
+        .filter(Boolean);
+
+    for (const candidate of allEntities) {
+      if (
+        !candidate?.id ||
+        identityIds.has(candidate.id)
+      ) {
+        continue;
+      }
+
+      const candidateName =
+        normalizeText(
+          candidate.name
+        );
+
+      if (
+        !candidateName ||
+        candidateName.length < 3
+      ) {
+        continue;
+      }
+
+      /*
+      * Alternate identities must still look like
+      * architecture objects.
+      */
+      if (
+        !hasArchitectureNoun(
+          candidateName
+        )
+      ) {
+        continue;
+      }
+
+      /*
+      * Require direct structural adjacency.
+      * Same broad section alone is not enough.
+      */
+      const candidateEvidence =
+        (candidate.evidenceIds || [])
+          .map((evidenceId) =>
+            evidence.find(
+              (item) =>
+                item.id === evidenceId
+            )
+          )
+          .filter(Boolean);
+
+      const structurallyAdjacent =
+        candidateEvidence.some(
+          (candidateEv) =>
+            promotedEvidence.some(
+              (sourceEv) => {
+                /*
+                * Both pieces of evidence must belong
+                * to the same explicit component context.
+                */
+                if (
+                  !sourceEv.sectionId ||
+                  !candidateEv.sectionId ||
+                  sourceEv.sectionId !==
+                    candidateEv.sectionId
+                ) {
+                  return false;
+                }
+
+                /*
+                * They must also occur on the same page.
+                */
+                if (
+                  sourceEv.page !==
+                  candidateEv.page
+                ) {
+                  return false;
+                }
+
+                const sourceOrder =
+                  Number(
+                    sourceEv.order
+                  );
+
+                const candidateOrder =
+                  Number(
+                    candidateEv.order
+                  );
+
+                /*
+                * And they must be directly adjacent
+                * in document order.
+                */
+                return (
+                  Number.isFinite(
+                    sourceOrder
+                  ) &&
+                  Number.isFinite(
+                    candidateOrder
+                  ) &&
+                  Math.abs(
+                    sourceOrder -
+                    candidateOrder
+                  ) <= 1
+                );
+              }
+            )
+        );
+
+      if (!structurallyAdjacent) {
+        continue;
+      }
+
+      /*
+      * Do not merge generic words, operations,
+      * protocols, or document vocabulary.
+      */
+      const lowerName =
+        candidateName.toLowerCase();
+
+      if (
+        genericNames.has(lowerName) ||
+        protocolOrOperationNames.has(
+          lowerName
+        ) ||
+        actionNames.has(lowerName)
+      ) {
+        continue;
+      }
+
+      identityIds.add(
+        candidate.id
+      );
+
+      identityNames.add(
+        candidateName
+      );
+
+      for (
+        const evidenceId of
+        candidate.evidenceIds || []
+      ) {
+        identityEvidenceIds.add(
+          evidenceId
+        );
+      }
+    }
+
+    return {
+      ids:
+        [...identityIds],
+
+      names:
+        [...identityNames],
+
+      evidenceIds:
+        [...identityEvidenceIds],
+    };
+    }
+
+    function isOwnedDescriptiveEntity(
+      entity
+    ) {
+      const entityName =
+        normalizeText(
+          entity?.name
+        );
+
+      if (!entityName) {
+        return false;
+      }
+
+      const componentHeadings =
+        componentHeadingUnderstanding
+          ?.componentHeadings ||
+        [];
+
+      return componentHeadings.some(
+        (heading) => {
+          const headingName =
+            normalizeText(
+              heading.headingText
+            );
+
+          if (
+            !headingName ||
+            headingName.toLowerCase() ===
+              entityName.toLowerCase()
+          ) {
+            return false;
+          }
+
+          const headingSectionId =
+            heading.headingId;
+
+          const escapedName =
+            entityName.replace(
+              /[.*+?^${}()|[\]\\]/g,
+              "\\$&"
+            );
+
+          const ownedPrefixMatch =
+            (
+              heading.ownedContent ||
+              []
+            ).some((item) => {
+              const text =
+                normalizeText(
+                  item.text
+                );
+
+              if (!text) {
+                return false;
+              }
+
+              return new RegExp(
+                `^${escapedName}(?:\\b|\\s|:|[-–—])`,
+                "i"
+              ).test(text);
+            });
+
+          if (!ownedPrefixMatch) {
+            return false;
+          }
+
+          const externalEvidence =
+            (
+              entity.evidenceIds ||
+              []
+            )
+              .map((evidenceId) =>
+                evidence.find(
+                  (item) =>
+                    item.id === evidenceId
+                )
+              )
+              .filter(Boolean)
+              .filter(
+                (item) =>
+                  item.sectionId !==
+                  headingSectionId
+              );
+
+          return (
+            externalEvidence.length === 0
+          );
         }
+      );
+    }
 
-        if (genericNames.has(lowerName)) {
+    const promotedComponents =
+      entities
+        .filter((entity) => {
+          const name =
+            normalizeText(entity.name);
+
+          const lowerName =
+            name.toLowerCase();
+
+          if (!name) {
+            return false;
+          }
+
+          /*
+          * BUG-1A
+          *
+          * Narrative owned by a component-bearing heading
+          * must not replace that heading as canonical identity.
+          */
+          if (
+            isOwnedDescriptiveEntity(
+              entity
+            )
+          ) {
+            return false;
+          }
+
+          if (genericNames.has(lowerName)) {
           return false;
         }
 
@@ -1637,26 +1962,68 @@ function buildCanonicalComponents(
           );
 
         const canonicalEntity =
-          cleanIdentityResolution?.entity ||
-          entity;
+            cleanIdentityResolution?.entity ||
+            entity;
 
-        if (cleanIdentityResolution) {
-          promotionReasons.push(
-            cleanIdentityResolution.derived
-              ? "derived_clean_document_identity"
-              : "clean_document_identity"
-          );
-        }
+          if (cleanIdentityResolution) {
+            promotionReasons.push(
+              cleanIdentityResolution.derived
+                ? "derived_clean_document_identity"
+                : "clean_document_identity"
+            );
+          }
 
-        const combinedEvidenceIds =
-          unique([
-            ...(entity.evidenceIds || []),
+          const siblingIdentities =
+            findDocumentSiblingIdentities({
+              promotedEntity:
+                entity,
 
-            ...(
-              canonicalEntity.evidenceIds ||
-              []
-            ),
-          ]);
+              canonicalEntity,
+
+              allEntities:
+                entities,
+
+              evidence,
+            });
+
+          const baseIdentityNames =
+            new Set(
+              [
+                entity.name,
+                canonicalEntity.name,
+              ]
+                .map(normalizeText)
+                .filter(Boolean)
+            );
+
+          const hasSiblingIdentity =
+            siblingIdentities.names.some(
+              (name) =>
+                !baseIdentityNames.has(
+                  normalizeText(name)
+                )
+            );
+
+          if (hasSiblingIdentity) {
+            promotionReasons.push(
+              "document_structural_identity_alias"
+            );
+          }
+
+          const combinedEvidenceIds =
+            unique([
+              ...(entity.evidenceIds || []),
+
+              ...(
+                canonicalEntity.evidenceIds ||
+                []
+              ),
+
+              ...(
+                siblingIdentities.evidenceIds ||
+                []
+              ),
+            ]);
 
         const componentEvidence =
           combinedEvidenceIds
@@ -1781,12 +2148,14 @@ function buildCanonicalComponents(
             unique([
               entity.id,
               canonicalEntity.id,
+              ...siblingIdentities.ids,
             ]),
 
           rawIdentityNames:
             unique([
               entity.name,
               canonicalEntity.name,
+              ...siblingIdentities.names,
             ]),
         };
       });
@@ -1799,12 +2168,184 @@ function buildCanonicalComponents(
   const registryById =
     new Map();
 
-  promotedComponents.forEach(
-    (component) => {
-      const existing =
-        registryById.get(
-          component.id
-        );
+    /*
+   * BUG-1A — Component-bearing headings seed canonical
+   * component identity directly.
+   *
+   * They do NOT enter entities[] and therefore do not
+   * weaken the structural eligibility firewall.
+   */
+  const headingPromotedComponents =
+    (
+      componentHeadingUnderstanding
+        ?.componentHeadings ||
+      []
+    )
+      .map((heading) => {
+        const title =
+          normalizeText(
+            heading.headingText
+          );
+
+        if (!title) {
+          return null;
+        }
+
+        const headingEvidenceIds =
+          unique(
+            heading.evidenceIds ||
+            []
+          );
+
+        const headingEvidence =
+          headingEvidenceIds
+            .map((evidenceId) =>
+              evidence.find(
+                (item) =>
+                  item.id ===
+                  evidenceId
+              )
+            )
+            .filter(Boolean);
+
+        const pseudoEntity = {
+          id:
+            slugify(title),
+
+          name:
+            title,
+
+          evidenceIds:
+            headingEvidenceIds,
+
+          pages:
+            unique([
+              heading.page,
+
+              ...headingEvidence.map(
+                (item) =>
+                  item.page
+              ),
+            ]),
+
+          sectionIds:
+            unique([
+              heading.headingId,
+
+              ...headingEvidence.map(
+                (item) =>
+                  item.sectionId
+              ),
+            ]),
+
+          parentSectionIds:
+            unique([
+              heading.parentSectionId,
+
+              ...headingEvidence.map(
+                (item) =>
+                  item.parentSectionId
+              ),
+            ]),
+
+          headingKinds:
+            unique([
+              heading.headingKind,
+
+              ...headingEvidence.map(
+                (item) =>
+                  item.headingKind
+              ),
+            ]),
+        };
+
+        return {
+          id:
+            pseudoEntity.id,
+
+          title,
+
+          kind:
+            inferCanonicalComponentKind(
+              pseudoEntity,
+              evidence
+            ),
+
+          entityId:
+            null,
+
+          canonicalIdentitySource:
+            "component_bearing_heading",
+
+          evidenceIds:
+            headingEvidenceIds,
+
+          pages:
+            pseudoEntity.pages,
+
+          sectionIds:
+            pseudoEntity.sectionIds,
+
+          parentSectionIds:
+            pseudoEntity
+              .parentSectionIds,
+
+          headingKinds:
+            pseudoEntity
+              .headingKinds,
+
+          mentions:
+            Math.max(
+              1,
+              Number(
+                heading
+                  .externalReferenceCount ||
+                0
+              )
+            ),
+
+          confidence:
+            heading.confidence ===
+              "high"
+              ? 0.9
+              : 0.8,
+
+          promotionReasons: [
+            "component_bearing_heading",
+            ...(
+              heading.basis ||
+              []
+            ),
+          ],
+
+          rawIdentityIds: [
+            pseudoEntity.id,
+          ],
+
+          rawIdentityNames: [
+            title,
+          ],
+
+          componentHeadingId:
+            heading.headingId,
+
+          ownedContent:
+            heading.ownedContent ||
+            [],
+        };
+      })
+      .filter(Boolean);  
+
+        [
+        ...headingPromotedComponents,
+        ...promotedComponents,
+      ]
+      .forEach(
+        (component) => {
+          const existing =
+            registryById.get(
+              component.id
+            );
 
       if (!existing) {
         registryById.set(
@@ -2611,13 +3152,36 @@ function buildDocumentUnderstanding({
   });
 
   const evidence = mergeEvidence(
-    collectLayoutEvidence(layoutBoxes),
-    collectStructureEvidence(documentStructure),
-    collectFallbackEvidence(extractedData)
+    collectLayoutEvidence(
+      layoutBoxes
+    ),
+    collectStructureEvidence(
+      documentStructure
+    ),
+    collectFallbackEvidence(
+      extractedData
+    )
   );
 
+  /*
+  * BUG-1A — Component-Bearing Heading Identity
+  *
+  * Consume the hierarchy already established by
+  * documentStructureBuilder without weakening the
+  * structural entity firewall.
+  */
+  const componentHeadingUnderstanding =
+    buildComponentHeadingUnderstanding({
+      documentStructure,
+      evidence,
+      outputDir:
+        jobDir,
+    });
+
   const textMentionExtraction =
-    extractTextMentionEntities(evidence);
+    extractTextMentionEntities(
+      evidence
+    );
 
   const rawEntities = [
     ...extractConceptEntities(conceptsData),
@@ -2633,7 +3197,8 @@ function buildDocumentUnderstanding({
   const canonicalComponents =
     buildCanonicalComponents(
       entities,
-      evidence
+      evidence,
+      componentHeadingUnderstanding
     );
 
   const entityIneligibleNames =
@@ -2776,6 +3341,7 @@ function buildDocumentUnderstanding({
     version: VERSION,
     layoutBoxes,
     documentStructure,
+    componentHeadingUnderstanding,
     entities,
     canonicalComponents,
     relationships,
@@ -2787,6 +3353,10 @@ function buildDocumentUnderstanding({
 
       contextPropagation:
         contextPropagationHealth,
+
+      componentHeading:
+        componentHeadingUnderstanding
+          .health,
     },
 
     confidence: {
@@ -2819,6 +3389,26 @@ function buildDocumentUnderstanding({
       textItemCount: evidence.length,
       evidenceCount: evidence.length,
       entityCount: entities.length,
+
+      componentHeadingCount:
+        componentHeadingUnderstanding
+          .stats
+          .headingCount,
+
+      componentBearingHeadingCount:
+        componentHeadingUnderstanding
+          .stats
+          .componentBearingHeadingCount,
+
+      componentHeadingRejectedCount:
+        componentHeadingUnderstanding
+          .stats
+          .rejectedHeadingCount,
+
+      componentHeadingHealthValid:
+        componentHeadingUnderstanding
+          .health
+          .valid,
 
       canonicalComponentCount:
         canonicalComponents.length,
