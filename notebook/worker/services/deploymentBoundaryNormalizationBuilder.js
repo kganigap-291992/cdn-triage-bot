@@ -529,9 +529,471 @@ function runtimeInstanceMatchesRegion(
   );
 }
 
+
+function collectVisualMembershipForBoundary({
+  region = {},
+  visualDeploymentEvidence = {},
+} = {}) {
+  const eligibleMemberships =
+    asArray(
+      visualDeploymentEvidence
+        .deploymentEligibleMemberships
+    );
+
+  /*
+   * BUG-2F V1 intentionally does NOT invent a new
+   * deployment-boundary identity from the visual rail.
+   *
+   * Visual evidence may augment only an already-normalized
+   * deployment boundary.
+   *
+   * We match through explicit normalized/canonical labels
+   * carried by the eligible observation when available.
+   */
+
+  const normalizedLabel =
+    safeLower(
+      region.normalizedLabel
+    );
+
+  const matches =
+    eligibleMemberships.filter(
+      (membership) => {
+        const targetLabel =
+          normalizeDeploymentLabel(
+            membership
+              .deploymentBoundaryLabel
+          );
+
+        const targetNormalizedLabel =
+          safeLower(
+            targetLabel
+          );
+
+        /*
+        * BUG-2F:
+        *
+        * Visual and existing deployment evidence converge
+        * through the existing deployment-label
+        * normalization contract.
+        *
+        * No visual-specific deployment identity.
+        * No substring matching.
+        * No fuzzy matching.
+        * No differentiator-only matching.
+        */
+
+        return (
+          normalizedLabel &&
+          targetNormalizedLabel &&
+          normalizedLabel ===
+            targetNormalizedLabel
+        );
+      }
+    );
+
+  return {
+    observations:
+      matches,
+
+    componentIds:
+      uniq(
+        matches
+          .filter(
+            (membership) =>
+              membership
+                .canonicalEntityType ===
+              'component'
+          )
+          .map(
+            (membership) =>
+              membership.componentId ||
+              membership.canonicalEntityId
+          )
+          .filter(Boolean)
+      ),
+
+    componentNames:
+      uniq(
+        matches
+          .filter(
+            (membership) =>
+              membership
+                .canonicalEntityType ===
+              'component'
+          )
+          .map(
+            (membership) =>
+              membership.componentName ||
+              membership.canonicalEntityName
+          )
+          .filter(Boolean)
+      ),
+
+    runtimeInstanceIds:
+      uniq(
+        matches
+          .filter(
+            (membership) =>
+              membership
+                .canonicalEntityType ===
+              'runtime_instance'
+          )
+          .map(
+            (membership) =>
+              membership.runtimeInstanceId ||
+              membership.canonicalEntityId
+          )
+          .filter(Boolean)
+      ),
+  };
+}
+
+function intersectValues(
+  left = [],
+  right = []
+) {
+  const rightSet =
+    new Set(
+      asArray(right)
+    );
+
+  return uniq(
+    asArray(left).filter(
+      (value) =>
+        rightSet.has(value)
+    )
+  );
+}
+
+function subtractValues(
+  left = [],
+  right = []
+) {
+  const rightSet =
+    new Set(
+      asArray(right)
+    );
+
+  return uniq(
+    asArray(left).filter(
+      (value) =>
+        !rightSet.has(value)
+    )
+  );
+}
+
+function mergeMembershipEvidence({
+  existingComponentIds = [],
+  existingComponentNames = [],
+  existingMembershipSource = null,
+  existingMembershipConfidence = 'low',
+  visualMembership = {},
+} = {}) {
+  const existingIds =
+    uniq(
+      existingComponentIds
+    );
+
+  const visualIds =
+    uniq(
+      visualMembership
+        .componentIds
+    );
+
+  const visualNames =
+    uniq(
+      visualMembership
+        .componentNames
+    );
+
+  const existingHasEvidence =
+    existingIds.length > 0;
+
+  const visualHasEvidence =
+    visualIds.length > 0;
+
+  const agreedComponentIds =
+    intersectValues(
+      existingIds,
+      visualIds
+    );
+
+  const existingOnlyComponentIds =
+    subtractValues(
+      existingIds,
+      visualIds
+    );
+
+  const visualOnlyComponentIds =
+    subtractValues(
+      visualIds,
+      existingIds
+    );
+
+  /*
+   * No visual evidence:
+   * preserve the existing behavior exactly.
+   */
+
+  if (
+    !visualHasEvidence
+  ) {
+    return {
+      componentIds:
+        existingIds,
+
+      componentNames:
+        uniq(
+          existingComponentNames
+        ),
+
+      membershipSource:
+        existingMembershipSource,
+
+      membershipConfidence:
+        existingMembershipConfidence,
+
+      membershipConflict:
+        false,
+
+      membershipConflictDetails:
+        null,
+
+      membershipEvidence: [
+        {
+          source:
+            existingMembershipSource,
+
+          componentIds:
+            existingIds,
+
+          confidence:
+            existingMembershipConfidence,
+        },
+      ].filter(
+        (item) =>
+          safeString(
+            item.source
+          )
+      ),
+    };
+  }
+
+  /*
+   * Visual-only membership can be used because BUG-2E
+   * has already enforced:
+   *
+   * - resolved identity
+   * - deployment-qualified boundary
+   * - no label self-membership
+   *
+   * BUG-2F does not redo those decisions.
+   */
+
+  if (
+    !existingHasEvidence &&
+    visualHasEvidence
+  ) {
+    return {
+      componentIds:
+        visualIds,
+
+      componentNames:
+        visualNames,
+
+      membershipSource:
+        'visualDeploymentEvidence',
+
+      membershipConfidence:
+        'high',
+
+      membershipConflict:
+        false,
+
+      membershipConflictDetails:
+        null,
+
+      membershipEvidence: [
+        {
+          source:
+            'visualDeploymentEvidence',
+
+          componentIds:
+            visualIds,
+
+          confidence:
+            'high',
+
+          observationIds:
+            uniq(
+              asArray(
+                visualMembership
+                  .observations
+              ).map(
+                (observation) =>
+                  observation
+                    .observationId
+              )
+            ),
+        },
+      ],
+    };
+  }
+
+  /*
+   * Both rails agree completely.
+   */
+
+  if (
+    existingOnlyComponentIds.length === 0 &&
+    visualOnlyComponentIds.length === 0
+  ) {
+    return {
+      componentIds:
+        existingIds,
+
+      componentNames:
+        uniq([
+          ...asArray(
+            existingComponentNames
+          ),
+          ...visualNames,
+        ]),
+
+      membershipSource:
+        'corroborated_existing_and_visual',
+
+      membershipConfidence:
+        'high',
+
+      membershipConflict:
+        false,
+
+      membershipConflictDetails:
+        null,
+
+      membershipEvidence: [
+        {
+          source:
+            existingMembershipSource,
+
+          componentIds:
+            existingIds,
+
+          confidence:
+            existingMembershipConfidence,
+        },
+
+        {
+          source:
+            'visualDeploymentEvidence',
+
+          componentIds:
+            visualIds,
+
+          confidence:
+            'high',
+
+          observationIds:
+            uniq(
+              asArray(
+                visualMembership
+                  .observations
+              ).map(
+                (observation) =>
+                  observation
+                    .observationId
+              )
+            ),
+        },
+      ],
+    };
+  }
+
+  /*
+   * Partial overlap is preserved as a conflict rather than
+   * silently unioning or choosing one rail.
+   */
+
+  return {
+    componentIds:
+      agreedComponentIds,
+
+    componentNames:
+      [],
+
+    membershipSource:
+      'conflicting_existing_and_visual_evidence',
+
+    membershipConfidence:
+      'low',
+
+    membershipConflict:
+      true,
+
+    membershipConflictDetails: {
+      agreedComponentIds,
+
+      existingComponentIds:
+        existingIds,
+
+      visualComponentIds:
+        visualIds,
+
+      existingOnlyComponentIds,
+
+      visualOnlyComponentIds,
+
+      existingSource:
+        existingMembershipSource,
+
+      visualSource:
+        'visualDeploymentEvidence',
+
+      visualObservationIds:
+        uniq(
+          asArray(
+            visualMembership
+              .observations
+          ).map(
+            (observation) =>
+              observation
+                .observationId
+          )
+        ),
+    },
+
+    membershipEvidence: [
+      {
+        source:
+          existingMembershipSource,
+
+        componentIds:
+          existingIds,
+
+        confidence:
+          existingMembershipConfidence,
+      },
+
+      {
+        source:
+          'visualDeploymentEvidence',
+
+        componentIds:
+          visualIds,
+
+        confidence:
+          'high',
+      },
+    ],
+  };
+}
+
 function assignRegionMembership({
   normalizedBoundaries = [],
   architectureUnderstanding = {},
+  visualDeploymentEvidence = {},
 } = {}) {
   const components =
     asArray(
@@ -596,24 +1058,59 @@ function assignRegionMembership({
           ? resolvedLogicalComponents
           : fallbackComponents;
 
+      const existingComponentIds =
+        uniq(
+          finalComponents.map(
+            (component) =>
+              component.id
+          )
+        );
+
+      const existingComponentNames =
+        uniq(
+          finalComponents.map(
+            (component) =>
+              component.name
+          )
+        );
+
+      const existingMembershipSource =
+        matchedRuntimeInstances.length > 0
+          ? 'architectureUnderstanding.deterministicGraph.runtimeInstances'
+          : 'architectureUnderstanding.deterministicGraph.components.name_differentiator_fallback';
+
+      const existingMembershipConfidence =
+        matchedRuntimeInstances.length > 0
+          ? 'high'
+          : finalComponents.length > 0
+            ? 'medium'
+            : 'low';
+
+      const visualMembership =
+        collectVisualMembershipForBoundary({
+          region,
+          visualDeploymentEvidence,
+        });
+
+      const mergedMembership =
+          mergeMembershipEvidence({
+          existingComponentIds,
+          existingComponentNames,
+          existingMembershipSource,
+          existingMembershipConfidence,
+          visualMembership,
+        });
+
       return {
         ...region,
 
         componentIds:
-          uniq(
-            finalComponents.map(
-              (component) =>
-                component.id
-            )
-          ),
+          mergedMembership
+            .componentIds,
 
         componentNames:
-          uniq(
-            finalComponents.map(
-              (component) =>
-                component.name
-            )
-          ),
+          mergedMembership
+            .componentNames,
 
         runtimeInstanceIds:
           uniq(
@@ -648,16 +1145,35 @@ function assignRegionMembership({
           ),
 
         membershipSource:
-          matchedRuntimeInstances.length > 0
-            ? 'architectureUnderstanding.deterministicGraph.runtimeInstances'
-            : 'architectureUnderstanding.deterministicGraph.components.name_differentiator_fallback',
+          mergedMembership
+            .membershipSource,
 
         membershipConfidence:
-          matchedRuntimeInstances.length > 0
-            ? 'high'
-            : finalComponents.length > 0
-              ? 'medium'
-              : 'low',
+          mergedMembership
+            .membershipConfidence,
+
+        membershipEvidence:
+          mergedMembership
+            .membershipEvidence,
+
+        membershipConflict:
+          mergedMembership
+            .membershipConflict,
+
+        membershipConflictDetails:
+          mergedMembership
+            .membershipConflictDetails,
+
+        visualMembershipObservationIds:
+          uniq(
+            asArray(
+              visualMembership
+                .observations
+            ).map(
+              (observation) =>
+                observation.observationId
+            )
+          ),
       };
     }
   );
@@ -682,6 +1198,13 @@ function buildNormalizationHealth({
       (item) =>
         asArray(item.componentNames).length === 0 &&
         asArray(item.runtimeInstanceNames).length === 0
+    );
+
+  const membershipConflicts =
+    normalizedBoundaries.filter(
+      (boundary) =>
+        boundary.membershipConflict ===
+        true
     );
 
   const traversalChanged = false;
@@ -709,8 +1232,15 @@ function buildNormalizationHealth({
     violationCount: violations.length,
     duplicateBoundaryIdCount: duplicateIds.length,
     missingNormalizedLabelCount: missingLabels.length,
-    emptyMembershipRegionCount: emptyMemberships.length,
-    rejectedCandidateCount: rejectedCandidates.length,
+    emptyMembershipRegionCount:
+      emptyMemberships.length,
+
+    membershipConflictCount:
+      membershipConflicts.length,
+
+    rejectedCandidateCount:
+      rejectedCandidates.length,
+
     traversalChanged,
     violations,
   };
@@ -719,6 +1249,7 @@ function buildNormalizationHealth({
 function buildDeploymentBoundaryNormalization({
   architectureUnderstanding = {},
   regionTraversal = {},
+  visualDeploymentEvidence = {},
   outputDir = null,
 } = {}) {
   const rawCandidates = [
@@ -744,8 +1275,12 @@ function buildDeploymentBoundaryNormalization({
 
   const normalizedBoundaries =
     assignRegionMembership({
-      normalizedBoundaries: discoveredRegions,
+      normalizedBoundaries:
+        discoveredRegions,
+
       architectureUnderstanding,
+
+      visualDeploymentEvidence,
     });
 
   const rejectedBreakdown =
@@ -817,6 +1352,38 @@ function buildDeploymentBoundaryNormalization({
             ).length,
           0
         ),
+
+      visualMembershipObservationCount:
+        normalizedBoundaries.reduce(
+          (sum, region) =>
+            sum +
+            asArray(
+              region
+                .visualMembershipObservationIds
+            ).length,
+          0
+        ),
+
+      corroboratedMembershipRegionCount:
+        normalizedBoundaries.filter(
+          (region) =>
+            region.membershipSource ===
+            'corroborated_existing_and_visual'
+        ).length,
+
+      visualOnlyMembershipRegionCount:
+        normalizedBoundaries.filter(
+          (region) =>
+            region.membershipSource ===
+            'visualDeploymentEvidence'
+        ).length,
+
+      membershipConflictCount:
+        normalizedBoundaries.filter(
+          (region) =>
+            region.membershipConflict ===
+            true
+        ).length,
 
       traversalChanged: false,
     },

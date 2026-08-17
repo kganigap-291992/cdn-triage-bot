@@ -37,6 +37,11 @@ const {
 } = require("../services/visualEntityGroundingBuilder");
 
 const {
+  buildVisualDeploymentEvidence,
+  saveVisualDeploymentEvidence,
+} = require("../services/visualDeploymentEvidenceBuilder");
+
+const {
   buildSpatialEntityGrounding,
 } = require("../services/spatialEntityGroundingBuilder");
 
@@ -626,6 +631,27 @@ router.post("/:jobId", async (req, res) => {
     console.log(
       "[visual-entity-grounding]",
       visualEntityGrounding.stats
+    );
+
+    /* ------------------------------------------------------- */
+    /* BUG-2E Visual Deployment Evidence                       */
+    /* ------------------------------------------------------- */
+
+    const visualDeploymentEvidence =
+      buildVisualDeploymentEvidence({
+        visualBoundarySemantics,
+        visualEntityGrounding,
+      });
+
+    const visualDeploymentEvidencePath =
+      saveVisualDeploymentEvidence(
+        jobDir,
+        visualDeploymentEvidence
+      );
+
+    console.log(
+      "[visual-deployment-evidence]",
+      visualDeploymentEvidence.stats
     );
 
     const spatialEntityGrounding = buildSpatialEntityGrounding({
@@ -1257,6 +1283,9 @@ const responsibilityUnderstanding = buildResponsibilityUnderstanding({
       buildDeploymentBoundaryNormalization({
         architectureUnderstanding,
         regionTraversal,
+
+        visualDeploymentEvidence,
+
         outputDir: jobDir,
       });
 
@@ -1488,29 +1517,52 @@ const responsibilityUnderstanding = buildResponsibilityUnderstanding({
       },
 
       visualEntityGrounding: {
-        version:
-          visualEntityGrounding.version,
+      version:
+        visualEntityGrounding.version,
 
-        stats:
-          visualEntityGrounding.stats,
+      stats:
+        visualEntityGrounding.stats,
 
-        health:
-          visualEntityGrounding.health,
+      health:
+        visualEntityGrounding.health,
 
-        identityPolicy:
-          visualEntityGrounding.identityPolicy,
+      identityPolicy:
+        visualEntityGrounding.identityPolicy,
 
-        graphChanged:
-          visualEntityGrounding.graphChanged,
+      graphChanged:
+        visualEntityGrounding.graphChanged,
 
-        traversalChanged:
-          visualEntityGrounding.traversalChanged,
+      traversalChanged:
+        visualEntityGrounding.traversalChanged,
 
-        output:
-          visualEntityGroundingPath,
-      },
+      output:
+        visualEntityGroundingPath,
+    },
 
-      spatialEntityGrounding: {
+    visualDeploymentEvidence: {
+      version:
+        visualDeploymentEvidence.version,
+
+      stats:
+        visualDeploymentEvidence.stats,
+
+      health:
+        visualDeploymentEvidence.health,
+
+      policy:
+        visualDeploymentEvidence.policy,
+
+      graphChanged:
+        visualDeploymentEvidence.graphChanged,
+
+      traversalChanged:
+        visualDeploymentEvidence.traversalChanged,
+
+      output:
+        visualDeploymentEvidencePath,
+    },
+
+    spatialEntityGrounding: {
         version: spatialEntityGrounding.version,
         stats: spatialEntityGrounding.stats,
         output: spatialEntityGroundingPath,
